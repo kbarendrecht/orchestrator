@@ -335,3 +335,37 @@ needs a native drag gesture on a real macOS webview, which is the one thing
 `docs/traps/macos.md` has those measurements. A source-level grep for the call
 would assert the fix is spelled, not that the drop lands, and the failure it
 guards is already loud: the rail simply stops reordering.
+
+## The splash is replaced, never pushed, and `Backspace` is refused outside a text field.
+Two halves of one defect (#14), and they are separate because only one of them can
+be proven from Linux.
+The window opens on a `data:` URL splash and `boot_daemon` used to `navigate` to
+the board, which is an ordinary load — so the board went **on top of** the splash
+and the splash became the back item. One back navigation then landed on a static
+page reading `starting daemon…`, with no forward item and a reload that reloads
+the splash. Terminal, and **reported as a daemon crash**: the daemon was up and
+serving its port the whole time, and from the window the two are identical.
+`location.replace` overwrites the entry instead, so there is nothing to go back to.
+**That entry is WKWebView's and only WKWebView's.** Measured here with a probe
+build: on WebKitGTK `history.length` is already 1 with the old `navigate`, and
+`history.back()` on the board does nothing. So Linux can neither reproduce the bug
+nor prove the fix, and the reporter's machine is the only gate that half will ever
+have. What *is* verified here is that a `data:` document may replace itself with
+`http://127.0.0.1` at all — the one step that could have failed outright.
+**So the trigger is removed as well as the destination**, and that half is gated.
+`keymap` refuses a bare `Backspace` unless the event target is a text field, first
+in the chain because it is a refusal rather than a binding. The guard is a
+`closest` over `textarea, input, [contenteditable]` rather than `typingElsewhere`,
+because xterm's helper textarea **is** a textarea and a terminal that cannot
+delete a character would be a worse bug than the one being fixed.
+Three lines in `mise run page-check` hold it, and they were **checked against
+deliberate breakage in both directions**: dropping the branch fails
+`Backspace outside a text field is refused`, and dropping the `closest` guard fails
+the other two, including the one asserted on the real `.xterm-helper-textarea`.
+The question is asked as `dispatchEvent`'s return value, not with a second
+listener — the app's own handler calls `stopPropagation` on a key it took, so a
+probe listening after it would never run and the gate would pass by never firing.
+`HANDOFF_REPLACE_GRACE` is the other half of the Rust side: a hand-off that
+silently does not happen is a window stuck on the splash for ever, which is worse
+than the entry being removed, so the scheme is re-read after four seconds and
+`navigate` is still there as the answer.

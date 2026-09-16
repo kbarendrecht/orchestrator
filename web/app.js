@@ -1004,7 +1004,31 @@ window.addEventListener('keydown', (e) => {
 }, true);
 
 function keymap(/** @type {KeyboardEvent} */ e) {
-  /* First in the chain, because it is modal and the topmost thing on screen: a
+  /* **A bare `Backspace` outside a text field is a navigation key, and this app
+     has nowhere to navigate to.** Clicking a titlebar puts focus on something
+     that is not editable, and one press then took the window back to the splash
+     — `starting daemon…`, no forward item, and a reload that reloads the splash.
+     The daemon was up and serving the whole time, which is why it was reported as
+     a crash (#14).
+
+     The other half of that fix is in `boot_daemon`: the board replaces the splash
+     rather than being pushed on top of it, so there is no entry to reach. This
+     half removes the *trigger* rather than the destination, and it is the half
+     that can be proven before it ships — the entry is WKWebView's, and WebKitGTK
+     keeps none either way.
+
+     First in the chain, and unconditional, because it is a refusal rather than a
+     binding: no overlay wants this key, and the guard below is what keeps it away
+     from everything that does. `closest` rather than `typingElsewhere`, because
+     xterm's helper textarea has to keep it — a terminal without `Backspace` is
+     the obvious way to make this cure worse than the disease. */
+  if (e.key === 'Backspace'
+      && !/** @type {HTMLElement} */ (e.target).closest?.('textarea, input, [contenteditable="true"]')) {
+    e.preventDefault();
+    return;
+  }
+  /* First of the branches that bind a key, because it is modal and the topmost
+     thing on screen: a
      confirm drawn over the review overlay has to be the thing `Esc` answers, or
      the overlay closes underneath the question about it. Cancelling is the safe
      answer, which is what `Esc` means everywhere else here too. */

@@ -302,6 +302,35 @@ try {
   await page.waitForTimeout(2000)
   check((await railNames()).join('|') === after.join('|'), 'the order survives a reload and the snapshots after it')
 
+  /* --- Backspace is not a way out of the board -------------------------------- */
+
+  /* **The other half of #14, and the half that can be proven here.** A bare
+     `Backspace` outside a text field is a navigation key: clicking a titlebar
+     focuses something that is not editable, and one press took the window back to
+     the splash it was launched on — no forward item, and a reload that reloads the
+     splash. `boot_daemon` now replaces that entry rather than pushing the board on
+     top of it, but that entry is WKWebView's and this browser has none, so the
+     destination cannot be asserted anywhere but a Mac. The *trigger* can.
+
+     `dispatchEvent` returns false when something called `preventDefault`, which is
+     the whole question. Asked that way rather than with a second listener, because
+     the app's own handler calls `stopPropagation` on a key it took — so a probe
+     listening after it would never run, and the gate would pass by never firing. */
+  const swallows = (sel) => page.evaluate((s) => {
+    const el = document.querySelector(s)
+    if (!el) return null
+    return !el.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Backspace', bubbles: true, cancelable: true }))
+  }, sel)
+
+  check(await swallows('#rail') === true, 'Backspace outside a text field is refused')
+  /* The two ways this cure could be worse than the disease, and both are one
+     `closest` call away from each other. A terminal that cannot delete a character
+     is the louder of them, which is why it is asserted on the real helper textarea
+     xterm focuses rather than on a stand-in. */
+  check(await swallows('#setlang') === false, 'Backspace still reaches a text field')
+  check(await swallows('.xterm-helper-textarea') === false, 'Backspace still reaches the pty')
+
   /* **Last, and deliberately so.** The move below puts a session into main,
      and the rail draws main's sessions and the worktrees' as two runs. The drag
      above reorders *within* a run and refuses a drop across them, so running

@@ -68,6 +68,14 @@ const HANDOFF_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 /// apart in a subtler way than a rename: see [`handoff_args`].
 const WAIT_FOR_PID: &str = "--wait-for-pid";
 
+/// How long the splash gets to replace itself with the board before `navigate`
+/// is used instead.
+///
+/// Slack, not a measurement: the page is on loopback and lands in milliseconds.
+/// It is long enough that a slow first paint is never mistaken for a failed
+/// hand-off, and short enough that the fallback is not itself a hang.
+const HANDOFF_REPLACE_GRACE: std::time::Duration = std::time::Duration::from_secs(4);
+
 /// macOS keeps its real traffic lights over a transparent titlebar; everywhere
 /// else the window is frameless and the SPA draws its own controls.
 const CHROME: Chrome = if cfg!(target_os = "macos") {
@@ -658,9 +666,50 @@ fn boot_daemon(
             BOARD_UP.store(true, std::sync::atomic::Ordering::SeqCst);
             match url.parse::<tauri::Url>() {
                 Ok(u) => {
-                    if let Err(e) = w.navigate(u) {
-                        tracing::error!("could not navigate to the daemon: {e}");
+                    /* **The splash must not survive as a back entry**, which is
+                    what `navigate` leaves behind: it is an ordinary load, so the
+                    board is pushed *on top of* the splash and the `data:` URL
+                    becomes the back item. One back navigation then lands on a
+                    static page whose only text is `starting daemon…`, with no
+                    forward item and a reload that reloads the splash — terminal,
+                    and reported as a daemon crash because from the window the two
+                    look identical (#14).
+
+                    `location.replace` overwrites the entry instead, so there is
+                    nothing to go back to whatever fires the navigation. **This is
+                    WKWebView's behaviour and only WKWebView's**: measured here,
+                    WebKitGTK keeps no such entry either way — `history.back()`
+                    does nothing on the board today. So Linux can neither reproduce
+                    it nor prove this fixes it, and the page-side half of #14 (the
+                    `Backspace` refusal in `app.js`) is the one that can be gated.
+
+                    Interpolated into a single-quoted string rather than escaped,
+                    because `Serving::url` is `http://127.0.0.1:<port>/?token=<hex>`
+                    and a port and 32 hex characters cannot carry a quote. */
+                    if let Err(e) = w.eval(format!("location.replace('{url}')")) {
+                        tracing::warn!("the replace hand-off did not run: {e}");
                     }
+                    /* **A hand-off that silently does not happen is a window stuck
+                    on the splash for ever**, which is worse than the entry this
+                    removes. So the load is checked, and `navigate` is still there
+                    as the answer — today's behaviour, rather than today's failure.
+                    The page is on loopback and was fetched in a few milliseconds
+                    when measured, so this deadline is slack rather than a guess. */
+                    let back = w.clone();
+                    let ah = ah.clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(HANDOFF_REPLACE_GRACE);
+                        let _ = ah.run_on_main_thread(move || {
+                            // Only the splash is a `data:` URL, so the scheme is
+                            // the whole question.
+                            if back.url().is_ok_and(|at| at.scheme() == "data") {
+                                tracing::warn!("still on the splash; navigating instead");
+                                if let Err(e) = back.navigate(u) {
+                                    tracing::error!("could not navigate to the daemon: {e}");
+                                }
+                            }
+                        });
+                    });
                 }
                 Err(e) => tracing::error!("the daemon's own URL did not parse ({url}): {e}"),
             }
