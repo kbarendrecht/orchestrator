@@ -49,3 +49,19 @@ empty daemon), a POST needs an `Origin` matching the port or it is "bad origin",
 and the config key is `worktrees_subdir`. An unknown config key is ignored in
 silence, so `worktrees_dir` leaves the daemon managing `.claude/worktrees` and
 logging that it is "ignoring worktree outside the managed dir".
+
+## A markdown heading in a tag message is a comment to git.
+`mise run release` writes the release notes into the annotated tag and the
+workflow reads them back, because `generate_release_notes: true` builds a body
+from merged pull requests and this repo has none — so every release published one
+compare link, for 8 commits in v2026.9.18 and 34 in v2026.9.17.
+**`git tag -F` applies `--cleanup=strip`, which deletes every line beginning with
+`#`.** Markdown headings and git comments are the same character, so `### What
+changed` was silently eaten and the body opened on a bare list. `--cleanup=verbatim`
+is the fix, and the round trip is the only way it was ever going to be noticed:
+the notes looked right in the file and wrong only after the tag existed.
+**And `%(contents)` on a *lightweight* tag hands back the commit's message.** Not
+an empty string — the commit's. So a release cut by hand, which is lightweight,
+would have published `Release 2026.9.19` as its body and looked deliberate about
+it. `git cat-file -t "$tag"` answers `tag` for an annotated one and `commit` for a
+lightweight one, and that is what the workflow branches on.

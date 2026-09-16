@@ -428,6 +428,7 @@ together: same entries, same order, same groups.
 - A test that asserts on git's own error wording fails on an older git.
 - A route an agent calls needs a line in `is_ask_route`, and forgetting it fails as `bad origin`.
 - Driving the API by hand has four traps.
+- A markdown heading in a tag message is a comment to git.
 
 ## Releases
 
@@ -450,6 +451,13 @@ commit as `Release <version>`, then `git tag v<version> && git push origin
 v<version>`. The workflow refuses a tag that does not match the crate version,
 because a released build that disagrees with its own tag nags about an update it
 already is. Versions are CalVer: `<year>.<month>.<n>`.
+
+**The release body is the tag's own message now**, written by
+`tools/release-notes.mjs` and read back by the workflow. A tag cut by hand is
+lightweight and carries none, and the workflow falls back to a compare link —
+which is what every release published before this. To write them by hand:
+`node tools/release-notes.mjs v<previous>..HEAD > notes.md`, then
+`git tag -a --cleanup=verbatim v<version> -F notes.md`.
 
 **The crate manifests are not on that list, and that is the fix for a release
 that could not be cut.** The version used to be a literal in each of them, and

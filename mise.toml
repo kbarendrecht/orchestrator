@@ -372,6 +372,35 @@ main() {
   # about`; CI regenerates and diffs, which is what would catch a wrong guess.
   bump THIRD-PARTY-RUST.md "$cur" "$VERSION" 1
 
+  # **The notes, before the tag exists.** `generate_release_notes: true` builds
+  # them from merged pull requests, and this repo has none — so every release said
+  # one compare link, for 8 commits in v2026.9.18 and 34 in v2026.9.17.
+  # `release-notes.mjs` builds them from the log instead, and asks `claude` to pick
+  # the handful a person upgrading would notice. Drafted here rather than in the
+  # workflow because this is where a reader is: the release job has no one to show
+  # a draft to, and a model's judgement is not something to publish unseen.
+  step "drafting the release notes"
+  notes=$(mktemp)
+  # Never fatal. A model call that is slow, offline or rate-limited must not block
+  # a release, and the script already falls back to picking by path — but if even
+  # that fails, the notes are dropped and GitHub's own line is what ships.
+  if node tools/release-notes.mjs "v$cur..HEAD" > "$notes"; then
+    printf '\\n%s\\n\\n' "$(cat "$notes")"
+  else
+    printf '  could not draft them; the release will carry the default body\\n'
+    : > "$notes"
+  fi
+  # Only when somebody is there to answer. A release cut from a script keeps the
+  # notes rather than hanging on a prompt nothing will type into.
+  if [ -s "$notes" ] && [ -t 0 ]; then
+    printf 'Use these notes? [Y/e/n] '
+    read -r answer
+    case $answer in
+      [Nn]*) : > "$notes"; printf '  dropped\\n' ;;
+      [Ee]*) "${EDITOR:-vi}" "$notes"; node tools/release-notes.mjs "v$cur..HEAD" --check "$notes" || die "the edited notes no longer cover the range" ;;
+    esac
+  fi
+
   [ "$DRY" = 1 ] && { printf '\\n(dry run: nothing written, nothing tagged; %s would have been pushed)\\n' "$tag"; return 0; }
 
   step "committing, tagging and pushing"
@@ -380,7 +409,18 @@ main() {
   # version bump cannot fail the hook's checks.
   git commit --no-verify -m "Release $VERSION"
   git push origin main
-  git tag "$tag"
+  # Annotated, because the message is what the workflow publishes as the release
+  # body. A lightweight tag carries none, and the release would fall back to the
+  # one line this exists to replace.
+  if [ -s "$notes" ]; then
+    # `--cleanup=verbatim`, and it is not optional: git's default strips every
+    # line beginning with `#` as a comment, which silently ate the `### What
+    # changed` heading and left the release body opening on a bare list. Markdown
+    # headings and git comments are the same character.
+    git tag -a --cleanup=verbatim "$tag" -F "$notes"
+  else
+    git tag "$tag"
+  fi
   git push origin "$tag"
   printf '  %s pushed\\n' "$tag"
   printf '\\nThe release workflow is running. Watch it with:\\n  gh run watch $(gh run list --workflow=release.yml --limit 1 --json databaseId -q ".[0].databaseId")\\n'
