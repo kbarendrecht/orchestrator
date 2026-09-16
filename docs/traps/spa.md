@@ -311,3 +311,27 @@ its first form only matched `x.checkout.token` and the real defect was
 `const { wsBase, token } = entry.checkout` — an ObjectPattern, which that selector
 does not see, so the revert linted clean. Both forms are denied now, and the check
 that says so is reverting the fix and watching each gate fail.
+
+## HTML5 drag-and-drop and the native drag destination cannot both be live on one webview.
+The rail reorders by `draggable` rows and `dataTransfer` (`web/js/rail.js`), and
+on macOS the drop never arrived: the ghost followed the pointer and the release
+did nothing. Not the rail's code — wry registers an `NSDraggingDestination` on the
+webview whenever tauri's drag-drop handler is left on, and it answers
+`draggingEntered` and `draggingUpdated` before the page does, so `dragover` and
+`drop` never reach JS. `dragstart` still fires, because that half is page-side,
+which is why the gesture *looks* alive.
+**The tell was the cursor.** `effectAllowed = 'move'` with a `dragover` that
+prevents default draws a plain move cursor and no badge. The green copy badge on
+screen is `NSDragOperationCopy`, which is what that destination returns — so
+something other than the page was answering. That is what named the mechanism from
+a recording, without a Mac.
+`build_window` calls `disable_drag_drop_handler()` (#19). Nothing here wants a
+file drop, so the native half was pure loss. If one is ever wanted it has to come
+from Rust through `on_drag_drop_event`; there is no configuration in which both
+work.
+**No gate, and this is the measured refusal rather than a shrug.** Observing it
+needs a native drag gesture on a real macOS webview, which is the one thing
+`mise run app-check` established a runner cannot drive — the entry in
+`docs/traps/macos.md` has those measurements. A source-level grep for the call
+would assert the fix is spelled, not that the drop lands, and the failure it
+guards is already loud: the rail simply stops reordering.

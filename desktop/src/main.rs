@@ -387,6 +387,19 @@ fn build_window(
     let see_through = orchd_serve::host::see_through_window();
     let mut builder = WebviewWindowBuilder::new(app_handle, "main", url)
         .title("Orchestrator")
+        /* **The rail reorders by HTML5 drag-and-drop, and the native handler eats
+        it.** wry registers an `NSDraggingDestination` on the webview whenever this
+        is left on, and that destination answers `draggingEntered` and
+        `draggingUpdated` before the page does — so `dragover` and `drop` never
+        reach JS. `dragstart` still fires, because it is page-side, which is why
+        the row ghost follows the pointer and the release does nothing. The tell in
+        #19 was the cursor: `effectAllowed = 'move'` cannot draw a copy badge, and
+        `NSDragOperationCopy` is what that destination returns.
+        Nothing here wants a file drop — no `on_drag_drop_event` in this crate and
+        no `dataTransfer` outside `web/js/rail.js` — so the native half is pure
+        loss. If a real file drop is ever wanted it has to come from Rust through
+        `on_drag_drop_event`; the two cannot both be live on one webview. */
+        .disable_drag_drop_handler()
         .transparent(see_through)
         /* **The ground is the app's, not the toolkit's white.** A webview paints
         white until a document says otherwise, and there are two moments here

@@ -305,6 +305,7 @@ together: same entries, same order, same groups.
 - A window drag is the one call in this app that can abort the process, and it is guarded in two places.
 - `window.confirm`, `window.prompt` and `window.alert` do nothing in this app on macOS.
 - A socket may freeze which checkout it serves, never where that checkout is.
+- HTML5 drag-and-drop and the native drag destination cannot both be live on one webview.
 
 ### Claude Code, and what it guarantees
 
