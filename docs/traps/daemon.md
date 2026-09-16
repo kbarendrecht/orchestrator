@@ -351,3 +351,26 @@ answer is to re-run that hook on the idle spare each tick — idempotent by
 contract, and by construction in this repo, `ln -sfn` behind an `[ -e ] && [ ! -L ]`
 guard — and to expire a spare after `MAX_AGE` whatever git says. A repo whose
 setup is neither idempotent nor cheap sets `spare_worktrees: 0`.
+
+## Two `git worktree add`s at once fail on the config lock, and the spare pool made that reachable.
+`git worktree add -b <branch> <remote-ref>` writes the new branch's upstream into
+`.git/config`, takes `.git/config.lock` to do it, and **does not retry**. A second
+add landing inside that window does not queue — it fails outright with
+`could not lock config file .git/config: File exists`, followed by `unable to
+write upstream branch configuration`, and the create fails with it.
+Nothing in the daemon made two of them overlap until the pool did. It cuts a tree
+in the background at boot, so any create in the first seconds of a daemon's life
+races it by construction — which is exactly what `mise run app-check` does, and
+the create it drives is *named*, so it never takes the spare and always cuts its
+own. `bundle` went red on the tag run of `5ecc500` and green on the push run of
+the same commit, which is the signature of a race rather than a break.
+`AppState::cutting` is held across `create_worktree` — over the repo's own
+`WorktreeCreate` hook as well as the daemon's fallback, because the hook cuts the
+tree on that path and is just as able to hold the lock — and across `revive`'s
+`worktree_rebuild`, which is a `git worktree add` too. `lock`, not `try_lock`
+like `sweeping`: a create still has to happen, so it queues, and the wait it can
+inherit is a whole cut.
+**A race is not a deterministic test.** Without the mutex
+`a_spare_cut_and_a_named_create_do_not_fight_over_the_config_lock` fails often
+rather than always, so what it pins is that both paths can be driven at once and
+both trees arrive; this entry is the rest of the evidence.

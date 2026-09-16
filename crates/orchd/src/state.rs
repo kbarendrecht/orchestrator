@@ -142,6 +142,25 @@ pub struct AppState {
     /// nothing to add, so it is dropped rather than queued behind a job whose
     /// result it would only overwrite with the same numbers.
     pub sweeping: tokio::sync::Mutex<()>,
+    /// Held across a `git worktree add`, so two of the daemon's own never overlap.
+    ///
+    /// **`git worktree add -b <branch> <remote-ref>` writes `.git/config`** — the
+    /// upstream tracking for the new branch — and git takes `.git/config.lock`
+    /// to do it and **does not retry**. A second add landing inside that window
+    /// fails outright with `could not lock config file .git/config: File exists`,
+    /// and the create fails with it.
+    ///
+    /// Nothing made two of them overlap until the spare pool did. It cuts a tree
+    /// in the background at boot, so a create arriving in the first seconds of a
+    /// daemon's life now races it by construction — which is exactly what
+    /// `mise run app-check` does, and it took `bundle` red on one run of a commit
+    /// while passing on another run of the same one.
+    ///
+    /// `lock`, not `try_lock`, unlike [`Self::sweeping`]: a create that arrives
+    /// while another is running still has to happen, so it queues. The wait it can
+    /// inherit is a whole cut — about 4.7 seconds on the monorepo — and that is
+    /// the price of the pool being allowed to work in the background at all.
+    pub cutting: tokio::sync::Mutex<()>,
     /// Set the moment shutdown begins.
     ///
     /// A session's exit watcher cannot otherwise tell "you closed this pane" from
@@ -589,6 +608,7 @@ impl AppState {
             }),
             swapping: tokio::sync::Mutex::new(()),
             sweeping: tokio::sync::Mutex::new(()),
+            cutting: tokio::sync::Mutex::new(()),
             shutting_down: std::sync::atomic::AtomicBool::new(false),
             events,
             chrome,

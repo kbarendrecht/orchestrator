@@ -610,6 +610,37 @@ mod tests {
         assert!(path.exists(), "somebody else's branch is not removed");
     }
 
+    /// A background cut beside a named create, which is the shape `app-check`
+    /// drives and the one that took `bundle` red.
+    ///
+    /// **`git worktree add -b` writes `.git/config` under a lock it does not
+    /// retry**, so before `AppState::cutting` the second of these died on
+    /// `could not lock config file .git/config: File exists`. A race is not a
+    /// deterministic test — without the mutex this fails often rather than always
+    /// — so what it really pins is that the two paths *can* be driven at once and
+    /// both trees arrive.
+    #[tokio::test]
+    async fn a_spare_cut_and_a_named_create_do_not_fight_over_the_config_lock() {
+        let (main, app) = repo("spare-lockrace");
+        let named = app.cfg.worktree_path("ledger");
+        let (_, create) = tokio::join!(refill(&app), async {
+            crate::worktree::create_worktree(
+                &app,
+                "ledger",
+                &named,
+                crate::worktree::Want::New {
+                    branch: "worktree-ledger",
+                    base: "main",
+                },
+                Board::Quiet,
+            )
+            .await
+        });
+        create.expect("the named create survives a spare being cut beside it");
+        assert!(named.exists(), "the named tree is there");
+        assert_eq!(worktrees(&main), 3, "main, the spare, and the named tree");
+    }
+
     /// Two unnamed creates racing. The write lock is the only thing between them —
     /// a claim does no git, so nothing downstream would refuse the second.
     #[tokio::test]

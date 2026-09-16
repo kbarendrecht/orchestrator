@@ -291,9 +291,13 @@ pub async fn revive(
 
     let main = app.cfg.main_checkout.clone();
     let (path, b, sha) = (cwd.to_path_buf(), branch.clone(), head_sha.clone());
+    // A rebuild is a `git worktree add` too, and the spare pool can be cutting one
+    // beside it. See `AppState::cutting`.
+    let cutting = app.cutting.lock().await;
     let moved = tokio::task::spawn_blocking(move || git::worktree_rebuild(&main, &path, &b, &sha))
         .await
         .map_err(|e| anyhow::anyhow!("rebuild task failed: {e}"))??;
+    drop(cutting);
 
     // A rebuilt worktree is a fresh checkout at the old path — its symlinks and
     // creation-time files are gone with the tree that was torn down, so the setup
@@ -1046,6 +1050,14 @@ pub(crate) async fn create_worktree(
     if board.is_loud() {
         app.create_begin(name).await;
     }
+    /* **One `git worktree add` at a time, daemon-wide.** Git writes the new
+    branch's upstream into `.git/config` under a lock it does not retry, so a
+    second add inside that window dies on `could not lock config file`. The spare
+    pool made that reachable by cutting in the background; `AppState::cutting`
+    carries the rest of the reasoning. Taken here rather than around the git call
+    alone, because the repo's own `WorktreeCreate` hook cuts the tree on the path
+    below and is just as capable of holding the lock. */
+    let _cutting = app.cutting.lock().await;
     // Owned up front: every git call below goes to a blocking thread, because each
     // one can fetch and a fetch against an unreachable remote parks a runtime worker
     // for as long as git waits.
