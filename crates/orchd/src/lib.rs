@@ -32,6 +32,7 @@ pub mod names;
 pub mod post;
 pub mod relocate;
 pub mod review_api;
+pub mod spare;
 pub mod spawn;
 pub mod state;
 pub mod store;

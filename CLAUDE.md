@@ -126,7 +126,7 @@ mise run check-ship                 # every binary the release must pack
 mise run app-check                  # drive the real app: a session survives a restart
 mise run page-check                 # what the rendered page must never show
 mise run notices                    # regenerate THIRD-PARTY-RUST.md
-mise run e2e                        # 26 flows against a real daemon
+mise run e2e                        # 27 flows against a real daemon
 mise run deflake                    # each flow 8x, to name the flaky ones
 cargo run -p orchestrator-desktop   # the app, daemon embedded in-process
 mise run shot                       # screenshot the running SPA (drives Chrome)
@@ -356,6 +356,7 @@ together: same entries, same order, same groups.
 - You cannot self-review your way to a testable review thread — use the fixture.
 - The host's own file is `host.json`, and a hosted child must not write the host's files.
 - A resume rebuilds a session's environment, so anything the daemon put there has to be re-handed.
+- A spare worktree is a workspace with no session, and that is the shape the reaper hunts.
 
 ### The e2e flows
 
@@ -387,6 +388,7 @@ together: same entries, same order, same groups.
 - A launcher-started app has no stdout, so it used to leave no log at all.
 - The page's own boot timing is not visible from Rust.
 - Measure a release build, or do not quote the number.
+- Creating a worktree is 4.7 seconds; claiming a pre-cut one is 84 milliseconds.
 
 ### macOS, and the tooling around the build
 

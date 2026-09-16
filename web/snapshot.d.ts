@@ -346,7 +346,18 @@ export type Snapshot = {
  * the settings pane shows it and does not offer it — and `Settings` leaves it
  * out so a write of the whole struct cannot replace a hand-edited one.
  */
-tracker_server: string | null, workspaces: Array<WorkspaceView>, sessions: Array<SessionView>, prs: Array<PrView>, 
+tracker_server: string | null, 
+/**
+ * Workspaces the spare pool is holding — cut, based, and not yet anybody's.
+ *
+ * Here so the pool can be *seen*. A spare is deliberately an ordinary
+ * workspace, which makes it indistinguishable on the board from one nobody
+ * has opened; without this, the only way to tell whether a create was handed
+ * a pre-cut tree would be to time it, which is the assertion
+ * `docs/traps/e2e.md` warns against. The e2e flow reads this, and so can a
+ * person wondering why the pool is empty.
+ */
+spare: Array<string>, workspaces: Array<WorkspaceView>, sessions: Array<SessionView>, prs: Array<PrView>, 
 /**
  * Set when the last poll failed; the pane says so rather than showing an
  * empty list.

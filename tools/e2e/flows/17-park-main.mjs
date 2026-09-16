@@ -51,5 +51,16 @@ export async function run(t) {
   // Parked, not lost: the branch still has the commit, and `move_branch_out` is how
   // it gets a tree of its own if you want one.
   assert.equal(git(t.repo, ['log', '-1', '--format=%s', 'feature/parked']), 'work in main')
-  assert.equal(git(t.repo, ['status', '--porcelain']), '', 'main came home with work on it')
+  /* The worktrees dir is excluded, the same way the daemon's own "is main clean"
+     does it. `is_clean_excluding` exists because main *contains* that directory,
+     so on a repo that has not gitignored it — this fixture, and the case that
+     docblock says stayed unnoticed — main reads dirty for as long as any worktree
+     exists. A bare `git status` here asserted something stricter than the product
+     ever promised, and held only while no tree happened to be standing. The spare
+     pool keeps one standing on purpose. */
+  const dirty = git(t.repo, ['status', '--porcelain'])
+    .split('\n')
+    .filter((l) => l && !l.includes('.worktrees/'))
+    .join('\n')
+  assert.equal(dirty, '', 'main came home with work on it')
 }

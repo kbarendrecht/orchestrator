@@ -229,6 +229,38 @@ pub struct Config {
     /// transcript to read at all and is dated by its own directory instead.
     #[serde(default = "default_retention_days")]
     pub worktree_retention_days: u32,
+
+    /// Keep this many worktrees cut and based in advance. `0` keeps none.
+    ///
+    /// **What it buys, measured by the daemon on the monorepo** (18,925 files,
+    /// release build): the `worktree ready` log line reports 4,742ms to cut a tree
+    /// against 84ms to claim a pre-cut one, and the whole create drops from about
+    /// five seconds to about a quarter of one. Two `git fetch`es and an 18,925-file
+    /// checkout are where that time goes; `worktree::create_worktree`'s own comment
+    /// had already named the repo's hook as "usually the whole of the wait".
+    ///
+    /// **What it costs**: one checkout of the repo per spare, on disk, per
+    /// checkout the host runs — 216 MB on the monorepo, where dependencies are
+    /// symlinked rather than installed. A repo that copies its dependencies
+    /// instead pays far more, which is the case this setting exists to turn off.
+    ///
+    /// Also turn it off for a repo whose `worktree_setup` is not idempotent or not
+    /// cheap: the pool re-runs that hook on the idle spare to answer the one kind
+    /// of staleness git cannot see, a dependency that appeared in main after the
+    /// cut.
+    ///
+    /// Above 1 is accepted and deliberately not recommended. The second spare only
+    /// pays when two sessions are cut within one poll interval of each other, and
+    /// it costs another whole checkout.
+    #[serde(default = "default_spare_worktrees")]
+    pub spare_worktrees: u32,
+}
+
+/// One. Enough to make the common case — one new session at a time — cost a
+/// measurement instead of a checkout, and it is the smallest pool that can do
+/// that. See [`Config::spare_worktrees`] for both halves of the trade.
+fn default_spare_worktrees() -> u32 {
+    1
 }
 
 /// Two months. Chosen to be clearly longer than anyone's memory of a branch: a

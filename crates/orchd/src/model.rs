@@ -183,6 +183,32 @@ pub struct CreateRun {
 /// to accumulate in memory and push over a websocket.
 pub const CREATE_LINES: usize = 200;
 
+/// Whether a cut reports to the board, or only to the log.
+///
+/// **[`CreateRun`] is one slot, not one per workspace.** A cut nobody asked for —
+/// filling the spare pool — runs at the same time as one somebody did, and every
+/// reporting call on the way down (`create_begin`, `create_step`, `create_lines`,
+/// `create_failed`, `create_end`) writes that single slot without checking whose
+/// it is. So a quiet cut would overwrite the step name, interleave its hook's
+/// output into somebody's overlay, and flip `running` to false while their own
+/// `WorktreeCreate` was still fetching.
+///
+/// Carried as an argument rather than inferred, because the two cuts are the same
+/// code: the only thing that separates them is whether a person is waiting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Board {
+    /// A person asked for this tree and is watching the overlay.
+    Loud,
+    /// The daemon decided to cut this tree. `tracing` is the only audience.
+    Quiet,
+}
+
+impl Board {
+    pub fn is_loud(self) -> bool {
+        self == Board::Loud
+    }
+}
+
 impl CreateRun {
     /// Add a line, dropping the oldest once the cap is reached.
     pub fn push(&mut self, line: String) {

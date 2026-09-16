@@ -1903,3 +1903,22 @@ fn only_a_moved_remote_reads_as_a_lease_refusal() {
         "fatal: could not read from remote repository"
     ));
 }
+
+/// The spare pool deletes a branch on every clean discard, so the refusal is the
+/// half that matters: `-d` rather than `-D` means git decides, and a branch
+/// carrying a commit nobody else has stays.
+#[test]
+fn branch_delete_takes_a_merged_branch_and_refuses_one_with_commits() {
+    let repo = scratch_repo();
+    git(&repo, &["branch", "spare-empty"]).unwrap();
+    branch_delete(&repo, "spare-empty").expect("a branch at the base goes");
+
+    git(&repo, &["checkout", "-q", "-b", "spare-worked-in"]).unwrap();
+    git(&repo, &["commit", "-q", "--allow-empty", "-m", "work"]).unwrap();
+    git(&repo, &["checkout", "-q", "main"]).unwrap();
+    let err = branch_delete(&repo, "spare-worked-in")
+        .expect_err("a branch holding a commit is refused, not forced");
+    assert!(format!("{err:#}").contains("spare-worked-in"));
+    let still = git(&repo, &["branch", "--list", "spare-worked-in"]).unwrap();
+    assert!(!still.trim().is_empty(), "and it is still there");
+}

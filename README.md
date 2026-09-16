@@ -620,7 +620,9 @@ crates/orchd/         the runtime core: the `orchd` library, what the daemon kno
   state.rs        the daemon's owned state, snapshots, reconcile, durable writes
   store.rs        session record persistence, orphan reaping
   spawn.rs        session / worktree / process spawning, and worktree_setup
-  worktree.rs     teardown preflight, archive, revive, removal
+  worktree.rs     cutting a tree and the hooks that finish it; teardown preflight,
+                  archive, revive, removal
+  spare.rs        the pool of one: a worktree cut before anybody asks for one
   triage.rs       the review session's spawn, and the gates a worktree must pass
   post.rs         one thread's outward words: the story, the reply, the reaction
   fix_pr.rs       automation state, the fix-pr guard table, a run's verdict

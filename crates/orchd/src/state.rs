@@ -302,6 +302,14 @@ pub struct Inner {
     /// An agent upgrade in flight, or the failure one left behind. Deliberately
     /// not a workspace process — see `update::UpgradeRun`.
     pub upgrade_run: Option<crate::model::UpgradeRun>,
+    /// Workspaces the spare pool is holding: cut, based and waiting for the next
+    /// unnamed create. See [`crate::spare`].
+    ///
+    /// **In `Inner` so that taking one is atomic with everything else the write
+    /// lock protects.** A claim reads the id and removes it in a single critical
+    /// section, because the thing that used to refuse a second claimant was `git
+    /// worktree add` failing on an existing path — and a claim does no git at all.
+    pub spare: Durable<crate::store::SpareStore>,
 }
 
 /// Releases a lock taken with [`AppState::try_claim`] when it goes out of scope.
@@ -389,6 +397,23 @@ impl Inner {
         if changed {
             if let Err(e) = crate::store::save_automation(&self.automation) {
                 tracing::error!("could not persist automation ({why}): {e:#}");
+            }
+        }
+        changed
+    }
+
+    /// The spare pool's ids, and the write that keeps `spare.json` agreeing with
+    /// them. A pool that failed to persist costs one abandoned tree after the next
+    /// restart, never a session.
+    pub fn with_spare(
+        &mut self,
+        why: &str,
+        f: impl FnOnce(&mut crate::store::SpareStore) -> bool,
+    ) -> bool {
+        let changed = f(&mut self.spare.0);
+        if changed {
+            if let Err(e) = crate::store::save_spare(&self.spare) {
+                tracing::warn!("could not save spare.json ({why}): {e:#}");
             }
         }
         changed
@@ -540,6 +565,7 @@ impl AppState {
                 proposals: HashMap::new(),
                 proposal_tokens: HashMap::new(),
                 stories: Default::default(),
+                spare: Default::default(),
                 viewer: None,
                 pr_error: None,
                 agent_error: None,
@@ -968,6 +994,7 @@ impl AppState {
 
         Snapshot {
             tracker_server: self.cfg.tracker.as_ref().map(|t| t.mcp_server.clone()),
+            spare: inner.spare.ids.clone(),
             workspaces,
             sessions,
             prs,
@@ -1600,6 +1627,15 @@ pub struct Snapshot {
     /// the settings pane shows it and does not offer it — and `Settings` leaves it
     /// out so a write of the whole struct cannot replace a hand-edited one.
     pub tracker_server: Option<String>,
+    /// Workspaces the spare pool is holding — cut, based, and not yet anybody's.
+    ///
+    /// Here so the pool can be *seen*. A spare is deliberately an ordinary
+    /// workspace, which makes it indistinguishable on the board from one nobody
+    /// has opened; without this, the only way to tell whether a create was handed
+    /// a pre-cut tree would be to time it, which is the assertion
+    /// `docs/traps/e2e.md` warns against. The e2e flow reads this, and so can a
+    /// person wondering why the pool is empty.
+    pub spare: Vec<String>,
     pub workspaces: Vec<WorkspaceView>,
     pub sessions: Vec<SessionView>,
     pub prs: Vec<PrView>,

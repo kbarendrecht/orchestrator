@@ -413,7 +413,7 @@ pub async fn move_out_of_main(
 
     // Cut by the daemon, so the repo's WorktreeCreate never fired for it (§ the
     // worktree_setup rule) — the same reason `ensure_pr_worktree` runs these.
-    crate::worktree::run_worktree_hooks(&app, &path).await;
+    crate::worktree::run_worktree_hooks(&app, &path, crate::model::Board::Loud).await;
     app.register_worktree(&name, path.clone(), Some(moved.branch.clone()))
         .await;
     // Main gave the branch away, and `reconcile` only adds: left in, main would go

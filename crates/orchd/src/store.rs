@@ -396,6 +396,40 @@ fn stories_path() -> Result<PathBuf> {
     Ok(Config::config_dir()?.join("stories.json"))
 }
 
+fn spare_path() -> Result<PathBuf> {
+    Ok(Config::config_dir()?.join("spare.json"))
+}
+
+/// The workspaces the spare pool is holding, by id.
+///
+/// **Persisted because workspace records are not.** They are rediscovered every
+/// boot by `adopt_existing_worktrees`, which reads `git worktree list` and names
+/// each tree after its own directory — so a spare comes back from a restart
+/// indistinguishable from an ordinary workspace nobody has opened yet. Without
+/// this file every restart would abandon its spare as silt and cut another, which
+/// is the shape `reap_old` was written to clean up after.
+///
+/// Written only once a spare is *finished* — cut, hooked and registered. A daemon
+/// killed mid-cut therefore leaves a tree the next boot adopts as an ordinary
+/// workspace, which is what an interrupted create has always left, rather than a
+/// pool entry pointing at something half-made.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SpareStore {
+    #[serde(default)]
+    pub ids: Vec<String>,
+}
+
+pub fn save_spare(store: &SpareStore) -> Result<()> {
+    save_json(&spare_path()?, store)
+}
+
+/// A corrupt or missing file costs the pool, never the daemon: an empty list
+/// means the next tick cuts a fresh spare, and the tree the old file named is
+/// left standing as an ordinary workspace.
+pub fn load_spare() -> SpareStore {
+    load_json(spare_path())
+}
+
 /// Stories filed for review threads, so a retry does not file a second one.
 ///
 /// A **cache**, not a ledger — see [`crate::story`]. The filer searches the

@@ -506,6 +506,15 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
     start_workspace_watcher(app.clone());
     start_head_poller(app.clone());
     start_worktree_reaper(app.clone());
+    /* The spare pool, re-attached to the worktrees `adopt_existing_worktrees`
+    just rediscovered. Spawned for the same reason the sweep above is: the
+    reconcile is a map lookup, but the refill behind it is a `git worktree add`
+    and a repo hook, and a start must not wait 4.4 seconds for a tree nobody has
+    asked for yet. */
+    tokio::spawn({
+        let app = app.clone();
+        async move { orchd::spare::adopt_at_boot(&app).await }
+    });
     // A debug build is `cargo run` from a checkout; its version is whatever the
     // working tree is, so comparing it against a release only ever nags. Only a
     // release build — which is what a downloaded/`mise`-installed one is — checks.
@@ -1077,6 +1086,9 @@ fn start_pr_poller(app: Arc<AppState>) {
                 let _ =
                     tokio::task::spawn_blocking(move || git::fetch_upstream(&main, &base)).await;
                 reconcile_all(&app).await;
+                // After the fetch, because "behind the base" is the question this
+                // answers and the fetch is what makes the answer current.
+                orchd::spare::refresh(&app).await;
             }
 
             app.inner.write().await.pr_polling = true;

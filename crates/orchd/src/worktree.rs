@@ -298,7 +298,7 @@ pub async fn revive(
     // A rebuilt worktree is a fresh checkout at the old path — its symlinks and
     // creation-time files are gone with the tree that was torn down, so the setup
     // seam has to run again, the same as on first creation.
-    run_worktree_hooks(app, cwd).await;
+    run_worktree_hooks(app, cwd, Board::Loud).await;
 
     app.register_worktree(&name, cwd.to_path_buf(), Some(branch.clone()))
         .await;
@@ -512,7 +512,12 @@ pub async fn teardown(app: &Arc<AppState>, workspace: &str) -> Result<Preflight>
     // The repo's own teardown first, then ours. Ours runs either way and no-ops
     // when the hook already did the job.
     let payload = remove_payload(&app.cfg.main_checkout, workspace, &path);
-    run_repo_hooks(app, "WorktreeRemove", payload).await;
+    // Quiet, because a removal is not a create and `CreateRun` is one slot. This
+    // used to report, which was harmless only while nothing removed a tree in the
+    // background — `reap_old` and the spare pool's discard both do, and either
+    // would have written its hook's output into the overlay of whatever create was
+    // running at the time.
+    run_repo_hooks(app, "WorktreeRemove", payload, Board::Quiet).await;
     // Off the runtime: this deletes the tree, which on a checkout carrying
     // `node_modules` is seconds of filesystem work, and it retries a stale lock.
     {
@@ -576,6 +581,13 @@ pub async fn reap_old(app: &Arc<AppState>) -> usize {
             .workspaces
             .values()
             .filter(|w| !w.is_main())
+            /* **A spare is exactly the shape this reaper hunts** — a tree no
+            conversation points at — and it is the one such tree that is there on
+            purpose. Without this, a pool on a quiet repo would be collected after
+            `worktree_retention_days` and cut again, and `spare.json` would be left
+            naming a workspace that no longer exists. `crate::spare::refresh` is
+            what expires a spare, on its own clock. */
+            .filter(|w| !inner.spare.ids.contains(&w.id))
             .filter(|w| {
                 let mut newest = None;
                 for s in inner.sessions.values().filter(|s| s.workspace == w.id) {
@@ -692,20 +704,34 @@ pub(crate) fn repo_worktree_hooks(main: &std::path::Path, event: &str) -> Vec<St
 /// whole board, sent to every socket, and a `git checkout` of 18k files prints
 /// faster than a screen refreshes; ten a second is already more than a person can
 /// read.
+///
+/// A [`Board::Quiet`] run still drains its sink — the pump is what keeps a chatty
+/// script's pipe from filling — but sends the lines to `tracing` instead of to the
+/// one `CreateRun` slot somebody else may be watching.
 pub(crate) async fn publish_output(
     app: &Arc<AppState>,
     step: &str,
+    board: Board,
 ) -> (crate::proc::LineSink, tokio::task::JoinHandle<()>) {
-    app.create_step(step).await;
+    if board.is_loud() {
+        app.create_step(step).await;
+    }
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     let app = app.clone();
+    let step = step.to_string();
     let pump = tokio::spawn(async move {
         while let Some(first) = rx.recv().await {
             let mut batch = vec![first];
             while let Ok(more) = rx.try_recv() {
                 batch.push(more);
             }
-            app.create_lines(batch).await;
+            if board.is_loud() {
+                app.create_lines(batch).await;
+            } else {
+                for line in batch {
+                    tracing::debug!(step = %step, "{line}");
+                }
+            }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
     });
@@ -736,6 +762,7 @@ pub(crate) async fn run_repo_hooks(
     app: &Arc<AppState>,
     event: &str,
     payload: serde_json::Value,
+    board: Board,
 ) -> Vec<std::process::Output> {
     let hooks = repo_worktree_hooks(&app.cfg.main_checkout, event);
     let mut out = Vec::new();
@@ -752,7 +779,7 @@ pub(crate) async fn run_repo_hooks(
         )];
         let body = body.clone();
         let label = event.to_string();
-        let (sink, pump) = publish_output(app, event).await;
+        let (sink, pump) = publish_output(app, event, board).await;
         let run = tokio::task::spawn_blocking(move || {
             crate::proc::run_bounded_with_input(
                 &at,
@@ -775,16 +802,22 @@ pub(crate) async fn run_repo_hooks(
                     o.status,
                     String::from_utf8_lossy(&o.stderr).trim()
                 );
-                app.create_failed(format!("{event} exited {}", o.status))
-                    .await;
+                if board.is_loud() {
+                    app.create_failed(format!("{event} exited {}", o.status))
+                        .await;
+                }
             }
             Ok(Err(e)) => {
                 tracing::warn!(event, "the repo's {event} hook failed: {e:#}");
-                app.create_failed(format!("{event} failed: {e}")).await;
+                if board.is_loud() {
+                    app.create_failed(format!("{event} failed: {e}")).await;
+                }
             }
             Err(e) => {
                 tracing::warn!(event, "the {event} hook task panicked: {e}");
-                app.create_failed(format!("{event} panicked")).await;
+                if board.is_loud() {
+                    app.create_failed(format!("{event} panicked")).await;
+                }
             }
         }
     }
@@ -857,12 +890,40 @@ fn resolve_setup_exe(main: &std::path::Path, exe: &str) -> String {
 /// this branch based correctly, does it have the files it needs beside the code —
 /// and a tree that is merely un-based is still worth linking. Skipping the link
 /// would turn one visible failure into two invisible ones.
-pub(crate) async fn run_worktree_hooks(app: &Arc<AppState>, path: &std::path::Path) {
-    run_worktree_hook(app, path, &app.cfg.worktree_init, "worktree init").await;
-    run_worktree_hook(app, path, &app.cfg.worktree_setup, "worktree setup").await;
+///
+/// `board` is [`Board::Quiet`] for a tree the daemon cut on its own account — the
+/// spare pool's. See [`Board`] for why the reporting has to be refused at the
+/// call rather than filtered later.
+pub(crate) async fn run_worktree_hooks(app: &Arc<AppState>, path: &std::path::Path, board: Board) {
+    run_worktree_hook(app, path, &app.cfg.worktree_init, "worktree init", board).await;
+    run_worktree_hook(app, path, &app.cfg.worktree_setup, "worktree setup", board).await;
     // The end of the scripts, not the end of the create: the session's own boot
     // follows and the board keeps saying so. See `AppState::create_end`.
-    app.create_end().await;
+    if board.is_loud() {
+        app.create_end().await;
+    }
+}
+
+/// The repo's `worktree_setup` alone, quietly, in a tree nobody is waiting on.
+///
+/// The spare pool's answer to the one staleness class git cannot see: a
+/// dependency that appeared in main after the spare was cut. The hook is
+/// idempotent by contract — this repo's link hook is idempotent by construction,
+/// `ln -sfn` behind an `[ -e ] && [ ! -L ]` guard — so re-running it on an idle
+/// tree costs a script and changes nothing when nothing drifted.
+///
+/// `worktree_init` is deliberately not re-run: it answers "is this branch based
+/// correctly", which is the refresh ladder's own question and is answered by
+/// re-cutting, not by running a script over a tree that is already wrong.
+pub(crate) async fn relink(app: &Arc<AppState>, path: &std::path::Path) {
+    run_worktree_hook(
+        app,
+        path,
+        &app.cfg.worktree_setup,
+        "worktree setup",
+        Board::Quiet,
+    )
+    .await;
 }
 
 /// One of the two, named for its logs.
@@ -876,6 +937,7 @@ async fn run_worktree_hook(
     path: &std::path::Path,
     configured: &[String],
     label: &'static str,
+    board: Board,
 ) {
     let mut argv = configured.to_vec();
     if argv.is_empty() {
@@ -888,7 +950,7 @@ async fn run_worktree_hook(
     let shown = argv.join(" ");
     // Streamed, because this is a script somebody is waiting on: the board shows
     // the lines as they arrive rather than one word for however long it takes.
-    let (sink, pump) = publish_output(app, label).await;
+    let (sink, pump) = publish_output(app, label, board).await;
     let result = tokio::task::spawn_blocking(move || {
         crate::proc::run_bounded_streaming(&at, WORKTREE_SETUP_TIMEOUT_SECS, &argv, label, sink)
     })
@@ -908,26 +970,255 @@ async fn run_worktree_hook(
                 "{label} `{shown}` exited {}: {tail}",
                 out.status.code().unwrap_or(-1),
             );
-            app.create_failed(format!(
-                "{label} exited {}",
-                out.status.code().unwrap_or(-1)
-            ))
-            .await;
+            if board.is_loud() {
+                app.create_failed(format!(
+                    "{label} exited {}",
+                    out.status.code().unwrap_or(-1)
+                ))
+                .await;
+            }
         }
         Ok(Err(e)) => {
             tracing::error!(worktree = %path.display(), "{label} `{shown}` failed: {e:#}");
-            app.create_failed(format!("{label} failed: {e}")).await;
+            if board.is_loud() {
+                app.create_failed(format!("{label} failed: {e}")).await;
+            }
         }
         Err(e) => {
             tracing::error!(worktree = %path.display(), "{label} task panicked: {e}");
-            app.create_failed(format!("{label} panicked")).await;
+            if board.is_loud() {
+                app.create_failed(format!("{label} panicked")).await;
+            }
         }
     }
+}
+
+/// What the daemon needs the new worktree to have checked out.
+///
+/// The repo's `WorktreeCreate` hook decides its own branch and base, so whatever it
+/// produces has to be put onto this afterwards. Naming the two shapes rather than
+/// passing a branch and a nullable base keeps the "is this a new branch or an
+/// existing one" question answered once, at the call site that knows.
+pub(crate) enum Want<'a> {
+    /// A branch to cut, from this base. A plain new worktree, or a fork from its
+    /// parent's HEAD.
+    New { branch: &'a str, base: &'a str },
+    /// A branch that already exists somewhere, local or on origin. A PR's head ref.
+    Existing { branch: &'a str },
+}
+
+/// Create a worktree the repo's way if it has one, ours otherwise.
+///
+/// **The repo's `WorktreeCreate` hook first, the daemon's own creation behind it.**
+/// A repo that declares the event is stating how worktrees are made here, and
+/// Claude Code treats the hook as the whole mechanism: it reads the request on
+/// stdin and prints the path it made. So the daemon runs it and adopts what it
+/// produced, which is how a repo's fetching, its layout and its post-create work
+/// reach a tree the daemon asked for.
+///
+/// **Then the branch is put right.** The hook chooses its own base, and the
+/// monorepo's hardcodes `upstream/develop`. That is wrong for a PR worktree pinned
+/// to a head ref and wrong for a fork cut from its parent, so [`Want`] is applied to
+/// the tree afterwards. The branch the hook made is left behind; that is the price
+/// of letting it own creation, and it is a stale ref rather than lost work.
+///
+/// **Every failure falls through to the daemon's own creation**, which is the path
+/// that ran before any of this existed. Creating a worktree is the daemon's most
+/// load-bearing operation and a repo script is not allowed to be the reason it
+/// cannot happen. A tree the hook made but we could not use is *removed* first: it
+/// usually sits at the very path and branch the fallback is about to ask for, so
+/// leaving it there turned an adoption failure into a hard spawn failure with a git
+/// error about a branch nobody asked about.
+///
+/// Returns the path the worktree actually landed at, which is the hook's choice when
+/// the hook made it. Callers must use that rather than the path they passed in.
+pub(crate) async fn create_worktree(
+    app: &Arc<AppState>,
+    name: &str,
+    path: &std::path::Path,
+    want: Want<'_>,
+    board: Board,
+) -> Result<std::path::PathBuf> {
+    // The board's report on this cut starts here, because this is where the first
+    // script runs: the repo's own `WorktreeCreate` is usually the whole of the wait.
+    // Ended by `run_worktree_hooks`, which every caller of this runs after it, and
+    // on the error path below.
+    if board.is_loud() {
+        app.create_begin(name).await;
+    }
+    // Owned up front: every git call below goes to a blocking thread, because each
+    // one can fetch and a fetch against an unreachable remote parks a runtime worker
+    // for as long as git waits.
+    let main = app.cfg.main_checkout.clone();
+    let branch = match &want {
+        Want::New { branch, .. } | Want::Existing { branch } => branch.to_string(),
+    };
+    let base = match &want {
+        Want::New { base, .. } => Some(base.to_string()),
+        Want::Existing { .. } => None,
+    };
+
+    if let Some(made) = hook_cut_worktree(app, name, board).await {
+        let (m, tree, b, ba) = (main.clone(), made.clone(), branch.clone(), base.clone());
+        let applied = tokio::task::spawn_blocking(move || match ba {
+            Some(base) => git::checkout_new_branch(&m, &tree, &b, &base),
+            None => git::checkout_existing_branch(&m, &tree, &b),
+        })
+        .await
+        .context("putting the hook's worktree on its branch panicked")?;
+
+        match applied {
+            Ok(()) => return Ok(made),
+            Err(e) => {
+                tracing::warn!(
+                    name,
+                    "the repo's WorktreeCreate made {} but it could not be put on the \
+                     branch this needs, so the daemon is cutting its own: {e:#}",
+                    made.display()
+                );
+                // Out of the way before the fallback asks for the same path, and very
+                // likely the same branch name.
+                let (m, t) = (main.clone(), made.clone());
+                let _ = tokio::task::spawn_blocking(move || git::worktree_remove(&m, &t)).await;
+            }
+        }
+    }
+
+    let p = path.to_path_buf();
+    // Named rather than streamed: `git worktree add` goes through `git::run`, which
+    // is the one exec path in the daemon that is not a script somebody wrote, and
+    // its progress is already a `slow git` line in the log.
+    if board.is_loud() {
+        app.create_step("worktree add").await;
+    }
+    let added = tokio::task::spawn_blocking(move || match base {
+        Some(base) => git::worktree_add_new(&main, &p, &branch, &base),
+        None => git::worktree_add_existing(&main, &p, &branch),
+    })
+    .await;
+    let added = match added {
+        Ok(r) => r,
+        Err(e) => Err(anyhow::anyhow!("the worktree add panicked: {e}")),
+    };
+    // The caller gives up here, so nothing downstream will close the run, and a
+    // report left saying `running` would sit on the board until the next create.
+    if let Err(e) = &added {
+        if board.is_loud() {
+            app.create_failed(format!("the worktree add failed: {e}"))
+                .await;
+            app.create_end().await;
+        }
+    }
+    added?;
+    Ok(path.to_path_buf())
+}
+
+/// Run the repo's `WorktreeCreate` hooks and return the tree the first usable one
+/// made.
+///
+/// `None` for every way this can decline: no hook declared, a non-zero exit, empty
+/// output, or a path that is not a directory. The caller cuts its own on `None`, so
+/// none of these is an error worth raising.
+async fn hook_cut_worktree(
+    app: &Arc<AppState>,
+    name: &str,
+    board: Board,
+) -> Option<std::path::PathBuf> {
+    // `name` is the key the monorepo's hook reads, and the only one the contract is
+    // observed to carry.
+    let payload = serde_json::json!({
+        "hook_event_name": "WorktreeCreate",
+        "cwd": app.cfg.main_checkout.to_string_lossy(),
+        "name": name,
+    });
+    for out in run_repo_hooks(app, "WorktreeCreate", payload, board).await {
+        let said = String::from_utf8_lossy(&out.stdout);
+        match usable_hook_path(&said) {
+            Some(made) => {
+                tracing::info!(
+                    name,
+                    "the repo's WorktreeCreate hook made {}",
+                    made.display()
+                );
+                return Some(made);
+            }
+            None => tracing::warn!(
+                name,
+                "the repo's WorktreeCreate hook emitted an unusable path {:?}",
+                said.trim()
+            ),
+        }
+    }
+    None
+}
+
+/// The worktree path a `WorktreeCreate` hook printed, if it is one the daemon can
+/// use.
+///
+/// Checked the way Claude Code checks it, and for its reasons: a relative path is
+/// ambiguous against a working directory the hook does not control; dot segments can
+/// climb out of the repository, and Claude Code refuses them outright rather than
+/// normalising, so a hook that emits them is one written against a different
+/// contract; and a path that is not a directory is a hook that failed while exiting
+/// zero. The hook's contract is that only the path goes to stdout, so trailing
+/// newlines are trimmed and nothing else is parsed out of it.
+fn usable_hook_path(said: &str) -> Option<std::path::PathBuf> {
+    let said = said.trim();
+    if said.is_empty() {
+        return None;
+    }
+    let made = std::path::PathBuf::from(said);
+    if !made.is_absolute() {
+        return None;
+    }
+    if made.components().any(|c| {
+        matches!(
+            c,
+            std::path::Component::CurDir | std::path::Component::ParentDir
+        )
+    }) {
+        return None;
+    }
+    made.is_dir().then_some(made)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// What the daemon will and will not adopt from a `WorktreeCreate` hook.
+    ///
+    /// Every rejection here falls back to the daemon cutting its own tree, so being
+    /// strict costs nothing and being lax means adopting a directory chosen by a
+    /// script that answered the wrong question.
+    #[test]
+    fn only_a_real_absolute_dot_free_directory_is_adopted_from_a_hook() {
+        let dir = std::env::temp_dir().join(format!("orch-hookpath-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let shown = dir.to_string_lossy().into_owned();
+
+        // The contract: only the path on stdout, and a trailing newline is normal.
+        assert_eq!(usable_hook_path(&format!("{shown}\n")), Some(dir.clone()));
+        assert_eq!(usable_hook_path(&format!("  {shown}  ")), Some(dir.clone()));
+
+        // Nothing said at all, which is a hook that declined.
+        assert_eq!(usable_hook_path(""), None);
+        assert_eq!(usable_hook_path("   \n"), None);
+        // Relative: ambiguous against a cwd the hook does not control.
+        assert_eq!(usable_hook_path("wt/name"), None);
+        // Dot segments: Claude Code refuses these rather than normalising, because
+        // they can climb out of the repository.
+        assert_eq!(usable_hook_path(&format!("{shown}/../elsewhere")), None);
+        assert_eq!(usable_hook_path(&format!("{shown}/./here")), None);
+        // Absolute, dot-free, and simply not there: a hook that failed while
+        // exiting zero.
+        assert_eq!(usable_hook_path("/nonexistent/orchd/worktree"), None);
+        // A file rather than a directory, same reason.
+        let f = dir.join("afile");
+        std::fs::write(&f, "x").unwrap();
+        assert_eq!(usable_hook_path(&f.to_string_lossy()), None);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// A real repo, a real worktree, an old archived conversation in it.
     ///
@@ -1424,7 +1715,7 @@ mod tests {
         ];
         let app = crate::state::AppState::new(cfg, "t".into(), crate::window::Chrome::None);
 
-        crate::worktree::run_worktree_hooks(&app, &dir).await;
+        crate::worktree::run_worktree_hooks(&app, &dir, Board::Loud).await;
 
         let got = std::fs::read_to_string(&log).expect("both hooks wrote");
         assert_eq!(
@@ -1447,7 +1738,7 @@ mod tests {
         assert!(cfg.worktree_init.is_empty() && cfg.worktree_setup.is_empty());
         let app = crate::state::AppState::new(cfg, "t".into(), crate::window::Chrome::None);
         // No panic, no process, nothing to assert but that it returns.
-        crate::worktree::run_worktree_hooks(&app, &dir).await;
+        crate::worktree::run_worktree_hooks(&app, &dir, Board::Loud).await;
         let _ = std::fs::remove_dir_all(&dir);
     }
 

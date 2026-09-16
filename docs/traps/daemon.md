@@ -300,3 +300,54 @@ hours later, which is what this entry is about.
 `proposal_tokens` says it is deliberately not persisted, and that is still right
 — the token is only ever compared against the record, so re-minting is the fix
 and persisting would be the wrong one.
+
+## A spare worktree is a workspace with no session, and that is the shape the reaper hunts.
+The pool (`crate::spare`) keeps `spare_worktrees` trees cut and based ahead of
+demand, because the wait it removes is the whole of the wait: measured on the
+monorepo by the daemon itself, release build, `worktree ready` is **4,742ms** for
+a cut against **84ms** for a claim, and the whole HTTP create drops from about 5s
+to about 260ms. `create_worktree` had already written
+down half of that — "the repo's own `WorktreeCreate` is usually the whole of the
+wait".
+**A spare is deliberately an ordinary workspace**, cut by `create_worktree`,
+hooked by `run_worktree_hooks` and registered by `register_worktree`, because the
+alternative is a second kind of worktree that every reader of `inner.workspaces`
+would have to learn. The cost of that choice is that four existing behaviours can
+see it, and each had to be answered:
+`reap_old` hunts exactly this shape — "a tree with no conversation pointing at it
+at all, which is the commonest shape of silt" — so a pooled id is excluded from
+its candidates, and `spare::refresh` expires a spare on its own clock instead.
+`adopt_pending_worktrees` pairs a lone pending session with a lone orphan
+directory, and would have handed a session the spare; it is safe only because a
+registered spare is not an orphan, its `known` set being `inner.workspaces.keys()`.
+`CreateRun` is **one slot**, not one per workspace, so a background cut that
+reported would overwrite the overlay a person is watching, interleave its hook's
+output into theirs and flip `running` false mid-fetch. `model::Board` is the
+argument that refuses the reporting at the call rather than filtering it later,
+and `teardown`'s `WorktreeRemove` hook went quiet with it — that one was harmless
+only while nothing removed a tree in the background, which both `reap_old` and
+this pool now do.
+And the claim itself does **no git**, which removes the thing that used to make a
+double-create impossible: `git worktree add` refusing an existing path. So the id
+is taken and cleared inside one `inner.write()`, and
+`two_claims_cannot_take_the_same_spare` fails without it.
+**The claim measures, every time, and never trusts the poller.** `Tree`'s defaults
+are indistinguishable from a fresh tree, the poll interval is at least 30 seconds,
+and a spare is a real directory anybody can `cd` into. 84ms against 4,742ms
+saved is not a trade worth thinking about — and the first claim on a freshly cut
+tree cost 524ms, still an order of magnitude the right side of the cut.
+**Nothing here resets a tree.** A stale spare is discarded and cut again; one that
+has been worked in, or that is no longer on the branch it was cut with, is
+*promoted* — dropped from the pool and left standing as an ordinary workspace with
+its branch. `git worktree remove` never deletes a branch and the teardown
+preflight refuses a dirty tree, so the pool cannot destroy work by being wrong
+about what it holds; the branch delete is `git branch -d`, never `-D`, so git
+refuses a branch carrying commits rather than this daemon deciding it may.
+**The fourth staleness class is not detectable and is not pretended to be.** The
+base moving, the tree being touched and a dangling symlink are all measurable. A
+dependency that appeared in main after the cut is not: it leaves a tree that is
+clean, current, and missing a link the repo's setup hook would have made. The
+answer is to re-run that hook on the idle spare each tick — idempotent by
+contract, and by construction in this repo, `ln -sfn` behind an `[ -e ] && [ ! -L ]`
+guard — and to expire a spare after `MAX_AGE` whatever git says. A repo whose
+setup is neither idempotent nor cheap sets `spare_worktrees: 0`.

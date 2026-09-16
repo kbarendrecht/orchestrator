@@ -101,6 +101,24 @@ pub fn worktree_remove(main: &Path, path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Delete a branch, and **refuse one that carries commits**.
+///
+/// `git branch -d`, never `-D`. The lowercase flag is the whole point: git itself
+/// refuses to delete a branch holding commits that are not reachable from where it
+/// would be merged, so the guarantee is git's rather than a check this daemon
+/// performs and could get wrong.
+///
+/// Written for the spare pool, which cuts a `worktree-<name>` branch per spare and
+/// would otherwise leave one behind on every discard. That is also why the refusal
+/// matters more than the deletion: a spare that somehow acquired a commit is not
+/// silt, and the pool promotes it to an ordinary workspace instead. The error is
+/// returned rather than logged, so the caller can tell the two outcomes apart.
+pub fn branch_delete(main: &Path, branch: &str) -> Result<()> {
+    git(main, &["branch", "-d", branch])
+        .with_context(|| format!("git refused to delete {branch}"))?;
+    Ok(())
+}
+
 /// The pid holding a worktree's lock, if it is locked and the lock reason names
 /// one. `claude --worktree` writes `claude session <name> (pid <PID> start <N>)`,
 /// which is the only lock this daemon ever expects to see — a plain checkout

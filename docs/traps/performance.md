@@ -144,3 +144,40 @@ terminal paints (10000 lines cost +36.7 MB against 2000's +13.3 MB) — and the
 daemon's ring buffer only replays ~3600 lines anyway, so a deeper buffer was
 never durable. JS-heap metrics are useless here: CDP reported 0.9 MB for 9000
 lines that cost ~23 MB, because typed-array stores are external memory.
+
+## Creating a worktree is 4.7 seconds; claiming a pre-cut one is 84 milliseconds.
+**Measured by the daemon, release build, against the monorepo** — 18,925 tracked
+files, six creates, a fresh daemon per sample so none inherits the last one's page
+cache. The `worktree ready` line in `spawn_worktree_session` is where the numbers
+come from:
+
+| | `worktree ready` | whole HTTP create |
+|---|---|---|
+| cut (no pool) | **4,742ms** | 4,930-5,136ms |
+| claimed | **84ms** | 258-261ms |
+
+A **56x** difference on the part the pool touches, and the create as a whole goes
+from about five seconds to about a quarter of one. The pool's own background cut
+costs the same as the create it replaces — `cut a spare worktree took_ms=4559` —
+which is the whole point: the work is not avoided, it is moved off the path
+somebody is waiting on.
+**Where the five seconds go**, from `slow git` in the same run: `git fetch upstream
+develop --no-tags` 1,367-1,417ms (the daemon's own, on the boot path), `git fetch
+--quiet upstream HEAD` 1,517-1,568ms (the repo's `worktree-create` hook, which
+fetches again), and `git worktree add` over 18,925 files, hand-timed at 1.4s.
+**The remaining ~175ms of a warm create is not the tree**: it is the pty spawn and
+`mise env` for the session's environment, which `mise env per spawn is a decision`
+above already accounts for.
+**Two corrections this run produced.** The claim was first bracketed *below* the
+claim call, so the claimed arm logged `took_ms=0` — true and worthless. And the
+first claim against a just-cut tree costs far more than the steady state: **524ms**
+measured once, against 84ms afterwards, because `verdict`'s status walk is reading
+a tree that was written seconds earlier. A hand-timed `git status` on a long-warm
+tree (49ms) is the floor, not the figure.
+**Dependencies cost nothing here and that is the repo's doing, not the daemon's.**
+A worktree is 216 MB because `worktree-link` symlinks `node_modules` and `vendor`
+out of main; 24 of them were 5.1 GB. A repo that copies instead pays that per
+spare, which is what `spare_worktrees: 0` is for.
+**The broken-symlink scan is cheap for the same reason it must not follow links**:
+`find -xtype l` over that tree is 30ms across 29 links, because the heavy trees
+*are* the links and nothing descends into them.
