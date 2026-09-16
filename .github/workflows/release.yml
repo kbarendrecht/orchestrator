@@ -271,6 +271,13 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
+          # **`contents: write` is granted here, so the token must not be left in
+          # `.git/config`.** zizmor's `artipacked` audit refused the checkout
+          # without this and took `health` red on the commit that added it — the
+          # gate doing its job on the first privileged checkout this workflow ever
+          # had. Nothing after the clone needs a credential: the tag's message is
+          # read locally.
+          persist-credentials: false
       - name: The tag's own message
         id: notes
         run: |

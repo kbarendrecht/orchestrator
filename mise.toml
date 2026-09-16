@@ -384,7 +384,7 @@ main() {
   # Never fatal. A model call that is slow, offline or rate-limited must not block
   # a release, and the script already falls back to picking by path — but if even
   # that fails, the notes are dropped and GitHub's own line is what ships.
-  if node tools/release-notes.mjs "v$cur..HEAD" > "$notes"; then
+  if node tools/release-notes.mjs "v$cur..HEAD" --tag "$tag" > "$notes"; then
     printf '\\n%s\\n\\n' "$(cat "$notes")"
   else
     printf '  could not draft them; the release will carry the default body\\n'

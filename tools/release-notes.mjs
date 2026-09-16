@@ -138,7 +138,7 @@ function drafted(cs) {
 }
 
 /** The markdown, with every commit in the range appearing exactly once. */
-function render(cs, picked, range) {
+function render(cs, picked, range, tag) {
   const cited = new Set(picked.map((p) => p.short));
   const rest = cs.filter((c) => !cited.has(c.short));
   const out = [];
@@ -152,7 +152,13 @@ function render(cs, picked, range) {
     for (const c of rest) out.push(`- ${c.subject} (${c.short})`);
     out.push('', '</details>', '');
   }
-  const [from, to] = range.split('..');
+  /* **The link names the tag, not the range's right-hand side.** A release is cut
+  from `v<previous>..HEAD`, so without `--tag` this published
+  `compare/v2026.9.18...HEAD` — a link that means "since the last release" to git
+  and resolves to the default branch on GitHub, so it drifts further from the
+  release with every commit after it. v2026.9.19 shipped with exactly that. */
+  const [from, end] = range.split('..');
+  const to = tag ?? end;
   out.push(`**Full Changelog**: https://github.com/${REPO}/compare/${from}...${to}`);
   return out.join('\n');
 }
@@ -173,7 +179,10 @@ function check(md, cs) {
 
 function main(argv) {
   const flags = new Set(argv.filter((a) => a.startsWith('--')));
-  const args = argv.filter((a) => !a.startsWith('--'));
+  // A flag's value is not a positional. `--tag v2026.9.19` would otherwise be read
+  // as the range, and the range as the file to check.
+  const takesValue = new Set(['--tag']);
+  const args = argv.filter((a, i) => !a.startsWith('--') && !takesValue.has(argv[i - 1]));
   // Default to the last tag, which is what a release is measured from.
   const range = args[0] ?? `${git('describe', '--tags', '--abbrev=0').trim()}..HEAD`;
   const cs = commits(range);
@@ -195,7 +204,9 @@ function main(argv) {
   const picked = (flags.has('--no-agent') ? null : drafted(cs))
     ?? cs.filter(ships).map((c) => ({ text: `**${c.subject}**${why(c.body) ? ` — ${why(c.body)}` : ''}`, short: c.short }));
 
-  const md = render(cs, picked, range);
+  // `--tag v2026.9.19`: what this release will be called, for the compare link.
+  const tagAt = argv.indexOf('--tag');
+  const md = render(cs, picked, range, tagAt >= 0 ? argv[tagAt + 1] : undefined);
   const problems = check(md, cs);
   if (problems.length) {
     process.stderr.write(`release-notes: the notes do not cover the range\n  ${problems.join('\n  ')}\n`);
