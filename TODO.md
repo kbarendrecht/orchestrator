@@ -124,8 +124,13 @@ this file, which churned it from every build; that feature is gone.
     server with the right name, over a transport we do not control (one repo's is
     `http` to `mcp.shortcut.com`), and the failure lands mid-run on a thread rather
     than at startup: the daemon warns about a missing *token* and says nothing
-    about a missing or renamed *server*. The interactive `/resolve` story step has
-    the same dependency, spelled `mcp__shortcut__*` in prose.
+    about a missing or renamed *server*. **The skill half moved rather than went
+    away**, which is worth knowing before this is built: `skills/story` used to
+    spell `mcp__shortcut__*` itself and now deliberately names no tool, deferring
+    to the repo's own tracker skill for the search tool, the team, the workflow
+    state and the epic. So a repo has to supply two things rather than one — an MCP
+    server under the name `Tracker::mcp_server()` expects, and a tracker skill of
+    its own — and neither absence is checked at startup.
 
     **The small version is the one to build, and the mechanism is already here.**
     A tracker with `stub: true` passes `--mcp-config` plus `--strict-mcp-config`,
