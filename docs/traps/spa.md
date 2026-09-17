@@ -242,22 +242,25 @@ chrome is a fix everywhere it is drawn.
 The resize strips fire on mousedown and are *not* guarded — they are
 `display:none` on macOS, so the AppKit call is unreachable there. That is safety
 by platform rather than by design: showing them on a Mac would reopen this.
-**Both guards shipped and #14 is still open**, which is the part to read before
-concluding this is done. The reporter came back on 2026-09-15 saying it still
-aborts on the open-project screen, on v2026.9.15 — a build carrying `9048384` and
-`8fb2d0c` both. Everything readable from Linux says the two guards hold: one
-`start-drag` request in the whole SPA, no `data-tauri-drag-region` and no
-`-webkit-app-region`, and `tauri-runtime-wry`'s `send_user_message` running the
-message *synchronously* when it is already on the main thread — so the check and
-the AppKit call really are the same turn. Which leaves a path nobody has read, or
-a different abort on that screen being reported as this one.
-That is why `desktop/src/appkit_abort.rs` is installed at boot. An uncaught
-Objective-C exception aborts without unwinding, so the Rust panic hook never runs
-and `orchd.log` simply stops — a crash that says nothing is what made this take
-two rounds of reading vendored source. The handler cannot prevent the abort and
-does not try; it writes the exception's name, reason and `callStackSymbols` into
-the log first, so the next report carries the selector instead of a description of
-what the person clicked.
+**Both guards are sound, and the report that said otherwise was a different
+defect.** This entry spent five days saying #14 was still open: the reporter came
+back on 2026-09-15 saying it still aborted on the open-project screen, on
+v2026.9.15, a build carrying `9048384` and `8fb2d0c` both. Everything readable
+from Linux said the guards held — one `start-drag` request in the whole SPA, no
+`data-tauri-drag-region` and no `-webkit-app-region`, and `tauri-runtime-wry`'s
+`send_user_message` running the message *synchronously* when it is already on the
+main thread, so the check and the AppKit call really are the same turn. That
+reading was right. The conclusion drawn from it — a path nobody had read, or a
+second abort on that screen — was the wrong pair of options, because **there was
+no abort at all.** What the reporter was seeing is the entry below: a back
+navigation onto the splash, which says `starting daemon…` and is therefore
+indistinguishable from a dead daemon. #14 closed on `a3355e5`, in v2026.9.19.
+`desktop/src/appkit_abort.rs` stays, and it is insurance rather than an open
+investigation. An uncaught Objective-C exception aborts without unwinding, so the
+Rust panic hook never runs and `orchd.log` simply stops — a crash that says
+nothing is what made the first round take two passes over vendored source. The
+handler cannot prevent the abort and does not try; it writes the exception's name,
+reason and `callStackSymbols` into the log first, so the next one names itself.
 
 ## `window.confirm`, `window.prompt` and `window.alert` do nothing in this app on macOS.
 WKWebView shows a script dialog only if the host implements the
@@ -339,6 +342,15 @@ guards is already loud: the rail simply stops reordering.
 ## The splash is replaced, never pushed, and `Backspace` is refused outside a text field.
 Two halves of one defect (#14), and they are separate because only one of them can
 be proven from Linux.
+**It was chased as an AppKit abort for five days first**, and the entry above
+carries what that cost: two guards shipped against a crash that was not happening,
+then a fortnight of reading vendored source when the reporter said it still
+occurred. **What separated the two was free the whole time** — a crash takes the
+process, so the pid changes and `orchd.log` stops mid-line. Neither happened. The
+report that closed this led with exactly that: the daemon ran 29 minutes across
+the event on one pid, with `reconciled 14 workspace(s)` logged two seconds before
+and ordinary git timings after. Check the pid and the log before the symptom: a
+window that looks dead is not a dead daemon until those say so.
 The window opens on a `data:` URL splash and `boot_daemon` used to `navigate` to
 the board, which is an ordinary load — so the board went **on top of** the splash
 and the splash became the back item. One back navigation then landed on a static

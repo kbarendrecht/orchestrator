@@ -59,17 +59,8 @@ re-litigates them from the doctrine alone:
   is what says the tests have any power: dropping the tokenizer's char-boundary
   advance and indexing one past the LCS walk each fail them.
   One thing the pass corrected: this entry used to send the reader to "the open
-  crash report (#14, in `diff.rs`)". **#14 is not a `diff.rs` panic** — it is the
-  AppKit window-drag abort, and there is no known panic in `diff.rs` and never
-  was one. **Nor is it closed**, and this entry twice said something weaker than
-  it meant. `9048384` and `8fb2d0c` fixed the two drag guards and it read as
-  "fixed, waiting only on the reporter's version" — then the version came back
-  (2026-09-15, on the open-project screen) as **v2026.9.15, which carries both**.
-  So the guards are not the whole of it, or that screen reaches AppKit another
-  way. Every path readable from Linux is guarded on both sides, including tauri's
-  main-thread dispatch being synchronous, so the next move is the macOS crash
-  report rather than more reading — and `desktop/src/appkit_abort.rs` exists so
-  that the next abort names itself in `orchd.log` instead of ending it mid-line.
+  crash report (#14, in `diff.rs`)". **There is no known panic in `diff.rs`, and
+  never was one** — which is the half of that claim this lint turns on.
 - `cargo nextest` — one process per test is the right shape for a suite whose
   fixtures are process-global, and it is **3x slower here** (50s against 16s,
   because most of these tests spawn git) *and* the generated-bindings tests race
