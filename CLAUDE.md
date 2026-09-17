@@ -122,7 +122,8 @@ mise run deflake                    # each flow 8x, to name the flaky ones
 cargo run -p orchestrator-desktop   # the app, daemon embedded in-process
 mise run shot                       # screenshot the running SPA (drives Chrome)
 mise run sweep                      # reclaim stale build artifacts, here and in each worktree
-mise run release                    # bump, wait for CI, tag and push
+mise run release                    # bump, wait for CI, tag, push, wait for the release
+mise run release --retry            # re-cut a version whose release never published
 ```
 
 **mise carries the toolchain and every task, and nothing in CI uses it.** `[tools]`
@@ -427,17 +428,46 @@ together: same entries, same order, same groups.
 ## Releases
 
 `mise run release` — it bumps the version, **waits for `check` to go green on the
-commit you are on**, then commits, tags and pushes. `mise run release -- 2027.1.1`
+commit you are on**, commits, tags, pushes, and then **waits for the release
+workflow and asserts the release carries assets**. `mise run release -- 2027.1.1`
 names a version instead of bumping the last component; `--dry-run` stops before
 anything is written.
 
 **The waiting is the whole point, and it is why the task exists.** `check` is the
 only thing that runs the test suite on **macOS**, and the release workflow runs it
 again *after* the tag exists — so a tag pushed before `check` answers is a tag
-that may publish nothing. That has happened twice, both times a test that passed
-on Linux and failed on macos-14, and both times it cost the same: a version number
-spent, a tag deleted by hand, the next release starting over. Nothing in git stops
-you tagging a red commit, so the guard has to be in front of the tag.
+that may publish nothing. That has happened three times, twice a test that passed
+on Linux and failed on macos-14. Nothing in git stops you tagging a red commit, so
+the guard has to be in front of the tag.
+
+**A tag is not a release, and the task waits for that too now.** It used to stop at
+the push and print a `gh run watch` line, so a failed release was found only when
+somebody went to look — v2026.9.20 sat dead for hours that way. Two things are
+waited on, because a release fails in two shapes: the workflow going red, and a
+*green* workflow that published **no assets**, which is what v2026.9.19 shipped.
+mise and ubi resolve a version from its assets, so that second one exists and
+cannot be installed.
+
+**`mise run release --retry` re-cuts the same number rather than spending it.** It
+takes the version already in `Cargo.toml` — the failed attempt committed the bump,
+so the tree already carries it and the fix is sitting on top — waits for `check`,
+drops the tag from both sides, re-tags `HEAD` with regenerated notes and pushes.
+That is what keeps the releases page free of holes, and it replaces the old
+recovery this entry used to describe: a version number spent, a tag deleted by
+hand, the next release starting over.
+
+**The one refusal that makes overwriting safe:** `--retry` stops if the tag already
+has published **assets**. A version people can install is one whose meaning must
+not change, so a retry only ever repairs something nobody received. Deleting and
+re-pushing a tag does leave a stale ref in any clone that fetched it, and `git
+fetch --tags` reports a conflict rather than moving it — which costs nothing for a
+tag whose release never published, and is the reason the refusal is not advisory.
+
+**The notes are measured from the last *published release*, not the last tag.** A
+tag with no release behind it names a version nobody received, so notes measured
+from it skip everything that attempt carried, and the compare link points at a tag
+that may since have been deleted. v2026.9.21 shipped exactly that link, to the
+deleted v2026.9.20.
 
 By hand it is: bump the version in `Cargo.toml` (`[workspace.package]`),
 `desktop/tauri.conf.json` and `Cargo.lock` (five lines there, one per member),

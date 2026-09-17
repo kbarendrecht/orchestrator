@@ -264,7 +264,7 @@ run = "cargo build -p orchd-serve --bin orchd && node tools/e2e/renderer.mjs"
 # and that flag takes an argument on a Mac and not on Linux — the same trap the
 # daemon avoids by never shelling out to a GNU-only flag.
 [tasks.release]
-description = "Bump the version, wait for CI, tag and push"
+description = "Bump the version, wait for CI, tag, push, and wait for the release"
 dir = "{{config_root}}"
 run = """
 set -e
@@ -288,10 +288,14 @@ bump() {
 
 main() {
   DRY=0
+  RETRY=0
   VERSION=""
   for a in "$@"; do
     case $a in
       --dry-run) DRY=1 ;;
+      # Re-cut a version whose release never published. The refusals below are what
+      # make that safe.
+      --retry) RETRY=1 ;;
       -*) die "unknown flag $a" ;;
       *) VERSION=$a ;;
     esac
@@ -299,7 +303,13 @@ main() {
 
   cur=$(sed -n 's/^version = "\\(.*\\)"$/\\1/p' Cargo.toml | head -1)
   [ -n "$cur" ] || die "no version line in Cargo.toml"
-  if [ -z "$VERSION" ]; then
+  if [ "$RETRY" = 1 ]; then
+    # A retry re-cuts the number already in the tree. The bump commit landed with
+    # the failed attempt, so `cur` *is* the version being released, and the fix
+    # that made it releasable is sitting on top of it.
+    [ -z "$VERSION" ] || die "--retry re-cuts the version already in Cargo.toml ($cur); do not name one"
+    VERSION=$cur
+  elif [ -z "$VERSION" ]; then
     # CalVer, and only the last component is bumped here: a new month is a
     # decision rather than an increment, so it is passed in.
     y=${cur%%.*}; rest=${cur#*.}; m=${rest%%.*}; n=${rest#*.}
@@ -307,17 +317,31 @@ main() {
     VERSION="$y.$m.$((n + 1))"
   fi
   tag="v$VERSION"
-  step "releasing $cur → $VERSION"
+  if [ "$RETRY" = 1 ]; then
+    step "re-cutting $tag"
+  else
+    step "releasing $cur → $VERSION"
+  fi
 
   # Every refusal before anything is written.
   [ "$(git rev-parse --abbrev-ref HEAD)" = main ] || die "a release is cut from main"
   [ -z "$(git status --porcelain)" ] || die "the tree is dirty — commit or stash first, so the tag names what you tested"
-  [ -z "$(git tag --list "$tag")" ] || die "$tag already exists locally"
-  [ -z "$(git ls-remote --tags origin "$tag")" ] || die "$tag already exists on origin"
+  command -v gh >/dev/null || die "gh is not installed, so CI cannot be asked (it is in [tools]: mise install)"
+  if [ "$RETRY" = 1 ]; then
+    # **Overwriting only ever repairs something nobody received.** A release
+    # carrying assets is one people may have installed, and moving the tag under it
+    # would change what a version means. `gh` exits non-zero when no release exists
+    # at all, which is the ordinary case for a retry.
+    published=$(gh release view "$tag" --json assets --jq '.assets | length' 2>/dev/null || echo 0)
+    [ "$published" = 0 ] \\
+      || die "$tag already published $published asset(s) — bump instead; a version people can install is not one to overwrite"
+  else
+    [ -z "$(git tag --list "$tag")" ] || die "$tag already exists locally (--retry re-cuts one whose release never published)"
+    [ -z "$(git ls-remote --tags origin "$tag")" ] || die "$tag already exists on origin (--retry re-cuts one whose release never published)"
+  fi
   git fetch --quiet origin main
   behind=$(git rev-list --count HEAD..origin/main)
   [ "$behind" = 0 ] || die "main is $behind commit(s) behind origin — pull first"
-  command -v gh >/dev/null || die "gh is not installed, so CI cannot be asked (it is in [tools]: mise install)"
 
   # The commit being released is HEAD, so that is the run to wait on. By sha and
   # not by branch: `--branch main` answers about whatever main pointed at when the
@@ -350,27 +374,33 @@ main() {
     sleep 15
   done
 
-  step "bumping the version"
-  # **Three files, and the crate manifests are not among them.** Every member says
-  # `version.workspace = true`, so the one literal is the root's
-  # `[workspace.package]` and cargo refuses a disagreement — which is why this no
-  # longer bumps `desktop/Cargo.toml`, and why it cannot silently miss a crate the
-  # next split adds.
-  bump Cargo.toml "version = \\"$cur\\"" "version = \\"$VERSION\\"" 1
-  bump desktop/tauri.conf.json "\\"version\\": \\"$cur\\"" "\\"version\\": \\"$VERSION\\"" 1
-  # The workspace's five members, and only those: every dependency in the lock
-  # carries its own version line, so the count is the check. It was 2 before the
-  # crate split, which is the kind of number this `bump` refuses rather than
-  # half-applies.
-  bump Cargo.lock "version = \\"$cur\\"" "version = \\"$VERSION\\"" 5
-  # **The notices carry the version too**, on the one line that names this
-  # workspace's five crates under the AGPL heading — `cargo about` writes it out of
-  # `Cargo.lock`. Left behind, `health.yml` goes red on the next push and stays
-  # red, which is the worst state for that workflow to be in: its whole job is to
-  # say "go and read an advisory", and a job that is always failing is one nobody
-  # reads. Bumped here rather than regenerated, so a release needs no `cargo
-  # about`; CI regenerates and diffs, which is what would catch a wrong guess.
-  bump THIRD-PARTY-RUST.md "$cur" "$VERSION" 1
+  if [ "$RETRY" = 1 ]; then
+    # Nothing to bump: the failed attempt committed these four files already,
+    # and `cur` is the version they carry.
+    step "version is already $VERSION from the failed attempt"
+  else
+    step "bumping the version"
+    # **Three files, and the crate manifests are not among them.** Every member says
+    # `version.workspace = true`, so the one literal is the root's
+    # `[workspace.package]` and cargo refuses a disagreement — which is why this no
+    # longer bumps `desktop/Cargo.toml`, and why it cannot silently miss a crate the
+    # next split adds.
+    bump Cargo.toml "version = \\"$cur\\"" "version = \\"$VERSION\\"" 1
+    bump desktop/tauri.conf.json "\\"version\\": \\"$cur\\"" "\\"version\\": \\"$VERSION\\"" 1
+    # The workspace's five members, and only those: every dependency in the lock
+    # carries its own version line, so the count is the check. It was 2 before the
+    # crate split, which is the kind of number this `bump` refuses rather than
+    # half-applies.
+    bump Cargo.lock "version = \\"$cur\\"" "version = \\"$VERSION\\"" 5
+    # **The notices carry the version too**, on the one line that names this
+    # workspace's five crates under the AGPL heading — `cargo about` writes it out of
+    # `Cargo.lock`. Left behind, `health.yml` goes red on the next push and stays
+    # red, which is the worst state for that workflow to be in: its whole job is to
+    # say "go and read an advisory", and a job that is always failing is one nobody
+    # reads. Bumped here rather than regenerated, so a release needs no `cargo
+    # about`; CI regenerates and diffs, which is what would catch a wrong guess.
+    bump THIRD-PARTY-RUST.md "$cur" "$VERSION" 1
+  fi
 
   # **The notes, before the tag exists.** `generate_release_notes: true` builds
   # them from merged pull requests, and this repo has none — so every release said
@@ -379,12 +409,23 @@ main() {
   # the handful a person upgrading would notice. Drafted here rather than in the
   # workflow because this is where a reader is: the release job has no one to show
   # a draft to, and a model's judgement is not something to publish unseen.
+  # **The range starts at the last *published* release, not the last tag.** A tag
+  # whose release never published names a version nobody received, so notes
+  # measured from it would skip everything that attempt carried — and the compare
+  # link would point at a tag that may since have been deleted. v2026.9.21 shipped
+  # exactly that link, to the deleted v2026.9.20.
+  base=$(gh release list --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null || true)
+  # A release with no assets is still a release, and on a retry it can be this very
+  # tag — which would leave an empty range.
+  [ "$base" != "$tag" ] || base=$(gh release list --limit 2 --json tagName --jq '.[1].tagName' 2>/dev/null || true)
+  [ -n "$base" ] || base="v$cur"
+
   step "drafting the release notes"
   notes=$(mktemp)
   # Never fatal. A model call that is slow, offline or rate-limited must not block
   # a release, and the script already falls back to picking by path — but if even
   # that fails, the notes are dropped and GitHub's own line is what ships.
-  if node tools/release-notes.mjs "v$cur..HEAD" --tag "$tag" > "$notes"; then
+  if node tools/release-notes.mjs "$base..HEAD" --tag "$tag" > "$notes"; then
     printf '\\n%s\\n\\n' "$(cat "$notes")"
   else
     printf '  could not draft them; the release will carry the default body\\n'
@@ -397,18 +438,28 @@ main() {
     read -r answer
     case $answer in
       [Nn]*) : > "$notes"; printf '  dropped\\n' ;;
-      [Ee]*) "${EDITOR:-vi}" "$notes"; node tools/release-notes.mjs "v$cur..HEAD" --check "$notes" || die "the edited notes no longer cover the range" ;;
+      [Ee]*) "${EDITOR:-vi}" "$notes"; node tools/release-notes.mjs "$base..HEAD" --check "$notes" || die "the edited notes no longer cover the range" ;;
     esac
   fi
 
   [ "$DRY" = 1 ] && { printf '\\n(dry run: nothing written, nothing tagged; %s would have been pushed)\\n' "$tag"; return 0; }
 
-  step "committing, tagging and pushing"
-  git add -A
-  # `--no-verify`: CI has just answered for the commit underneath this one, and a
-  # version bump cannot fail the hook's checks.
-  git commit --no-verify -m "Release $VERSION"
-  git push origin main
+  if [ "$RETRY" = 1 ]; then
+    step "re-tagging and pushing"
+    # The bump commit is already on main from the failed attempt and the tree is
+    # clean, so there is nothing to commit. The old tag goes from both sides first:
+    # `git tag -f` moves the local one, but a push of a moved tag is refused, and
+    # `--force` on a tag push is the habit worth not teaching.
+    git tag -d "$tag" 2>/dev/null || true
+    git push --quiet origin ":refs/tags/$tag" 2>/dev/null || true
+  else
+    step "committing, tagging and pushing"
+    git add -A
+    # `--no-verify`: CI has just answered for the commit underneath this one, and a
+    # version bump cannot fail the hook's checks.
+    git commit --no-verify -m "Release $VERSION"
+    git push origin main
+  fi
   # Annotated, because the message is what the workflow publishes as the release
   # body. A lightweight tag carries none, and the release would fall back to the
   # one line this exists to replace.
@@ -423,7 +474,44 @@ main() {
   fi
   git push origin "$tag"
   printf '  %s pushed\\n' "$tag"
-  printf '\\nThe release workflow is running. Watch it with:\\n  gh run watch $(gh run list --workflow=release.yml --limit 1 --json databaseId -q ".[0].databaseId")\\n'
+
+  # **The tag is not the release.** `release.yml` runs the suite again and builds
+  # every bundle, so a tag that pushed cleanly can still publish nothing. This task
+  # used to stop here and print a `gh run watch` line, which meant a failed release
+  # was found only by somebody going to look: v2026.9.20 sat dead for hours that
+  # way. Waiting is what turns a silently spent version number into one `--retry`
+  # can reclaim.
+  step "waiting for the release workflow"
+  # An hour: the macOS leg builds a bundle and drives it, and a queued runner is
+  # not a failure. `check` gets 30 minutes because it only runs the suite.
+  deadline=$(( $(date +%s) + 3600 ))
+  while :; do
+    # `--branch` takes the tag: a tag push reports the tag as `headBranch`, so this
+    # names *this* release's run and not whatever ran last.
+    run=$(gh run list --workflow=release.yml --branch "$tag" --limit 1 \\
+            --json status,conclusion,url --jq '.[] | .status + " " + (.conclusion // "") + " " + .url' || true)
+    case $(echo "$run" | cut -d' ' -f1) in
+      completed)
+        [ "$(echo "$run" | cut -d' ' -f2)" = success ] \\
+          || die "the release workflow failed for $tag — fix it, then: mise run release --retry
+  $(echo "$run" | cut -d' ' -f3)"
+        break
+        ;;
+      "") printf '  no release run for %s yet…\\n' "$tag" ;;
+      *) printf '  the release workflow is %s…\\n' "$(echo "$run" | cut -d' ' -f1)" ;;
+    esac
+    [ "$(date +%s)" -lt "$deadline" ] || die "the release workflow has not finished in an hour — look at it, then: mise run release --retry"
+    sleep 20
+  done
+
+  # **A green workflow is still not an installable release.** mise and ubi resolve a
+  # version from its assets, so a release carrying none exists and cannot be
+  # installed — which is what v2026.9.19 shipped, green. Assert the thing people
+  # actually consume.
+  assets=$(gh release view "$tag" --json assets --jq '.assets | length' 2>/dev/null || echo 0)
+  [ "$assets" -gt 0 ] \\
+    || die "$tag published no assets — fix it, then: mise run release --retry"
+  printf '  %s published, %s assets\\n' "$tag" "$assets"
 }
 
 main "$@"
