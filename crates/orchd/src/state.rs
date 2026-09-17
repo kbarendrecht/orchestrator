@@ -1424,7 +1424,7 @@ impl AppState {
     /// means running its `stop_command` first and that lives in `spawn`, one layer
     /// up. This used to send a bare `SIGHUP` to each pty instead: no escalation, so
     /// anything that traps it stayed, and no `stop_command`, which is the whole
-    /// reason `spawn::stop_managed` exists — killing the pty leaves the real
+    /// reason `crate::managed::stop_managed` exists — killing the pty leaves the real
     /// process running with nothing pointing at it. Containers are still not
     /// reached, the same as at shutdown: `docker compose up` has already detached
     /// by the time its pty dies.

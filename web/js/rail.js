@@ -1,7 +1,7 @@
 // The rail: what is running, what is waiting on you, and the PRs beside it.
 // Twenty-four names, three out; the rest is how a row decides what it says.
 
-import { $, activeCheckout, bandOf, byNewest, call, callFor, callHost, callOn, caret, checkoutOf, CHECKOUTS, chooseBox, clock, confirmBox, copyText, creating, creatingIn, dotClass, el, enterCheckout, everySession, getHost, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, QUEUE_MAX, reason, refreshButton, repoSummary, safeHref, selected, sessionsOf, sessionOrder, setPendingSelect, setSelected, setSessionOrder, snap, snapshotFor, snapshotOf, startingShown, stateClass, stateLabel, terms, toast, unchanged, watchStarting } from './core.js';
+import { $, activeCheckout, bandOf, byNewest, call, callFor, callHost, callOn, caret, checkoutOf, CHECKOUTS, chooseBox, clock, confirmBox, copyText, creating, creatingIn, dotClass, el, enterCheckout, everySession, getHost, inTrouble, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, QUEUE_MAX, reason, refreshButton, repoSummary, safeHref, selected, sessionsOf, sessionOrder, setPendingSelect, setSelected, setSessionOrder, snap, snapshotFor, snapshotOf, startingShown, stateClass, stateLabel, terms, toast, unchanged, watchStarting } from './core.js';
 import * as Open from './open.js';
 import * as Review from './review.js';
 import * as Term from './term.js';
@@ -536,7 +536,7 @@ function prDot(/** @type {import('../snapshot').PrView} */ p) {
   // Red first, above everything. A PR that is failing or conflicting is failing
   // whoever happens to be sitting in it, and the teal "a session holds this" used
   // to hide exactly that: you opened a session on a red PR and the row went calm.
-  if (p.checks === 'failing' || p.mergeable === 'CONFLICTING') return 'build';
+  if (inTrouble(p)) return 'build';
   if (p.session) return 'auto';           // a session is holding it
   if (p.is_draft) return 'idle';
   if (p.needs_you) return 'blocked';
@@ -730,8 +730,7 @@ function prGroup() {
     head.title = snap.pr_error;
   } else {
     const needs = prs.filter((p) => p.needs_you).length;
-    const failing = prs.filter(
-      (p) => p.checks === 'failing' || p.mergeable === 'CONFLICTING').length;
+    const failing = prs.filter(inTrouble).length;
     const bits = [`${prs.length}`];
     if (needs) bits.push(`${needs} needs you`);
     if (failing) bits.push(`${failing} failing`);
@@ -794,7 +793,7 @@ function prGroup() {
 
     const auto = (snap.automation || {})[p.number];
     const needsResolve = p.needs_you;
-    const needsFix = p.checks === 'failing' || p.mergeable === 'CONFLICTING';
+    const needsFix = inTrouble(p);
 
     // A reason chip next to a button just repeats it and steals width from the
     // title, which is the part you actually read.

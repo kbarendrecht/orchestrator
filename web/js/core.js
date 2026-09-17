@@ -1609,6 +1609,21 @@ export const selectedProc = {};        // wsKey -> process id
  */
 export const wsKey = (wsId) => `${activeCheckout().path}\u0000${wsId}`;
 /** What a PR is doing, in the two or three words a row has space for. */
+/** Is this PR in trouble — its checks red, or it cannot merge?
+ *
+ *  **One test, because it was written out four times.** The rail's dot, its header
+ *  count and the `fix` button each spelled
+ *  `p.checks === 'failing' || p.mergeable === 'CONFLICTING'` for themselves, which
+ *  is the shape the daemon's own `Pr::rank` doc warns about: that precedence was
+ *  "decided here rather than in four places that each got it slightly
+ *  differently", and the page then grew its own four.
+ *
+ *  @param {import('../snapshot').PrView} p
+ */
+export function inTrouble(p) {
+  return p.checks === 'failing' || p.mergeable === 'CONFLICTING';
+}
+
 export function prState(/** @type {import('../snapshot').PrView} */ p) {
   if (p.awaiting_you) return `${p.awaiting_you} waiting on you`;
   if (p.mergeable === 'CONFLICTING') return 'conflicted';

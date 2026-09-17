@@ -32,8 +32,8 @@ use orchd::resolve_repo;
 use orchd::state::{self, AppState};
 use orchd::window;
 use orchd::{
-    api, env_source, fix_pr, git, instance, machine, model, proc, relocate, review_api, reviews,
-    secret, skills, spawn, store, update,
+    api, bank, env_source, fix_pr, git, instance, machine, managed, model, proc, relocate,
+    review_api, reviews, secret, skills, spawn, store, update,
 };
 
 /// How the caller wants the daemon brought up.
@@ -131,7 +131,7 @@ impl Server {
                 .iter()
                 .any(|s| s.name == name && !s.stop_command.is_empty())
             {
-                orchd::spawn::stop_managed(&self.app, &workspace, &name, &pty).await;
+                orchd::managed::stop_managed(&self.app, &workspace, &name, &pty).await;
             }
         }
     }
@@ -688,11 +688,11 @@ fn daemon_router(app: Arc<AppState>) -> Router {
         .route("/api/worktree", post(api::new_worktree))
         .route("/api/workspace/:id/shell", post(api::new_shell))
         .route("/api/workspace/:id/reconcile", post(api::reconcile))
-        .route("/api/workspace/:id/rebase", post(api::rebase))
-        .route("/api/workspace/:id/rebase/abort", post(api::rebase_abort))
-        .route("/api/workspace/:id/wip/restore", post(api::wip_restore))
-        .route("/api/workspace/:id/wip/discard", post(api::wip_discard))
-        .route("/api/workspace/:id/wip/resolve", post(api::wip_resolve))
+        .route("/api/workspace/:id/rebase", post(bank::rebase))
+        .route("/api/workspace/:id/rebase/abort", post(bank::rebase_abort))
+        .route("/api/workspace/:id/wip/restore", post(bank::wip_restore))
+        .route("/api/workspace/:id/wip/discard", post(bank::wip_discard))
+        .route("/api/workspace/:id/wip/resolve", post(bank::wip_resolve))
         .route("/api/workspace/:id/preflight", get(api::preflight))
         .route("/api/workspace/:id/teardown", post(api::teardown))
         .route(
@@ -987,7 +987,7 @@ async fn autostart_processes(app: &Arc<AppState>) {
         if !spec.autostart {
             continue;
         }
-        if let Err(e) = spawn::start_managed(app, MAIN, &spec).await {
+        if let Err(e) = managed::start_managed(app, MAIN, &spec).await {
             tracing::warn!("could not start {}: {e:#}", spec.name);
         }
     }

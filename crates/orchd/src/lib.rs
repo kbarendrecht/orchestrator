@@ -25,8 +25,10 @@ pub use orchd_repo::{
 };
 
 pub mod api;
+pub mod bank;
 pub mod fix_pr;
 pub mod health;
+pub mod managed;
 pub mod model;
 pub mod names;
 pub mod post;

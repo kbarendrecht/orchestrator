@@ -132,6 +132,17 @@ enum Input {
 /// Sessions and Processes are hosted identically (§2) — same ring buffer, same
 /// reattach. What differs is the hook lifecycle and whether it earns a rail
 /// entry, and neither of those lives here.
+/// The rows and columns a pty is opened at.
+///
+/// **Here rather than beside either caller.** It lived in `spawn`, so `managed`
+/// had to import `spawn` to open a pty of its own — and the module ratchet refused
+/// the cycle that made when managed processes moved out. Neither of them owns the
+/// geometry a pty starts at; the pty does.
+///
+/// 40x140 is what the SPA's terminal is sized for — `docs/traps/performance.md`
+/// has the cell-count reasoning behind the renderer choice at that size.
+pub const DEFAULT_SIZE: (u16, u16) = (40, 140);
+
 pub struct PtyHandle {
     /// Input queued for the child, drained by a dedicated writer thread. See
     /// [`PtyHandle::write`] for why it is a queue rather than the fd.

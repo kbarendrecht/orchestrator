@@ -97,12 +97,19 @@ pub struct Pr {
 impl Pr {
     /// Sort key for the rail PR group (§9):
     /// needs-resolving → failing → open and clean → draft.
+    ///
+    /// **`needs_you` is asked before `is_draft`, and that order is the fix for a
+    /// row that contradicted itself.** `is_draft` used to sink a PR first, so a
+    /// draft carrying a thread that waited on you sorted to the bottom with the
+    /// quiet drafts while the rail labelled it *"N waiting on you"* — the daemon
+    /// ordering the list by one precedence and the page labelling it by another.
+    /// A draft nobody is waiting on still sinks, which is what a draft is for.
     pub fn rank(&self) -> u8 {
-        if self.is_draft {
-            return 4;
-        }
         if self.needs_you {
             return 0;
+        }
+        if self.is_draft {
+            return 4;
         }
         if self.checks == Checks::Failing || self.mergeable == "CONFLICTING" {
             return 1;
@@ -483,5 +490,17 @@ mod tests {
         assert!(failing.rank() < clean.rank());
         // A draft stays at the bottom even when it is red.
         assert!(draft.rank() > clean.rank());
+
+        /* **But a draft that is waiting on you sorts with the rows that want
+        you**, not with the drafts. `is_draft` used to be asked first, so this PR
+        sank to the bottom while the rail labelled it "1 waiting on you" — the
+        list ordered by one precedence and labelled by another, and the row that
+        contradicted itself was the one asking for something. */
+        let mut draft_wants_you = pr(5, "e", "develop");
+        draft_wants_you.is_draft = true;
+        draft_wants_you.awaiting_you = 1;
+        draft_wants_you.needs_you = true;
+        assert_eq!(draft_wants_you.rank(), needs.rank());
+        assert!(draft_wants_you.rank() < draft.rank());
     }
 }
