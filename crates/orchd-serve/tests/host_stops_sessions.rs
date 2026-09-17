@@ -75,9 +75,21 @@ async fn closing_a_checkout_takes_its_sessions_with_it() {
         ),
     );
 
+    /* **`env_source` off, or the shim above is shadowed and this test is a lie.**
+    `mise env --json` derives PATH from the caller's and puts the checkout's pinned
+    tools *in front* — by design, `crates/orchd-repo/src/env_source.rs` says so — so
+    a developer whose own mise config pins `claude` gets the real agent here, which
+    never writes the pid file, and the test times out after 60 seconds. It passes in
+    CI, where no global mise config provides one, which is the worst shape a failure
+    can have. `tools/e2e/harness.mjs` settled this already and for the same reason:
+    nothing here tests `env_source`, and a suite that depends on the developer's own
+    mise state is not isolated. */
     std::fs::write(
         cfg.join("config.json"),
-        format!(r#"{{"main_checkout":{:?}}}"#, repo.to_string_lossy()),
+        format!(
+            r#"{{"main_checkout":{:?},"env_source":"none"}}"#,
+            repo.to_string_lossy()
+        ),
     )
     .unwrap();
 
