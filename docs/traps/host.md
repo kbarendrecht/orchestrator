@@ -232,3 +232,24 @@ rather than broken), and a malformed ready line.
 **The test for it answers over a channel rather than asserting in place**, because
 the regression does not return a wrong value — it never returns, and a test that
 called `read_ready` directly would hang the binary and surface as a CI timeout.
+
+## A buffer another thread is filling is empty when you read it, and a release paid for that.
+`child::launch` reads the daemon's stderr on a thread of its own, because a child
+that is alive and silent must not park the launcher — `drain_stderr` keeps the last
+`STDERR_KEPT` lines in a `Mutex<VecDeque>` and the failure path quotes them.
+**Nothing made the failure wait for that thread.** A child that writes its
+complaint and exits loses the race on a loaded machine: the parent sees the missing
+`ready` line, formats the diagnosis, and reads a buffer the reader has not been
+scheduled to fill. The sentence then names the exit status and says the child said
+nothing — which is precisely the silence #18 exists to end, reintroduced by the
+code written to end it.
+**It read as flake and was a release.** `a_failed_launch_names_the_status_the_stderr_and_the_log`
+had failed occasionally for days and passed on every rerun, so it read as noise.
+Then it went red in the `build` leg of a tag: v2026.9.20 was never published, and
+`release` was skipped rather than failed, so the run looked half-fine.
+`settle` waits for the reader with a 500ms bound, on the failure path only.
+**Bounded, and never a `join`**: the pipe of a child that is alive and silent never
+reaches EOF, and that is exactly the case this path may be in.
+**Measured, because a race that is argued about is a race nobody fixed.** With
+sixteen `yes` processes competing, the wait removed again fails 2 runs in 8; with
+it, 0 in 12.

@@ -54,6 +54,14 @@ const READY_TIMEOUT: Duration = Duration::from_secs(60);
 /// whole, because this is kept for a process that may run for days.
 const STDERR_KEPT: usize = 20;
 
+/// How long a failed launch waits for the stderr reader before quoting it.
+///
+/// Long enough for a thread that already has the bytes to be scheduled on a loaded
+/// runner, short enough that it is never felt: this runs only on the path where a
+/// launch has already failed, and the alternative is a diagnosis missing the line
+/// that names the cause. See [`settle`].
+const STDERR_SETTLE: Duration = Duration::from_millis(500);
+
 /// How long to keep asking for an exited child's status.
 ///
 /// `try_wait` right after stdout EOF can still answer `None`: the last write and
@@ -287,7 +295,7 @@ pub fn launch_at(
         .stderr
         .take()
         .context("the child has no stderr to read")?;
-    let said = drain_stderr(stderr, pid);
+    let (said, reading) = drain_stderr(stderr, pid);
 
     /* **Read on a thread, received with a deadline.** This used to iterate the
     child's lines here, and the deadline was checked *after* each line arrived —
@@ -306,6 +314,9 @@ pub fn launch_at(
             // it is a process nobody is watching.
             crate::pty::signal_group_of(pid, libc::SIGKILL);
             let _ = child.wait();
+            // The pipe is closed now, so its reader is about to end. Wait for it,
+            // or quote a buffer that has not been filled yet.
+            settle(&reading);
             /* **Everything the caller needs to act, in one sentence.** The host
             shows this string and nothing else, and a person reading "the daemon
             never said it was ready" has no next step — not the exit status, not
@@ -430,10 +441,13 @@ fn pump_stdout(stdout: std::process::ChildStdout) -> Receiver<String> {
 /// Both halves matter. The log line is for a failure that happens later, when
 /// there is a checkout to attach it to; the kept ring is for a failure that
 /// happens *now*, before the child has a log file of its own.
-fn drain_stderr(stderr: std::process::ChildStderr, pid: u32) -> Arc<Mutex<VecDeque<String>>> {
+fn drain_stderr(
+    stderr: std::process::ChildStderr,
+    pid: u32,
+) -> (Arc<Mutex<VecDeque<String>>>, std::thread::JoinHandle<()>) {
     let kept = Arc::new(Mutex::new(VecDeque::new()));
     let mine = kept.clone();
-    std::thread::spawn(move || {
+    let reader = std::thread::spawn(move || {
         for line in BufReader::new(stderr).lines() {
             let Ok(line) = line else { break };
             if line.is_empty() {
@@ -447,7 +461,31 @@ fn drain_stderr(stderr: std::process::ChildStderr, pid: u32) -> Arc<Mutex<VecDeq
             kept.push_back(line);
         }
     });
-    kept
+    (kept, reader)
+}
+
+/// Give the stderr reader a moment to finish before its lines are quoted.
+///
+/// **The buffer is filled on another thread, so reading it the instant a launch
+/// fails is a race the failure loses.** The child writes its complaint, exits, and
+/// the parent notices the missing `ready` line — all before that thread has been
+/// scheduled to turn the bytes into lines. The failure then names the exit status
+/// and says the child said nothing, which is the one sentence #18 exists to
+/// prevent.
+///
+/// It cost a release rather than a test run: `a_failed_launch_names_the_status_the_stderr_and_the_log`
+/// went red on a loaded CI runner in the `build` leg of a tag, so v2026.9.20 was
+/// never published. It had been flaky for a while and read as noise.
+///
+/// Bounded, and never a join: a child that is alive and silent keeps its pipe open
+/// for ever, and this runs on the path where that is exactly what may have
+/// happened. EOF arrives when the child exits, so the wait is real only when there
+/// is something to wait for.
+fn settle(reader: &std::thread::JoinHandle<()>) {
+    let deadline = Instant::now() + STDERR_SETTLE;
+    while !reader.is_finished() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }
 
 /// The kept stderr, as a clause to append to a failure, or nothing.

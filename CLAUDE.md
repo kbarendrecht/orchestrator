@@ -253,6 +253,7 @@ together: same entries, same order, same groups.
 - The page is served by `host.rs`, not by the daemon.
 - A child that will not start leaves one sentence, and it used to name nothing.
 - A deadline checked after a blocking read is not a deadline.
+- A buffer another thread is filling is empty when you read it, and a release paid for that.
 
 ### The gates, and what each one caught
 
