@@ -251,22 +251,19 @@ jobs:
     permissions:
       contents: write
     steps:
-      # `merge-multiple`, because v4 requires a distinct name per upload: the two
-      # `dist-<slug>` artifacts land in one directory again here.
-      - name: Collect every platform's assets
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          path: dist
-          merge-multiple: true
-
-      # **The notes ride on the tag, which is why this job now checks out.** It
-      # used to take `generate_release_notes: true`, which builds a body out of
-      # merged pull requests — and this repo commits straight to `main`, so there
-      # were none and every release published the same single compare link, for 8
-      # commits in v2026.9.18 and 34 in v2026.9.17. `mise run release` writes the
-      # notes into the annotated tag, where a person has already read them, and
-      # this reads that message back. Tags only, and no history, because the
-      # message is the whole of what is needed.
+      # **The notes ride on the tag, so this job checks out — and it must do so
+      # BEFORE the artifacts are downloaded.** `actions/checkout` cleans the
+      # workspace, so placed after the download it deleted the `dist/` the
+      # artifacts had just landed in and the upload matched nothing:
+      # `Pattern 'dist/*' does not match any files.` **v2026.9.19 shipped with an
+      # empty asset list because of exactly that**, and mise resolves versions
+      # from the assets, so the release existed and could not be installed.
+      #
+      # The checkout is here at all because the body is the annotated tag's own
+      # message. `generate_release_notes: true` builds one out of merged pull
+      # requests, and this repo commits straight to `main` — so every release
+      # published the same single compare link, for 8 commits in v2026.9.18 and 34
+      # in v2026.9.17.
       - name: Read the notes off the tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -278,6 +275,15 @@ jobs:
           # had. Nothing after the clone needs a credential: the tag's message is
           # read locally.
           persist-credentials: false
+
+      # `merge-multiple`, because v4 requires a distinct name per upload: the two
+      # `dist-<slug>` artifacts land in one directory again here.
+      - name: Collect every platform's assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: dist
+          merge-multiple: true
+
       - name: The tag's own message
         id: notes
         run: |
