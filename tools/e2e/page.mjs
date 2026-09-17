@@ -405,6 +405,25 @@ try {
   check(await withDiffOpen({ key: 'ArrowLeft', ctrlKey: true, altKey: true, metaKey: true }) === false,
     'Ctrl+Option+Cmd+Left is left to the window manager')
 
+  /* --- the chord labels and the drawn icons are nodes, not markup ------------- */
+
+  /* Both were `innerHTML` and are DOM calls now, which is what lets the SPA's
+     no-HTML-sinks rule (`no-restricted-syntax`, `tools/eslint.config.mjs`) have no
+     exceptions. Neither break is visible to `tsc` or to ESLint: a chord left
+     reading `MOD Shift N`, a `kbd` eaten by the rewrite, and an icon that draws
+     nothing all type-check and lint clean. The placeholder itself is already
+     asserted above, on the rendered text. */
+  const kbds = await page.$$eval('[data-mod] kbd', (ns) => ns.length)
+  check(kbds > 0, `the chord rewrite kept the kbd children it runs over, got ${kbds}`)
+  const drawn = await page.evaluate(async () => {
+    const core = await import('/js/core.js')
+    const c = core.caret()
+    const svg = c.firstElementChild
+    return svg?.namespaceURI === 'http://www.w3.org/2000/svg'
+      && svg.tagName === 'svg' && svg.querySelectorAll('path').length === 1
+  })
+  check(drawn === true, 'a drawn icon is a real SVG node with its path')
+
   /* **Last, and deliberately so.** The move below puts a session into main,
      and the rail draws main's sessions and the worktrees' as two runs. The drag
      above reorders *within* a run and refuses a drop across them, so running

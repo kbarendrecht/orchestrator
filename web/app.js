@@ -887,10 +887,19 @@ keyActivate($('keysbtn'));
    spelling ("also MOD `"), and resolving the `dt`s alone left the placeholder on
    screen. Found by looking at the rendered legend; the test that checked the
    chords read `dt` text and passed happily. */
+/* Text nodes, not `innerHTML`, so the SPA keeps zero HTML sinks — see the
+   `no-restricted-syntax` rule in `tools/eslint.config.mjs`. It is also the more
+   honest edit: two of these carry `<kbd>` children, and a read-replace-write of
+   `innerHTML` rebuilt that markup to change a word inside it. `data-mac` needs
+   no markup either — the parser decodes an attribute's entities, so
+   `getAttribute` already hands back `⌘` and the non-breaking spaces. */
 for (const dt of document.querySelectorAll('[data-mod]')) {
   const mac = dt.getAttribute('data-mac');
-  if (IS_MAC && mac) dt.innerHTML = mac;
-  else dt.innerHTML = dt.innerHTML.replace(/MOD/g, MOD_LABEL);
+  if (IS_MAC && mac) { dt.textContent = mac; continue; }
+  const walk = document.createTreeWalker(dt, NodeFilter.SHOW_TEXT);
+  for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+    if (n.nodeValue) n.nodeValue = n.nodeValue.replace(/MOD/g, MOD_LABEL);
+  }
 }
 $('dcollapse').onclick = () => setDrawerCollapsed(!drawerCollapsed);
 /* The bar itself is the second way in, on a double-click: the same gesture the

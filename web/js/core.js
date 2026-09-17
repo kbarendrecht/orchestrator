@@ -501,16 +501,48 @@ export function el(tag, cls, text, title) {
   return n;
 }
 
+/** An inline SVG icon, built as nodes rather than written as markup.
+ *
+ *  **Node by node so the SPA has no `innerHTML` at all.** Both icons here used
+ *  to be a string of markup, which is harmless — the string is a literal — but it
+ *  left the page with a live HTML sink for the next person to reach for, on a page
+ *  that renders PR titles, review-thread bodies and diff text from GitHub and
+ *  carries the app token on `window.__ORCH__`. There is no Content-Security-Policy
+ *  behind it either: the window loads the daemon over `http://127.0.0.1`, which is
+ *  a *remote* origin to Tauri, so `app.security.csp` never applies to this page.
+ *  Zero sinks is the cheaper property to hold, and `no-restricted-syntax` holds it.
+ *
+ *  `1em`, so the caller's own font-size sets the size.
+ *
+ *  @param {string} cls class for the wrapping span
+ *  @param {number} strokeWidth
+ *  @param {...string} ds one `path` per `d`
+ *  @returns {HTMLSpanElement}
+ */
+export function icon(cls, strokeWidth, ...ds) {
+  const ns = 'http://www.w3.org/2000/svg';
+  const span = el('span', cls);
+  const svg = document.createElementNS(ns, 'svg');
+  for (const [k, v] of [
+    ['viewBox', '0 0 16 16'], ['width', '1em'], ['height', '1em'], ['fill', 'none'],
+    ['stroke', 'currentColor'], ['stroke-width', String(strokeWidth)],
+    ['stroke-linecap', 'round'], ['stroke-linejoin', 'round'], ['aria-hidden', 'true'],
+  ]) svg.setAttribute(k, v);
+  for (const d of ds) {
+    const path = document.createElementNS(ns, 'path');
+    path.setAttribute('d', d);
+    svg.append(path);
+  }
+  span.append(svg);
+  return span;
+}
+
 /** The chevron a collapsible header rotates — drawn rather than typed so it
  *  matches the gear and refresh and cannot fall out of the font. `1em`, so each
  *  header's own font-size still sets its size, and the `[aria-expanded]` rotate
  *  rule turns the SVG exactly as it turned the glyph. */
 export function caret() {
-  const s = el('span', 'caretr');
-  s.innerHTML = '<svg viewBox="0 0 16 16" width="1em" height="1em" fill="none"'
-    + ' stroke="currentColor" stroke-width="1.6" stroke-linecap="round"'
-    + ' stroke-linejoin="round" aria-hidden="true"><path d="M6 4l4 4-4 4"/></svg>';
-  return s;
+  return icon('caretr', 1.6, 'M6 4l4 4-4 4');
 }
 
 /** A duration that keeps moving, without the tree being rebuilt to move it.
@@ -1008,11 +1040,7 @@ export const QUEUE_MAX = 50;
 export function refreshButton(/** @type {'pr' | 'review'} */ kind, /** @type {number} */ pollCount, /** @type {string} */ endpoint, /** @type {boolean} */ polling) {
   // Drawn, not typed — see the files-header refresh in index.html for why the
   // reload glyph is an SVG rather than U+21BB. 1em tracks the font-size setting.
-  const btn = el('span', 'rvrefresh');
-  btn.innerHTML = '<svg viewBox="0 0 16 16" width="1em" height="1em" fill="none"'
-    + ' stroke="currentColor" stroke-width="1.5" stroke-linecap="round"'
-    + ' stroke-linejoin="round" aria-hidden="true">'
-    + '<path d="M13.4 8A5.4 5.4 0 1 1 11.7 4"/><path d="M12 1.6V4.3H9.3"/></svg>';
+  const btn = icon('rvrefresh', 1.5, 'M13.4 8A5.4 5.4 0 1 1 11.7 4', 'M12 1.6V4.3H9.3');
   btn.title = 'Refresh now';
   btn.setAttribute('role', 'button');
   keyActivate(btn);

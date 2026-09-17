@@ -128,6 +128,20 @@ export default tseslint.config(
           selector: "VariableDeclarator[init.property.name='checkout'] > ObjectPattern > Property[key.name=/^(token|port|wsBase|base)$/]",
           message: 'read the address out of CHECKOUTS at dial time, not off a captured checkout — a restarted daemon keeps its path and changes its port and token (see term.js `address`).',
         },
+        {
+          /* **Zero HTML sinks, and it stays zero.** This page renders PR titles,
+             review-thread bodies and diff text that came from GitHub, and it holds
+             the app token on `window.__ORCH__` — so one sink is a token read away
+             from local code execution. There is no Content-Security-Policy behind
+             the rule either, and there cannot easily be: the window loads the
+             daemon over `http://127.0.0.1`, which Tauri classifies as a *remote*
+             origin, so `app.security.csp` in `tauri.conf.json` never applies to
+             this page. The two sites that existed were static SVG markup and are
+             `core.icon()` now, which builds the same nodes with `createElementNS`
+             — so this rule has no exceptions and needs none. */
+          selector: "AssignmentExpression[left.property.name=/^(innerHTML|outerHTML)$/], CallExpression[callee.property.name='insertAdjacentHTML'], CallExpression[callee.object.name='document'][callee.property.name=/^(write|writeln)$/]",
+          message: 'no HTML sinks in the SPA — build nodes (`core.el`, `core.icon`) and set textContent; this page renders GitHub text and carries the app token.',
+        },
       ],
 
       eqeqeq: ['error', 'always', { null: 'ignore' }],
