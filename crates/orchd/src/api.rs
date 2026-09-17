@@ -236,6 +236,13 @@ pub async fn guard(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     if !host_allowed(host, port) {
+        // Warn, not silence, on all three refusals below. A refusal is three words
+        // over the wire and the caller is usually a script that cannot say which
+        // rule turned it down — and the one that bites is `is_ask_route`: a route
+        // an agent calls that nobody added to that list answers `bad origin`, which
+        // reads as a CORS problem and is not one. No token material: the header
+        // that failed is named, never its value.
+        tracing::warn!(%path, %host, "refused: host is not this daemon's");
         return (StatusCode::FORBIDDEN, "bad host").into_response();
     }
 
@@ -305,6 +312,13 @@ pub async fn guard(
         is_get,
         token_ok,
     ) {
+        tracing::warn!(
+            %path,
+            origin = origin.unwrap_or("-"),
+            is_ask,
+            is_hook,
+            "refused: origin is not this daemon's, and no other arm applied"
+        );
         return (StatusCode::FORBIDDEN, "bad origin").into_response();
     }
 
@@ -325,6 +339,7 @@ pub async fn guard(
     let needs_token =
         !is_hook && !is_ask && (req.method() != axum::http::Method::GET || spends_github_token);
     if needs_token && !token_ok {
+        tracing::warn!(%path, "refused: no app token, or the wrong one");
         return (StatusCode::UNAUTHORIZED, "bad token").into_response();
     }
 

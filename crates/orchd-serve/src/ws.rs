@@ -23,6 +23,9 @@ pub struct WsQuery {
 
 /// Browsers cannot set headers on a WebSocket handshake, so the token rides in
 /// the query string. It never leaves the loopback interface (§12).
+///
+/// A refusal is warned about by the caller, for the reason `orchd::api::guard`
+/// gives: the socket closes with three words and no way to tell the rules apart.
 fn authorised(app: &AppState, q: &WsQuery) -> bool {
     q.token == app.token
 }
@@ -37,6 +40,7 @@ pub async fn events(
     ws: WebSocketUpgrade,
 ) -> Response {
     if !authorised(&app, &q) {
+        tracing::warn!("refused: the events socket was dialled without the app token");
         return (StatusCode::UNAUTHORIZED, "bad token").into_response();
     }
     ws.on_upgrade(move |socket| events_loop(app, socket))
@@ -99,6 +103,7 @@ pub async fn pty(
     ws: WebSocketUpgrade,
 ) -> Response {
     if !authorised(&app, &q) {
+        tracing::warn!("refused: the pty socket was dialled without the app token");
         return (StatusCode::UNAUTHORIZED, "bad token").into_response();
     }
     let Some(target) = q.target.clone() else {

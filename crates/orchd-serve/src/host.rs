@@ -727,7 +727,11 @@ async fn guard(
         .get("host")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
+    let path = req.uri().path().to_string();
     if !orchd::api::host_allowed(host_header, host.port) {
+        // Said out loud for the reason `orchd::api::guard` says it: the caller gets
+        // three words and cannot tell which of the three rules turned it down.
+        tracing::warn!(%path, host = host_header, "refused: host is not the host's");
         return (StatusCode::FORBIDDEN, "bad host").into_response();
     }
     let origin = headers.get("origin").and_then(|v| v.to_str().ok());
@@ -737,11 +741,13 @@ async fn guard(
         .is_some_and(|t| t == host.token);
     let is_get = req.method() == axum::http::Method::GET;
     if !orchd::api::origin_ok(origin, host.port, None, false, is_get, token_ok) {
+        tracing::warn!(%path, origin = origin.unwrap_or("-"), "refused: origin is not the host's");
         return (StatusCode::FORBIDDEN, "bad origin").into_response();
     }
     // The page itself is deliberately not token-gated: it is where the token comes
     // from. Everything that changes something is.
     if !is_get && !token_ok {
+        tracing::warn!(%path, "refused: no host token, or the wrong one");
         return (StatusCode::UNAUTHORIZED, "bad token").into_response();
     }
     next.run(req).await
@@ -1594,6 +1600,7 @@ async fn host_socket(
     ws: axum::extract::WebSocketUpgrade,
 ) -> Response {
     if q.token != host.token {
+        tracing::warn!("refused: the host socket was dialled without the host token");
         return (StatusCode::UNAUTHORIZED, "bad token").into_response();
     }
     ws.on_upgrade(move |socket| host_socket_loop(host, socket))
