@@ -1193,17 +1193,34 @@ async fn next_tick(interval: std::time::Duration, refresh: &tokio::sync::Notify)
 }
 
 /// Of several resumable records, the ones to actually bring back: at most one per
-/// workspace, oldest first.
+/// workspace, oldest first — **except in main when the config allows several**.
 ///
 /// Pure and separate from the spawn loop so the rule can be tested without a daemon.
 /// Oldest-first both orders the rail the way it was built up and decides *which* of
 /// two records sharing a workspace wins.
-fn first_per_workspace(mut resumable: Vec<store::SessionRecord>) -> Vec<store::SessionRecord> {
+///
+/// **`several_in_main` is not an extra: it is the same carve-out the API has.**
+/// `api::refuse_if_occupied` returns early for main when `allow_several_in_main` is
+/// set, and this comment used to claim parity with that rule while squeezing main
+/// to one record like any worktree. So a repo that had turned the setting on lost
+/// every main session but the oldest on each restart, silently — the setting meant
+/// one thing while the daemon was up and another the moment it came back.
+fn first_per_workspace(
+    mut resumable: Vec<store::SessionRecord>,
+    several_in_main: bool,
+) -> Vec<store::SessionRecord> {
     resumable.sort_by_key(|r| r.created_at);
     let mut seen = std::collections::HashSet::new();
     resumable
         .into_iter()
-        .filter(|r| seen.insert(r.workspace.clone()))
+        .filter(|r| {
+            // Main keeps all of them when the config says main may hold several.
+            // Every other workspace admits one, restart or not.
+            if several_in_main && r.workspace == MAIN {
+                return true;
+            }
+            seen.insert(r.workspace.clone())
+        })
         .collect()
 }
 
@@ -1244,7 +1261,7 @@ fn auto_resume(app: Arc<AppState>, records: Vec<store::SessionRecord>) {
         // (`refuse_if_occupied`). A cold start has spawned nothing yet, so the restore
         // path is where it holds — and it also defends a `sessions.json` written
         // before that invariant existed, where two records shared one worktree.
-        let to_resume = first_per_workspace(resumable);
+        let to_resume = first_per_workspace(resumable, app.cfg.allow_several_in_main);
         let mut resumed = 0usize;
         for r in to_resume {
             // Its recorded pass, not `None`: a resumed fix run is still the run
@@ -1756,7 +1773,7 @@ mod tests {
     /// on a cold start, keeps two sessions that once shared a worktree from both
     /// re-hydrating into it.
     #[test]
-    fn auto_resume_brings_back_one_session_per_workspace() {
+    fn auto_resume_brings_back_one_per_workspace_and_all_of_main_when_allowed() {
         use std::time::{Duration, UNIX_EPOCH};
         let rec = |ws: &str, age_secs: u64| {
             let mut s = model::Session::new(
@@ -1776,12 +1793,10 @@ mod tests {
         let older_a = rec("wt-a", 90);
         let b = rec("wt-b", 50);
         let main = rec(MAIN, 5);
-        let kept = first_per_workspace(vec![
-            newer_a.clone(),
-            b.clone(),
-            main.clone(),
-            older_a.clone(),
-        ]);
+        let kept = first_per_workspace(
+            vec![newer_a.clone(), b.clone(), main.clone(), older_a.clone()],
+            false,
+        );
 
         let by_ws: std::collections::HashMap<_, _> =
             kept.iter().map(|r| (r.workspace.clone(), r.id)).collect();
@@ -1793,6 +1808,35 @@ mod tests {
         );
         assert_eq!(by_ws.get("wt-b"), Some(&b.id));
         assert_eq!(by_ws.get(MAIN), Some(&main.id));
+
+        /* **And with `allow_several_in_main`, main keeps all of them.** The rule
+        this path enforces is `api::refuse_if_occupied`'s, which returns early for
+        main when that setting is on — so squeezing main to one record here made
+        the setting mean one thing while the daemon was up and another after a
+        restart, and a repo that had turned it on lost every main session but the
+        oldest, silently. A worktree is unaffected either way. */
+        let second_main = rec(MAIN, 3);
+        let kept = first_per_workspace(
+            vec![
+                newer_a.clone(),
+                main.clone(),
+                second_main.clone(),
+                older_a.clone(),
+            ],
+            true,
+        );
+        let mains: Vec<_> = kept
+            .iter()
+            .filter(|r| r.workspace == MAIN)
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(mains.len(), 2, "both main sessions come back");
+        assert!(mains.contains(&main.id) && mains.contains(&second_main.id));
+        assert_eq!(
+            kept.iter().filter(|r| r.workspace == "wt-a").count(),
+            1,
+            "a worktree still admits one, whatever main is allowed"
+        );
     }
 
     // --- the page, and the window it may not have --------------------------

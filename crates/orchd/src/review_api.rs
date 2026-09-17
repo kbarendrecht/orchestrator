@@ -395,9 +395,14 @@ pub struct ThreadReply {
 /// already on the thread, file the story first and substitute `{story}` into the
 /// words, refuse a story position with no tracker configured, and append the
 /// footer. Three of those are idempotency, and the fourth is load-bearing for
-/// something else entirely — `forge::acknowledged` reads `(via orchestrator)` to
-/// decide whether a thread still awaits you, so a reply posted without it is a
-/// thread that reads unanswered for ever.
+/// something else entirely — `post::already_replied` compares `with_footer(body)`
+/// against what is already on the thread, so a reply posted without the footer is
+/// one a retry posts a second time.
+/// **It is not what decides whether a thread awaits you.** `forge::acknowledged`
+/// never reads the footer: it compares the last comment's author against the
+/// viewer and looks for your 👍 (`forge/github.rs`'s `acknowledged`). This comment
+/// claimed otherwise, which would have sent a change to either mechanism at the
+/// wrong one.
 ///
 /// So the words come from the agent and the writing stays here, where the rules are
 /// enforced rather than remembered and eleven tests say so.

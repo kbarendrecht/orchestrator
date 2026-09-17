@@ -1304,6 +1304,14 @@ impl AppState {
     /// Re-minted rather than persisted, exactly like [`crate::model::Session::ask_token`]:
     /// the value is only ever compared against this record, so a new pair costs
     /// nothing, and the record is dropped with the process that minted it.
+    /// **Keyed by PR, and that is safe only because of a rule kept elsewhere.**
+    /// A second mint for the same PR replaces the first, so any earlier holder is
+    /// silently locked out. Nothing can reach that today: every run over a PR lives
+    /// in that PR's own worktree, and `api::refuse_if_occupied` admits one live
+    /// session per workspace — so two holders of one PR's token cannot coexist.
+    /// The ask token is keyed per session and needs no such argument.
+    /// Move a run for a PR out of that PR's worktree and this key is wrong. Key it
+    /// by session id then, or refuse the second mint while the first run is live.
     pub async fn mint_post_token(&self, pr: u64) -> String {
         let token = crate::secret::random_token();
         self.inner

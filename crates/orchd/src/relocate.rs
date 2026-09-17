@@ -88,6 +88,20 @@ async fn swap_with_main_inner(
     if workspace == MAIN {
         refuse!("main cannot be swapped with itself");
     }
+    /* **A pooled spare is not a swap target.** It holds no session and no work, so
+    there is nothing on its side to exchange: the swap would put main's branch into
+    an empty tree and hand main the spare's own `worktree-<name>`, which is not a
+    move anybody would ask for. It is refused here rather than allowed and then
+    un-pooled, because the pool is not the reason — a workspace with nothing in it
+    is.
+    Reachable only by calling this route by hand; the rail offers a swap from a
+    session's row, and a spare has no row. Refused anyway, because until this the
+    swap and the pool did not know about each other, and `Snapshot.spare` would have
+    gone on naming a workspace `Snapshot.workspaces` showed with a live occupant
+    until the next poll noticed. */
+    if app.inner.read().await.spare.ids.contains(&workspace) {
+        refuse!("{workspace} is a spare worktree with nothing in it — there is nothing to swap");
+    }
     // One swap at a time, and refused rather than queued: a swap kills and respawns
     // the conversations that follow the branches, and it decides which ones those
     // are *before* anything moves. A second swap taken while the first is still
@@ -786,6 +800,40 @@ async fn carry_record(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A spare is a workspace with no session, so a swap has nothing to exchange
+    /// with it — and before this refusal the two features did not know about each
+    /// other at all.
+    #[tokio::test]
+    async fn a_swap_refuses_a_pooled_spare() {
+        let (app, _dir) = crate::testutil::app("swap-spare");
+        {
+            let mut inner = app.inner.write().await;
+            inner.with_spare("test", |s| {
+                s.ids.push("idle-tree".into());
+                true
+            });
+        }
+        let err = swap_with_main_inner(app.clone(), "idle-tree".into())
+            .await
+            .expect_err("a spare is not a swap target");
+        assert!(
+            format!("{:#}", err.0).contains("nothing to swap"),
+            "the refusal says why: {:#}",
+            err.0
+        );
+
+        // And an ordinary workspace is refused for its own reasons, not this one —
+        // the guard must not swallow every unknown name.
+        let err = swap_with_main_inner(app, "not-pooled".into())
+            .await
+            .expect_err("an unknown workspace is still refused");
+        assert!(
+            !format!("{:#}", err.0).contains("nothing to swap"),
+            "but not as a spare: {:#}",
+            err.0
+        );
+    }
 
     /// A conversation travels with its branch, and the *record's* branch is what
     /// decides that.
