@@ -141,9 +141,8 @@ this file, which churned it from every build; that feature is gone.
     ladder are github.com-specific — `for_kind`'s single `token` argument does not
     yet model per-forge credentials.
 
-- **Drag and drop in the rail: the reorder is in, the pair swap is not.**
-  *Done:* dragging a session row reorders the list, the order is kept per checkout
-  in `localStorage` (`core.sessionOrder`), a session the order has never seen falls
+- ~~**Drag and drop in the rail.**~~ **Done.** Dragging a session row reorders
+  the list, the order is kept per checkout in `localStorage` (`core.sessionOrder`), a session the order has never seen falls
   where `byNewest` would have put it, and `sort by newest` in the row's menu puts
   it back. Driven in a real browser — three worktrees, a drag, a reload, the menu —
   and now gated in `tools/e2e/page.mjs`, which was already booting a browser and a
@@ -152,12 +151,6 @@ this file, which churned it from every build; that feature is gone.
   write fails the reload line. The **mid-drag render guard** is the one part it
   cannot hold — a synthetic drag is over before a snapshot can rebuild the rail
   under the pointer — and `page.mjs` says so where the check is.
-
-  *Left:* dropping a row **onto** another swaps their branches, which is
-  `swap-main` generalised to any pair of worktrees and needs a daemon route that
-  does not exist yet. The gesture is free — `ondrop` already distinguishes the two
-  runs — but the refusals are not: the `swapping` lock, a tree mid-rebase and a
-  session mid-turn all have to answer for a pair neither of which is main.
 
   One thing settled while doing the reorder: the rail uses **HTML5 drag-and-drop**,
   not the drawer's pointer maths. The rail is one column, so `dragover` answers the
