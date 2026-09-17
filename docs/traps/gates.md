@@ -21,10 +21,12 @@ daemon. Kill by pid, or `pgrep -x orchestrator-de` for the app.
 hooks, so a fresh clone has none until you say this. It runs only what the staged
 files could break, and its own header says why that matters; `--no-verify` is a
 fine thing to reach for mid-refactor, and the real gate is `mise run check-web`.
-**Every fifth Rust-or-`tools/e2e/` commit it also runs the e2e flows**, ~35s
-instead of ~2s. The counter is in `.git/`, only qualifying commits spend it, and
-a *failure does not reset it* so the next commit tries again rather than burying
-a break for four more. `E2E_EVERY=1` forces a run, `E2E_EVERY=0` turns it off.
+**Every Rust-or-`tools/e2e/` commit also runs the e2e flows**, ~50s instead of
+~2s. It was every *fifth* such commit, on a counter in `.git/`, and the argument
+for that was the cost — which is real and unchanged. What retired it is what the
+count bought: a regression up to four commits from its cause, found by a bisect
+somebody still has to sit down and run. A docs or SPA commit still runs nothing,
+and `--no-verify` is still the way past a mid-refactor commit.
 **`check.yml` runs them too now, and the hook is no longer the only thing that
 does.** It was: no workflow ran `tools/e2e/run.mjs` at all, so a fresh clone, a
 `--no-verify` habit or anybody who never said `git config core.hooksPath
@@ -35,8 +37,8 @@ consecutive clean runs, 168 flow executions**, and both known flakes have a fix
 behind them (`t.settled` before each call, and `spawn_worktree_session`
 recording the branch). One machine and a fast one, so a runner may yet find a
 timing fault this could not — if it does, read the numbers `E2E_TIME=1` prints
-before reaching for a longer timeout. The hook keeps its counter, because a
-local answer four commits early is worth more than the same answer from CI.
+before reaching for a longer timeout. The hook runs them anyway, because a local
+answer now is worth more than the same answer from CI in ten minutes.
 
 ## Splitting one working tree into several commits has two traps, and neither fails loudly.
 `git diff -U0` splits finely, but `git apply --cached

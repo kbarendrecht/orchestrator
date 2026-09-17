@@ -199,41 +199,24 @@ if [ "$rust" = 1 ]; then
   node tools/rust-modules.mjs >/dev/null || exit 1
 fi
 
-# The end-to-end flows, every Nth Rust commit rather than every one.
+# The end-to-end flows, on every Rust or `tools/e2e/` commit.
 #
-# They cost ~45s, which is twenty times the rest of this hook, so running them
-# always would teach everybody to pass `--no-verify` and the hook would then catch
-# nothing at all. Never running them means the faults only they can see — a state
-# machine driven by hooks over HTTP against a real git repo — wait for CI or for a
-# person to remember. Every fifth commit is the middle: a regression is at most
-# four commits from the one that caused it, which is still a readable bisect.
+# They cost ~50s, five times the rest of this hook on a Rust commit, and that cost
+# is the whole of the argument against — it ran every fifth commit for exactly
+# that reason. What changed the answer is what the count actually bought: a
+# regression up to four commits away from the one that caused it, found by a
+# bisect somebody still has to sit down and run. These flows are the only thing
+# here that drives the state machine over HTTP against a real git repo, so a break
+# they see is a break nothing else catches until CI.
 #
-# Three details that make the count mean something:
-#
-#   * Only a Rust or harness commit ticks it. A docs or SPA commit cannot break a
-#     flow, so it does not spend the count.
-#   * The counter lives in `.git/`, so it is per-clone and never committed.
-#   * A failing run does **not** reset it, so the next commit tries again. Resetting
-#     on failure would bury a real break for four more commits.
-#
-# `E2E_EVERY=1` to run every time, `E2E_EVERY=0` to turn it off. `--no-verify`
-# still skips the lot.
-if { [ "$rust" = 1 ] || [ "$e2e" = 1 ]; } && [ "${E2E_EVERY:-5}" != 0 ]; then
-  counter="$(git rev-parse --git-dir)/e2e-counter"
-  n=$(( $(cat "$counter" 2>/dev/null || echo 0) + 1 ))
-  if [ "$n" -lt "${E2E_EVERY:-5}" ]; then
-    printf '%s\n' "$n" > "$counter"
-    echo "pre-commit: e2e in $(( ${E2E_EVERY:-5} - n )) more qualifying commit(s) (E2E_EVERY=1 to force)"
-  else
-    echo "pre-commit: running the e2e flows (~45s; every ${E2E_EVERY:-5} qualifying commits)"
-    if node tools/e2e/run.mjs; then
-      printf '0\n' > "$counter"
-    else
-      # Left un-reset on purpose: the next commit runs them again rather than
-      # waiting out another four.
-      echo "pre-commit: an e2e flow failed. The sandbox above has its daemon log." >&2
-      echo "            Commit anyway with --no-verify if you know why." >&2
-      exit 1
-    fi
+# Only a Rust or harness commit runs them: a docs or SPA commit cannot break a
+# flow. `--no-verify` is still the way past a mid-refactor commit, and `check.yml`
+# runs the same flows, so skipping one locally does not skip them entirely.
+if [ "$rust" = 1 ] || [ "$e2e" = 1 ]; then
+  echo "pre-commit: running the e2e flows (~50s)"
+  if ! node tools/e2e/run.mjs; then
+    echo "pre-commit: an e2e flow failed. The sandbox above has its daemon log." >&2
+    echo "            Commit anyway with --no-verify if you know why." >&2
+    exit 1
   fi
 fi
