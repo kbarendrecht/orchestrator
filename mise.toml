@@ -428,3 +428,59 @@ main() {
 
 main "$@"
 """
+
+[tasks.sweep]
+# Cargo never prunes `target/`. `target/debug/deps` gains a set of test binaries
+# per build and keeps every earlier one, so it reached 54 G here across 7,097
+# files and filled the disk mid-commit twice in one session. It does not fail as
+# "no space": it surfaced as the pre-commit hook's type export dying, which reads
+# like a tooling bug and sent two people looking in the wrong place.
+#
+# By age rather than `cargo clean`, because a clean throws what this checkout is
+# still building against and makes the next `cargo test` a cold build. Two days
+# keeps today's work warm and reclaimed 42 G on the run that prompted this task.
+#
+# The worktree pass is the other half: each `.dev` worktree carries its own
+# target, and one of them held 18 G. **Only `target/` inside a worktree, never the
+# worktree** — `.dev/` holds uncommitted work on a real branch, and deleting one
+# cost a full session. A path is passed per worktree rather than sweeping
+# recursively, because cargo-sweep skips dot-directories unless told otherwise and
+# `--hidden` would let it walk the whole of `.dev`.
+description = "Reclaim stale cargo build artifacts, here and in each .dev worktree"
+dir = "{{config_root}}"
+run = """
+set -eu
+
+main() {
+  # Days to keep. Appended by mise as a positional, so `mise run sweep -- 7`.
+  days="${1:-2}"
+
+  if ! command -v cargo-sweep >/dev/null 2>&1; then
+    printf 'cargo-sweep is not installed. Install it with:\\n  cargo install cargo-sweep\\n' >&2
+    exit 1
+  fi
+
+  before=$(df -k . | awk 'NR==2 {print $4}')
+
+  # Each worktree is a cargo project in its own right, so it is a path to sweep
+  # beside this one. The glob stays unexpanded when there are none, hence the -d.
+  paths="."
+  for w in .dev/worktree/*; do
+    # An `if`, not `[ … ] && …`: that is an AND-list, and a false test in the last
+    # command of a loop body ends the task under `set -e`.
+    if [ -d "$w/target" ]; then
+      paths="$paths $w"
+    fi
+  done
+
+  # Unquoted on purpose: `paths` is a list of arguments, not one path.
+  # shellcheck disable=SC2086
+  cargo sweep --time "$days" $paths
+
+  after=$(df -k . | awk 'NR==2 {print $4}')
+  awk -v b="$before" -v a="$after" \\
+    'BEGIN { printf "\\nreclaimed %.1f GiB, %.1f GiB now free\\n", (a - b) / 1048576, a / 1048576 }'
+}
+
+main "$@"
+"""

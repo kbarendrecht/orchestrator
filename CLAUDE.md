@@ -121,6 +121,7 @@ mise run e2e                        # 27 flows against a real daemon
 mise run deflake                    # each flow 8x, to name the flaky ones
 cargo run -p orchestrator-desktop   # the app, daemon embedded in-process
 mise run shot                       # screenshot the running SPA (drives Chrome)
+mise run sweep                      # reclaim stale build artifacts, here and in each worktree
 mise run release                    # bump, wait for CI, tag and push
 ```
 
