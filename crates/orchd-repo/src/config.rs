@@ -776,6 +776,39 @@ pub enum EnvSourceKind {
     None,
 }
 
+/// The top-level keys in `raw` that this build's [`Config`] does not have.
+///
+/// **A typo in a config key is silent, and that is the whole of the problem.**
+/// serde drops an unknown field without a word, which is what lets a file with a
+/// stale key keep loading — and it is also what makes `worktrees_setup` for
+/// `worktree_setup` read as "the daemon ignored my setting", with nothing to tell
+/// a typo from a feature that does not work. The caller warns. It must not refuse:
+/// the promise on [`Config::parse`] is that an old file still loads, and a config
+/// the daemon rejects costs you the daemon.
+///
+/// **The known names come from serialising the parsed value, never from a list
+/// written here.** A list would be a second copy of `Config`'s fields and would
+/// drift the first time somebody added one. That also means a `#[serde(skip)]`
+/// field is reported, which is right — serde would ignore it in the file too.
+///
+/// Top level only. That is where a typed key lands, and `tracker` has
+/// `tracker_or_warn` for its own half.
+fn unknown_keys(raw: &str, cfg: &Config) -> Vec<String> {
+    let (Ok(serde_json::Value::Object(given)), Ok(serde_json::Value::Object(known))) = (
+        serde_json::from_str::<serde_json::Value>(raw),
+        serde_json::to_value(cfg),
+    ) else {
+        return Vec::new();
+    };
+    let mut unknown: Vec<String> = given
+        .keys()
+        .filter(|k| !known.contains_key(*k))
+        .cloned()
+        .collect();
+    unknown.sort_unstable();
+    unknown
+}
+
 fn default_story_timeout() -> u64 {
     300
 }
@@ -987,6 +1020,17 @@ impl Config {
         // that with a message naming the fix. Claiming the file is not JSON sent the
         // reader looking for a missing brace.
         let mut cfg: Config = serde_json::from_str(raw).context("config.json could not be read")?;
+
+        // **A key this build does not know does nothing, and said nothing.** See
+        // [`unknown_keys`] for why this warns rather than refuses.
+        let unknown = unknown_keys(raw, &cfg);
+        if !unknown.is_empty() {
+            tracing::warn!(
+                "config.json: {} — not a key this build knows, so it does nothing",
+                unknown.join(", ")
+            );
+        }
+
         // Sanitise once, here, so every accessor can trust the field and the
         // warning fires at load rather than on every hook event.
         cfg.worktrees_subdir = match normalize_worktrees_subdir(&cfg.worktrees_subdir) {
@@ -1682,6 +1726,35 @@ mod tests {
         assert_eq!(
             dir("wt/../../escape"),
             PathBuf::from("/repo/.claude/worktrees")
+        );
+    }
+
+    /// The three cases that decide whether the warning is worth having: a typo is
+    /// named, a real key is not, and the list is not hand-written.
+    #[test]
+    fn a_config_key_this_build_does_not_know_is_named() {
+        let keys = |raw: &str| {
+            let cfg = Config::parse(raw).expect("a stale key still loads");
+            unknown_keys(raw, &cfg)
+        };
+        // The shape this exists for: one letter out, and serde says nothing.
+        assert_eq!(
+            keys(r#"{"main_checkout":"/repo","worktrees_setup":"echo hi"}"#),
+            vec!["worktrees_setup".to_string()]
+        );
+        // The real spelling, and every other key the file may carry, stays quiet.
+        assert!(keys(r#"{"main_checkout":"/repo","worktree_setup":["echo hi"]}"#).is_empty());
+        assert!(keys(r#"{"main_checkout":"/repo","env_source":"none","port":7777}"#).is_empty());
+        // `host_origin` is `#[serde(skip)]`, so the file cannot set it — being told
+        // so is right, and it is the half a hand-written list would have got wrong.
+        assert_eq!(
+            keys(r#"{"main_checkout":"/repo","host_origin":"http://x"}"#),
+            vec!["host_origin".to_string()]
+        );
+        // Sorted, so the sentence reads the same twice.
+        assert_eq!(
+            keys(r#"{"main_checkout":"/repo","zzz":1,"aaa":2}"#),
+            vec!["aaa".to_string(), "zzz".to_string()]
         );
     }
 

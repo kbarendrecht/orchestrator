@@ -234,9 +234,10 @@ repos leave them at the default:
 | `forge` | `github` | which forge the repo lives on. Only GitHub is implemented, and the key is the seam a second one would be added behind — not a config switch that would turn one on. `crates/orchd-repo/src/forge/mod.rs` lists the four things that sit outside the trait and would have to move first. |
 | `workspace_notes` | *(empty)* | what to tell an agent whose conversation was just moved into a workspace, keyed by the kind it landed in. The daemon states the factual half (which branch, which directory); this is the half only the repo knows. |
 
-An **unknown key is ignored in silence** — a misspelling does not error, it just
-leaves the default in force. Check the spelling against this list if a setting
-seems to do nothing.
+An **unknown key is named and then ignored** — a misspelling does not error, it
+just leaves the default in force, and the daemon says which key it did not know
+on the `WARN` line at start-up. Ignoring it is deliberate: a config this build
+rejects costs you the daemon, and an old file with a stale key must still load.
 
 ### Fork workflow, or not
 
@@ -427,7 +428,8 @@ is logged and the pty is killed anyway.
 - **The review pane reads *degraded*.** A configured `reviews_command` exited non-zero and the
   pane is showing its stderr. Deliberately distinct from an empty queue, which is
   what "no reviews" looks like.
-- **A setting does nothing.** An unknown key is ignored in silence. Check the
+- **A setting does nothing.** An unknown key is ignored. The daemon warns at
+  start-up with the key it did not know (`orchd.log`, or the terminal); check the
   spelling against the tables above.
 - **It is not in Finder, Spotlight or your launcher.** A mise or tarball install
   writes its entry on first launch, so start it once from a terminal. If it is
