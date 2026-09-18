@@ -191,8 +191,19 @@ body[data-chrome="custom"] .top-r{padding-right:0}
    `flex:0 0 auto` on the controls was never the problem; what was missing is that
    everything *before* them can give way. `min-width:0` is the half that actually
    does it — without it the text is its own floor and the ellipsis never engages. */
-.top-r>.eyebrow,.top-r>.ctx-btn{
-  flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+/* **The title and the base are stacked, and that is what stops the clipping.**
+   Side by side both could shrink, so at the default 296px the base won the space
+   and `Changes` rendered as `Chang…`. In a column each line has the whole width,
+   and 46px of bar holds a 9px eyebrow over a 10.5px line with room to spare.
+   `min-width:0` is still the half that makes the ellipsis work at all, for the
+   rare column narrow enough to need one. */
+.top-r>.fhead-txt{
+  display:flex;flex-direction:column;justify-content:center;align-items:flex-start;
+  flex:1 1 auto;min-width:0;gap:1px;
+}
+.top-r>.fhead-txt>.eyebrow,.top-r>.fhead-txt>.ctx-btn{
+  max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  line-height:1.25;
 }
 .top-r>.refresh{flex:0 0 auto}
 

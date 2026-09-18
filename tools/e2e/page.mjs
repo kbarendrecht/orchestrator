@@ -34,6 +34,8 @@
 //     records that orchd carries no container config at all and calls that the
 //     portable default; the drawer contradicted it on every checkout with no
 //     compose file.
+//   * a pane header clipping its own label. `Changes` read as `Chang…` at the
+//     default width, which is a layout fault that shows up as missing words.
 //   * a boot preflight finding that never leaves the log. `machine::check` knows
 //     at startup that `gh` is missing or that `reviews_command` is not there, and
 //     the window used to show only the symptom — `unavailable`, `off` — with the
@@ -131,6 +133,44 @@ try {
 
   check(seen.wctl === 1, `one window-button group${seen.wctl === 1 ? '' : `, found ${seen.wctl}`}`)
   check(seen.buttons === 3, `three window buttons${seen.buttons === 3 ? '' : `, found ${seen.buttons}`}`)
+
+  /* **A pane header that does not fit its own pane.** `Changes` came back as
+     `Chang…` at the default 296px, because the title and the `since <sha>` beside
+     it could both shrink and the longer string won. It is a layout fault, but it
+     is a *text* one at heart — the word a person reads is not there — and
+     `scrollWidth > clientWidth` is what the ellipsis actually is, so it needs no
+     pixel baseline. Every element carrying its own label in a fixed-width pane
+     header, so a third one added later is covered without another line here. */
+  const clipped = await page.evaluate(() => {
+    /* The strings the pane really draws, put there rather than waited for: the
+       sandbox workspace has no merge base, so `#filesbase` is empty and the title
+       it competes with has nothing to lose to. `diff.js` writes exactly these two
+       — `Changeset` is the longer title, and a base is a 7-character short sha. */
+    const title = document.getElementById('filestitle')
+    const base = document.getElementById('filesbase')
+    const was = [title.textContent, base.textContent]
+    title.textContent = 'Changeset'
+    base.textContent = 'since 1a2b3c4'
+    /* **Under the app's own chrome, which is the case that clipped.** A browser tab
+       draws no window buttons, so `.top-r` has ~100px this checks nothing about;
+       `custom` is what the Linux app runs and what reveals `.wctl`. Set here rather
+       than in a second browser launch, because it is a CSS branch and the rules it
+       turns on (`.wctl{display:flex}`, `.top-r{padding-right:0}`) are the whole of
+       the difference. */
+    const chrome = document.body.dataset.chrome
+    document.body.dataset.chrome = 'custom'
+    const out = []
+    for (const el of document.querySelectorAll('.top-r .eyebrow, .top-r .ctx-btn, .rvhead .eyebrow')) {
+      const t = (el.textContent || '').trim()
+      // Overflow by a subpixel is the browser rounding, not an ellipsis.
+      if (t && el.scrollWidth > el.clientWidth + 1) out.push(`${el.id || el.className}: ${t}`)
+    }
+    ;[title.textContent, base.textContent] = was
+    if (chrome === undefined) delete document.body.dataset.chrome
+    else document.body.dataset.chrome = chrome
+    return out
+  })
+  check(clipped.length === 0, `no header label is clipped${clipped.length ? `: ${clipped[0]}` : ''}`)
 
   /* The href rule, in the page's own module rather than a copy of it here. A PR's
      URL comes from GitHub, a review row's from whatever `reviews_command` prints,

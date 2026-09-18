@@ -80,9 +80,15 @@
   </div>
 
   <div class="top top-r">
-    <span class="eyebrow" id="filestitle">Changes</span>
-    <span class="ctx-btn" id="filesbase" style="margin-left:auto"
-          title="Everything changed since this workspace branched"></span>
+    <!-- Two lines, not two items on one. At the default 296px the base ate the
+         space the title needed and `Changes` came back as `Chang…`, because both
+         can shrink and the base is the longer string. Stacked, each gets the whole
+         column and neither has to give way. -->
+    <span class="fhead-txt">
+      <span class="eyebrow" id="filestitle">Changes</span>
+      <span class="ctx-btn" id="filesbase"
+            title="Everything changed since this workspace branched"></span>
+    </span>
     <!-- Drawn, not typed: the reload glyph (U+21BB) is exactly the kind the font
          stack cannot be trusted for at this size — the same reason the gear and
          window controls are drawn. 1em so it still tracks the font-size setting. -->
