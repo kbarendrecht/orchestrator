@@ -3,7 +3,61 @@
 // The first seam to become a real module: five names, one of which leaves. What
 // it needs from elsewhere is now an import list rather than an assumption about
 // what happens to be in scope.
-import { $, activeCheckout, bandOf, caret, CHECKOUTS, clock, compactAge, el, QUEUE_MAX, refreshButton, safeHref, snap, unchanged } from './core.js';
+import { $, activeCheckout, bandOf, call, caret, CHECKOUTS, CHROME, clock, compactAge, confirmBox, el, icon, keyActivate, QUEUE_MAX, refreshButton, safeHref, snap, toast, unchanged } from './core.js';
+
+/** Above this many, the press asks first.
+ *
+ *  **Ask rather than cap.** A hard cap opens the first N and drops the rest with
+ *  nothing said, which is the silent truncation this codebase keeps writing rules
+ *  against. The question states the number before it happens, and the head already
+ *  shows that number two elements to the left, so it is not a surprise.
+ */
+const ASK_ABOVE = 8;
+
+/** Open every actionable review, one press.
+ *
+ *  **Grey, like the refresh beside it.** Nothing in this header is coloured, and
+ *  amber means "needs you" everywhere else in this UI (§9) — a control wearing it
+ *  would be claiming a state. The count is not on the glyph either: it is in the
+ *  tooltip, the same way the refresh says "Refresh now", and the head spells it
+ *  out in words two elements to the left.
+ *
+ *  **Absent in a browser tab**, and that is the whole of the popup-blocker answer.
+ *  A tab returns before `app.js`'s external-link handler, so the rows open
+ *  natively and this button would mean one `window.open` per row: the first lands
+ *  inside the gesture and the browser drops the rest *without telling the page*.
+ *  One press, one tab, four reviews lost. A button that cannot work is worse than
+ *  no button, and ⌘-clicking the rows still does the job there.
+ */
+function openAllButton(/** @type {import('../repo').Review[]} */ rows) {
+  // Drawn, not typed — the same reason the refresh glyph beside it is an SVG.
+  const btn = icon('openall', 1.5, 'M6.2 2.5h7.3v7.3', 'M13.5 2.5 7 9', 'M11 9.6v3.9H2.5V5h3.9');
+  btn.setAttribute('role', 'button');
+  // Dead rather than gone on an empty queue, so the header keeps its shape between
+  // polls instead of the refresh jumping sideways every time the last row clears.
+  const none = !rows.length;
+  btn.setAttribute('aria-disabled', String(none));
+  const what = none ? 'No reviews to open' : `Open all ${rows.length} reviews`;
+  btn.title = what;
+  btn.setAttribute('aria-label', what);
+  if (none) return btn;
+  keyActivate(btn);
+  btn.onclick = async (e) => {
+    e.stopPropagation();               // the header's own click toggles the pane
+    if (rows.length > ASK_ABOVE && !await confirmBox(
+      `Open ${rows.length} reviews in your browser?`, { ok: 'Open', danger: false },
+    )) return;
+    try {
+      // One call, not one per row: `api::open_urls` says why the count has to come
+      // back from one place.
+      const r = await call('/api/open-all', { urls: rows.map((x) => x.url) });
+      if (r.opened < rows.length) toast(`opened ${r.opened} of ${rows.length}`, true);
+    } catch (err) {
+      toast(err instanceof Error ? err.message : String(err), true);
+    }
+  };
+  return btn;
+}
 
 let showReviews = true;
 let showBlockedReviews = false;
@@ -147,6 +201,7 @@ function renderReviews() {
     // does not flicker to "0s ago" and back.
     if (hasAge) count.appendChild(clock('prage', snap.reviews_age_ms, ' ago', ' · '));
     head.appendChild(count);
+    if (CHROME !== 'none') head.appendChild(openAllButton(rows));
     head.appendChild(refresh);
     head.onclick = () => { showReviews = !showReviews; renderReviews(); };
   }

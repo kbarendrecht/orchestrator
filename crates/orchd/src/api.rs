@@ -2231,6 +2231,58 @@ pub async fn open_url(
     Ok(Json(json!({ "opened": url })))
 }
 
+/// How many URLs one press may open.
+///
+/// **On the daemon as well as in the page**, because this is the half that spawns
+/// processes and the page that sent the body is the one thing it cannot check. The
+/// pane asks above eight and never sends more than it is showing; a body naming
+/// five hundred reviews is not that pane, and thirty-two browser hand-offs is
+/// already more than anybody meant.
+const OPEN_ALL_MAX: usize = 32;
+
+#[derive(Deserialize)]
+pub struct OpenUrls {
+    pub urls: Vec<String>,
+}
+
+/// Open several external URLs, one browser hand-off each.
+///
+/// **One route rather than one call per URL**, because a per-URL round trip has a
+/// way to half-fail for every row and no way to say so: the page would tally its
+/// own failures and still not know which opener refused. Here the count comes back
+/// whole, and the log names each one that did not.
+///
+/// A refusal is counted rather than fatal. A queue holding one malformed row must
+/// still open the other four — the press meant "open what you can", and the answer
+/// says how many that was.
+pub async fn open_urls(
+    State(_app): State<Arc<AppState>>,
+    Json(body): Json<OpenUrls>,
+) -> ApiResult<serde_json::Value> {
+    if body.urls.len() > OPEN_ALL_MAX {
+        refuse!(
+            "refusing to open {} URLs at once — the cap is {OPEN_ALL_MAX}",
+            body.urls.len()
+        );
+    }
+    let mut opened = 0usize;
+    for url in &body.urls {
+        let url = url.trim();
+        // The same rule `open_url` keeps, for the same reason: this can never be
+        // coaxed into launching a local file or a `mailto:`/`file:` handler.
+        if !(url.starts_with("https://") || url.starts_with("http://")) {
+            tracing::warn!("refusing to open a non-http URL");
+            continue;
+        }
+        match open_detached(url).await {
+            Ok(()) => opened += 1,
+            Err(e) => tracing::warn!("could not open {url}: {e:#}"),
+        }
+    }
+    tracing::info!("opened {opened} of {} in the browser", body.urls.len());
+    Ok(Json(json!({ "opened": opened, "asked": body.urls.len() })))
+}
+
 #[derive(Deserialize)]
 pub struct OpenFile {
     pub workspace: String,

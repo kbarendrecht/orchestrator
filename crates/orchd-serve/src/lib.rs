@@ -723,6 +723,7 @@ fn daemon_router(app: Arc<AppState>) -> Router {
         .route("/api/client/timing", post(api::client_timing))
         .route("/api/client/note", post(api::client_note))
         .route("/api/open", post(api::open_url))
+        .route("/api/open-all", post(api::open_urls))
         .route("/api/open/file", post(api::open_file))
         .route("/api/file/verb", post(api::file_verb))
         .route("/api/pr/:number/review", get(review_api::pr_review))

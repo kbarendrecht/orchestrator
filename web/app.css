@@ -1611,11 +1611,16 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 .rvcount{font-family:var(--mono);font-size:calc(9px * var(--fs));color:var(--faint-solid);margin-left:auto}
 .rvcount .n{color:var(--dim)}
 .rvcount .f{color:var(--bad)}
-/* Refresh: one glyph, three headers. 12px with 3px of padding was a 16px target
-   for a thing you press by hand, so it is 15px in a 24px box now. */
-.rvrefresh,.refresh{font-size:calc(15px * var(--fs));line-height:1;color:var(--faint-solid);cursor:pointer;
+/* One look for every glyph button in a pane header: the refresh in three of them,
+   and the review queue's open-all beside it. 12px with 3px of padding was a 16px
+   target for a thing you press by hand, so it is 15px in a 24px box now. */
+.rvrefresh,.refresh,.openall{font-size:calc(15px * var(--fs));line-height:1;color:var(--faint-solid);cursor:pointer;
   padding:4px 8px;border-radius:2px;transition:color .12s,background .12s}
-.rvrefresh:hover,.refresh:hover{color:var(--text);background:var(--raised)}
+.rvrefresh:hover,.refresh:hover,.openall:hover{color:var(--text);background:var(--raised)}
+/* An empty queue leaves it dead rather than removing it, so the refresh does not
+   jump sideways every time the last row clears. */
+.openall[aria-disabled="true"]{color:var(--ghost);cursor:default}
+.openall[aria-disabled="true"]:hover{color:var(--ghost);background:none}
 .rvrefresh.spin{animation:rvspin .8s linear infinite;color:var(--dim)}
 @keyframes rvspin{to{transform:rotate(360deg)}}
 .rvrow{display:flex;text-decoration:none;color:inherit;cursor:pointer;align-items:center;
