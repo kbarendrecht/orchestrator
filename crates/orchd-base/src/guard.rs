@@ -43,10 +43,25 @@ pub struct Call<'a> {
     /// Where the command runs, from the payload's own `cwd`.
     pub cwd: Option<&'a Path>,
     /// The worktree this session may reach, and its own git dir. Both `None` for a
-    /// session in the main checkout, which has nothing to be isolated from — and
-    /// either one absent disables [`isolation`] rather than guessing.
+    /// session in the main checkout, which has no outer bound — and either one
+    /// absent disables that half of [`isolation`] rather than guessing.
     pub worktree: Option<&'a Path>,
     pub git_dir: Option<&'a Path>,
+    /// The worktrees the daemon manages, for a session standing in main.
+    ///
+    /// **Main's boundary points inwards.** A worktree session is bounded by its own
+    /// tree; a session in main has no such tree, and the managed worktrees sit
+    /// *under* the checkout it is standing in — so reaching one is a path it is
+    /// already inside, and no outer bound can see it. The trees are the daemon's:
+    /// `worktree_holding`, `branch_busy` and `park_main` all read which branch each
+    /// one carries, and one `git -C <tree> checkout` from main moves a branch under
+    /// a live session in that tree.
+    ///
+    /// `None` for a worktree session and for anything unreadable, which is the
+    /// fail-open direction the rest of this module takes. Read from the repo's own
+    /// `worktrees_subdir` rather than assumed to be `.claude/worktrees`, because
+    /// that layout is the monorepo's convention and not a contract.
+    pub worktrees_dir: Option<&'a Path>,
     /// The folders you have already let this session out to, from
     /// `Session::outside_grants`. Each covers what is under it, so the rule reads
     /// them exactly like the worktree itself.
@@ -85,6 +100,7 @@ pub fn check(call: &Call, base: Base) -> Option<String> {
             at.as_deref(),
             call.worktree,
             call.git_dir,
+            call.worktrees_dir,
             call.granted,
         ) {
             return Some(reason);
@@ -223,23 +239,45 @@ fn check_one(segment: &str, base: Base, current_branch: Option<&str>) -> Option<
 /// about, read exactly like the worktree. It arrives as a list rather than as a
 /// flag because a yes is **about one folder**, so a session let out to one
 /// checkout is still refused at the next and asked about it.
+///
+/// **Two bounds, and a session has one of them.** A worktree session is held to its
+/// own tree, which points outwards. A session in main is held out of the worktrees
+/// under it ([`Call::worktrees_dir`]), which points inwards. A grant beats either,
+/// because the ask is the same ask and a yes has to mean something.
 fn isolation(
     segment: &str,
     at: Option<&Path>,
     worktree: Option<&Path>,
     git_dir: Option<&Path>,
+    worktrees_dir: Option<&Path>,
     granted: &[PathBuf],
 ) -> Option<String> {
-    let worktree = worktree?;
+    /* A worktree session is never fenced out of the worktrees dir, and the rule
+    says so itself rather than trusting the caller: its *own* tree lives under
+    that path, so a fence applied here would refuse every command it ever runs
+    and the grants list starts empty. The binary already only sets one of the
+    two; this is what makes that a detail rather than a trap. */
+    let fence = worktrees_dir.filter(|_| worktree.is_none());
+    if worktree.is_none() && fence.is_none() {
+        return None;
+    }
     let tokens: Vec<&str> = segment.split_whitespace().collect();
     let first = tokens.first()?;
     if *first != "git" && !first.ends_with("/git") {
         return None;
     }
     let allowed = |p: &Path| {
-        p.starts_with(worktree)
-            || git_dir.is_some_and(|g| p.starts_with(g))
-            || granted.iter().any(|g| p.starts_with(g))
+        if granted.iter().any(|g| p.starts_with(g)) {
+            return true;
+        }
+        if fence.is_some_and(|d| p.starts_with(d)) {
+            return false;
+        }
+        match worktree {
+            Some(w) => p.starts_with(w) || git_dir.is_some_and(|g| p.starts_with(g)),
+            // Standing in main, where everything but the fence is its own.
+            None => true,
+        }
     };
 
     // Where an explicit redirection points, and otherwise where the command
@@ -275,14 +313,27 @@ fn isolation(
     // The way out is in the refusal, because a guard that only says no makes the
     // agent guess: `orch outside` puts the question to the user through the
     // ordinary ask box, and a yes covers that folder for the rest of the session.
-    Some(format!(
-        "orchd: this session works in {}, and this command aims git at {}. Run it \
-         against your own worktree, or ask first with `orch outside {}` — changing \
-         another checkout from here moves branches the app is keeping track of.",
-        worktree.display(),
-        out.display(),
-        out.display()
-    ))
+    // Two sentences rather than one, because "run it against your own worktree" is
+    // no advice at all to a session that has none — main's answer is the tree's own
+    // session, which is a different place to send the reader.
+    Some(match worktree {
+        Some(w) => format!(
+            "orchd: this session works in {}, and this command aims git at {}. Run it \
+             against your own worktree, or ask first with `orch outside {}` — changing \
+             another checkout from here moves branches the app is keeping track of.",
+            w.display(),
+            out.display(),
+            out.display()
+        ),
+        None => format!(
+            "orchd: this session works in the main checkout, and this command aims git \
+             at {}, which is a worktree the app manages. Run it in that worktree's own \
+             session, or ask first with `orch outside {}` — moving a branch under a \
+             live session there is what this is watching for.",
+            out.display(),
+            out.display()
+        ),
+    })
 }
 
 /// Where a `cd` segment lands: `Some(Some(path))` for a target that can be read,
@@ -385,6 +436,7 @@ mod tests {
             cwd: None,
             worktree: None,
             git_dir: None,
+            worktrees_dir: None,
             granted: &[],
         }
     }
@@ -405,6 +457,7 @@ mod tests {
             cwd: Some(Path::new(TREE)),
             worktree: Some(Path::new(TREE)),
             git_dir: Some(Path::new(GITDIR)),
+            worktrees_dir: None,
             granted: &[],
         }
     }
@@ -527,20 +580,124 @@ mod tests {
         assert!(!denied(&format!("rg -l 'git -C {MAIN}'")));
     }
 
-    #[test]
-    fn a_session_in_main_is_isolated_from_nothing() {
-        // `worktree: None` is how the binary reports "this session is in main", and
-        // the rule has to be silent then rather than measuring main against itself.
-        let call = Call {
+    /// The worktrees dir, as the daemon bakes it into the hook.
+    const TREES: &str = "/repo/.claude/worktrees";
+
+    /// A session standing in the main checkout, fenced out of the trees under it.
+    ///
+    /// `worktree: None` is how the binary reports "this session is in main": there
+    /// is no tree to be held inside, only the managed ones to be held out of.
+    fn in_main<'a>(command: &'a str) -> Call<'a> {
+        Call {
             tool_name: "Bash",
-            command: &format!("git -C {TREE} status"),
+            command,
             current_branch: None,
             cwd: Some(Path::new(MAIN)),
             worktree: None,
             git_dir: None,
+            worktrees_dir: Some(Path::new(TREES)),
             granted: &[],
+        }
+    }
+
+    #[test]
+    fn a_session_in_main_with_no_fence_is_bounded_by_nothing() {
+        // Both `None` is what an older daemon's settings file produces — no
+        // `--worktrees` in the baked command — and the rule stays silent rather
+        // than guessing where the trees are.
+        let cmd = format!("git -C {TREE} status");
+        let call = Call {
+            worktrees_dir: None,
+            ..in_main(&cmd)
         };
         assert!(check(&call, Some("main")).is_none());
+    }
+
+    #[test]
+    fn git_from_main_into_a_managed_worktree_is_refused() {
+        let denied = |c: &str| check(&in_main(c), Some("main")).is_some();
+        // The mistake this exists for, and it is the mirror of the worktree rule:
+        // `worktree_holding`, `branch_busy` and `park_main` all read which branch a
+        // tree carries, and this is how a session in main moves one under whoever
+        // is working in it.
+        assert!(denied(&format!("git -C {TREE} checkout -b topic")));
+        assert!(denied(&format!("git --work-tree={TREE} checkout .")));
+        assert!(denied(&format!("git -C {TREES}/other status")));
+        // The tree it aims at need not exist as a word in the command: a `cd` in
+        // the same tool call moves where the git runs, as it does the other way.
+        assert!(denied(&format!("cd {TREE} && git status")));
+        // Relative, and `..` folded rather than compared as text.
+        assert!(denied("git -C .claude/worktrees/invoice status"));
+    }
+
+    #[test]
+    fn the_refusal_from_main_names_the_way_out() {
+        let said = check(&in_main(&format!("git -C {TREE} status")), Some("main"))
+            .expect("a session in main is refused a worktree");
+        // The two halves an agent acts on: which folder it was stopped at, and the
+        // command that turns the refusal into a question for the user.
+        assert!(said.contains(TREE), "the folder must be named: {said}");
+        assert!(
+            said.contains(&format!("orch outside {TREE}")),
+            "the ask must be spelled out: {said}"
+        );
+    }
+
+    #[test]
+    fn git_from_main_outside_the_trees_is_left_alone() {
+        let denied = |c: &str| check(&in_main(c), Some("main")).is_some();
+        assert!(!denied("git status"));
+        assert!(!denied(&format!("git -C {MAIN}/src add -A")));
+        assert!(!denied(&format!("git --git-dir={MAIN}/.git log -1")));
+        // A worktree's real git dir sits under main and is not the tree, so reading
+        // it is main's own business.
+        assert!(!denied(&format!("git --git-dir={GITDIR} log -1")));
+        // Not git at all, whatever it mentions.
+        assert!(!denied(&format!("echo git -C {TREE}")));
+        /* **Another checkout entirely is still allowed, and that is the limit of
+        this rule rather than an oversight.** Main's fence is about the trees the
+        daemon manages, which is what was asked for; a second repo on disk is
+        nothing the daemon is keeping track of. */
+        assert!(!denied("git -C /elsewhere/other-repo status"));
+    }
+
+    #[test]
+    fn a_grant_lets_a_main_session_into_the_tree_it_asked_about() {
+        let grants = [PathBuf::from(TREE)];
+        let own = format!("git -C {TREE} status");
+        let call = Call {
+            granted: &grants,
+            ..in_main(&own)
+        };
+        assert!(check(&call, Some("main")).is_none());
+        // And one yes is one folder here too: the tree next door is still asked
+        // about, exactly as it is for a session leaving its own worktree.
+        let next = format!("git -C {TREES}/other status");
+        let call = Call {
+            granted: &grants,
+            ..in_main(&next)
+        };
+        assert!(check(&call, Some("main")).is_some());
+    }
+
+    #[test]
+    fn a_worktree_session_is_never_fenced_out_of_its_own_tree() {
+        /* The trap this closes: a worktree lives *under* the worktrees dir, so a
+        fence applied to a worktree session would refuse every command it runs, with
+        an empty grants list and no way to answer. The rule drops the fence itself
+        rather than trusting the binary to pass only one of the two. */
+        let call = Call {
+            worktrees_dir: Some(Path::new(TREES)),
+            ..inside("git status")
+        };
+        assert!(check(&call, Some("main")).is_none());
+        // And the outward bound still holds, so dropping the fence widens nothing.
+        let cmd = format!("git -C {MAIN} checkout -b topic");
+        let call = Call {
+            worktrees_dir: Some(Path::new(TREES)),
+            ..inside(&cmd)
+        };
+        assert!(check(&call, Some("main")).is_some());
     }
 
     #[test]
@@ -588,6 +745,7 @@ mod tests {
             cwd: Some(Path::new(TREE)),
             worktree: Some(Path::new(TREE)),
             git_dir: Some(Path::new(GITDIR)),
+            worktrees_dir: None,
             granted: &granted,
         };
         // The folder you said yes about, and what is under it: an agent refused at

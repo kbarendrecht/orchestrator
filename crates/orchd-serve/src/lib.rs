@@ -337,6 +337,7 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
             cfg.tracker.as_ref().map(|t| t.mcp_server.as_str()),
             base.as_deref(),
             &cfg.main_checkout,
+            &cfg.worktrees_dir(),
         )?
     };
     tracing::info!("hook settings at {}", settings.display());

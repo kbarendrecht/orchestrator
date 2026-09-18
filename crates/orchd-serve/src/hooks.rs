@@ -830,14 +830,25 @@ pub fn sh_quote(s: &str) -> String {
 /// **One file serves every session, so nothing here may name one.** The worktree
 /// rule needs to know which tree the session may reach, and it works that out from
 /// the payload's own cwd against this path — not from a flag, which would be the
-/// first session's answer given to all of them.
-fn push_guard_hook(base_branch: Option<&str>, main: &std::path::Path) -> Option<serde_json::Value> {
+/// first session's answer given to all of them. The worktrees dir is the other
+/// half: a session in main is bounded *inwards*, out of the trees the daemon
+/// manages, and that path is per repo (`worktrees_subdir`) rather than the
+/// `.claude/worktrees` this one happens to use.
+fn push_guard_hook(
+    base_branch: Option<&str>,
+    main: &std::path::Path,
+    worktrees: &std::path::Path,
+) -> Option<serde_json::Value> {
     let orch = orch_binary()?;
     let mut command = format!("{} guard push", sh_quote(&orch.to_string_lossy()));
     if let Some(b) = base_branch {
         command.push_str(&format!(" --base {}", sh_quote(b)));
     }
     command.push_str(&format!(" --main {}", sh_quote(&main.to_string_lossy())));
+    command.push_str(&format!(
+        " --worktrees {}",
+        sh_quote(&worktrees.to_string_lossy())
+    ));
     Some(json!({ "matcher": "Bash", "hooks": [{
         "type": "command",
         "command": command,
@@ -856,6 +867,7 @@ pub fn write_settings(
     tracker: Option<&str>,
     base_branch: Option<&str>,
     main: &std::path::Path,
+    worktrees: &std::path::Path,
 ) -> Result<PathBuf> {
     let base = format!("http://127.0.0.1:{port}/hooks");
     let http = |path: &str| {
@@ -949,7 +961,7 @@ pub fn write_settings(
     // Appended rather than written inline, because it is the one hook that can be
     // absent. Additive to the repo's own `pre-bash`: any hook exiting 2 blocks, so
     // both sets of rules apply (§11).
-    match push_guard_hook(base_branch, main) {
+    match push_guard_hook(base_branch, main, worktrees) {
         Some(hook) => {
             #[expect(
                 clippy::expect_used,
@@ -1387,6 +1399,7 @@ mod tests {
             Some("shortcut"),
             Some("main"),
             std::path::Path::new("/repo"),
+            std::path::Path::new("/repo/.claude/worktrees"),
         )
         .expect("write settings");
         let raw = std::fs::read_to_string(&path).expect("read back");
@@ -1444,7 +1457,11 @@ mod tests {
     /// stopped existing. Absent must mean *no hook*, never a broken one.
     #[test]
     fn push_guard_hook_is_absent_rather_than_broken() {
-        match push_guard_hook(Some("main"), std::path::Path::new("/repo")) {
+        match push_guard_hook(
+            Some("main"),
+            std::path::Path::new("/repo"),
+            std::path::Path::new("/repo/.claude/worktrees"),
+        ) {
             None => {}
             Some(hook) => {
                 let cmd = hook["hooks"][0]["command"].as_str().expect("a command");
@@ -1461,7 +1478,11 @@ mod tests {
     /// force rather than passing a `HEAD` symref through as a branch name.
     #[test]
     fn an_unresolvable_base_still_registers_the_force_rule() {
-        if let Some(hook) = push_guard_hook(None, std::path::Path::new("/repo")) {
+        if let Some(hook) = push_guard_hook(
+            None,
+            std::path::Path::new("/repo"),
+            std::path::Path::new("/repo/.claude/worktrees"),
+        ) {
             let cmd = hook["hooks"][0]["command"].as_str().expect("a command");
             assert!(
                 cmd.ends_with("guard push"),

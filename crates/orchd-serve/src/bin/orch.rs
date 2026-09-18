@@ -48,7 +48,7 @@ orch — talk to the orchestrator you are running inside
   orch outside <path>
       Ask to run git in that folder. Remembered for it, for this session.
 
-  orch guard push [--base <branch>] [--main <path>]
+  orch guard push [--base <branch>] [--main <path>] [--worktrees <path>]
       Not for you to call — the daemon registers this as a PreToolUse hook.
 
 `orch <command> --help` for the flags each one takes.
@@ -186,16 +186,19 @@ answer, then prints `allowed` or `refused`.
 ";
 
 const HELP_GUARD: &str = "\
-orch guard push [--base <branch>] [--main <path>]
+orch guard push [--base <branch>] [--main <path>] [--worktrees <path>]
 
 Not for you to call. The daemon registers this as a PreToolUse hook; it reads the
 payload on stdin and exits 2 to refuse a dangerous push, or a git command aimed
-out of the worktree the session works in.
+out of the area the session works in.
 
-  --base <branch>  The branch that must never be pushed to. Defaults to the
-                   daemon's configured upstream ref.
-  --main <path>    The main checkout. Without it the worktree rule is skipped,
-                   since there is nothing to measure \"another checkout\" against.
+  --base <branch>     The branch that must never be pushed to. Defaults to the
+                      daemon's configured upstream ref.
+  --main <path>       The main checkout. Without it both boundary rules are
+                      skipped, since there is nothing to measure against.
+  --worktrees <path>  Where the daemon keeps its worktrees. A session standing in
+                      main is asked before it aims git into one of them; without
+                      it that half is skipped.
 ";
 
 /// The states `--state` will accept, which are the ones `model::State` has.
@@ -268,7 +271,11 @@ fn spec(cmd: &str) -> Option<&'static [(&'static str, Arity)]> {
         ],
         "run" => &[],
         "outside" => &[],
-        "guard" => &[("--base", Arity::Value), ("--main", Arity::Value)],
+        "guard" => &[
+            ("--base", Arity::Value),
+            ("--main", Arity::Value),
+            ("--worktrees", Arity::Value),
+        ],
         _ => return None,
     })
 }
@@ -694,31 +701,53 @@ fn guard(a: &Parsed) -> ExitCode {
         .filter(|_| mentions_git(command))
         .and_then(current_branch);
 
-    /* The worktree this session may reach, asked of git rather than derived from
-    the path: one `rev-parse` answers both halves, and the git dir is the
+    /* Which bound this session gets, asked of git rather than derived from the
+    path: one `rev-parse` answers the tree and its git dir, and that git dir is the
     exemption the rule cannot do without — a worktree's real one sits under the
     *main* checkout. Only when there is a git command to judge, so the ordinary
-    Bash call pays nothing, and only outside main, which is not isolated from
-    anything. */
-    let (worktree, git_dir) = match (a.value("--main"), cwd.filter(|_| mentions_git(command))) {
-        (Some(main), Some(cwd)) => match worktree_of(cwd) {
-            Some((top, dir)) if top != std::path::Path::new(main) => (Some(top), Some(dir)),
-            _ => (None, None),
-        },
-        _ => (None, None),
-    };
+    Bash call pays nothing.
+
+    **Main is bounded too now, and inwards.** It used to fall through here with
+    nothing, on the reading that a session in main "is not isolated from anything".
+    That is true of other checkouts and false of the trees *under* it: those are the
+    daemon's, and a `git -C <tree> checkout` from main moves a branch under whoever
+    is working in it. So a session in main is handed the worktrees dir as its fence
+    and asked about the tree it aimed at, exactly as a worktree session is asked
+    about another checkout. A session that is neither — an unreadable cwd, no
+    `--main` — still gets nothing, which is this file's fail-open rule. */
+    let (worktree, git_dir, worktrees_dir) =
+        match (a.value("--main"), cwd.filter(|_| mentions_git(command))) {
+            (Some(main), Some(cwd)) => match worktree_of(cwd) {
+                // A worktree session: its own tree is the bound, and the fence is not
+                // its business — every tree but its own is already outside it.
+                Some((top, dir)) if top != std::path::Path::new(main) => {
+                    (Some(top), Some(dir), None)
+                }
+                // A session in main. Without `--worktrees` there is nothing to fence,
+                // which is what an older daemon's settings file looks like.
+                Some(_) => (
+                    None,
+                    None,
+                    a.value("--worktrees").map(std::path::PathBuf::from),
+                ),
+                None => (None, None, None),
+            },
+            _ => (None, None, None),
+        };
     /* **The grants are handed to the rule rather than turning it off.** The daemon
     holds them per session (`api::allow_outside`), one folder per yes, and
     [`orchd::guard::isolation`] reads them exactly like the worktree — so the rule
     stays a pure function of the command and can still say no to the checkout you
     never approved. This used to drop the worktree from the `Call` on a blanket
     yes, which no list of folders can be expressed as.
-    Only asked when there *is* a worktree to be let out of, so an ordinary session
-    in main pays nothing, and an empty answer leaves the rule on: a daemon that
-    does not answer must not silently widen what an agent may reach. */
-    let granted = match &worktree {
-        Some(_) => outside_grants(),
-        None => Vec::new(),
+    Only asked when there *is* a bound to be let out of — a worktree to leave, or
+    main's fence to cross — so a session with neither pays nothing, and an empty
+    answer leaves the rule on: a daemon that does not answer must not silently
+    widen what an agent may reach. */
+    let granted = if worktree.is_some() || worktrees_dir.is_some() {
+        outside_grants()
+    } else {
+        Vec::new()
     };
 
     let call = orchd::guard::Call {
@@ -728,6 +757,7 @@ fn guard(a: &Parsed) -> ExitCode {
         cwd: cwd.map(std::path::Path::new),
         worktree: worktree.as_deref(),
         git_dir: git_dir.as_deref(),
+        worktrees_dir: worktrees_dir.as_deref(),
         granted: &granted,
     };
     match orchd::guard::check(&call, a.value("--base")) {
