@@ -195,8 +195,12 @@ function renderReviews() {
   const rows = rv.actionable || [];
   const blocked = rv.blocked || [];
   if (drawHead) {
+    /* The number alone. `waiting` named what the rows under it already are, and
+       the dot that joins it to the age was doing the joining either way — so the
+       word cost a third of the header's text and said nothing. `clear` stays,
+       because a bare `0` is not an answer. */
     count.appendChild(el('span', rows.length ? 'n' : null,
-      rows.length ? `${rows.length} waiting` : 'clear'));
+      rows.length ? String(rows.length) : 'clear'));
     // The same line, and the same clock, the PR pane shows. Hidden mid-poll so it
     // does not flicker to "0s ago" and back.
     if (hasAge) count.appendChild(clock('prage', snap.reviews_age_ms, ' ago', ' · '));

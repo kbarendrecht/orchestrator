@@ -1632,6 +1632,12 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
    jump sideways every time the last row clears. */
 .openall[aria-disabled="true"]{color:var(--ghost);cursor:default}
 .openall[aria-disabled="true"]:hover{color:var(--ghost);background:none}
+/* **The two glyphs are one group, so the header's gap does not go between them.**
+   `.rvhead` sets 8px for the words, and each button already carries 8px of its own
+   padding — 24px between two icons that belong together, which read as two
+   unrelated controls. Cancelling just this gap leaves each press target the 24px
+   box it had. */
+.openall + .rvrefresh{margin-left:-8px}   /* = `.rvhead`'s gap, above */
 .rvrefresh.spin{animation:rvspin .8s linear infinite;color:var(--dim)}
 @keyframes rvspin{to{transform:rotate(360deg)}}
 .rvrow{display:flex;text-decoration:none;color:inherit;cursor:pointer;align-items:center;
