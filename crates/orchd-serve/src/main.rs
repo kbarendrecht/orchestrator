@@ -207,8 +207,12 @@ async fn run_host(checkouts: Vec<String>) -> Result<()> {
 
     let serving = orchd_serve::host::serve(
         orchd_serve::host::mint_token(),
-        // Ephemeral, like the app's: the URL is printed, so nothing has to predict
-        // it, and a stale process on a fixed port cannot stop this starting.
+        /* Ephemeral, and the app is not: it takes `host::PORT` so the page keeps
+        one origin and `localStorage` survives a restart. Here the URL is printed,
+        so nothing has to predict it — and taking the fixed port too would mean a
+        terminal host and the app cannot both run, which the per-checkout instance
+        lock does not otherwise refuse. The cost is the one the app just stopped
+        paying: a browser tab on this host resets its pane sizes each launch. */
         0,
         orchd::window::Chrome::None,
     )

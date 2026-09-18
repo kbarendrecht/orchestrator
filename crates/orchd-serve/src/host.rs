@@ -23,6 +23,7 @@
 //! than instead of it, because a checkout added after the page loaded, or one that
 //! restarted and minted a new token, cannot be in a page that was already served.
 
+use anyhow::Context;
 use axum::extract::{Path as UrlPath, State};
 use axum::http::{header, Request, StatusCode};
 use axum::middleware::Next;
@@ -1361,19 +1362,42 @@ impl Drop for Serving {
     }
 }
 
+/// The port the app serves the page on, and it has to be the same one every time.
+///
+/// **`localStorage` is keyed by origin, and a port is part of an origin.** So an
+/// ephemeral port is a new, empty store on every launch — the theme, the rail
+/// width, the drawer height, the wheel scale, the column widths and the session
+/// order all reset, and the store the last launch wrote is orphaned rather than
+/// overwritten. That was the shape here, and it read as a settings pane that does
+/// not save: the write lands, on an origin the app will never visit again.
+///
+/// Next to the child daemon's 7777 ([`orchd::config`]'s `default_port`), which a
+/// child tries first and falls back from — so the two cannot meet.
+///
+/// The cost is stated rather than mitigated: anything already on this port stops
+/// the app from opening. A fallback would buy that back and give back the empty
+/// store with it, which is the bug.
+pub const PORT: u16 = 7788;
+
 /// Bind a loopback port and serve the page on it.
 ///
-/// `port` of 0 takes an ephemeral one, which is what a test wants and what the app
-/// will want too: the page's own URL is handed to the webview, so nothing needs to
-/// predict it. The `Host` is rebuilt with the port it actually got, because the
-/// Host and Origin rules compare against it — a guard checking a port nothing is
-/// listening on refuses everything, and says `bad host` while doing it.
+/// `port` of 0 takes an ephemeral one, which is what a test wants and what a
+/// terminal-started host uses: it prints its own URL, so nothing has to predict
+/// it. The app passes [`PORT`] instead, for the reason written there. The `Host`
+/// is rebuilt with the port it actually got, because the Host and Origin rules
+/// compare against it — a guard checking a port nothing is listening on refuses
+/// everything, and says `bad host` while doing it.
 pub async fn serve(
     token: String,
     port: u16,
     chrome: orchd::window::Chrome,
 ) -> anyhow::Result<Serving> {
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
+    // Named, because a fixed port makes "address in use" reachable and io::Error
+    // says only that much. The person reading it needs the number to find what
+    // holds it.
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
+        .await
+        .with_context(|| format!("serving the page on 127.0.0.1:{port}"))?;
     let bound = listener.local_addr()?.port();
     let host = Host::new(token, bound, chrome);
     let router = router(host.clone());
@@ -1828,5 +1852,32 @@ async fn dispatch(host: &Arc<Host>, cmd: orchd::window::WindowCmd) -> Response {
     match control.dispatch(cmd) {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
         Err(e) => refusal(&format!("{e:#}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The app's page keeps one origin, and does not sit on a child's port.
+    ///
+    /// Written because a port of 0 is the reasonable-looking answer — the URL is
+    /// handed to the webview, so nothing has to predict it — and it silently
+    /// empties `localStorage` on every launch. [`PORT`] says the rest. The
+    /// collision half reads the child daemon's own default rather than repeating
+    /// the number, so moving one of the two fails here instead of on a machine.
+    #[test]
+    fn the_page_is_served_on_a_fixed_port_of_its_own() {
+        assert_ne!(PORT, 0, "an ephemeral port is a new origin every launch");
+        let child = orchd::config::Config::parse(&format!(
+            r#"{{"main_checkout": {:?}}}"#,
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .expect("a config with only a checkout in it parses")
+        .port;
+        assert_ne!(
+            PORT, child,
+            "a child daemon tries {child} first, so the host cannot hold it"
+        );
     }
 }

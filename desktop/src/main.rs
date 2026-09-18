@@ -566,12 +566,17 @@ fn boot_daemon(
             Some(p) => vec![p],
             None => orchd_serve::host::remembered_checkouts(),
         };
-        // A port of 0: the page's URL is handed to the webview, so nothing has to
-        // predict it, and a stale process on a configured port cannot be the
-        // difference between an app that opens and one that does not.
+        /* **A fixed port, because the page's origin is where its settings live.**
+        This was 0, on the reasoning that the URL is handed to the webview so
+        nothing has to predict it and a stale process could never stop the app
+        opening. Both halves are true and the conclusion was wrong: `localStorage`
+        is keyed by origin and a port is part of one, so every launch got an empty
+        store and the theme, the rail width, the drawer height and the pane widths
+        reset each time. It reported as a settings pane that does not save —
+        `host::PORT` has the rest. */
         let serving = match rt.block_on(orchd_serve::host::serve(
             orchd_serve::host::mint_token(),
-            0,
+            orchd_serve::host::PORT,
             CHROME,
         )) {
             Ok(s) => s,
