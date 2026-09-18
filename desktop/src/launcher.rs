@@ -122,6 +122,10 @@ pub(crate) fn install_desktop_entry() -> Result<Option<std::path::PathBuf>> {
         (32u32, &include_bytes!("../icons/32x32.png")[..]),
         (128, &include_bytes!("../icons/128x128.png")[..]),
         (256, &include_bytes!("../icons/128x128@2x.png")[..]),
+        // 512 because a launcher draws the largest size it finds. A 512 left by an
+        // earlier install outranks all three above, so without this a changed icon
+        // reaches three directories and shows in none.
+        (512, &include_bytes!("../icons/icon.png")[..]),
     ] {
         let dir = std::path::PathBuf::from(&data)
             .join("icons/hicolor")
