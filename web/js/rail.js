@@ -114,10 +114,13 @@ function renderRail() {
     block.appendChild(checkoutSessions(c, state, mainWorkspace(state), !several));
   }
 
-  // The one added piece of chrome, at the foot of the list where "and another
-  // one" belongs. Always drawn, including on a single-checkout install: it is how
-  // a second checkout is ever opened, and it replaces the header's switcher.
-  rail.appendChild(addCheckoutButton());
+  /* **Below the sessions, not among them.** There is one of this however many
+     projects are open, so a row inside a project's own block said the opposite —
+     and inside the scroller it slid away under a long list or an open archive,
+     which is the one thing a button you press by hand must not do. Its own strip
+     between the scroller and the PR pane, always drawn: it is how a second
+     checkout is ever opened, and it replaces the header's switcher. */
+  $('railfoot').replaceChildren(addCheckoutButton());
 
   // Its own pane below the scroller, so it stays put while sessions scroll. It
   // describes one repository, so it follows the checkout you are in.
@@ -984,13 +987,13 @@ function checkoutSessions(/** @type {import('./core.js').Target} */ c, /** @type
   // The workspace is only needed for the name it lends the row.
   for (const s of treeRows) group.appendChild(draggable(sessionRow(s, { id: s.workspace }), s, 'tree'));
 
-  group.appendChild(addRow(c, state, main, mainActive));
   /* One archive per checkout rather than one per group, which follows from there
      being one list: the two folds were only ever separate because their headings
-     were. Keyed on the checkout, because `sessions` names a fold in every one of
-     them and a single key would open them all. */
-  appendArchived(c, group, 'sessions',
-    [...mainSessions, ...treeSessions].filter(isConversation));
+     were. Read once here because the add row shows the count and the block below
+     draws the rows, and two reads of it could disagree. */
+  const archived = [...mainSessions, ...treeSessions].filter(isConversation);
+  group.appendChild(addRow(c, state, main, mainActive, archived));
+  appendArchived(c, group, 'sessions', archived);
   return group;
 }
 
@@ -1042,7 +1045,7 @@ function startingRow() {
  *  headings and read as `+` twice, so which one you were pressing came from where
  *  it was rather than from what it said.
  */
-function addRow(/** @type {import('./core.js').Target} */ c, /** @type {import('../snapshot').Snapshot} */ state, /** @type {import('../snapshot').WorkspaceView | undefined} */ main, /** @type {import('../snapshot').SessionView[]} */ mainActive) {
+function addRow(/** @type {import('./core.js').Target} */ c, /** @type {import('../snapshot').Snapshot} */ state, /** @type {import('../snapshot').WorkspaceView | undefined} */ main, /** @type {import('../snapshot').SessionView[]} */ mainActive, /** @type {import('../snapshot').SessionView[]} */ archived) {
   const row = el('div', 'ws-add');
 
   /* Main is exclusive: one active session at a time, and no queue. While it is
@@ -1089,7 +1092,49 @@ function addRow(/** @type {import('./core.js').Target} */ c, /** @type {import('
   tree.onclick = (/** @type {MouseEvent} */ ev) => newWorktree(ev.shiftKey, c);
   row.appendChild(tree);
 
+  /* **On this row rather than under it**, hard right. The row then says one thing
+     about the list above it — what you can add on the left, what it is holding
+     back on the right — where it used to be two rows, both starting with a verb,
+     for two ideas that are not alike. Absent when there is no archive, which is
+     the one case where the row has nothing to say on that side. */
+  const fold = archivedToggle(c, 'sessions', archived);
+  if (fold) row.appendChild(fold);
+
   return row;
+}
+
+/** Is this checkout's archive open?
+ *
+ *  One answer for the toggle and for the block it opens: they are drawn by
+ *  different functions now, and a second reading of this is how they come to
+ *  disagree about what the caret is pointing at.
+ */
+function archiveOpen(/** @type {import('./core.js').Target} */ c, /** @type {string} */ key, /** @type {import('../snapshot').SessionView[]} */ sessions) {
+  // Qualified, because `sessions` names a fold in every checkout and one open
+  // archive would open all of them.
+  const held = `${c.path}\u0000${key}`;
+  // Opened whenever the conversation you are looking at is in here, so the rail
+  // never goes silent about what the centre pane is showing.
+  return { held, open: showArchived[held] || sessions.some((/** @type {import('../snapshot').SessionView} */ s) => s.id === selected) };
+}
+
+/** The archive's own control, which rides the add row.
+ *
+ *  `null` when nothing is archived: a count of zero is not news, and the row is
+ *  better off with the space.
+ */
+function archivedToggle(/** @type {import('./core.js').Target} */ c, /** @type {string} */ key, /** @type {import('../snapshot').SessionView[]} */ sessions) {
+  if (!sessions.length) return null;
+  const { held, open } = archiveOpen(c, key, sessions);
+  const btn = el('button', 'arctoggle');
+  btn.type = 'button';
+  btn.setAttribute('aria-expanded', String(open));
+  btn.title = `${sessions.length} past conversation${sessions.length === 1 ? '' : 's'} in this checkout`;
+  btn.appendChild(caret());
+  btn.appendChild(el('span', null, 'archived'));
+  btn.appendChild(el('span', 'arccount', String(sessions.length)));
+  btn.onclick = () => { showArchived[held] = !open; renderRail(); };
+  return btn;
 }
 
 /** The group's past conversations, behind a count.
@@ -1100,21 +1145,17 @@ function addRow(/** @type {import('./core.js').Target} */ c, /** @type {import('
  */
 function appendArchived(/** @type {import('./core.js').Target} */ c, /** @type {HTMLElement} */ group, /** @type {string} */ key, /** @type {import('../snapshot').SessionView[]} */ sessions) {
   if (!sessions.length) return;
-  // Qualified, because `main` and `worktrees` name a group in every checkout and
-  // one open archive would open all of them.
-  const held = `${c.path}\u0000${key}`;
-  const open = showArchived[held] || sessions.some((/** @type {import('../snapshot').SessionView} */ s) => s.id === selected);
-
-  const toggle = el('button', 'arctoggle');
-  toggle.setAttribute('aria-expanded', String(open));
-  toggle.appendChild(caret());
-  toggle.appendChild(el('span', null, 'archived'));
-  toggle.appendChild(el('span', 'arccount', String(sessions.length)));
-  toggle.onclick = () => { showArchived[held] = !open; renderRail(); };
-  group.appendChild(toggle);
-
-  if (!open) return;
-  for (const s of sessions.sort(byNewest)) group.appendChild(archivedRow(s));
+  if (!archiveOpen(c, key, sessions).open) return;
+  /* **Its own box, and the box is what scrolls.** Bounded in CSS at about ten
+     rows: this checkout has 26 and a machine that has been running for a month
+     will have more, and the whole lot took the column and pushed `+ open project`
+     and the PR pane out of sight. Bounded rather than truncated — everything is
+     still reachable, it is the *height* that is capped.
+     The box is also what says "section" now that the heading has moved onto the
+     add row: it has a rule above and below it and a ground of its own. */
+  const box = el('div', 'arcbox');
+  for (const s of sessions.sort(byNewest)) box.appendChild(archivedRow(s));
+  group.appendChild(box);
 }
 
 /** A past conversation: which worktree it was in, and how long ago.

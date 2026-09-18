@@ -543,9 +543,14 @@ button.ctx-btn:hover{color:var(--text)}
 .forked[hidden]{display:none}
 
 /* Past conversations collapse: the rail is for what still needs you. */
+/* **It rides the add row now, hard right.** It was a full-width row of its own
+   under that one: two rows, both opening with a verb, for two ideas that are not
+   alike — what you can add, and what the list is holding back. `margin-left:auto`
+   is what claims the gap, the way `.rvcount` does in the review queue's head. */
 .arctoggle{
-  display:flex;align-items:center;gap:8px;width:100%;
-  padding:8px 16px 12px;font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid);
+  display:flex;align-items:center;gap:5px;margin-left:auto;flex:0 0 auto;
+  padding:0;font-family:var(--mono);font-size:calc(9px * var(--fs));color:var(--ghost);
+  background:none;border:0;cursor:pointer;transition:color .12s;
 }
 .arctoggle:hover{color:var(--dim)}
 .arctoggle .caretr{display:inline-block;transition:transform .13s;font-size:calc(13px * var(--fs));line-height:1}
@@ -553,7 +558,28 @@ button.ctx-btn:hover{color:var(--text)}
    it sits centred in every header that carries one. */
 .caretr svg{display:block}
 .arctoggle[aria-expanded="true"] .caretr{transform:rotate(90deg)}
-.arccount{margin-left:auto;font-size:calc(9px * var(--fs));color:var(--faint-solid)}
+/* No `margin-left:auto` any more: on a row of its own the count sat at the far
+   edge, and in the chip it belongs beside the word it counts. */
+.arccount{font-size:calc(9px * var(--fs));color:var(--ghost)}
+
+/* **The archive is a box, and the box is what scrolls.** About ten rows, because
+   a month-old checkout has dozens and the open list took the whole column —
+   pushing `+ open project` and the PR pane out of sight. Bounded, not truncated:
+   everything is still reachable inside it.
+   41px is one `.sess.arc` (6 + 7 of padding, a name line and a sub line), and the
+   cap is a height rather than a row count, so a larger UI scale shows fewer rows
+   instead of a taller block — which is the thing this exists to stop.
+   The rules and the darker ground are what say "section" now that the heading has
+   moved onto the add row. */
+.arcbox{
+  max-height:calc(41px * 10);overflow-y:auto;
+  border-top:1px solid var(--line-soft);border-bottom:1px solid var(--line-soft);
+  background:var(--bg);
+}
+
+/* The rail's own foot: `+ open project`, below every project and above the PR
+   pane. Outside `.rail-scroll`, so an open archive cannot push it away. */
+.railfoot{flex:0 0 auto;border-top:1px solid var(--line)}
 
 /* A past conversation. Quieter than a live row, and one line rather than two, so
    twenty of them still read as a list. */

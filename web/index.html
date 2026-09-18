@@ -113,6 +113,11 @@
   <nav class="rail" aria-label="Sessions">
     <button class="waitbar" id="waitbar"></button>
     <div class="rail-scroll" id="rail"></div>
+    <!-- `+ open project` lives here rather than inside the scroller. It is the
+         app's verb and there is one of it however many projects are open, so
+         sitting among a project's own rows said the opposite — and out of the
+         scroller it stops sliding away under a long list. -->
+    <div class="railfoot" id="railfoot"></div>
     <!-- Pinned to the bottom, mirroring the review queue bottom-right: what you
          owe yourself on the left, what colleagues are blocked on on the right. -->
     <div class="prblock" id="prpane"></div>
