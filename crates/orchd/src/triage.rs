@@ -212,7 +212,44 @@ pub async fn spawn_command_session(
     if let Some(ws) = app.worktree_holding(head_ref).await {
         let live = app.live_sessions_in(&ws).await;
         if let Some(id) = live.first() {
-            return Ok(*id);
+            /* **Landing on it is half the press, and it used to be all of it.** This
+            returned the id alone: the rail selected the session you already had,
+            the toast said "handling #<n>", and nothing whatever had been asked of
+            that agent. A button that navigates and then claims to have worked is
+            worse than one that refuses, because there is nothing to notice.
+
+            So the command is typed at it, as the ordinary user turn it is — you
+            pressed a button, and the transcript should read as though you asked.
+            `type_user_turn` carries the three refusals with it (mid-turn, a
+            permission prompt, an open question), which is exactly right here: each
+            is a keystroke that would mean something other than a prompt. */
+            let run = {
+                let inner = app.inner.read().await;
+                inner
+                    .sessions
+                    .get(id)
+                    .ok_or_else(|| crate::state::no_such_session(*id))?
+                    .pass
+                    .as_ref()
+                    .map(|p| p.command.clone())
+            };
+            match run.as_deref() {
+                // Already doing this, so the press is "show me" and nothing else.
+                // Typing it again would queue a second pass over the same threads.
+                Some(c) if c == command => return Ok(*id),
+                /* Another run owns the tree. `gate` refuses a live `fix-pr` for
+                this reason and never sees it, because the branch above wins first —
+                and typing a slash command into an unattended run that is rewriting
+                this history is how you derail it. Refused by name, like the gate. */
+                Some(c) => {
+                    bail!("a {c} run is working in {ws}; wait for it to finish or stop it first")
+                }
+                // An ordinary conversation, which is the case the button is for.
+                None => {
+                    crate::api::type_user_turn(app, *id, &format!("/orchd:{command} {pr}")).await?;
+                    return Ok(*id);
+                }
+            }
         }
         /* **The same worktree gates as the other review verb**, because the pass
         writes into that tree: a rebase stopped part-way cannot take a commit, a
@@ -391,6 +428,118 @@ mod tests {
         assert!(
             !err.contains("already used") && !err.contains("interleave"),
             "refused on the reused name again: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A live session in the PR's worktree, with whatever run it is doing.
+    ///
+    /// Idle rather than mid-turn, and with this test process's pid, because
+    /// `live_sessions_in` wants both before it will report the session at all.
+    async fn with_live_session(
+        tag: &str,
+        pass: Option<Pass>,
+    ) -> (Arc<crate::state::AppState>, std::path::PathBuf, uuid::Uuid) {
+        let dir = crate::testutil::scratch(tag);
+        let cfg = crate::config::Config::parse(&format!(
+            r#"{{"main_checkout":{:?}}}"#,
+            dir.to_string_lossy()
+        ))
+        .expect("parse");
+        let app = crate::state::AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+        let id = uuid::Uuid::new_v4();
+        {
+            let mut inner = app.inner.write().await;
+            inner.workspaces.insert(
+                "pr-4".into(),
+                crate::model::Workspace {
+                    id: "pr-4".into(),
+                    path: dir.join("pr-4"),
+                    kind: crate::model::WorkspaceKind::Worktree {
+                        name: "pr-4".into(),
+                    },
+                    branches: ["feature/x".to_string()].into_iter().collect(),
+                    processes: Vec::new(),
+                    occupant: None,
+                    tree: Default::default(),
+                    banked: None,
+                },
+            );
+            let mut s = Session::new(id, "pr-4".into(), dir.join("pr-4"), pass);
+            s.set_state(State::YourTurn {
+                since: std::time::SystemTime::now(),
+                reason: crate::model::TurnReason::TurnComplete,
+            });
+            s.pid = Some(std::process::id());
+            inner.sessions.insert(id, s);
+        }
+        (app, dir, id)
+    }
+
+    /// The press has to reach the agent, not just the rail.
+    ///
+    /// **This returned `Ok(id)` and typed nothing.** The rail selected the session
+    /// you already had and toasted "handling #4", so a button that did half its job
+    /// looked exactly like one that did all of it — which is how it was reported:
+    /// "handle review didn't work when I had an open session for a PR".
+    ///
+    /// Asserted through `type_user_turn`'s own refusal rather than a delivered
+    /// keystroke, because a real one needs a pty and a `claude`. The session here
+    /// has none, so reaching that refusal is proof the typing was attempted; the
+    /// old code could not produce it, because it never got there.
+    #[tokio::test]
+    async fn handling_a_pr_that_already_has_a_session_asks_that_session() {
+        let (app, dir, _) = with_live_session("handle-live", None).await;
+        let err = format!(
+            "{:#}",
+            spawn_command_session(&app, 4, "feature/x", Pass::HANDLE_REVIEW)
+                .await
+                .expect_err("no pty here, so the typing cannot land")
+        );
+        assert!(
+            err.contains("not running"),
+            "the command never reached the session: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Already doing this pass: the press means "show me", and typing it again
+    /// would queue a second walk over the same threads.
+    #[tokio::test]
+    async fn a_session_already_on_this_pass_is_only_landed_on() {
+        let pass = Pass {
+            pr: 4,
+            command: Pass::HANDLE_REVIEW.to_string(),
+        };
+        let (app, dir, id) = with_live_session("handle-same", Some(pass)).await;
+        let got = spawn_command_session(&app, 4, "feature/x", Pass::HANDLE_REVIEW)
+            .await
+            .expect("landing on the pass already running is not a refusal");
+        assert_eq!(got, id, "landed somewhere other than the running pass");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Another run owns the tree, and typing a slash command into it derails it.
+    ///
+    /// `gate` refuses a live `fix-pr` for exactly this reason and never sees one,
+    /// because a running fix-pr *is* a live session and the branch above it wins.
+    /// So the refusal has to be here.
+    #[tokio::test]
+    async fn handling_a_pr_a_fix_run_is_working_on_is_refused_by_name() {
+        let pass = Pass {
+            pr: 4,
+            command: Pass::FIX_PR.to_string(),
+        };
+        let (app, dir, _) = with_live_session("handle-fixpr", Some(pass)).await;
+        let err = format!(
+            "{:#}",
+            spawn_command_session(&app, 4, "feature/x", Pass::HANDLE_REVIEW)
+                .await
+                .expect_err("a running fix-pr owns that worktree")
+        );
+        assert!(
+            err.contains("fix-pr") && err.contains("pr-4"),
+            "the refusal must name the run and the tree: {err}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
