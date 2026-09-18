@@ -11,15 +11,47 @@
 //! it was written, because the shell is about to stop being the only host: a
 //! checkout gets its own child `orchd`, and a child that logged to stdout would log
 //! to a pipe the parent drains for one line and then leaves. One log shape means
-//! the library owns the shape — same lines, same file name, same single kept
-//! generation, following `ORCHD_CONFIG_DIR` per process, so two hosts never write
+//! the library owns the shape — same lines, same file name, same kept
+//! generations, following `ORCHD_CONFIG_DIR` per process, so two hosts never write
 //! over each other.
 //!
-//! One generation is kept. A restart is the interesting case to compare against
-//! and it would otherwise overwrite itself, while an unbounded log on a machine
-//! nobody is watching is the other way to lose the information.
+//! [`KEPT`] generations are kept. A restart is the interesting case to compare
+//! against and it would otherwise overwrite itself, while an unbounded log on a
+//! machine nobody is watching is the other way to lose the information.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// How many previous runs are kept beside the live log.
+///
+/// **One was not enough, and what proved it is the failure the file exists for.**
+/// A crash that takes the app restarts it, so the crashed run's log is already at
+/// `.1` by the time the window is back — and the *next* start overwrites it.
+/// Quitting and reopening once, which is what a person does after their window
+/// disappears, is enough to lose the only record of why. #23 was reported against a
+/// log that had already rotated past its own answer, and read as "the log holds no
+/// shutdown line", which is exactly what a rotated file looks like.
+///
+/// Five rather than two, because the number has to cover the starts between the
+/// crash and somebody being asked for the file, and those are the reporter's habit
+/// rather than ours. A quiet log is tens of kilobytes, so being wrong in this
+/// direction costs a few hundred.
+pub const KEPT: usize = 5;
+
+/// Shift the kept generations along, leaving `orchd.log` free.
+///
+/// Oldest first, so no generation is overwritten before it has been moved itself.
+/// A rename that fails is skipped rather than reported: this runs *before* the
+/// subscriber exists, so there is nowhere to report it to, and the cost is one
+/// generation of history rather than the log.
+fn rotate(dir: &Path, live: &Path) {
+    for n in (1..KEPT).rev() {
+        let _ = std::fs::rename(
+            dir.join(format!("orchd.log.{n}")),
+            dir.join(format!("orchd.log.{}", n + 1)),
+        );
+    }
+    let _ = std::fs::rename(live, dir.join("orchd.log.1"));
+}
 
 /// The file half of the subscriber.
 struct LogFile(PathBuf);
@@ -72,7 +104,7 @@ pub fn init(default_filter: &'static str, to_stdout: bool) {
     let file = path.clone().map(|path| {
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
-            let _ = std::fs::rename(&path, dir.join("orchd.log.1"));
+            rotate(dir, &path);
         }
         tracing_subscriber::fmt::layer()
             // No colour: this one is read in an editor, not a terminal.
@@ -116,4 +148,66 @@ pub fn install_panic_hook() {
         );
         default(info);
     }));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn read(dir: &Path, name: &str) -> Option<String> {
+        std::fs::read_to_string(dir.join(name)).ok()
+    }
+
+    /// A crash and the restart it causes must not be able to bury each other.
+    ///
+    /// The sequence this asserts is the one #23 was reported from: the run that
+    /// crashed is at `.1` the moment the app comes back, and every ordinary start
+    /// after that pushes it one further along. With a single generation the second
+    /// start overwrote it, and the reporter read a file that began at the restart
+    /// and concluded the log held nothing.
+    #[test]
+    fn a_crashed_run_survives_the_restarts_that_follow_it() {
+        let dir = crate::testutil::scratch("log-rotate");
+        let live = dir.join("orchd.log");
+        std::fs::write(&live, "the run that crashed\n").expect("write the live log");
+
+        // The restart the crash itself causes. Its own log becomes the live one.
+        rotate(&dir, &live);
+        assert_eq!(
+            read(&dir, "orchd.log.1").as_deref(),
+            Some("the run that crashed\n")
+        );
+
+        // And every start after it, which is what used to overwrite the evidence.
+        for n in 2..=KEPT {
+            std::fs::write(&live, format!("run {n}\n")).expect("write the live log");
+            rotate(&dir, &live);
+            assert_eq!(
+                read(&dir, &format!("orchd.log.{n}")).as_deref(),
+                Some("the run that crashed\n"),
+                "the crashed run was lost after {n} start(s)"
+            );
+        }
+
+        // It falls off the end eventually, which is the bound the unbounded log
+        // does not have. Said here so the number is a decision rather than a
+        // surprise: one more start than `KEPT` and it is gone.
+        std::fs::write(&live, "one too many\n").expect("write the live log");
+        rotate(&dir, &live);
+        assert!(
+            (1..=KEPT).all(|n| read(&dir, &format!("orchd.log.{n}")).as_deref()
+                != Some("the run that crashed\n")),
+            "the oldest generation must fall off rather than accumulate"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Rotating an empty config dir is not an error, because it is every first run.
+    #[test]
+    fn a_first_run_has_nothing_to_rotate_and_says_nothing() {
+        let dir = crate::testutil::scratch("log-rotate-first");
+        rotate(&dir, &dir.join("orchd.log"));
+        assert!(read(&dir, "orchd.log.1").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

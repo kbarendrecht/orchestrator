@@ -95,6 +95,9 @@ fn a_new_checkout_dir_inherits_every_state_file_but_the_hosts_own() {
     write(&old, "instance.pid", "12345");
     write(&old, "orchd.log", "an old run");
     write(&old, "orchd.log.1", "an older run");
+    // A later generation too, since the log keeps several: the rule is a prefix and
+    // a rule that only named `.1` would hand every older run to the checkout.
+    write(&old, "orchd.log.5", "the oldest kept run");
     write(&old, "checkouts/someone-else/config.json", "{}");
     /* Everything the sweep may delete because the next start rebuilds it — `plugin`,
     `hooks.json` (which names a *port*, and a copied one points a checkout's hooks
@@ -142,7 +145,13 @@ fn a_new_checkout_dir_inherits_every_state_file_but_the_hosts_own() {
         Some("kept")
     );
 
-    for denied in ["host.json", "instance.pid", "orchd.log", "orchd.log.1"] {
+    for denied in [
+        "host.json",
+        "instance.pid",
+        "orchd.log",
+        "orchd.log.1",
+        "orchd.log.5",
+    ] {
         assert!(
             read(&dir, denied).is_none(),
             "{denied} is not the checkout's to inherit"

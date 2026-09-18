@@ -112,8 +112,9 @@ is why deferring the sweep costs no safety.
 That
 is why a colleague's slow start could not be looked at: `tracing` went to a
 terminal nobody had. `logging::init` writes the same lines to
-`<config_dir>/orchd.log`, one generation kept as `orchd.log.1`, and says the path
-in its first line. It follows `ORCHD_CONFIG_DIR`, so a fixture daemon does not
+`<config_dir>/orchd.log`, `logging::KEPT` generations kept as `orchd.log.1` and up,
+and says the path in its first line. It kept **one**, until a crash that restarts
+the app was found to overwrite its own evidence on the next ordinary start (#23). It follows `ORCHD_CONFIG_DIR`, so a fixture daemon does not
 write over the real one.
 **It lives in `orchd`, not in the desktop shell where it was written**, and both
 hosts call it — so `cargo run -p orchd` leaves a file too, which it did not. The
