@@ -16,6 +16,16 @@ name: bundle
 
 on:
   push:
+    # Branches only, and `**` is how a push trigger says that — a tag push is a
+    # `push` event too, so without this the release commit builds the app three
+    # times over one sha: `release` on the tag, and this twice, once for `main`
+    # and once for the same tag. `mise run release` bumps
+    # `desktop/tauri.conf.json`, so the path filter below matches on *every*
+    # release and the duplicate was structural rather than bad luck. A tag needs
+    # nothing from here anyway: `release.yml` builds the same two bundlers and is
+    # the one that publishes.
+    branches:
+      - "**"
     paths:
       - desktop/**
       - .github/workflows/bundle.yml
