@@ -1713,8 +1713,11 @@ function setupChrome() {
  * state the daemon owns, so they live in localStorage — same reasoning as the
  * rail's collapsed sections. */
 const COLS = {
-  rail: { prop: '--rail', key: 'orch.railWidth', def: 290, min: 210 },
-  files: { prop: '--files', key: 'orch.filesWidth', def: 296, min: 230 },
+  // `def` is `:root`'s value in `app.css`, and the two have to agree: this one is
+  // what a reset restores, that one is what a fresh install paints before any of
+  // this runs.
+  rail: { prop: '--rail', key: 'orch.railWidth', def: 320, min: 210 },
+  files: { prop: '--files', key: 'orch.filesWidth', def: 326, min: 230 },
 };
 /* The centre pane holds a terminal; squeezing it to nothing to admire a wide
  * rail is not a layout anybody wants to be one drag away from. */

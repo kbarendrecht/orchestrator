@@ -75,8 +75,11 @@
      page has script; this value is what the first paint uses. */
   --fs:1.155;
 
-  --rail:290px;
-  --files:296px;
+  /* **Kept in step with `COLS` in `app.js`**, which is the default a drag resets
+     to and the floor a stored width is read against. Two copies of one number,
+     and a fresh install takes this one while a reset takes that one. */
+  --rail:320px;
+  --files:326px;
   --drawer:210px;
   /* How far a bottom-docked bar is raised off the pty's floor, sized to clear the
      agent's own input box (~4-5 rows of the ~18px terminal line) so it never covers
