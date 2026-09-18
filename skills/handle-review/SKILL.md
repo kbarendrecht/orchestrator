@@ -26,7 +26,8 @@ query($owner:String!,$repo:String!,$num:Int!){
   repository(owner:$owner,name:$repo){ pullRequest(number:$num){
     headRefName headRepositoryOwner{login}
     reviewThreads(first:100){ nodes{ isResolved isOutdated
-      comments(first:20){ nodes{ databaseId author{login} body path line url } } } } } } }
+      comments(first:20){ nodes{ databaseId author{login} body path line url
+        reactionGroups{ content viewerHasReacted } } } } } } } }
 ' -F owner=<owner> -F repo=<repo> -F num=$ORCH_PR
 ```
 
@@ -45,7 +46,14 @@ handed `$ORCH_PR` and the output language, and a skill that reads a variable its
 spawner does not set takes the empty string for an answer and carries on.
 
 Skip `isResolved`. **Keep `isOutdated`**: the code moved, the point may still stand.
-A thread whose last comment is your own is already answered; do not re-answer it.
+
+**A thread is already answered when its last comment is yours *or* you have 👍'd
+any comment in it.** Both halves, because a reaction is how this pass answers
+"applied as asked, nothing to add" — the Apply step below posts one — so a rule
+that reads only comments offers you back every thread you settled that way, and
+the ones you thumbed by hand on GitHub besides. That is `reactionGroups` in the
+query above, and it is the same rule the daemon keeps in `forge::model::answered`.
+Do not re-answer an answered thread; say it was already settled and move on.
 
 ## Sort
 
