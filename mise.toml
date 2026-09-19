@@ -135,6 +135,20 @@ depends = ["deps"]
 dir = "{{config_root}}"
 run = "node tools/e2e/deflake.mjs"
 
+# The order is the whole point, and `docs/traps/gates.md` says why: a crate's
+# export run rewrites every file its types reach, keeping only what it reached,
+# so the crate that owns a file has to go last. The hook and `check-web` spell
+# this loop themselves; this is the same loop for a person.
+[tasks.types]
+description = "Regenerate the four generated .d.ts files, in the one safe order"
+dir = "{{config_root}}"
+run = """
+for crate in orchd-serve orchd orchd-repo orchd-base; do
+  cargo test -p "$crate" --lib export_bindings >/dev/null
+done
+git diff --stat web/base.d.ts web/repo.d.ts web/serve.d.ts web/snapshot.d.ts
+"""
+
 [tasks.check-docs]
 # Two kinds of prose, one task, because both fail the same way: silently.
 # `cargo doc` answers whether an intra-doc link resolves; `check-assumptions.mjs`

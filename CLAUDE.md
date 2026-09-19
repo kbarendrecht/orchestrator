@@ -118,6 +118,7 @@ mise run app-check                  # drive the real app: a session survives a r
 mise run page-check                 # what the rendered page must never show
 mise run paint-check                # which panes rebuild while agents work
 mise run hover-check                # does a hovered row survive a rebuild
+mise run types                      # regenerate the four generated .d.ts, in the one safe order
 mise run notices                    # regenerate THIRD-PARTY-RUST.md
 mise run e2e                        # 28 flows against a real daemon
 mise run deflake                    # each flow 8x, to name the flaky ones
@@ -266,6 +267,7 @@ together: same entries, same order, same groups.
 - The SPA is compiled in.
 - There is a pre-commit hook, and it needs enabling once per clone.
 - Splitting one working tree into several commits has two traps, and neither fails loudly.
+- A filtered `cargo test` rewrites the generated types with only what it reached.
 - Inserting a test can unregister the one next to it.
 - `mise run check-web` is the SPA's gate, and it bites.
 - ESLint answers what `tsc` structurally cannot: the promise nobody awaited.

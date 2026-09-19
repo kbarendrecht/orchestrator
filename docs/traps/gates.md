@@ -54,6 +54,39 @@ demands the final file and can only pass on the last one. `--no-verify` for the
 split, then `mise run check-web` on the end state. Worth knowing generally: the
 hook reads the working tree, so it never validates an intermediate commit at all.
 
+## A filtered `cargo test` rewrites the generated types with only what it reached.
+`cargo test -p orchd --lib export_bindings` leaves
+`web/base.d.ts` holding one type where it held six, and `web/repo.d.ts` six where
+it held fourteen. Nothing says a word: the file is valid TypeScript, `tsc` is
+happy because nothing imported what went missing, and the loss is only visible if
+you count.
+
+**ts-rs exports a type's dependencies too, and it rewrites the whole target file
+rather than merging into it.** All six of `base.d.ts`'s types are declared in
+`orchd-base`, but `orchd`'s `Snapshot` reaches `DiffFile` — so exporting from
+`orchd` writes `base.d.ts` containing `DiffFile` and nothing else. Measured, each
+crate run alone from a full set, counting types left in each file:
+
+| run alone | base | repo | snapshot | serve |
+| ---------- | ---- | ---- | -------- | ----- |
+| `orchd-serve` |  6 | 14 | 23 | 4 |
+| `orchd`       |  **1** | **6** | 23 | 4 |
+| `orchd-repo`  |  **1** | 14 | 23 | 4 |
+| `orchd-base`  |  6 | 14 | 23 | 4 |
+
+So the two ends of the stack are safe and the two in the middle are not, and
+**that is what makes the order load-bearing** where the hook and `check-web` both
+spell it — `orchd-serve orchd orchd-repo orchd-base`. Each later crate restores
+what an earlier one thinned, and the crate that owns a file comes last.
+
+Nothing wrong can reach a commit: the hook and `mise run check-web` both
+regenerate all four and then refuse a generated file that differs from the index.
+What this costs is a session, not a build — a thinned file sat in the tree four
+times in one day, was twice mistaken for a real deletion, and once made a commit
+look like it was dropping types somebody else had added. `mise run types` is the
+four-crate loop under a name, so the manual path stops being a thing to remember
+the order of.
+
 ## Inserting a test can unregister the one next to it.
 An anchor on
 `fn other_test() {` puts your test *between* that test's `#[test]` and its `fn`,
