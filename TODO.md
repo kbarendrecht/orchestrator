@@ -96,6 +96,14 @@ this file, which churned it from every build; that feature is gone.
   `{{LANGUAGE}}`. Paths, `/proc` reads and GNU coreutils were the other half, and
   those rules are in CLAUDE.md.
 
+  One decision comes before any transport, and `get-bb/bb` is where it is visible
+  (`docs/system-overview.md`, `docs/multiple-devices.md`): it separates **where the
+  state lives** from **where the work runs** — one always-on server owning the
+  database, daemons enrolled per machine, a machine chosen per thread. orchd's rule
+  today is the opposite and deliberate: a checkout's daemon owns that checkout's
+  state. Running work on a second machine settles that question first, because the
+  answer decides whether the child daemon keeps its stores at all.
+
   What is left is three seams — the agent, the tracker and the forge:
   - **Worktree *creation* is decoupled; the session model is not.** The daemon cuts
     every tree itself now — `spawn_worktree_session` runs the repo's own
@@ -104,6 +112,44 @@ this file, which churned it from every build; that feature is gone.
     untouched: `--session-id` correlation, the transcript slug, the `ai-title`
     field, `--resume`, and the whole hook-observer plumbing. Hosting another agent
     means abstracting *that*.
+
+    `get-bb/bb` has already cut this seam for three agents, and its
+    `docs/provider-plugin-api.md` is a ready-made checklist of what the abstraction
+    has to name: a **capability handshake** at session start (does this agent
+    restore a session, fork one, enforce approvals, accept skills), **session
+    verbs** (start, resume, fork, stop, archive, name) and **turn verbs** (start,
+    and steer a turn already running). Two of those orchd has no verb for at all —
+    fork, and steer as something other than typing into the pty — so the checklist
+    is worth reading before the trait is written rather than after. The half that
+    does **not** transfer is bb's typed recovery events (`authRequired`,
+    `rateLimited`): bb parses them because it renders a timeline, and orchd shows
+    the pty, where the person already reads that text. orchd matches no agent error
+    string anywhere today, and importing the typing would buy a parser and nothing
+    else.
+
+    **`stablyai/orca` names the two pieces bb's checklist leaves out, and both are
+    things orchd currently gets from Claude Code for free.**
+
+    *Status has to arrive from somewhere, and hooks are Claude Code's answer, not
+    every agent's.* Orca takes agent status down three paths that converge on one
+    write (`docs/reference/agent-status-store.md`): hook HTTP posts, relay
+    observations, and **an `OSC 9999` escape sequence parsed straight out of the
+    pty**. That third one is the interesting one here — it needs nothing of the
+    agent but that it print, and orchd is already reading every byte of that pty
+    into a ring buffer. It is the fallback for an agent with no hook system at all.
+    Two rules Orca states are worth taking with it: one store with one authority
+    id, and **precedence decided at write time with provenance on the row**, not
+    re-adjudicated by each reader.
+
+    *Skills reach each agent differently, and `--plugin-dir` has no counterpart.*
+    `docs/reference/agent-skill-provider-paths.md` gives Codex `$HOME/.agents/skills`
+    plus `.agents/skills` at the repository root, a plain copy; Claude Code gets
+    `.claude/skills` searched hierarchically from the launch directory upward, laid
+    down as a relative symlink (a junction on Windows, a verified copy where
+    neither works). `skills::VENDORED` and the one `--plugin-dir` flag are a Claude
+    Code fact, so the seam has to be "put this skill where *this* agent looks",
+    with the placement mechanism per agent — not one flag with the agent's name
+    swapped.
   - **Give the tracker the same seam the forge has, and let it own its transport.**
     A tracker is now three config fields (`config::Tracker`) rather than four
     constants in an enum arm, so the naming half is done; what is left is that
@@ -141,6 +187,7 @@ this file, which churned it from every build; that feature is gone.
     routing rules the repo's tracker skill holds, which would then need another
     home. Either way `Tracker` starts owning *how it is reached* rather than only
     naming a server somebody else configured.
+
   - **Two GitHub-shaped leaks** for a real second forge: `ThreadRoot`'s `comment_id`
     is a REST id, and both `GitHubForge::detect`'s URL parsing and the read-token
     ladder are github.com-specific — `for_kind`'s single `token` argument does not
@@ -196,6 +243,19 @@ this file, which churned it from every build; that feature is gone.
   number. `archivedRow` says out loud that this is the list you scan weeks later,
   and scanning is the one thing it does not support. Group by week, and put the PR
   number on the row where there is one.
+
+  **And the thing worth finding is not on the row at all.** Every archived session
+  leaves its transcript at `<config dir>/transcripts/<session id>.jsonl`, so what
+  the session actually *did* is already on disk and nothing reads it back.
+  `stablyai/orca` indexes exactly that (`docs/reference/agent-session-search-contract.md`)
+  and its contract is worth copying where it is cheap: index user and assistant
+  text in full, **cap tool output** (it uses 3,072 characters a row) so a build log
+  does not drown the index, filter by agent, path and date, and tie a pagination
+  cursor to the query so a rebuild answers `stale-cursor` rather than a silently
+  different page. Grouping by week makes 91 rows scannable; searching the
+  transcripts makes them answerable — "which session touched the pty ring buffer"
+  is the question people actually arrive with. The redaction half of Orca's
+  contract does not apply: orchd's archive never leaves the machine.
 
 - ~~**A repo with nothing configured still pays for every pane.**~~ **Done, and it
   found a snapshot that disagreed with the daemon.** A checkout with no forge drew
@@ -275,4 +335,112 @@ this file, which churned it from every build; that feature is gone.
   to pick between two implementations of one intent. The gate is the overlay entry
   above and is blocked on a real drive; until it closes, the beta item could sit
   behind a setting rather than in the menu everybody uses.
+
+- **Record real agent screens, before there is a second agent to record.** orchd
+  parses agent pty bytes in three places already — `agent_complaint` reads the ring
+  buffer to turn a fast non-zero exit into a sentence (`spawn.rs:1767`),
+  `is_interrupt` classifies keystrokes (`ws.rs:296`), and `health.rs` strips ANSI to
+  reach a verdict — and every fixture behind them is a byte string **typed by hand
+  into a test**. That is affordable for one agent whose screens are known. It stops
+  being affordable at the second, and the roadmap has more.
+
+  `stablyai/orca` built the harness for this and wrote down what it cost
+  (`docs/reference/agent-pty-transcript-capture.md`). The shape:
+
+  - A capture command spawns the agent **in a real pty** and records every byte —
+    escape sequences and carriage returns included — while mirroring the session to
+    your terminal so you drive it by hand. `Ctrl+]` ends the capture, chosen so it
+    does not dismiss whatever dialog is on screen.
+  - `--cols`/`--rows` pin the pty size, because **where the agent wraps is part of
+    the evidence**. A fixture recorded at a different width tests a different
+    string.
+  - `--duration` for an unattended screen, `--send "<ms>:<text>"` to type at a
+    timestamp, `--note` for the account type and CLI version.
+  - The bytes land unchanged beside the tests, with a sibling `.meta.json` holding
+    the timestamp, the platform, the command, the pty size and the exit code — so a
+    fixture that stops matching can be dated and re-cut rather than argued about.
+  - **Scrubbing is mandatory and same-length.** Tokens, hostnames, usernames,
+    absolute paths and branch names come out, replaced by placeholders of the same
+    width so the wrapping the fixture exists to prove survives the redaction.
+
+  The gotcha Orca records is the one worth having in advance: their early fixtures
+  were **pasted from a rendered terminal**, so they carry no escape bytes and no
+  carriage returns. Those pass a word-match rule and prove nothing about a parser.
+  orchd's hand-typed strings are the same class of fixture, and `agent_complaint`'s
+  is the closest to real precisely because somebody typed the `\x1b[2J\x1b[H`
+  prefix in by hand.
+
+  Two orchd-specific notes for whoever builds it. The capture belongs beside the
+  suite as a `mise` task, not as a test — it needs a human driving a real agent, so
+  what CI gets is the recorded file, not the recording. And the platform matters
+  the way `docs/traps/macos.md` says it does: a screen recorded on Linux is not
+  evidence about the same agent under WebKitGTK's pty on a Mac.
+
+- **Deferred: a restart of the daemon does not have to kill the terminals.**
+  `mise run app-check` asserts that a session survives a restart, and it survives
+  by being *resumed* — the pty dies with the daemon, `spawn::Carried` rebuilds the
+  record, and `auto_resume` starts the agent again 1,200 ms apart. `stablyai/orca`
+  does not resume, because nothing died (`docs/reference/orcad-operations.md`): the
+  runtime forks a **separate terminal daemon**, detached, owning every local pty,
+  with its own socket and its own pid file, and a new runtime **adopts the existing
+  daemon** rather than replacing it. Their sentence for the rule is the useful
+  part: *code freshness always defers to live work*.
+
+  That is a real architectural difference and a large change, so it is recorded
+  rather than proposed. What makes it worth recording is that orchd's update path
+  wants exactly this property — an update today interrupts every running agent, and
+  resume is the compensation. Two smaller things from the same document need no
+  such change and may be worth taking on their own: orcad distinguishes **exit code
+  78, a configuration fault, do not restart** from exit 1, retry with backoff —
+  orchd's host restarts a dead child exactly once, and a config fault spends that
+  one restart achieving nothing; and orcad bounds respawning at five launches in a
+  rolling 60 seconds rather than trusting a single-shot rule.
+
+- **Say which git the daemon needs, and stop exceeding it by accident.** There is
+  no stated minimum git version, no `git --version` read and no capability probe,
+  so a flag newer than the reader's git fails silently in whatever way that call
+  site happens to fail. One was found by reading `stablyai/orca`'s
+  `docs/reference/git-compatibility.md` and is fixed: `rebase_in_progress` asked
+  for `rev-parse --path-format=absolute --git-dir` (git 2.31) inside a
+  `let Ok(..) else { return false }`, so on Ubuntu 20.04's git 2.25 or Debian 11's
+  2.30 every caller — `bank`, `triage`, `relocate`, `reconcile`, `rebase_onto` —
+  would read "not rebasing" and act on a tree stopped mid-rebase. It says
+  `--absolute-git-dir` now, which is git 2.13 and already the spelling in
+  `git::head_file`.
+
+  What is left is the statement and one open question. The oldest flag still in use
+  is `switch`/`restore` (2.23), so **2.23 is the honest floor** and belongs in the
+  README beside the other requirements. The open one is
+  `git config core.fsmonitor true` in `configure_repo`: as a boolean that is git
+  2.37, and older git reads `core.fsmonitor` as a *hook path*, so it would try to
+  run a hook named `true` on every status. It is written `let _ =`, so nothing
+  would say so. Worth answering on an old git before the floor is written down.
+
+  Orca's own answer to the general problem is a `GitCapabilityCache` that probes
+  behaviour per execution host and remembers the refusal, explicitly *not*
+  branching on a parsed `git --version`. That is the right shape for a product
+  running git over SSH and WSL. orchd runs git on one machine, so the cheap version
+  is the whole version: name the floor, and do not exceed it.
+
+- **Deferred: a worktree could be given files by copy, not only by symlink.** orchd
+  puts a worktree's untracked files there by symlinking back to main, with
+  `shared_worktree_paths` for links pointing out. `get-bb/bb` does the same job
+  declaratively and with the other semantics (`docs/worktrees.md`): a
+  `.worktreeinclude` file in gitignore syntax names untracked files to **copy** in,
+  after the tree is cut and before setup runs, and an edit in the worktree then does
+  not touch main. The two are not the same feature — a per-worktree `.env` cannot be
+  a symlink — and orchd has no answer for that today except a `worktree_setup`
+  script. Nothing has gone wrong, so this is recorded, not planned. It becomes real
+  the first time a shared file has to differ per worktree.
+
+- **Deferred: setup can fail and say nothing.** `worktree_init` and `worktree_setup`
+  are non-fatal, the second runs even after the first failed, and `env_source`
+  failures are silent by design — a degraded session beats a lost one, and that
+  stays. What is missing is the *report*: a session whose setup did not finish then
+  misbehaves with nothing on screen to explain it. `get-bb/bb` splits the two
+  (`docs/environment-provisioning.md`): creation failure is terminal and loud, setup
+  failure leaves a usable workspace and is shown as retryable, with no automatic
+  retry ladder. That split is the part worth copying — the policy, not the state
+  machine. Justified the first time a session's odd behaviour is traced back to a
+  setup step that failed quietly.
 
