@@ -436,8 +436,14 @@ pub(super) fn unpushed_range(cwd: &Path, branch: &str, upstream: &str) -> (Strin
 ///
 /// Checked on disk rather than inferred: a button that offers to rebase a tree
 /// already mid-rebase would make a mess that is annoying to unpick.
+///
+/// `--absolute-git-dir` rather than `--path-format=absolute --git-dir`, which
+/// says the same thing and needs git 2.31. The error arm here returns `false`,
+/// so on an older git every caller would read "not rebasing" and every guard
+/// that gates on it would open — silently, on the machine that has the older
+/// git and nowhere else. `head_file` already spells it this way.
 pub fn rebase_in_progress(cwd: &Path) -> bool {
-    let Ok(dir) = git(cwd, &["rev-parse", "--path-format=absolute", "--git-dir"]) else {
+    let Ok(dir) = git(cwd, &["rev-parse", "--absolute-git-dir"]) else {
         return false;
     };
     let dir = Path::new(dir.trim());
