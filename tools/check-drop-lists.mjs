@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // A name a pane says it does not draw has to be a name the daemon still sends.
 //
-// `core.unchanged(box, value, drop)` decides whether a pane rebuilds. The safe
+// `core.unchanged(box, value, drop)` decides whether a pane rebuilds, and
+// `core.paintSig(value, drop)` signs one row for `core.reconcile`. The safe
 // shape passes the whole snapshot and names the fields that pane ignores — the
 // rail's `NOT_DRAWN`, which is what stops every agent edit rebuilding it, because
 // a `PostToolUse` sweep rewrites the changed-file counts and those ride the same
@@ -48,10 +49,16 @@ const problems = [];
 let checked = 0;
 for (const file of sources) {
   const src = read(file);
-  // The third argument of an `unchanged(…)` call: an inline array, or the name of
-  // a const array in the same file. Found by balancing parentheses rather than by
-  // regex, because the second argument is itself a list full of calls.
-  for (const at of [...src.matchAll(/\bunchanged\(/g)].map((m) => m.index + m[0].length)) {
+  // The last argument of an `unchanged(…)` or `paintSig(…)` call: an inline
+  // array, or the name of a const array in the same file. Found by balancing
+  // parentheses rather than by regex, because the argument before it is itself a
+  // list full of calls.
+  //
+  // **Both, because both take a drop list.** `unchanged` decides whether a pane
+  // repaints; `paintSig` signs one row for `reconcile`, and it is exported for
+  // exactly that. A name misspelled in either one drops nothing and churns
+  // silently, which is the whole reason this file exists.
+  for (const at of [...src.matchAll(/\b(?:unchanged|paintSig)\(/g)].map((m) => m.index + m[0].length)) {
     let depth = 1;
     let end = at;
     while (end < src.length && depth > 0) {
@@ -68,9 +75,23 @@ for (const file of sources) {
     else {
       const named = /,\s*([A-Za-z_][A-Za-z0-9_]*)\s*$/.exec(tail);
       if (!named) continue;
-      const decl = new RegExp(`const\\s+${named[1]}\\s*=\\s*\\[([^\\]]*)\\]`).exec(src);
-      if (!decl) continue;
-      list = decl[1];
+      // Balanced, not `[^\]]*`, for the same reason the call above is: a comment
+      // inside the declaration may carry a bracket. One did — `branches` sat
+      // behind a comment mentioning `[0]`, the capture stopped at that bracket,
+      // and this printed a count one short and checked the entry never. A gate
+      // that quietly stops checking is worse than no gate, so it counts brackets.
+      const open = new RegExp(`const\\s+${named[1]}\\s*=\\s*\\[`).exec(src);
+      if (!open) continue;
+      let d = 1;
+      let i = open.index + open[0].length;
+      const from = i;
+      while (i < src.length && d > 0) {
+        if (src[i] === '[') d += 1;
+        else if (src[i] === ']') d -= 1;
+        i += 1;
+      }
+      if (d !== 0) continue;
+      list = src.slice(from, i - 1);
     }
     for (const s of list.matchAll(/['"]([a-z_][a-z0-9_]*)['"]/g)) {
       checked += 1;

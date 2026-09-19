@@ -1007,8 +1007,75 @@ export function keyActivate(/** @type {HTMLElement} */ el) {
  *  the two inputs it was missing — each found by pressing something. So prefer
  *  the whole-snapshot-plus-`drop` shape wherever stale would be worse than an
  *  extra rebuild. */
-function paintSig(/** @type {any} */ value, /** @type {string[]} */ drop = []) {
+export function paintSig(/** @type {any} */ value, /** @type {string[]} */ drop = []) {
   return JSON.stringify(value, (k, v) => (k.endsWith('_ms') || drop.includes(k) ? undefined : v));
+}
+
+/** A pane's paint box: what it was last built from, and what that has cost.
+ *
+ * @typedef {object} PaintBox
+ * @property {string | null | undefined} sig  The last signature, or `null` before the first paint.
+ * @property {string} [name]    What to call this pane in `paintStats`.
+ * @property {number} [n]       Rebuilds since the page loaded, or since `orchPaint`.
+ * @property {string[]} [paths] Where the signature moved on the last rebuild.
+ */
+
+/** Every named box that has been asked at least once, for `paintStats`.
+ *
+ *  The boxes are module-level constants in the panes, so this holds them for the
+ *  life of the page and never grows past the number of panes. */
+const paintBoxes = new Set();
+
+/** Whether to work out *which* field moved, which costs two parses and a walk.
+ *
+ *  Off by default and switched on from `orchPaint`, because the counting half is
+ *  one integer add and the attributing half is not. */
+let paintPaths = false;
+
+/** The paths at which two signatures differ, as the drop lists spell them.
+ *
+ *  Array indices collapse to `[]`, so sixty worktrees report
+ *  `workspaces[].processes[].health` once rather than sixty near-identical
+ *  paths — and the leaf of that path is the bare name a `drop` entry matches.
+ *  Capped, because a signature that differs everywhere has already answered the
+ *  question and walking the rest of a snapshot is the cost this is measuring. */
+function sigDiff(/** @type {string | null | undefined} */ before, /** @type {string} */ after) {
+  if (before == null) return ['(first paint)'];
+  /** @type {Set<string>} */
+  const out = new Set();
+  const walk = (/** @type {any} */ a, /** @type {any} */ b, /** @type {string} */ path) => {
+    if (out.size >= 12 || a === b) return;
+    const both = a !== null && b !== null && typeof a === 'object' && typeof b === 'object'
+      && Array.isArray(a) === Array.isArray(b);
+    if (!both) {
+      if (JSON.stringify(a) !== JSON.stringify(b)) out.add(path || '(root)');
+      return;
+    }
+    if (Array.isArray(a)) {
+      if (a.length !== b.length) out.add(`${path}[] (length)`);
+      for (let i = 0; i < Math.min(a.length, b.length); i += 1) walk(a[i], b[i], `${path}[]`);
+      return;
+    }
+    for (const k of new Set([...Object.keys(a), ...Object.keys(b)])) {
+      walk(a[k], b[k], path ? `${path}.${k}` : k);
+    }
+  };
+  try {
+    walk(JSON.parse(before), JSON.parse(after), '');
+  } catch {
+    return ['(unparseable)'];
+  }
+  /* **A rebuild with nowhere to point is a rebuild for key order**, and it is
+     worth its own sentence rather than an empty list. `paintSig` compares JSON
+     text; this walks the parsed values by key, so the one difference it cannot
+     see is the order the keys came in. The daemon has two places that can move
+     without changing anything — `WorkspaceView.branches` is collected off a
+     `HashSet` and never sorted, and `automation` is serialized straight from a
+     `HashMap` — and a rehash of either tears down every session row and every PR
+     row for a snapshot that says the same thing. Measured idle: one rail rebuild
+     in 35 seconds, this and nothing else. */
+  if (out.size === 0) return ['(key order only — a HashSet or HashMap in the snapshot)'];
+  return [...out];
 }
 
 /** True when `value` renders the same as it did last time this box was asked.
@@ -1016,13 +1083,130 @@ function paintSig(/** @type {any} */ value, /** @type {string[]} */ drop = []) {
  *  The box is the pane's own `{ sig: null }`: five panes were each carrying a
  *  module-level `let xSig`, the same three lines of compare-and-remember, and the
  *  same comment with one noun changed. One name for the idiom means a reader
- *  confirms it once. */
-export function unchanged(/** @type {{ sig: string | null | undefined }} */ box, /** @type {any} */ value, /** @type {string[]} */ drop = []) {
+ *  confirms it once.
+ *
+ *  **`name` is what makes a rebuild attributable**, and it is why every box
+ *  carries one. `paintSig` above says the unchecked half of this guard is whether
+ *  a pane rebuilds for something it does not draw; the cost of that is a rail
+ *  that tears down the row under the pointer several times a second, and the
+ *  symptom is a hover that strobes. Nothing said which field moved, so the answer
+ *  was read out of the type file and guessed at. `box.n` counts the rebuilds and
+ *  `box.paths` names them — see `orchPaint`. */
+export function unchanged(/** @type {PaintBox} */ box, /** @type {any} */ value, /** @type {string[]} */ drop = []) {
   const sig = paintSig(value, drop);
+  paintBoxes.add(box);
   if (box.sig === sig) return true;
+  box.n = (box.n ?? 0) + 1;
+  if (paintPaths) box.paths = sigDiff(box.sig, sig);
   box.sig = sig;
   return false;
 }
+
+/** What each guarded pane has rebuilt, and what moved when it last did.
+ *
+ *  **A counter rather than a gate**, deliberately: the number that matters is per
+ *  workload — three agents editing is not one agent idling — so there is no bound
+ *  to deny against, and a rule nobody can run is worse than a number somebody
+ *  reads. `tools/paint-check.mjs` is the thing that runs it.
+ *
+ *  Counts are since the page loaded, or since the last `reset`. */
+function paintStats() {
+  return [...paintBoxes]
+    .map((b) => ({ name: b.name ?? '(unnamed)', rebuilds: b.n ?? 0, paths: b.paths ?? [] }))
+    .sort((a, b) => b.rebuilds - a.rebuilds);
+}
+
+/** Read the counters, and with `true` zero them and start naming what moved.
+ *
+ *  Hung on the global object rather than exported to a pane, because the caller
+ *  is a person at a console or `tools/paint-check.mjs` — the same reason
+ *  `orchTeardown` is there. One name with two verbs: a second global for the read
+ *  would be the same idea spelled twice.
+ *
+ *  **Arming is the half that costs**, two `JSON.parse`s and a walk per rebuild,
+ *  so it stays off until somebody asks. Nothing turns it back off: a page that
+ *  has been asked to measure itself is a page somebody is measuring, and it is
+ *  reloaded rather than un-armed. */
+window.orchPaint = (reset = false) => {
+  if (reset) {
+    paintPaths = true;
+    for (const b of paintBoxes) {
+      b.n = 0;
+      b.paths = [];
+    }
+  }
+  return paintStats();
+};
+
+/** What each keyed parent last put where — see `reconcile`. */
+const keyed = new WeakMap();
+
+/** Fill `parent` with `items`, keeping every node whose signature has not moved.
+ *
+ *  **`unchanged` decides whether a pane repaints; this decides what a repaint
+ *  costs.** A pane that must repaint still has no business destroying the rows
+ *  that did not change, and `replaceChildren` destroys all of them. The row under
+ *  the pointer is the one that matters: `:hover` re-resolves onto the replacement
+ *  in every engine — measured, not assumed — but the replacement starts from no
+ *  hover, so `.sess`'s 120ms fade restarts and the highlight never arrives.
+ *
+ *  **Measured, at the rebuild rate three real sessions produce (~7/s), with the
+ *  pointer parked on a row — the fraction of the time its highlight was actually
+ *  painted:**
+ *
+ *  | how the list is rebuilt                        | chromium | webkit/gtk |
+ *  | ---------------------------------------------- | -------- | ---------- |
+ *  | `replaceChildren`, fresh nodes (what this was) |      0%  |       13%  |
+ *  | `replaceChildren`, *same* node objects reused  |      5%  |       13%  |
+ *  | this: never detach a node that is still wanted |    100%  |      100%  |
+ *
+ *  The middle row is why this is not three lines of caching. Re-appending the very
+ *  same element still detaches and re-inserts it, and the engines treat that as a
+ *  new box: keeping the object is not enough, the node has to stay where it is.
+ *  `tools/hover-engine-check.mjs` is that table.
+ *
+ *  An item is `{ key, sig, build }`. `key` identifies the row across repaints —
+ *  a session id, not an index, or a reorder renames every row. `sig` is what the
+ *  row was drawn from, through `paintSig`; when it matches, the node is left
+ *  alone. **`sig` has to cover the handlers too, not only the pixels**: a reused
+ *  row keeps the closures it was built with, so anything an `onclick` reads from
+ *  outside the row belongs in the signature or the row will act on a stale copy
+ *  of it.
+ *
+ *  `fill(node)` is for a container whose own children are reconciled: give it a
+ *  constant `sig` so the container itself is built once, and reconcile inside it.
+ *
+ *  A row whose `sig` did move is rebuilt and swapped in place, so it flickers —
+ *  correctly, since it changed. Its neighbours do not. */
+export function reconcile(/** @type {Element} */ parent, /** @type {{key: string, sig: string, build: () => Element, fill?: (node: any) => void}[]} */ items) {
+  const cache = keyed.get(parent) ?? new Map();
+  const next = new Map();
+  let cursor = parent.firstChild;
+  for (const it of items) {
+    const had = cache.get(it.key);
+    const reuse = had && had.sig === it.sig;
+    const node = reuse ? had.node : it.build();
+    /* The stale node goes before the new one arrives, and the cursor steps over
+       it first — `insertBefore` against a node that is no longer a child throws,
+       and that is exactly what a removed cursor would be. */
+    if (!reuse && had && had.node.parentNode === parent) {
+      if (had.node === cursor) cursor = had.node.nextSibling;
+      had.node.remove();
+    }
+    if (node === cursor) cursor = node.nextSibling;
+    else parent.insertBefore(node, cursor);
+    if (it.fill) it.fill(node);
+    next.set(it.key, { node, sig: it.sig });
+  }
+  // Whatever is left is what this pass did not ask for.
+  while (cursor) {
+    const after = cursor.nextSibling;
+    cursor.remove();
+    cursor = after;
+  }
+  keyed.set(parent, next);
+}
+
 
 /** How many rows either bottom pane will draw.
  *

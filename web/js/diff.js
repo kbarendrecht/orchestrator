@@ -2,7 +2,7 @@
 // drives it. One module because the three call each other; splitting them would
 // only have turned that into circular imports.
 
-import { $, activeWorkspaceId, call, confirmBox, currentSession, currentWorkspaceId, el, get, MOD_LABEL, openMenu, pending, prForWorkspace, snap, reason, toast, unchanged, workspaceById } from './core.js';
+import { $, activeWorkspaceId, call, confirmBox, currentSession, currentWorkspaceId, el, get, MOD_LABEL, openMenu, pending, prForWorkspace, snap, reason, toast, paintSig, reconcile, unchanged, workspaceById } from './core.js';
 
 // Written back onto the button after a save, so it is spelled from the same
 // platform label the page resolved `data-mod` with — a hardcoded glyph here was
@@ -236,56 +236,24 @@ function counting() {
   return box;
 }
 
+/** Workspace fields this pane is handed and never shows.
+ *
+ *  Read off what `renderFiles`, `renderDivergence` and `fileMenu` actually touch:
+ *  `banked`, `rebasing`, `id`, `changed`, `changed_since`, `changed_total`,
+ *  `measured` and `is_main`. Everything else on a `WorkspaceView` rides here for
+ *  nothing, and `processes` rides here several times a second. */
+const NOT_SHOWN = [
+  'processes', 'stopped_processes', 'occupant', 'kind', 'branches', 'branch',
+  'dirty_count',
+];
+
 /** What the pane was last built from — see `unchanged`. */
-const drawn = { sig: null };
+const drawn = { sig: null, name: 'changed-files' };
 
-function renderFiles() {
-  // The diff overlay is opened against a workspace and keeps describing it while
-  // it is open, session or no session.
-  const wsId = diffState.open ? diffState.ws : activeWorkspaceId();
-  const w = workspaceById(wsId);
-  /* Rebuilt only when it would come out different: a file row is a button you
-     hover and click, and a snapshot lands several times a second while an agent
-     works.
-     **This workspace, not the snapshot.** Passing the whole snapshot is the safe
-     default and it is the wrong one here: with sixty worktrees and several agents
-     running, an edit in any *other* worktree rewrote its changed-file list and
-     rebuilt this pane, which describes one workspace and never reads another. So
-     the inputs are named — `w` and the current session cover both branches below,
-     and the `diffState` fields are the ones drawn here, `file` and its hunks
-     being the overlay's rather than the list's. */
-  if (unchanged(drawn, [wsId, w, currentSession(), diffState.open, diffState.path,
-    diffState.summary])) return;
-  if (w) renderDivergence(w);
-  const panes = $('filepanes');
-  panes.replaceChildren();
-
-  $('filestitle').textContent = diffState.open ? 'Changeset' : 'Changes';
-
-  if (!w) {
-    const s = currentSession();
-    panes.appendChild(el('div', 'fempty', s && pending(s)
-      ? 'Creating the worktree…'
-      : 'No session open.'));
-    $('filesfoot').textContent = '';
-    $('filesbase').textContent = '';
-    return;
-  }
-
-  /* One list, one meaning: everything this workspace changed since it branched.
-   *
-   * Not `git status`, which is uncommitted work only — a session that commits
-   * would empty its own pane. Not a diff against develop's tip either, which
-   * would add every file a colleague landed meanwhile. The base is the
-   * merge-base, so the list is what happened *here*.
-   *
-   * With the diff open the same question is asked of the diff's own summary,
-   * which carries line counts per file and a cursor. */
-  const sum = diffState.open ? diffState.summary : null;
-  const files = sum ? sum.files : (w.changed || []);
-  const since = sum ? sum.base : w.changed_since;
-
-  for (const f of files) {
+/** One changed file: what happened to it, and what git can be asked to do.
+ *
+ *  Its own function so `renderFiles` can key it — see `core.reconcile`. */
+function fileRow(/** @type {import('../snapshot').WorkspaceView} */ w, /** @type {any} */ f, /** @type {any} */ sum) {
     const row = el('button', sum ? 'dfrow' : 'frow');
     if (sum) row.setAttribute('aria-current', String(f.path === diffState.path));
     const letter = (f.status || 'M')[0];
@@ -328,8 +296,91 @@ function renderFiles() {
        The daemon refuses the same two anyway (`api::open_file`), the way the fork
        guard lives on both sides. */
     row.oncontextmenu = (ev) => openMenu(ev, fileMenu(w, f));
-    panes.appendChild(row);
+  return row;
+}
+
+function renderFiles() {
+  // The diff overlay is opened against a workspace and keeps describing it while
+  // it is open, session or no session.
+  const wsId = diffState.open ? diffState.ws : activeWorkspaceId();
+  const w = workspaceById(wsId);
+  /* Rebuilt only when it would come out different: a file row is a button you
+     hover and click, and a snapshot lands several times a second while an agent
+     works.
+     **This workspace, not the snapshot.** Passing the whole snapshot is the safe
+     default and it is the wrong one here: with sixty worktrees and several agents
+     running, an edit in any *other* worktree rewrote its changed-file list and
+     rebuilt this pane, which describes one workspace and never reads another. So
+     the inputs are named — `w` and the current session cover both branches below,
+     and the `diffState` fields are the ones drawn here, `file` and its hunks
+     being the overlay's rather than the list's.
+
+     **`w` still carried seven fields this pane never shows**, and one of them —
+     `processes` — moves on every line a managed process prints. `NOT_SHOWN` names
+     them, the way the rail's `NOT_DRAWN` does, and `tools/check-drop-lists.mjs`
+     holds the names to what the daemon still sends.
+
+     **The session is in as the two things it is read for**, not whole: it is used
+     once below, for `pending(s)` in the arm with no workspace, and its `state`
+     moves every time the agent does. The id is there so switching sessions still
+     redraws — `wsId` alone would not, for two sessions in one workspace. */
+  const cur = currentSession();
+  if (unchanged(drawn, [wsId, w, cur?.id ?? null, !!(cur && pending(cur)),
+    diffState.open, diffState.path, diffState.summary], NOT_SHOWN)) return;
+  if (w) renderDivergence(w);
+  const panes = $('filepanes');
+
+  $('filestitle').textContent = diffState.open ? 'Changeset' : 'Changes';
+
+  if (!w) {
+    const s = currentSession();
+    reconcile(panes, [{
+      key: 'nows',
+      sig: paintSig([!!(s && pending(s))]),
+      build: () => el('div', 'fempty', s && pending(s)
+        ? 'Creating the worktree…'
+        : 'No session open.'),
+    }]);
+    $('filesfoot').textContent = '';
+    $('filesbase').textContent = '';
+    return;
   }
+
+  /* One list, one meaning: everything this workspace changed since it branched.
+   *
+   * Not `git status`, which is uncommitted work only — a session that commits
+   * would empty its own pane. Not a diff against develop's tip either, which
+   * would add every file a colleague landed meanwhile. The base is the
+   * merge-base, so the list is what happened *here*.
+   *
+   * With the diff open the same question is asked of the diff's own summary,
+   * which carries line counts per file and a cursor. */
+  const sum = diffState.open ? diffState.summary : null;
+  const files = sum ? sum.files : (w.changed || []);
+  const since = sum ? sum.base : w.changed_since;
+
+  /* **Keyed on the path, and the container is kept**, because this pane draws up
+     to five hundred buttons and a rebuild destroys the one under the pointer.
+     `core.reconcile` carries the measurements. A row's signature is its own file
+     record plus the two things its handlers read from outside it — which list it
+     belongs to, and whether it is the row the open diff is showing. */
+  /** @type {any[]} */
+  const items = files.map((/** @type {any} */ f) => ({
+    key: `f:${f.path}`,
+    sig: paintSig([f, !!sum, sum ? f.path === diffState.path : false, w.id]),
+    build: () => fileRow(w, f, sum),
+  }));
+  if (!files.length) {
+    items.push({
+      key: 'empty',
+      sig: paintSig([!!sum, w.measured, w.is_main]),
+      build: () => (sum || w.measured
+        ? el('div', 'fempty',
+          w.is_main ? 'Nothing changed in the main checkout.' : 'Nothing changed in this worktree yet.')
+        : counting()),
+    });
+  }
+  reconcile(panes, items);
 
   /* **"Nothing changed" and "not counted yet" are different sentences.** Every
      field this pane reads defaults to a value that looks like a real answer — no
@@ -341,13 +392,6 @@ function renderFiles() {
 
      Not while the diff overlay is open: `sum` is its own fetched summary, which
      is measured by definition. */
-  if (!files.length) {
-    panes.appendChild(sum || w.measured
-      ? el('div', 'fempty',
-        w.is_main ? 'Nothing changed in the main checkout.' : 'Nothing changed in this worktree yet.')
-      : counting());
-  }
-
   // "500 of 5,214" when the daemon capped the list, plain count otherwise. Said
   // rather than left to look complete: a truncation presented as the whole answer
   // is the one thing a changed-file pane must not do, and a wiped repository is

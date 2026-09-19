@@ -131,7 +131,7 @@ new MutationObserver(updateTabOverflow).observe($('dtabs'), { childList: true })
 const shownTab = {};
 
 /** What the drawer was last built from — see `unchanged`. */
-const drawerDrawn = { sig: null };
+const drawerDrawn = { sig: null, name: 'drawer-tabs' };
 
 /** Hand what a process pane is showing to the session beside it.
  *

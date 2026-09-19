@@ -180,7 +180,7 @@ function render() {
  *  rule below turns on that difference. */
 const DECISIONS = 'decisions';
 
-const askDrawn = { sig: null };
+const askDrawn = { sig: null, name: 'ask' };
 
 /** The ask the user has folded away, by its id.
  *
@@ -735,7 +735,14 @@ function renderContext() {
   $('ctxdot').className = 'dot ' + (s ? dotClass(s) : 'idle');
   $('ctxname').textContent = s ? Rail.rowName(s, { id: wsId }) : (wsId || 'no session');
   $('ctxforked').hidden = !(s && s.forked_from);
-  $('ctxbranch').textContent = w ? (w.branches[0] || '') : '';
+  /* **`branch`, not `branches[0]`.** `branches` is every branch this workspace has
+     ever held and never prunes, in no order at all — so the header labelled with
+     one branch was naming an arbitrary member of that history, and which one it
+     picked moved with a `HashSet` rehash. `WorkspaceView` warns about exactly this
+     conflation where it declares the two fields; this is the reader that was
+     making it. `branch` is what the tree has checked out now, which is what a
+     header beside the session's name means. */
+  $('ctxbranch').textContent = (w && w.branch) || '';
   const pr = wsId ? prForWorkspace(wsId) : null;
   const bits = [];
   if (s) bits.push(stateLabel(s));

@@ -116,6 +116,8 @@ mise run check-modules              # the daemon's module graph, held no worse
 mise run check-ship                 # every binary the release must pack
 mise run app-check                  # drive the real app: a session survives a restart
 mise run page-check                 # what the rendered page must never show
+mise run paint-check                # which panes rebuild while agents work
+mise run hover-check                # does a hovered row survive a rebuild
 mise run notices                    # regenerate THIRD-PARTY-RUST.md
 mise run e2e                        # 28 flows against a real daemon
 mise run deflake                    # each flow 8x, to name the flaky ones

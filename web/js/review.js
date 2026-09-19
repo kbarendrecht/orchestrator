@@ -1566,7 +1566,7 @@ function barState() {
  *  Rendered from `app.js`'s tick like every other pane, and into a host that lives
  *  outside `#rvoverlay` — `renderReview` replaces that element's children on every
  *  snapshot and would tear a live node out from under itself once a second. */
-const barDrawn = { sig: null };
+const barDrawn = { sig: null, name: 'review-bar' };
 
 function renderBar() {
   const host = $('rvbar');

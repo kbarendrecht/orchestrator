@@ -1,7 +1,7 @@
 // The rail: what is running, what is waiting on you, and the PRs beside it.
 // Twenty-four names, three out; the rest is how a row decides what it says.
 
-import { $, activeCheckout, bandOf, byNewest, call, callFor, callHost, callOn, caret, checkoutOf, CHECKOUTS, chooseBox, clock, confirmBox, copyText, creating, creatingIn, dotClass, el, enterCheckout, everySession, getHost, inTrouble, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, QUEUE_MAX, reason, refreshButton, repoSummary, safeHref, selected, sessionsOf, sessionOrder, setPendingSelect, setSelected, setSessionOrder, snap, snapshotFor, snapshotOf, startingShown, stateClass, stateLabel, terms, toast, unchanged, watchStarting } from './core.js';
+import { $, activeCheckout, bandOf, byNewest, call, callFor, callHost, callOn, caret, checkoutOf, CHECKOUTS, chooseBox, clock, confirmBox, copyText, creating, creatingIn, dotClass, el, enterCheckout, everySession, getHost, inTrouble, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, QUEUE_MAX, reason, refreshButton, repoSummary, safeHref, selected, sessionsOf, sessionOrder, setPendingSelect, setSelected, setSessionOrder, snap, snapshotFor, snapshotOf, startingShown, stateClass, stateLabel, terms, toast, paintSig, reconcile, unchanged, watchStarting } from './core.js';
 import * as Open from './open.js';
 import * as Review from './review.js';
 import * as Term from './term.js';
@@ -35,10 +35,15 @@ let editingName = null;
 const NOT_DRAWN = [
   'changed', 'changed_total', 'changed_since', 'behind', 'ahead', 'rebasing',
   'measured', 'dirty_count',
+  /* `branches` is the workspace's whole branch history and no pane draws it —
+     the context header used to take `[0]` from it and now reads `branch`, which
+     is a different field and stays. It grows whenever a tree is put on a new
+     branch, which is a thing the rail has no way to show and rebuilt for anyway. */
+  'branches',
 ];
 
 /** What the rail was last built from — see `unchanged`. */
-const drawn = { sig: null };
+const drawn = { sig: null, name: 'rail+pr' };
 
 function renderRail() {
   /* Before the guards, not between them: the bar has its own inputs and its own
@@ -65,7 +70,7 @@ function renderRail() {
      as its contents. Without it a fold wrote the key and redrew nothing, and the
      rail only caught up on the next reload. */
   /* **The create in flight is an input too**, and it was not in this list. The
-     `+` buttons read `creating()` for their disabled state and `checkoutSessions`
+     `+` buttons read `creating()` for their disabled state and `fillSessions`
      now draws a row from it, but the announcement that calls this function changes
      nothing the signature could see — so the render returned early and neither
      appeared until the next snapshot happened along. Which is exactly the window
@@ -76,42 +81,62 @@ function renderRail() {
   }
 
   const rail = $('rail');
-  rail.replaceChildren();
+
+  /* **Reconciled, not replaced**, and `core.reconcile` holds the measurements
+     that say why: a `replaceChildren` here destroys the row under the pointer
+     several times a second, and its hover highlight then never finishes fading
+     in. Only the session rows carry a signature of their own; everything else
+     below takes `chrome`, which moves whenever the rail's own guard let this
+     function run at all. That is deliberate — those are single elements nobody
+     rests a pointer on, and a signature naming too little freezes a pane, which
+     is the worse failure of the two. */
+  /* **Taken from the guard rather than computed again.** `unchanged` keeps the
+     signature it compared on the box, and this is that same signature — the same
+     array, the same drop list. Rebuilding it here would stringify every
+     checkout's whole snapshot a second time, which is the most expensive thing
+     on this path, and would be a second copy of a twelve-item list to keep in
+     step by hand. `drawn.sig` is a string by the time the guard has let us
+     through; the fallback is for the type checker. */
+  const chrome = drawn.sig ?? '';
 
   /* One block per checkout, in the order the host opened them. A checkout is a
      daemon and a daemon describes only itself, so each block is built from that
      checkout's own snapshot — there is no combined one to build from. */
   const several = CHECKOUTS.length > 1;
+  /** @type {any[]} */
+  const items = [];
   for (const [i, c] of CHECKOUTS.entries()) {
-    /* One block per checkout, marked as a group so a screen reader can skip it
-       whole — the header is its name, and the rail is otherwise a flat list of
-       rows from several places.
-
-       **No block and no header at all on a single-checkout install**, which is
-       every install today: the rail is then exactly what it always was, and a
-       header naming the only checkout there is is noise. */
-    const block = several ? el('div', 'co-block') : rail;
-    if (several) {
-      block.setAttribute('role', 'group');
-      block.setAttribute('aria-label', c.name);
-      rail.appendChild(block);
-      block.appendChild(checkoutHead(c));
-    }
     const state = states[i];
-    // Folded: the header and nothing else. It still says what it is hiding — see
-    // `checkoutHead`.
-    if (several && folded.has(c.path)) continue;
-    if (!state) {
-      // A checkout whose daemon has not reported yet, or is down. The row stays
-      // either way, because the row is what `reopen` acts on.
-      block.appendChild(el('div', 'railbtn', c.live ? 'starting\u2026' : 'not running'));
+    /* **No block and no header at all on a single-checkout install**, which is
+       every install today: the rail is then exactly what it always was, and a
+       header naming the only checkout there is is noise. Its items go straight
+       into the rail rather than into a wrapper holding one thing. */
+    if (!several) {
+      items.push(...checkoutItems(c, state, chrome, false));
       continue;
     }
-    /* One list per checkout, main's sessions first (§9). The group headings are
-       gone; `checkoutSessions` says why. It draws its own head only on a
-       single-checkout install, where there is no `checkoutHead` above it and the
-       rail would otherwise open on a bare session row with nothing naming it. */
-    block.appendChild(checkoutSessions(c, state, mainWorkspace(state), !several));
+    /* One block per checkout, marked as a group so a screen reader can skip it
+       whole — the header is its name, and the rail is otherwise a flat list of
+       rows from several places. The block is built once and kept; its children
+       are reconciled inside it, which is the whole point. */
+    items.push({
+      key: `co:${c.path}`,
+      sig: 'co-block',
+      build: () => {
+        const b = el('div', 'co-block');
+        b.setAttribute('role', 'group');
+        return b;
+      },
+      fill: (/** @type {HTMLElement} */ b) => {
+        b.setAttribute('aria-label', c.name);
+        reconcile(b, [
+          { key: 'head', sig: chrome, build: () => checkoutHead(c) },
+          // Folded: the header and nothing else. It still says what it is
+          // hiding — see `checkoutHead`.
+          ...(folded.has(c.path) ? [] : checkoutItems(c, state, chrome, true)),
+        ]);
+      },
+    });
   }
 
   /* **Below the sessions, not among them.** There is one of this however many
@@ -119,8 +144,13 @@ function renderRail() {
      and inside the scroller it slid away under a long list or an open archive,
      which is the one thing a button you press by hand must not do. Its own strip
      between the scroller and the PR pane, always drawn: it is how a second
-     checkout is ever opened, and it replaces the header's switcher. */
-  $('railfoot').replaceChildren(addCheckoutButton());
+     checkout is ever opened, and it replaces the header's switcher.
+
+     Reconciled rather than replaced, like the rail below it: it is a button with
+     a hover, and one rebuilt under the pointer on every repaint is the fault
+     `core.reconcile` exists for. */
+  reconcile($('railfoot'), [{ key: 'addco', sig: chrome, build: () => addCheckoutButton() }]);
+  reconcile(rail, items);
 
   // Its own pane below the scroller, so it stays put while sessions scroll. It
   // describes one repository, so it follows the checkout you are in.
@@ -135,16 +165,50 @@ function renderRail() {
      assuming this decides both. */
   const prpane = $('prpane');
   if (snap.repos?.upstream) {
-    prpane.replaceChildren(prGroup());
+    // Reconciled like the rail above it, and for the same reason: a `.prrow` is
+    // hovered and clicked, and this pane is rebuilt by the rail's guard — so it
+    // was being thrown away on every session state change, none of which it draws.
+    reconcile(prpane, [{
+      key: 'prs',
+      sig: 'ws',
+      build: () => el('div', 'ws'),
+      fill: (/** @type {HTMLElement} */ g) => fillPrGroup(prpane, g),
+    }]);
   } else {
-    /* The band is set on the pane itself by `prGroup`, so the arm that does not
-       call it has to take it off: with two checkouts open, the one-line notice
+    /* The band is set on the pane itself by `fillPrGroup`, so the arm that does
+       not call it has to take it off: with two checkouts open, the one-line notice
        otherwise wears the previous checkout's colour — which is the one thing the
        band exists to say. */
     prpane.classList.remove('pr-of-checkout');
     prpane.style.removeProperty('--band');
-    prpane.replaceChildren(noForge());
+    reconcile(prpane, [{ key: 'noforge', sig: chrome, build: () => noForge() }]);
   }
+}
+
+/** What one checkout puts in the rail, below its header when it has one. */
+function checkoutItems(/** @type {import('./core.js').Target} */ c, /** @type {import('../snapshot').Snapshot | null | undefined} */ state, /** @type {string} */ chrome, /** @type {boolean} */ several) {
+  if (!state) {
+    // A checkout whose daemon has not reported yet, or is down. The row stays
+    // either way, because the row is what `reopen` acts on.
+    return [{
+      key: `down:${c.path}`,
+      sig: chrome,
+      build: () => el('div', 'railbtn', c.live ? 'starting\u2026' : 'not running'),
+    }];
+  }
+  /* One list per checkout, main's sessions first (§9). The group headings are
+     gone; `fillSessions` says why. It draws its own head only on a
+     single-checkout install, where there is no `checkoutHead` above it and the
+     rail would otherwise open on a bare session row with nothing naming it.
+
+     The `.ws` box is built once and kept — a constant signature — because what
+     has to survive a repaint is inside it. */
+  return [{
+    key: `ws:${c.path}`,
+    sig: 'ws',
+    build: () => el('div', 'ws'),
+    fill: (/** @type {HTMLElement} */ g) => fillSessions(g, c, state, mainWorkspace(state), chrome, !several),
+  }];
 }
 
 /** `+ open project`, and the menu of ways to name one.
@@ -700,11 +764,17 @@ function noForge() {
   return line;
 }
 
-function prGroup() {
+/** Fill the PR pane, keeping every row whose own signature has not moved.
+ *
+ *  Split out of a `prGroup()` that returned a fresh tree: the pane is redrawn
+ *  whenever the rail is, and the rail is redrawn whenever any session's state
+ *  moves — none of which this pane shows. `core.reconcile` has the measurements.
+ *
+ *  The head names its own inputs rather than taking the rail's `chrome`, the way
+ *  `queue.js` does for the pane beside it: what it draws is the PR list and the
+ *  poll, and neither moves when a session does. */
+function fillPrGroup(/** @type {HTMLElement} */ block, /** @type {HTMLElement} */ group) {
   const prs = snap.prs || [];
-  // Just `ws`: the pinned pane it lives in owns the sizing, and carrying
-  // `prblock` here too applied max-height twice, nested.
-  const group = el('div', 'ws');
   /* It lists one checkout's PRs — the one you are in — and it sits below the
      scroller, so the block whose colour would have said which has scrolled away.
      The band says it instead. Only with several checkouts open, like every other
@@ -715,11 +785,42 @@ function prGroup() {
      window edge and read as an unfinished line. The review queue's is on its block
      for the same reason. */
   const band = CHECKOUTS.length > 1 ? bandOf(activeCheckout().path) : null;
-  const block = $('prpane');
   block.classList.toggle('pr-of-checkout', !!band);
   if (band) block.style.setProperty('--band', `var(--co-${band})`);
   else block.style.removeProperty('--band');
 
+  /* Whether there is an age to show, not what it says: `paintSig` drops every
+     `_ms` field, because the text is a `data-clock` node `tick` rewrites in
+     place. `snap.pr_poll` earns its place the same way it does in `queue.js` —
+     `refreshButton` clears the spinner it started when that counter moves. */
+  const hasAge = snap.pr_age_ms != null && !snap.pr_polling;
+  const headSig = paintSig([showPrs, prs, snap.pr_error, snap.pr_poll ?? 0,
+    !!snap.pr_polling, hasAge, band]);
+
+  /** @type {any[]} */
+  const items = [{ key: 'head', sig: headSig, build: () => prHead(prs) }];
+  if (!showPrs) {
+    reconcile(group, items);
+    return;
+  }
+
+  /* The body lives in its own element rather than loose in the group, so this
+     pane has the shape the review queue already had: a head that stays put and a
+     list that scrolls under it. That is what lets one rule cap both at ten rows
+     without either pane having to know how tall its own head is — and it is why
+     the two empty states had drifted apart in the first place, each being styled
+     where it happened to sit. */
+  items.push({
+    key: 'list',
+    sig: 'prlist',
+    build: () => el('div', 'prlist'),
+    fill: (/** @type {HTMLElement} */ list) => reconcile(list, prRowItems(prs)),
+  });
+  reconcile(group, items);
+}
+
+/** The PR pane's head: the count, the poll age and the refresh button. */
+function prHead(/** @type {any[]} */ prs) {
   const head = el('button', 'prgroup-head');
   head.setAttribute('aria-expanded', String(showPrs));
   head.appendChild(caret());
@@ -756,31 +857,42 @@ function prGroup() {
      diagnosing over the API; it is just not a thing to look at every day. */
   head.appendChild(refreshButton('pr', snap.pr_poll ?? 0, '/api/prs/refresh', snap.pr_polling));
   head.onclick = () => { showPrs = !showPrs; renderRail(); };
-  group.appendChild(head);
+  return head;
+}
 
-  if (!showPrs) return group;
-
-  /* The body lives in its own element rather than loose in the group, so this
-     pane has the shape the review queue already had: a head that stays put and a
-     list that scrolls under it. That is what lets one rule cap both at ten rows
-     without either pane having to know how tall its own head is — and it is why
-     the two empty states had drifted apart in the first place, each being styled
-     where it happened to sit. */
-  const list = el('div', 'prlist');
-  group.appendChild(list);
-
-  if (snap.pr_error) {
-    const e = el('div', 'railbtn', snap.pr_error.slice(0, 120));
-    e.style.color = 'var(--bad)';
-    list.appendChild(e);
-    return group;
+/** One item per PR row, plus the two states that replace the whole list. */
+function prRowItems(/** @type {any[]} */ prs) {
+  // Held in a local, because the narrowing does not reach inside `build`.
+  const failed = snap.pr_error;
+  if (failed) {
+    return [{
+      key: 'error',
+      sig: paintSig([failed]),
+      build: () => {
+        const e = el('div', 'railbtn', failed.slice(0, 120));
+        e.style.color = 'var(--bad)';
+        return e;
+      },
+    }];
   }
   if (!prs.length) {
-    list.appendChild(el('div', 'railbtn', 'none open'));
-    return group;
+    return [{ key: 'empty', sig: 'none', build: () => el('div', 'railbtn', 'none open') }];
   }
+  /* Everything a row reads from outside the PR itself is named here: its
+     automation record, which draws the `fixing` chip, and whether its session is
+     the one you are in, which marks the `session` chip. A reused row keeps the
+     closures it was built with, so a signature that missed one would leave a chip
+     pointing at the wrong place. */
+  return prs.slice(0, QUEUE_MAX).map((/** @type {any} */ p) => ({
+    key: `pr:${p.number}`,
+    sig: paintSig([p, (snap.automation || {})[p.number], p.session === selected]),
+    build: () => prRow(p),
+  }));
+}
 
-  for (const p of prs.slice(0, QUEUE_MAX)) {
+/** One PR: what it is, what it wants, and the one chip that moves you. */
+function prRow(/** @type {any} */ p) {
+
     // Rows for PRs that already have a session are dimmed, and the chip at the
     // end of the row goes to it (§9).
     const row = el('a', 'prrow' + (p.session ? ' linked' : ''));
@@ -873,9 +985,7 @@ function prGroup() {
       };
       row.appendChild(j);
     }
-    list.appendChild(row);
-  }
-  return group;
+  return row;
 }
 
 /** One checkout's sessions: a single list, and the two ways to add to it.
@@ -891,8 +1001,18 @@ function prGroup() {
  *  word — nearly every session is a worktree session — so only the exception
  *  carries one, and it means something every time it appears.
  */
-function checkoutSessions(/** @type {import('./core.js').Target} */ c, /** @type {import('../snapshot').Snapshot} */ state, /** @type {import('../snapshot').WorkspaceView | undefined} */ main, /** @type {boolean} */ titled = false) {
-  const group = el('div', 'ws');
+/** Fill one checkout's list, keeping every row whose own signature has not moved.
+ *
+ *  **It fills a box rather than returning one**, and that is the change: it used
+ *  to build a fresh `.ws` group per repaint, which threw away every row in it.
+ *  `core.reconcile` carries the measurements — a row rebuilt under the pointer
+ *  loses its hover highlight for as long as the rebuilds keep coming.
+ *
+ *  `chrome` is the signature everything that is not a session row takes. Only the
+ *  rows are worth naming precisely: they are what a pointer rests on, there are
+ *  many of them, and a session's own slice of the snapshot is exactly what one
+ *  draws from. */
+function fillSessions(/** @type {HTMLElement} */ group, /** @type {import('./core.js').Target} */ c, /** @type {import('../snapshot').Snapshot} */ state, /** @type {import('../snapshot').WorkspaceView | undefined} */ main, /** @type {string} */ chrome, /** @type {boolean} */ titled = false) {
   const mainSessions = main ? sessionsOf(main.id, state) : [];
   const mainActive = mainSessions.filter((/** @type {import('../snapshot').SessionView} */ s) => !isArchived(s));
 
@@ -903,11 +1023,15 @@ function checkoutSessions(/** @type {import('./core.js').Target} */ c, /** @type
   const treeSessions = state.sessions.filter((/** @type {import('../snapshot').SessionView} */ s) => s.workspace !== main?.id);
   const treeActive = treeSessions.filter((/** @type {import('../snapshot').SessionView} */ s) => !isArchived(s));
 
+  /** @type {any[]} */
+  const items = [];
+
   /* **A head only when nothing above it is one.** With several checkouts open the
      `.co-head` names each block and this would be a second heading saying less;
      with one — which is every install today — there is no header at all, and the
      rail opened on a bare session row. It counts what it holds, the way the two
      panes below the rail do. */
+  const shut = folded.has(c.path);
   if (titled) {
     /* **The project's own name, not the word "sessions".** A rail that holds one
        project and calls its list `Sessions` is naming the obvious and leaving out
@@ -915,15 +1039,23 @@ function checkoutSessions(/** @type {import('./core.js').Target} */ c, /** @type
        multi-checkout header's name, so opening a second project changes where the
        name sits and not what it looks like. Folds on a double-click, the same
        gesture that folds the header it mirrors. */
-    const head = el('div', 'ws-title');
-    const shut = folded.has(c.path);
-    head.title = repoSummary(c);
-    head.appendChild(el('span', 'co-name solo', c.name));
-    const live = mainActive.length + treeActive.length;
-    head.appendChild(el('span', 'ws-count', live ? String(live) : 'none'));
-    head.ondblclick = () => setFolded(c.path, !shut);
-    group.appendChild(head);
-    if (shut) return group;
+    items.push({
+      key: 'head',
+      sig: chrome,
+      build: () => {
+        const head = el('div', 'ws-title');
+        head.title = repoSummary(c);
+        head.appendChild(el('span', 'co-name solo', c.name));
+        const live = mainActive.length + treeActive.length;
+        head.appendChild(el('span', 'ws-count', live ? String(live) : 'none'));
+        head.ondblclick = () => setFolded(c.path, !shut);
+        return head;
+      },
+    });
+    if (shut) {
+      reconcile(group, items);
+      return;
+    }
   }
 
   /* **The press shows before the daemon answers.** A worktree is a POST, the
@@ -932,7 +1064,7 @@ function checkoutSessions(/** @type {import('./core.js').Target} */ c, /** @type
      dead and pressing again was the reasonable thing to do. The row lands first and
      the real one replaces it, which is what `pendingSelect` was already for.
      At the top, because it is the newest thing there is. */
-  if (creatingIn() === c.path) group.appendChild(startingRow());
+  if (creatingIn() === c.path) items.push({ key: 'starting', sig: chrome, build: () => startingRow() });
 
   /* Newest first until you say otherwise, and then your order — see
      `inRailOrder`. Main stays first whatever the order says: it is the checkout
@@ -940,14 +1072,12 @@ function checkoutSessions(/** @type {import('./core.js').Target} */ c, /** @type
   const mainRows = inRailOrder(c.path, mainActive);
   const treeRows = inRailOrder(c.path, treeActive);
   const shown = [...mainRows, ...treeRows];
+  /* **The drop handler closes over this list**, so it belongs in every row's
+     signature: a reused row keeps the closures it was built with, and one holding
+     last repaint's order would write the wrong order back. Ids rather than the
+     sessions, because the order is the only part the handler reads. */
+  const order = shown.map((/** @type {import('../snapshot').SessionView} */ s) => s.id);
 
-  /* Drag a row to put the list in an order only you know.
-   *
-   *  HTML5 drag-and-drop rather than the drawer's pointer maths, because the rail
-   *  is one column and `dragover` already answers the only question there is —
-   *  above or below this one. It is what `checkoutHead` a few functions up does
-   *  for the same gesture on the same rail; the drawer's tab strip is horizontal
-   *  and scrolls, which is where the pointer maths earns its keep. */
   const draggable = (/** @type {HTMLElement} */ row, /** @type {import('../snapshot').SessionView} */ s, /** @type {string} */ list) => {
     row.draggable = true;
     row.ondragstart = (ev) => {
@@ -983,18 +1113,61 @@ function checkoutSessions(/** @type {import('./core.js').Target} */ c, /** @type
     return row;
   };
 
-  for (const s of mainRows) group.appendChild(draggable(sessionRow(s, main, true), s, 'main'));
+  /* One signature per row, over the session and the workspace it takes its name
+     from, with `NOT_DRAWN` taking out the same fields the rail as a whole ignores
+     — `changed` and the counts beside it ride every snapshot and no row shows
+     them. Everything a row reads from outside itself is named here too. */
+  const rowSig = (/** @type {import('../snapshot').SessionView} */ s, /** @type {any} */ w, /** @type {boolean} */ fromMain) =>
+    paintSig([s, w, s.id === selected, startingShown(), fromMain, order, c.path], NOT_DRAWN);
+
+  for (const s of mainRows) {
+    items.push({
+      key: `s:${s.id}`,
+      sig: rowSig(s, main, true),
+      build: () => draggable(sessionRow(s, main, true), s, 'main'),
+    });
+  }
   // The workspace is only needed for the name it lends the row.
-  for (const s of treeRows) group.appendChild(draggable(sessionRow(s, { id: s.workspace }), s, 'tree'));
+  for (const s of treeRows) {
+    items.push({
+      key: `s:${s.id}`,
+      sig: rowSig(s, { id: s.workspace }, false),
+      build: () => draggable(sessionRow(s, { id: s.workspace }), s, 'tree'),
+    });
+  }
 
   /* One archive per checkout rather than one per group, which follows from there
      being one list: the two folds were only ever separate because their headings
-     were. Read once here because the add row shows the count and the block below
+     were. Read once here because the add row shows the count and the box below
      draws the rows, and two reads of it could disagree. */
   const archived = [...mainSessions, ...treeSessions].filter(isConversation);
-  group.appendChild(addRow(c, state, main, mainActive, archived));
-  appendArchived(c, group, 'sessions', archived);
-  return group;
+  items.push({
+    key: 'add',
+    sig: chrome,
+    build: () => addRow(c, state, main, mainActive, archived),
+  });
+  /* **The rows, in the box `archivedToggle` opens from the add row above.** The
+     box is bounded in CSS at about ten rows rather than truncated, and it is also
+     what says "section" now the heading rides the add row — `archivedToggle` and
+     `archiveOpen` carry the rest of that reasoning.
+
+     Keyed inside it, because an archived row is hovered and clicked like a live
+     one and has the same claim on surviving a repaint. */
+  if (archived.length && archiveOpen(c, 'sessions', archived).open) {
+    items.push({
+      key: 'arcbox',
+      sig: 'arcbox',
+      build: () => el('div', 'arcbox'),
+      fill: (/** @type {HTMLElement} */ box) => reconcile(box, [...archived]
+        .sort(byNewest)
+        .map((/** @type {import('../snapshot').SessionView} */ s) => ({
+          key: `arc:${s.id}`,
+          sig: paintSig([s, s.id === selected], NOT_DRAWN),
+          build: () => archivedRow(s),
+        }))),
+    });
+  }
+  reconcile(group, items);
 }
 
 /** A session that has been asked for and does not exist yet.
@@ -1135,27 +1308,6 @@ function archivedToggle(/** @type {import('./core.js').Target} */ c, /** @type {
   btn.appendChild(el('span', 'arccount', String(sessions.length)));
   btn.onclick = () => { showArchived[held] = !open; renderRail(); };
   return btn;
-}
-
-/** The group's past conversations, behind a count.
- *
- *  Collapsed by default, because history is not what the rail is for — but
- *  opened whenever the conversation you are looking at is in here, so the rail
- *  never goes silent about what the centre pane is showing.
- */
-function appendArchived(/** @type {import('./core.js').Target} */ c, /** @type {HTMLElement} */ group, /** @type {string} */ key, /** @type {import('../snapshot').SessionView[]} */ sessions) {
-  if (!sessions.length) return;
-  if (!archiveOpen(c, key, sessions).open) return;
-  /* **Its own box, and the box is what scrolls.** Bounded in CSS at about ten
-     rows: this checkout has 26 and a machine that has been running for a month
-     will have more, and the whole lot took the column and pushed `+ open project`
-     and the PR pane out of sight. Bounded rather than truncated — everything is
-     still reachable, it is the *height* that is capped.
-     The box is also what says "section" now that the heading has moved onto the
-     add row: it has a rule above and below it and a ground of its own. */
-  const box = el('div', 'arcbox');
-  for (const s of sessions.sort(byNewest)) box.appendChild(archivedRow(s));
-  group.appendChild(box);
 }
 
 /** A past conversation: which worktree it was in, and how long ago.
@@ -1745,7 +1897,7 @@ const isNudgeable = (/** @type {import('../snapshot').SessionView} */ s) =>
   && s.interrupted;
 
 /** What the bar was last built from — see `unchanged`. */
-const barDrawn = { sig: null };
+const barDrawn = { sig: null, name: 'waitbar' };
 
 function renderWaitbar() {
   // Across every checkout, which is what makes the bar and the chord it

@@ -72,8 +72,8 @@ let showBlockedReviews = false;
  * land on two different elements is never delivered, which is the review row that
  * does not open when you click it. The rail's waiting clock was moved off
  * `Rail.render()` for this same reason, and this is the same fault one pane over. */
-const headDrawn = { sig: null };
-const listDrawn = { sig: null };
+const headDrawn = { sig: null, name: 'review-head' };
+const listDrawn = { sig: null, name: 'review-list' };
 
 /* **The head and the list are guarded apart, because a refresh only moves the
    head.** A poll flips `reviews_polling` on and then off again, and the counter

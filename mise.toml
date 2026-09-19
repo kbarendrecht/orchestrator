@@ -156,6 +156,23 @@ depends = ["deps"]
 dir = "{{config_root}}"
 run = "node tools/shot.mjs"
 
+# Asks both engines whether a hovered row survives being rebuilt. Needs no daemon
+# and no checkout: the page under test is its own, because what is measured is the
+# engine's rule rather than orchd's.
+[tasks.hover-check]
+description = "Does a hovered row survive a rebuild — chromium against webkit"
+depends = ["deps"]
+dir = "{{config_root}}"
+run = "node tools/hover-engine-check.mjs"
+
+# Attaches to a daemon you already have open and watches it work. Not a gate:
+# the number that matters is per workload, so there is nothing to deny against.
+[tasks.paint-check]
+description = "Count which panes rebuild while agents work, and name what moved"
+depends = ["deps"]
+dir = "{{config_root}}"
+run = "node tools/paint-check.mjs"
+
 # The README's demo GIF, recorded against a *running* daemon on a prepared
 # checkout — `docs/demo.md` says which, and why it cannot be the e2e sandbox.
 # Drives a real `claude`, so it costs tokens and is not part of any gate.
