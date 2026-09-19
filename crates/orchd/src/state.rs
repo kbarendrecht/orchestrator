@@ -1,6 +1,6 @@
 use anyhow::{bail, Context as _, Result};
 use serde::Serialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -942,7 +942,17 @@ impl AppState {
                 kind: w.kind.clone(),
                 is_main: w.is_main(),
                 occupant: w.occupant,
-                branches: w.branches.iter().cloned().collect(),
+                /* Sorted, because a `HashSet` hands them back in whatever order
+                the last rehash left — and the page compares snapshots by their
+                JSON text to decide whether to repaint. A reorder that says
+                nothing new then tears down every session row and every PR row
+                under the pointer. Measured: one rail rebuild in 35 idle
+                seconds, this and nothing else. */
+                branches: {
+                    let mut b: Vec<String> = w.branches.iter().cloned().collect();
+                    b.sort();
+                    b
+                },
                 processes: w
                     .processes
                     .iter()
@@ -1033,7 +1043,12 @@ impl AppState {
                 .and_then(|t| now.duration_since(t).ok().map(|d| d.as_millis() as u64)),
             reviews_poll: inner.reviews_poll,
             reviews_polling: inner.reviews_polling,
-            automation: inner.automation.by_pr.clone(),
+            automation: inner
+                .automation
+                .by_pr
+                .iter()
+                .map(|(k, v)| (*k, v.clone()))
+                .collect(),
             repos: self.repos.clone(),
             several_in_main: self.cfg.allow_several_in_main,
             upstream_ref: self.cfg.upstream_ref.clone(),
@@ -1696,11 +1711,14 @@ pub struct Snapshot {
     #[cfg_attr(any(test, feature = "test-util"), ts(type = "number"))]
     pub reviews_poll: u64,
     pub reviews_polling: bool,
+    /// Ordered, for the same reason `WorkspaceView::branches` is sorted: the page
+    /// decides whether to repaint by comparing snapshot text, and a `HashMap`
+    /// rehash reorders these keys without changing a word of what they say.
     #[cfg_attr(
         any(test, feature = "test-util"),
         ts(as = "std::collections::HashMap<String, crate::model::PrAutomation>")
     )]
-    pub automation: HashMap<u64, crate::model::PrAutomation>,
+    pub automation: BTreeMap<u64, crate::model::PrAutomation>,
     pub repos: Repos,
     /// Main may hold more than one live session (`allow_several_in_main`).
     ///
@@ -1974,6 +1992,165 @@ mod tests {
         s.set_state(State::Working);
         inner.sessions.insert(id, s);
         id
+    }
+
+    /// Two snapshots of an unchanged daemon have to be the same bytes.
+    ///
+    /// **The page decides whether to repaint by comparing snapshot text.** So a
+    /// field that serialises in a different order each time is a rail torn down
+    /// under the pointer for a snapshot carrying no news — every session row and
+    /// every PR row rebuilt, and the hover highlight on the row you are aiming at
+    /// never finishing its fade.
+    ///
+    /// Two fields did exactly that and were fixed by hand: `WorkspaceView::branches`
+    /// came off a `HashSet` unsorted, and `automation` was a `HashMap` serialised
+    /// in rehash order. Fixing the third one by hand is what this test exists to
+    /// stop. It is deliberately about the *whole* snapshot rather than those two,
+    /// because the next one will be a field nobody is thinking about — measured
+    /// idle before the fix: one rail rebuild in 35 seconds, this and nothing else.
+    ///
+    /// Populated rather than empty: an empty collection serialises the same way
+    /// whatever holds it, so a bare fixture would pass while proving nothing.
+    #[tokio::test]
+    async fn a_snapshot_of_an_unchanged_daemon_is_the_same_bytes_twice() {
+        let app = app().await;
+        let id = live_in_main(&app).await;
+        {
+            let mut inner = app.inner.write().await;
+            // Several branches, inserted in an order that is not their sorted one,
+            // so an unsorted collection has something to get wrong.
+            if let Some(w) = inner.workspaces.get_mut(MAIN) {
+                for b in ["zebra", "alpha", "middle", "beta"] {
+                    w.branches.insert(b.to_string());
+                }
+            }
+            // Sixteen, inserted out of order: a `HashMap` holds its order steady
+            // within one process until it rehashes, so *repeating* the snapshot
+            // cannot catch one on its own — what catches it is asking whether the
+            // order is **defined**, and sixteen keys coming back ascending by
+            // chance is not a thing that happens.
+            for pr in [
+                77_u64, 3, 512, 9, 41, 8, 630, 12, 205, 1, 99, 34, 7, 888, 56, 23,
+            ] {
+                inner.automation.0.by_pr.insert(
+                    pr,
+                    crate::model::PrAutomation::Exhausted {
+                        at_head: None,
+                        at: std::time::UNIX_EPOCH,
+                    },
+                );
+            }
+        }
+
+        /* **Compared the way the page compares them**, which means without the
+        `_ms` fields. Those are durations measured when the snapshot is taken,
+        so they differ on every build by construction — `paintSig` drops every
+        key ending `_ms` for exactly that reason, and each one reaches the page
+        as a `data-clock` node that ticks in place. Comparing raw text here
+        would only ever be re-testing that a clock moves. */
+        let first = serde_json::to_string(&app.snapshot().await).unwrap();
+        let stable = |json: &str| {
+            let mut v: serde_json::Value = serde_json::from_str(json).unwrap();
+            drop_durations(&mut v);
+            v
+        };
+        let before = stable(&first);
+        for _ in 0..8 {
+            let again = serde_json::to_string(&app.snapshot().await).unwrap();
+            assert_eq!(
+                before,
+                stable(&again),
+                "nothing but the clocks changed between these two snapshots, so the \
+                 page must see the same thing — a collection serialising in rehash \
+                 order rebuilds every row the pointer is on"
+            );
+        }
+
+        /* **And the order has to be *defined*, not merely repeated.** Both halves
+        are needed and neither replaces the other: the loop above catches a
+        value that differs per call, and this catches a container that happens
+        to be steady in one process and reorders in the next — which is what a
+        `HashMap` does, and is why putting `automation` back to one still
+        passed the loop. */
+        let snap = app.snapshot().await;
+        let ws = snap.workspaces.iter().find(|w| w.id == MAIN).unwrap();
+        let mut sorted = ws.branches.clone();
+        sorted.sort();
+        assert_eq!(ws.branches, sorted, "branches are sorted, not hash-ordered");
+
+        // Read the key order out of the text, because parsing it back would sort
+        // the keys for us and answer a question nobody asked.
+        let keys = automation_keys_in_order(&first);
+        let mut ascending = keys.clone();
+        ascending.sort_unstable();
+        assert_eq!(
+            keys, ascending,
+            "the automation map has to serialise in a defined order — a `HashMap` \
+             here reorders on a rehash and rebuilds every row for a snapshot that \
+             says the same thing"
+        );
+        assert_eq!(
+            keys.len(),
+            16,
+            "the fixture's records all have to be in there"
+        );
+        let _ = id;
+    }
+
+    /// Strip every `_ms` field, the way `paintSig` does before the page compares.
+    fn drop_durations(v: &mut serde_json::Value) {
+        match v {
+            serde_json::Value::Object(map) => {
+                map.retain(|k, _| !k.ends_with("_ms"));
+                for inner in map.values_mut() {
+                    drop_durations(inner);
+                }
+            }
+            serde_json::Value::Array(items) => items.iter_mut().for_each(drop_durations),
+            _ => {}
+        }
+    }
+
+    /// The `automation` keys, in the order the JSON actually lists them.
+    ///
+    /// Read out of the text rather than parsed, because `serde_json` would sort
+    /// the keys on the way in and answer a question nobody asked. Depth-counted,
+    /// because each value is itself an object — splitting on the first `}` finds
+    /// one key and the length assertion above is what says so.
+    fn automation_keys_in_order(json: &str) -> Vec<u64> {
+        let mark = "\"automation\":{";
+        let at = json.find(mark).expect("a snapshot carries automation");
+        let body = &json[at + mark.len()..];
+        let mut keys = Vec::new();
+        let mut depth = 0i32;
+        let mut rest = body;
+        while let Some(i) = rest.find(['{', '}', '"']) {
+            match rest.as_bytes()[i] {
+                b'{' => {
+                    depth += 1;
+                    rest = &rest[i + 1..];
+                }
+                b'}' => {
+                    if depth == 0 {
+                        break;
+                    }
+                    depth -= 1;
+                    rest = &rest[i + 1..];
+                }
+                _ => {
+                    let after = &rest[i + 1..];
+                    let end = after.find('"').unwrap_or(0);
+                    // A key at the top level of this object, not one inside a value.
+                    if depth == 0 && after[end + 1..].starts_with(':') {
+                        if let Ok(n) = after[..end].parse() {
+                            keys.push(n);
+                        }
+                    }
+                    rest = &after[end + 1..];
+                }
+            }
+        }
+        keys
     }
 
     #[tokio::test]

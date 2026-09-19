@@ -392,7 +392,13 @@ reviews_age_ms: number,
 /**
  * Monotonic counter of completed review polls; see `Inner::reviews_poll`.
  */
-reviews_poll: number, reviews_polling: boolean, automation: { [key in string]: PrAutomation }, repos: Repos, 
+reviews_poll: number, reviews_polling: boolean, 
+/**
+ * Ordered, for the same reason `WorkspaceView::branches` is sorted: the page
+ * decides whether to repaint by comparing snapshot text, and a `HashMap`
+ * rehash reorders these keys without changing a word of what they say.
+ */
+automation: { [key in string]: PrAutomation }, repos: Repos, 
 /**
  * Main may hold more than one live session (`allow_several_in_main`).
  *
