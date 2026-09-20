@@ -150,6 +150,10 @@ function scheduleRender() {
 
 function render() {
   syncDiffToSession();
+  // An overlay opened from a session belongs to it: switching away closes it,
+  // for the reason the diff does. A search pinned to one worktree quietly
+  // answering about another is the failure being avoided.
+  Find.syncToSession();
   Rail.render();
   // The create in flight reports through the snapshot, so its overlay is redrawn
   // with everything else rather than only when the press changed.
@@ -774,6 +778,7 @@ import * as Review from './js/review.js';
 // ---------------------------------------------------------------------------
 
 import * as Queue from './js/queue.js';
+import * as Find from './js/find.js';
 
 
 
@@ -866,6 +871,9 @@ $('ovmode').onclick = async () => {
 };
 $('ovedit').onclick = () => (Diff.edit.on ? Diff.closeEditor() : Diff.openEditor());
 $('ovsave').onclick = Diff.saveEditor;
+// The find overlay's own chrome: its two boxes and three toggles all ask the
+// same question again, so the module wires them rather than five lines here.
+Find.init();
 $('addshell').onclick = newShell;
 $('keyhelpx').onclick = () => { $('keyhelp').hidden = true; };
 // The visible way in, beside the gear. Its tooltip names the chord — the whole
@@ -1045,6 +1053,49 @@ window.addEventListener('keydown', (e) => {
   if (e.defaultPrevented) e.stopPropagation();
 }, true);
 
+/* **Shift-Shift opens the file search, and the guard is the whole of it.**
+ *
+ * A double tap of Shift is JetBrains' "search everywhere", and it is the one
+ * gesture that costs no chord: Shift alone is neither a binding nor a character,
+ * so no rule in the map above bends to make room for it. A bare Shift is never
+ * written to a pty either, so nothing is taken from an agent and nothing needs
+ * preventing — this listener only watches.
+ *
+ * The failure it exists to refuse is typing two capitals. `Shift A Shift B` is
+ * two Shift keydowns with a release between them, which is exactly the shape of a
+ * deliberate double tap — so "within 300ms of the last one" on its own fires
+ * while somebody is typing prose. `dirty` is the fix: any other key pressed while
+ * Shift is held disqualifies that tap, so a Shift used *as a modifier* can never
+ * arm the next one. What survives is a Shift pressed and released with nothing
+ * between, twice — which is a thing people do on purpose and almost never by
+ * accident.
+ *
+ * Both halves are asserted in `mise run page-check`, and the refusal is the half
+ * that gives the assertion power. */
+const TAP = 300;
+let armedAt = 0;      // when a clean tap ended, 0 if there is none
+let holding = false;  // a Shift is down, and started clean
+let dirty = false;    // something else was pressed while it was down
+window.addEventListener('keydown', (e) => {
+  if (e.key !== 'Shift') { dirty = true; armedAt = 0; return; }
+  if (e.repeat) return;
+  // A Shift with another modifier held is part of a chord, not a tap.
+  if (e.ctrlKey || e.altKey || e.metaKey) { armedAt = 0; holding = false; return; }
+  if (armedAt && Date.now() - armedAt <= TAP) {
+    armedAt = 0;
+    holding = false;
+    Find.open('names');
+    return;
+  }
+  holding = true;
+  dirty = false;
+}, true);
+window.addEventListener('keyup', (e) => {
+  if (e.key !== 'Shift') return;
+  armedAt = holding && !dirty ? Date.now() : 0;
+  holding = false;
+}, true);
+
 function keymap(/** @type {KeyboardEvent} */ e) {
   /* **A bare `Backspace` outside a text field is a navigation key, and this app
      has nowhere to navigate to.** Clicking a titlebar puts focus on something
@@ -1147,6 +1198,19 @@ function keymap(/** @type {KeyboardEvent} */ e) {
     else foldOpenAsk();
     return;
   }
+  /* The find overlay: bare keys are its while it is up, which is the contract's
+     first line. `j`/`k` only once focus has left the query box — it is a text
+     field, so the letters belong to what you are typing until Tab moves off it. */
+  if (Find.isOpen()) {
+    if (e.key === 'Escape') { e.preventDefault(); Find.close(); return; }
+    const typingInFind = !!/** @type {HTMLElement} */ (e.target).closest?.('input, textarea');
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp'
+        || (!typingInFind && !e.ctrlKey && !e.altKey && !e.metaKey && (e.key === 'j' || e.key === 'k'))) {
+      e.preventDefault();
+      Find.step(e.key === 'ArrowDown' || e.key === 'j' ? 1 : -1);
+      return;
+    }
+  }
   if (Diff.state.open) {
     if (e.key === 'Escape') { e.preventDefault(); void Diff.close(); return; }
     // j/k steps through the changeset, matching the review overlay's motion so
@@ -1204,6 +1268,15 @@ function keymap(/** @type {KeyboardEvent} */ e) {
       e.preventDefault();
       if (Review.state.open) return toast('the review is already open');
       void Review.open(Review.state.pr);
+      return;
+    }
+    /* Find in files. Shift rather than plain, by the rule at the top of this
+       handler: a plain `Ctrl+F` is readline's forward-char and the pty's to keep.
+       The filename half of the same feature is Shift-Shift (see `doubleShift`),
+       which spends no chord at all. */
+    if (e.shiftKey && k === 'f') {
+      e.preventDefault();
+      Find.open('text');
       return;
     }
     // Shift, not plain: Ctrl+D is EOF and still has to exit a shell.

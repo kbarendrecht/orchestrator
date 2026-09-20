@@ -1531,6 +1531,7 @@ async fn module(UrlPath(file): UrlPath<String>) -> Response {
         "rail.js" => include_str!("../../../web/js/rail.js"),
         "diff.js" => include_str!("../../../web/js/diff.js"),
         "source.js" => include_str!("../../../web/js/source.js"),
+        "find.js" => include_str!("../../../web/js/find.js"),
         "review.js" => include_str!("../../../web/js/review.js"),
         "review-diff.js" => include_str!("../../../web/js/review-diff.js"),
         "queue.js" => include_str!("../../../web/js/queue.js"),

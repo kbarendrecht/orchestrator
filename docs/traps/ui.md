@@ -81,3 +81,43 @@ two have different containing blocks (`#oq` beside `#termwrap`, `#rvbar` inside
 it). Which side layout puts it on is not the contract. **Checked against deliberate
 breakage twice** — reverting the CSS to the bare anchor and disabling the observer
 each reproduce the screenshot, bar 731-769 against question 735-812.
+
+## Shift-Shift is the one gesture that costs no chord, and the guard is the whole of it.
+A double tap of Shift opens the file search (`web/app.js`, below the keymap).
+It fits the map without bending a rule, which is why it was taken: `Shift` alone
+is neither a binding nor a character, so nothing had to move aside, and a bare
+Shift is never written to a pty — nothing is taken from an agent and nothing
+needs `preventDefault`.
+
+**The naive detector fires while you type.** "Two Shift keydowns within 300ms" is
+also the shape of `Shift A Shift B` — two taps with a release between them — so an
+interval check alone opens the overlay in the middle of a sentence. The fix is
+`dirty`: any other key pressed while Shift is held disqualifies that tap, so a
+Shift used *as a modifier* can never arm the next one. What survives is a Shift
+pressed and released with nothing between, twice.
+
+`mise run page-check` holds both halves, and **the refusal is the half with
+power**: `Shift Shift opens the file search` passes on a broken detector too, and
+`typing two capitals does not open it` is what fails when the guard goes. Checked
+against deliberate breakage — dropping `!dirty` from the keyup fails exactly that
+one. Driven with real `down`/`up`, because the guard turns on the keyup between
+the presses and a synthetic keydown would pass while the feature was broken.
+
+## The find viewer draws a band of the file, and the spacers are what make it scroll.
+`web/js/find.js` renders 320 rows around the cursor, not the file. A row per line
+is a DOM node per line — `core.js` is 2,002 of them — and this app paints into
+WebKitGTK with xterm's DOM renderer already on the same page.
+
+**The two spacers are not padding, they are the scrollbar.** Without them the
+document is as tall as the band and scrolling stops after 320 lines, which looks
+like a truncated file rather than a broken viewer. Their height is the *measured*
+height of a real row, taken once per file: a height derived from the CSS goes
+wrong the moment the font-size setting moves, and that setting is a slider in this
+app.
+
+Two smaller rules travel with it. The gutter number is generated content
+(`i::before { content: attr(data-n) }`) for the reason the diff's is — WebKit
+takes an unselectable element's text when a selection *crosses* it, so a copied
+snippet would carry a column of digits. And a refusal — binary, too large, deleted
+underneath you — is a sentence in the pane (`.fnsay`), because an empty viewer is
+indistinguishable from a broken one.

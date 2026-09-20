@@ -55,6 +55,9 @@
 // under the pointer never lands inside it. That failure is a hand on a mouse, and
 // nothing here can see it.
 
+import fs from 'node:fs'
+import path from 'node:path'
+
 import { chromium } from 'playwright-core'
 import { sandbox } from './harness.mjs'
 
@@ -510,6 +513,90 @@ try {
   check((await asking()) === true, 'deleting a session still asks — the transcript does not come back')
   const said = await page.$eval('#dlg', (d) => d.textContent || '')
   check(/for good/.test(said), 'and the box says what goes for good')
+  await page.keyboard.press('Escape')
+
+  /* --- Shift-Shift opens the file search, and typing capitals does not --------- */
+
+  /* **The refusal is the assertion with power here.** "Two Shift keydowns within
+     300ms" also describes somebody typing `Shift A Shift B`, so a detector that
+     only measured the interval would open the overlay mid-sentence. The guard is
+     that any other key pressed while Shift is held disqualifies that tap, and this
+     pair is what holds it: the gesture works, and the prose does not trigger it.
+
+     Driven with real `down`/`up` rather than synthetic events, because the guard
+     turns on the keyup arriving between the two presses — a `dispatchEvent` of
+     keydown alone would pass while the feature was broken. */
+  await page.keyboard.press('Escape')
+  const findUp = () => page.$eval('#fnoverlay', (o) => o.classList.contains('on')).catch(() => null)
+  const tapShift = async () => { await page.keyboard.down('Shift'); await page.keyboard.up('Shift') }
+
+  await page.click('#rail')
+  await tapShift()
+  await tapShift()
+  await page.waitForTimeout(150)
+  check(await findUp() === true, 'Shift Shift opens the file search')
+
+  await page.keyboard.press('Escape')
+  await page.waitForTimeout(100)
+  check(await findUp() === false, 'and Escape closes it')
+
+  // A capital, then another: two Shift taps with a letter inside each, which is
+  // the shape the guard exists to refuse.
+  await page.keyboard.down('Shift')
+  await page.keyboard.press('KeyA')
+  await page.keyboard.up('Shift')
+  await page.keyboard.down('Shift')
+  await page.keyboard.press('KeyB')
+  await page.keyboard.up('Shift')
+  await page.waitForTimeout(150)
+  check(await findUp() === false, 'typing two capitals does not open it')
+
+  /* --- the search answers, and the viewer shows the file it found ------------- */
+
+  /* **The overlay is the viewer, so this is one assertion about both.** Opening it
+     proves the chord; only typing into it proves the route, the index and the file
+     underneath are wired to each other. The word is written into the worktree
+     first and never committed, which also asks the question the daemon's own
+     walk answers: an untracked file an agent wrote a moment ago has to be
+     findable, because that is the normal state of everything here. */
+  const tree = (await t.session(session)).cwd
+  fs.writeFileSync(
+    path.join(tree, 'haystack.txt'),
+    'first line\nsecond line\nthe frobnicate word is here\nfourth line\n',
+  )
+  await page.keyboard.press('Control+Shift+KeyF')
+  await page.waitForSelector('#fnoverlay.on', { timeout: 5000 })
+  await page.fill('#fnq', 'frobnicate')
+  await page.waitForFunction(
+    () => !!document.querySelector('#fnhits .fnhit'), null, { timeout: 5000 })
+
+  const row = await page.$eval('#fnhits .fnhit', (r) => r.textContent)
+  check(row === 'haystack.txt:3', `the index is path:line, got ${row}`)
+
+  // The file under it, at the line the hit named — and the match marked through
+  // the same range machinery the word-diff paints with.
+  await page.waitForFunction(
+    () => !!document.querySelector('#fnsrc .fnrow.on'), null, { timeout: 5000 })
+  const shown = await page.$eval('#fnsrc .fnrow.on', (r) => r.textContent)
+  check(shown === 'the frobnicate word is here', `the viewer shows the matched line, got ${shown}`)
+  check(
+    await page.$eval('#fnsrc .fnrow.on .tok-find', (m) => m.textContent).catch(() => null) === 'frobnicate',
+    'and the match itself is marked',
+  )
+  // The whole file is there to scroll, not only the matched line.
+  const viewerRows = await page.$$eval('#fnsrc .fnrow', (rs) => rs.length)
+  check(viewerRows === 5, `the viewer holds the file, not the hit, got ${viewerRows} rows`)
+  await page.keyboard.press('Escape')
+
+  /* And the content half, on its own chord. `Control+Shift+F` rather than a plain
+     `Control+F`, which is readline's forward-char and the pty's to keep. */
+  await page.keyboard.press('Control+Shift+KeyF')
+  await page.waitForTimeout(150)
+  check(await findUp() === true, 'Ctrl Shift F opens the search in contents mode')
+  check(
+    await page.$eval('#fnmode', (m) => m.textContent) === 'contents',
+    'and it says which mode it is in',
+  )
   await page.keyboard.press('Escape')
 
   console.log(`\npage-check: ${failed ? 'FAILED' : 'ok'}`)

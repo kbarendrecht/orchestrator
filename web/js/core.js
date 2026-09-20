@@ -886,11 +886,16 @@ export async function callOn(c, path, body) {
 
 /** GET from one checkout's daemon.
  *
+ *  `signal` is for a caller whose next request supersedes this one — the search
+ *  makes one per keystroke, and an answer to a query nobody is asking any more is
+ *  worse than no answer, because it arrives after the right one.
+ *
  *  @param {Endpoint} c
  *  @param {string} path
+ *  @param {AbortSignal} [signal]
  */
-export async function getOn(c, path) {
-  const res = await fetch(c.base + path, { headers: { 'x-orch-token': c.token } });
+export async function getOn(c, path, signal) {
+  const res = await fetch(c.base + path, { headers: { 'x-orch-token': c.token }, signal });
   const json = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(json.error || res.statusText);
   return json;
@@ -924,7 +929,7 @@ export const snapshotFor = (id) => snapshotOf((checkoutOf(id) ?? activeCheckout(
    because "the active one" is only ever right for the panes that follow the
    selection — the rail does not. */
 export const call = (/** @type {string} */ path, /** @type {any} */ body) => callOn(activeCheckout(), path, body);
-export const get = (/** @type {string} */ path) => getOn(activeCheckout(), path);
+export const get = (/** @type {string} */ path, /** @type {AbortSignal} */ signal) => getOn(activeCheckout(), path, signal);
 
 function duration(/** @type {number | null | undefined} */ ms) {
   if (ms == null) return '';

@@ -7,7 +7,7 @@
 // it and none of them wanted a diff.
 
 import { $, activeWorkspaceId, call, confirmBox, currentSession, currentWorkspaceId, el, get, MOD_LABEL, openMenu, pending, prForWorkspace, snap, reason, toast, paintSig, reconcile, unchanged, workspaceById } from './core.js';
-import { langFor, lineSegments } from './source.js';
+import { charRanges, langFor, lineSegments } from './source.js';
 
 // Written back onto the button after a save, so it is spelled from the same
 // platform label the page resolved `data-mod` with — a hardcoded glyph here was
@@ -451,12 +451,6 @@ const diffState = {
   context: 3,
 };
 
-/* Byte offsets come from Rust; JS strings are UTF-16. Decode through the byte
-   array rather than assuming ASCII, or a line with an accent in it highlights
-   the wrong span. */
-const ENC = new TextEncoder();
-const DEC = new TextDecoder();
-
 function lineEl(/** @type {import('../repo').Row} */ row, /** @type {'old' | 'new'} */ side) {
   // side: 'old' | 'new'. In split view each pane shows only its own side.
   const empty = !row || (side === 'old' && row.kind === 'add') ||
@@ -475,9 +469,7 @@ function lineEl(/** @type {import('../repo').Row} */ row, /** @type {'old' | 'ne
     // Word ranges arrive as byte offsets (from Rust); Prism works on the JS
     // string. Convert the ranges to character offsets so the two line up, then
     // merge. A blank line still needs a space so the row has height.
-    const bytes = ENC.encode(row.text);
-    const b2c = (/** @type {number} */ b) => DEC.decode(bytes.slice(0, b)).length;
-    const words = (row.words || []).map(([ws, we]) => ({ s: b2c(ws), e: b2c(we) }));
+    const words = charRanges(row.text, row.words || []);
     const segs = lineSegments(row.text, words, langFor(diffState.path ?? ''));
     if (!segs.length) {
       body.textContent = row.text || ' ';

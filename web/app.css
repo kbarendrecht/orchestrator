@@ -2324,3 +2324,78 @@ select.opfield,input.opfield{appearance:none}
   display:flex;align-items:center;gap:12px;
 }
 .opactions .opbtn.primary{margin-left:auto}
+
+/* ---------------------------------------------------------------------------
+   The find overlay: query, an index of `path:line`, the file under it.
+
+   Stacked rather than columned, the way JetBrains stacks them: a hit is one line
+   of code and wants width, and source wants width more than it wants height.
+   --------------------------------------------------------------------------- */
+.overlay.find{gap:0}
+.fnq,.fnglob{
+  font-family:var(--code);font-size:calc(12px * var(--fs));color:var(--text);
+  background:var(--bg);border:1px solid var(--line);border-radius:2px;
+  padding:5px 9px;min-width:0;
+}
+.fnq{flex:1}
+.fnglob{flex:0 0 150px}
+.fnq:focus,.fnglob:focus{outline:none;border-color:var(--focus)}
+.fnmode{
+  font-family:var(--label);font-size:calc(9px * var(--fs));font-weight:700;
+  letter-spacing:.1em;text-transform:uppercase;color:var(--faint-solid);flex:0 0 auto;
+}
+.fntg{
+  font-family:var(--code);font-size:calc(10.5px * var(--fs));color:var(--faint-solid);
+  border:1px solid var(--line);border-radius:2px;padding:3px 7px;
+}
+.fntg:hover{color:var(--text)}
+/* On is amber because it changes what the answer *is*, which is the one thing in
+   this overlay worth a colour. */
+.fntg.on{color:var(--attn);border-color:#4A3A1E;background:#1E1810}
+
+/* The index. A third of the height, so the file below it is the larger half. */
+.fnhits{
+  flex:0 0 32%;overflow:auto;background:var(--bg);
+  border-bottom:1px solid var(--line);
+  font-family:var(--code);font-size:calc(11.5px * var(--fs));line-height:1.75;
+}
+.fnhit{display:flex;padding:0 14px;white-space:nowrap;cursor:pointer}
+.fnhit:hover{background:var(--hover)}
+.fnhit.sel{background:var(--raised);box-shadow:inset 2px 0 0 var(--attn)}
+.fndir{color:var(--ghost)}
+.fnbase{color:var(--dim)}
+.fnhit.sel .fnbase{color:var(--text)}
+.fnline{color:var(--attn);font-variant-numeric:tabular-nums}
+
+.fnview-head{
+  display:flex;align-items:center;gap:12px;padding:5px 16px;flex:0 0 auto;
+  background:var(--surface);border-bottom:1px solid var(--line-soft);
+}
+.fnview-head .ov-count{margin-left:auto}
+
+/* The viewer. Scrolls in its own box, so the page never scrolls sideways. */
+.fnsrc{
+  flex:1;overflow:auto;background:var(--bg);
+  font-family:var(--code);font-size:calc(var(--code-px,11.5px) * var(--fs));line-height:1.65;
+}
+/* Standing in for the lines outside the band, so the scrollbar is the file's
+   length and not the band's. */
+.fnpad{width:1px}
+.fnrow{display:grid;grid-template-columns:56px 1fr;white-space:pre}
+.fnrow i{
+  color:#6E6E6E;text-align:right;padding-right:12px;font-style:normal;user-select:none;
+}
+.fnrow i::before{content:attr(data-n)}
+.fnrow s{text-decoration:none;padding:0 12px;display:block}
+.fnrow.on{background:#1B1A14;box-shadow:inset 2px 0 0 var(--attn)}
+/* The match itself, in the diff's own word-highlight shape so a marked span
+   means one thing everywhere in this app. */
+.tok-find{background:#3A2C12;color:var(--attn);border-radius:2px}
+/* A refusal — binary, too large, gone from disk — said in the pane. A blank
+   viewer is indistinguishable from a broken one. */
+.fnsay{padding:18px 16px;color:var(--dim);font-family:var(--mono)}
+.fnfoot{
+  flex:0 0 auto;padding:5px 16px;border-top:1px solid var(--line);
+  background:var(--surface);color:var(--faint-solid);
+  font-family:var(--mono);font-size:calc(10.5px * var(--fs));
+}

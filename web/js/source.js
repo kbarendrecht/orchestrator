@@ -14,6 +14,25 @@
 
 import { el } from './core.js';
 
+/* Byte offsets come from Rust; JS strings are UTF-16. Decode through the byte
+   array rather than assuming ASCII, or a line with an accent in it highlights the
+   wrong span. Two callers now — the diff's word ranges and the search's matched
+   span — which is why the conversion is here rather than beside either. */
+const ENC = new TextEncoder();
+const DEC = new TextDecoder();
+
+/** Byte `[start, end]` pairs within `text`, as character offsets.
+ *
+ *  @param {string} text
+ *  @param {[number, number][] | number[][]} pairs
+ */
+export function charRanges(text, pairs) {
+  if (!pairs.length) return [];
+  const bytes = ENC.encode(text);
+  const at = (/** @type {number} */ b) => DEC.decode(bytes.slice(0, b)).length;
+  return pairs.map(([s, e]) => ({ s: at(s), e: at(e) }));
+}
+
 /* Prism is vendored whole (every grammar) and driven for its token stream only,
  * never its markup: the daemon already marks the changed slices of a line, and
  * those `.w-add`/`.w-del` ranges have to interleave with the syntax spans rather

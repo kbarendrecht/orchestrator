@@ -142,6 +142,32 @@
       <div class="diff" id="diffbody"></div>
     </div>
 
+    <!-- ============ FIND OVERLAY ============ -->
+    <!-- The search, in the diff overlay's slot: query, an index of `path:line`,
+         and the file under it. Static chrome, because it is one layout rather
+         than the review's six screens; the two lists are rendered by find.js. -->
+    <div class="overlay find" id="fnoverlay">
+      <div class="ov-head">
+        <span class="fnmode" id="fnmode"></span>
+        <input class="fnq" id="fnq" spellcheck="false" autocomplete="off" aria-label="search">
+        <input class="fnglob" id="fnglob" spellcheck="false" autocomplete="off"
+               placeholder="path filter" aria-label="path filter">
+        <div class="ov-nav">
+          <button class="fntg on" id="fncase" title="Smart case: an upper-case letter makes the search sensitive">Aa</button>
+          <button class="fntg" id="fnre" title="The query is a regular expression">.*</button>
+          <button class="fntg" id="fnword" title="Whole words only">W</button>
+          <button class="head-btn" id="fnclose">Close ESC</button>
+        </div>
+      </div>
+      <div class="fnhits" id="fnhits"></div>
+      <div class="fnview-head">
+        <span class="ov-path" id="fnpath"></span>
+        <span class="ov-count" id="fnwhere"></span>
+      </div>
+      <div class="fnsrc" id="fnsrc"></div>
+      <div class="fnfoot" id="fnfoot"></div>
+    </div>
+
     <!-- ============ REVIEW OVERLAY ============ -->
     <!-- Rendered entirely by renderReview(): it is six screens rather than one
          layout, so markup here would be five hidden shells. Ids inside take an
@@ -721,6 +747,8 @@
       <dt data-mod>MOD&nbsp;Shift&nbsp;T</dt><dd data-mod>new shell in this workspace (also MOD&nbsp;`)</dd>
 
       <div class="settings-group">Overlays</div>
+      <dt data-mod>MOD&nbsp;Shift&nbsp;F</dt><dd>find in this workspace's files</dd>
+      <dt>Shift&nbsp;Shift</dt><dd>find a file by name</dd>
       <dt data-mod>MOD&nbsp;Shift&nbsp;D</dt><dd>toggle the diff</dd>
       <dt data-mod>MOD&nbsp;Shift&nbsp;R</dt><dd>back to the review you left</dd>
       <dt>J&nbsp;/&nbsp;K</dt><dd>previous / next changed file or review card</dd>
