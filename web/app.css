@@ -2394,6 +2394,11 @@ select.opfield,input.opfield{appearance:none}
 /* A refusal — binary, too large, gone from disk — said in the pane. A blank
    viewer is indistinguishable from a broken one. */
 .fnsay{padding:18px 16px;color:var(--dim);font-family:var(--mono)}
+/* The viewer handing its box to a buffer. No base pane beside it — a search
+   result is usually a file nobody changed, so there is no revision to compare —
+   which is why the textarea gets the whole width. */
+.fnsrc.editing{overflow:hidden;display:flex}
+.fnsrc.editing .editarea{flex:1}
 .fnfoot{
   flex:0 0 auto;padding:5px 16px;border-top:1px solid var(--line);
   background:var(--surface);color:var(--faint-solid);

@@ -6,14 +6,9 @@
 // knows about strings and nothing about changesets. Three other modules wanted
 // it and none of them wanted a diff.
 
-import { $, activeWorkspaceId, call, confirmBox, currentSession, currentWorkspaceId, el, get, MOD_LABEL, openMenu, pending, prForWorkspace, snap, reason, toast, paintSig, reconcile, unchanged, workspaceById } from './core.js';
+import { $, activeWorkspaceId, call, confirmBox, currentSession, el, get, openMenu, pending, prForWorkspace, snap, reason, toast, paintSig, reconcile, unchanged, workspaceById } from './core.js';
+import * as Editor from './editor.js';
 import { charRanges, langFor, lineSegments } from './source.js';
-
-// Written back onto the button after a save, so it is spelled from the same
-// platform label the page resolved `data-mod` with — a hardcoded glyph here was
-// the Mac key on every platform.
-const SAVE_LABEL = `Save ${MOD_LABEL} S`;
-
 
 // ---------------------------------------------------------------------------
 // The changed-files pane. Inside this seam rather than beside it: the list is
@@ -668,7 +663,7 @@ async function loadSummary() {
 async function loadFile(/** @type {string} */ path) {
   const ws = diffState.ws || activeWorkspaceId();
   if (!ws) return;
-  if (editState.on && path !== editState.path && !await closeEditor()) return;
+  if (Editor.isOpen() && path !== Editor.state.path && !await Editor.close()) return;
   diffState.path = path;
   const q = new URLSearchParams({
     workspace: ws, base: diffState.base, path, context: String(diffState.context),
@@ -718,7 +713,7 @@ async function openDiff(/** @type {string} */ path) {
 }
 
 async function closeDiff() {
-  if (editState.on && !await closeEditor()) return;
+  if (Editor.isOpen() && !await Editor.close()) return;
   diffState.open = false;
   diffState.ws = null;
   diffState.file = null;
@@ -734,141 +729,43 @@ async function closeDiff() {
 // Editable right pane (§5, step 9)
 // ---------------------------------------------------------------------------
 
-/** The open editor. `version` is what the buffer was loaded at, and `watch` is
- *  the poll that notices somebody editing the file underneath you.
- *
- *  @type {{ on: boolean, path: string | null, version: number | null,
- *           dirty: boolean, watch: ReturnType<typeof setInterval> | null }}
- */
-const editState = {
-  on: false,
-  path: null,
-  version: null,
-  dirty: false,
-  watch: null,
-};
+/* The buffer itself is `editor.js` now — the search viewer wanted the same one,
+   and it could not have had it while the load read `diffState` directly. What is
+   left here is the half that really is the diff's: which base revision the
+   read-only left pane shows, and re-diffing after a write. */
 
-function editQuery(/** @type {Record<string, string>} */ extra) {
-  const ws = diffState.ws || activeWorkspaceId();
-  const q = new URLSearchParams({ workspace: ws ?? '', path: diffState.path ?? '', ...extra });
-  const pr = prForWorkspace(ws);
-  if (pr && pr.base_ref) q.set('pr_base', pr.base_ref);
-  return q;
-}
-
-async function openEditor() {
+function openEditor() {
   if (!diffState.path || !diffState.file || diffState.file.binary) {
     return toast('nothing editable here', true);
   }
-  let live, base;
-  try {
-    [live, base] = await Promise.all([
-      get(`/api/file?${editQuery({})}`),
-      get(`/api/file?${editQuery({ base: diffState.base })}`),
-    ]);
-  } catch (e) {
-    return toast(reason(e), true);
-  }
-
-  editState.on = true;
-  editState.path = diffState.path;
-  editState.version = live.version;
-  editState.dirty = false;
-  $('ovsave').hidden = false;
-  $('ovedit').textContent = 'Cancel';
-
-  const body = $('diffbody');
-  body.replaceChildren();
-  body.className = 'diff split editing';
-
-  // The left pane stays the base revision, read-only: this is an editable
-  // right pane, not a free-floating text editor.
-  const left = el('pre', 'editbase');
-  left.textContent = base.content;
-  body.appendChild(left);
-  body.appendChild(el('div', 'gutter'));
-
-  const ta = el('textarea', 'editarea');
-  ta.value = live.content;
-  ta.spellcheck = false;
-  ta.oninput = () => {
-    editState.dirty = true;
-    $('ovsave').textContent = 'Save •';
-  };
-  body.appendChild(ta);
-  ta.focus();
-
-  // Invalidation: an agent editing the same file underneath you must not be
-  // discovered only at save time (§5).
-  clearInterval(editState.watch ?? undefined);
-  editState.watch = setInterval(checkUnderneath, 4000);
+  const ws = diffState.ws || activeWorkspaceId() || '';
+  return Editor.open({
+    mount: $('diffbody'),
+    mountClass: 'diff split editing',
+    workspace: ws,
+    path: diffState.path,
+    base: diffState.base,
+    prBase: prForWorkspace(ws)?.base_ref ?? null,
+    save: $('ovsave'),
+    edit: $('ovedit'),
+    onClosed: renderDiff,
+    onSaved: async () => {
+      // Re-diff so the changeset reflects the write.
+      await loadSummary();
+      const q = new URLSearchParams({
+        workspace: ws,
+        path: diffState.path ?? '',
+        context: String(diffState.context),
+      });
+      const pr = prForWorkspace(ws);
+      if (pr?.base_ref) q.set('pr_base', pr.base_ref);
+      try {
+        diffState.file = await get(`/api/diff/file?${q}`);
+      } catch (e) {
+        /* the editor is still the source of truth on screen */
+      }
+    },
+  });
 }
 
-async function checkUnderneath() {
-  if (!editState.on) return;
-  try {
-    const now = await get(`/api/file?${editQuery({})}`);
-    if (now.version !== editState.version) {
-      clearInterval(editState.watch ?? undefined);
-      editState.watch = null;
-      $('ovsave').textContent = 'Save (conflict)';
-      toast('this file changed on disk — an agent is editing it too. Saving will be refused.', true);
-    }
-  } catch (e) {
-    // A file that vanished is also a change worth knowing about, but not worth
-    // a second alarm; the save will report it.
-  }
-}
-
-async function closeEditor(/** @type {boolean | undefined} */ silent) {
-  // Async now, and the callers await it: `confirm` blocked the thread, this does
-  // not. Everything below has to stay after the answer, or the editor tears
-  // itself down while the question about it is still on screen.
-  if (editState.on && editState.dirty && !silent
-      && !await confirmBox('Discard unsaved edits?', { ok: 'Discard' })) return false;
-  clearInterval(editState.watch ?? undefined);
-  editState.watch = null;
-  editState.on = false;
-  editState.dirty = false;
-  $('ovsave').hidden = true;
-  $('ovsave').textContent = SAVE_LABEL;
-  $('ovedit').textContent = 'Edit';
-  renderDiff();
-  return true;
-}
-
-async function saveEditor() {
-  if (!editState.on) return;
-  const ta = $('diffbody').querySelector('.editarea');
-  if (!ta) return;
-  let out;
-  try {
-    out = await call('/api/file', {
-      workspace: currentWorkspaceId(),
-      path: editState.path,
-      content: /** @type {HTMLTextAreaElement} */ (ta).value,
-      version: editState.version,
-    });
-  } catch (e) {
-    return toast(reason(e), true);
-  }
-  if (out.result === 'conflict') {
-    return toast(
-      'refused: the file changed on disk since you opened it. Cancel and reopen to see their version.',
-      true);
-  }
-  editState.version = out.version;
-  editState.dirty = false;
-  $('ovsave').textContent = SAVE_LABEL;
-  toast('saved');
-  // Re-diff so the changeset reflects the write.
-  await loadSummary();
-  const q = editQuery({ context: String(diffState.context) });
-  try {
-    diffState.file = await get(`/api/diff/file?${q}`);
-  } catch (e) {
-    /* the editor is still the source of truth on screen */
-  }
-}
-
-export { diffState as state, editState as edit, openDiff as open, closeDiff as close, renderDiff as render, stepChange as step, loadFile, renderFiles, openEditor, closeEditor, saveEditor };
+export { diffState as state, openDiff as open, closeDiff as close, renderDiff as render, stepChange as step, loadFile, renderFiles, openEditor };

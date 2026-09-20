@@ -586,6 +586,79 @@ try {
   // The whole file is there to scroll, not only the matched line.
   const viewerRows = await page.$$eval('#fnsrc .fnrow', (rs) => rs.length)
   check(viewerRows === 5, `the viewer holds the file, not the hit, got ${viewerRows} rows`)
+  /* --- and the viewer edits, with no base revision beside it ------------------ */
+
+  /* **The half that only exists because `editor.js` was lifted out of the diff.**
+     Its load used to read `diffState` directly, so a search result — a file with
+     no changeset and usually no base — could not have opened it at all. Asserted
+     by writing through it and reading the disk, because a buffer that looks saved
+     and is not is the failure worth catching. */
+  /* Clicked through the element rather than the pointer, and the reason is not
+     this feature: `.updatebar` is a centred pill at `z-index:100`, so whenever the
+     daemon has something to announce it floats over the middle of *any* overlay
+     header — the diff's path sits under it too. The assertion here is about the
+     buffer, not about hit-testing a button. */
+  const press = (id) => page.$eval(id, (b) => b.click())
+  await press('#fnedit')
+  await page.waitForSelector('#fnsrc.editing .editarea', { timeout: 5000 })
+  check(
+    await page.$$eval('#fnsrc .editbase', (b) => b.length) === 0,
+    'no base pane: a search result has no revision to sit beside',
+  )
+  await page.fill('#fnsrc .editarea', 'the frobnicate word moved\n')
+  check(
+    await page.$eval('#fnsave', (b) => b.textContent) === 'Save •',
+    'typing marks the buffer dirty',
+  )
+  await press('#fnsave')
+  await page.waitForFunction(
+    () => document.getElementById('fnsave')?.textContent?.startsWith('Save') === true
+      && !document.getElementById('fnsave')?.textContent?.includes('•'),
+    null, { timeout: 5000 },
+  )
+  check(
+    fs.readFileSync(path.join(tree, 'haystack.txt'), 'utf8') === 'the frobnicate word moved\n',
+    'the write reached the workspace the read came from',
+  )
+
+  // Cancel goes back to the viewer, on the file as it now is rather than the copy
+  // the band was built from.
+  await press('#fnedit')
+  await page.waitForFunction(
+    () => !!document.querySelector('#fnsrc .fnrow'), null, { timeout: 5000 })
+  check(
+    await page.$eval('#fnsrc .fnrow', (r) => r.textContent) === 'the frobnicate word moved',
+    'and the viewer comes back on the saved file, not the stale one',
+  )
+  await page.keyboard.press('Escape')
+
+  /* --- and the diff's editor is unchanged by the lift ------------------------- */
+
+  /* **The regression this step could quietly cause.** `editor.js` was the diff's
+     right-hand pane; if the move broke it, nothing above would have said so —
+     every assertion here is about the search viewer, which never had one. The
+     difference between the two is the base pane, so that is what is asserted:
+     the diff opens one, the search viewer does not. */
+  // A tracked file, changed: the diff is a changeset, so it needs one to draw.
+  fs.appendFileSync(path.join(tree, 'README.md'), 'a line the diff can show\n')
+  await page.keyboard.press('Control+Shift+KeyD')
+  await page.waitForSelector('#overlay.on', { timeout: 5000 })
+  await page.waitForFunction(
+    () => !!document.querySelector('#diffbody .ln'), null, { timeout: 10_000 })
+  await press('#ovedit')
+  await page.waitForSelector('#diffbody.editing .editarea', { timeout: 5000 })
+  check(
+    await page.$$eval('#diffbody .editbase', (b) => b.length) === 1,
+    "the diff's editor still shows the base revision beside the buffer",
+  )
+  await press('#ovedit')
+  await page.waitForFunction(
+    () => !document.getElementById('diffbody')?.classList.contains('editing'),
+    null, { timeout: 5000 })
+  check(
+    await page.$eval('#ovsave', (b) => b.hidden) === true,
+    'and cancelling puts the Save button away',
+  )
   await page.keyboard.press('Escape')
 
   /* And the content half, on its own chord. `Control+Shift+F` rather than a plain

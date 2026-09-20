@@ -305,6 +305,7 @@ together: same entries, same order, same groups.
 - A socket may freeze which checkout it serves, never where that checkout is.
 - HTML5 drag-and-drop and the native drag destination cannot both be live on one webview.
 - The splash is replaced, never pushed, and `Backspace` is refused outside a text field.
+- The editable buffer is `web/js/editor.js`, and it writes to the workspace it read from.
 
 ### Claude Code, and what it guarantees
 

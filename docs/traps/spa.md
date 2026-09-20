@@ -381,3 +381,25 @@ probe listening after it would never run and the gate would pass by never firing
 silently does not happen is a window stuck on the splash for ever, which is worse
 than the entry being removed, so the scheme is re-read after four seconds and
 `navigate` is still there as the answer.
+
+## The editable buffer is `web/js/editor.js`, and it writes to the workspace it read from.
+It was the diff's right-hand pane and read `diffState` directly — which workspace,
+which path, which base — so the search viewer could not open it without pretending
+to be a diff. `web/js/editor.js` takes a `host` instead: where to mount, which
+file, and whether there is a base revision to sit beside. The diff passes one; the
+search viewer passes `null`, because a result is usually a file nobody changed and
+there is nothing to compare it to.
+
+**The move corrected a real defect, and it is the kind that comes back.** The load
+asked about `diffState.ws` — pinned when the overlay opened — and the save posted
+`currentWorkspaceId()`, which follows the *selection* and answers `main` when
+nothing is selected. Two workspaces for one file, and the write is the half that
+lands on disk. `syncDiffToSession` closed the diff on a switch, which is what kept
+it from biting; nothing enforced it. One `host` holds the workspace now, so a
+write can only ever reach the tree the read came from. Reach for
+`currentWorkspaceId()` in a writer and this is the bug you are rebuilding.
+
+`mise run page-check` holds both shapes, because the risk in lifting it was the
+half that already worked: the diff's editor still draws its base pane, the search
+viewer's still does not, and a save from the search viewer is asserted by reading
+the file back off disk.

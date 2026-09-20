@@ -779,6 +779,7 @@ import * as Review from './js/review.js';
 
 import * as Queue from './js/queue.js';
 import * as Find from './js/find.js';
+import * as Editor from './js/editor.js';
 
 
 
@@ -865,12 +866,12 @@ $('ovmode').onclick = async () => {
   // `closeEditor` is async — it may draw a confirm box — so the guard has to
   // await it. Un-awaited, `!promise` is always false and the mode flipped while
   // "Discard unsaved edits?" was still on screen, whatever you answered.
-  if (Diff.edit.on && !(await Diff.closeEditor())) return;
+  if (Editor.isOpen() && !(await Editor.close())) return;
   Diff.state.split = !Diff.state.split;
   Diff.render();
 };
-$('ovedit').onclick = () => (Diff.edit.on ? Diff.closeEditor() : Diff.openEditor());
-$('ovsave').onclick = Diff.saveEditor;
+$('ovedit').onclick = () => (Editor.isOpen() ? Editor.close() : Diff.openEditor());
+$('ovsave').onclick = Editor.save;
 // The find overlay's own chrome: its two boxes and three toggles all ask the
 // same question again, so the module wires them rather than five lines here.
 Find.init();
@@ -1084,7 +1085,7 @@ window.addEventListener('keydown', (e) => {
   if (armedAt && Date.now() - armedAt <= TAP) {
     armedAt = 0;
     holding = false;
-    Find.open('names');
+    void Find.open('names');
     return;
   }
   holding = true;
@@ -1158,9 +1159,12 @@ function keymap(/** @type {KeyboardEvent} */ e) {
     e.preventDefault();
     return;
   }
-  if ((e.metaKey || e.ctrlKey) && e.key === 's' && Diff.edit.on) {
+  /* One save chord for both overlays. It used to name the diff's editor, which
+     was the only one; the buffer is `editor.js` now and either viewer can hold
+     it, so the question is whether *anything* is open to write. */
+  if ((e.metaKey || e.ctrlKey) && e.key === 's' && Editor.isOpen()) {
     e.preventDefault();
-    void Diff.saveEditor();
+    void Editor.save();
     return;
   }
   /* The overlay wants bare Enter, j/k and digits, and this handler is registered
@@ -1202,7 +1206,7 @@ function keymap(/** @type {KeyboardEvent} */ e) {
      first line. `j`/`k` only once focus has left the query box — it is a text
      field, so the letters belong to what you are typing until Tab moves off it. */
   if (Find.isOpen()) {
-    if (e.key === 'Escape') { e.preventDefault(); Find.close(); return; }
+    if (e.key === 'Escape') { e.preventDefault(); void Find.close(); return; }
     const typingInFind = !!/** @type {HTMLElement} */ (e.target).closest?.('input, textarea');
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp'
         || (!typingInFind && !e.ctrlKey && !e.altKey && !e.metaKey && (e.key === 'j' || e.key === 'k'))) {
@@ -1276,7 +1280,7 @@ function keymap(/** @type {KeyboardEvent} */ e) {
        which spends no chord at all. */
     if (e.shiftKey && k === 'f') {
       e.preventDefault();
-      Find.open('text');
+      void Find.open('text');
       return;
     }
     // Shift, not plain: Ctrl+D is EOF and still has to exit a shell.

@@ -18,6 +18,7 @@
 import {
   $, activeWorkspaceId, el, get, reason, toast,
 } from './core.js';
+import * as Editor from './editor.js';
 import { charRanges, hlTokens, langFor, paintRanges } from './source.js';
 
 /** How long the query rests before it is sent. Long enough that typing a symbol
@@ -75,10 +76,13 @@ export const isOpen = () => state.open;
 /** Open the overlay in one of its two modes, or switch mode while it is up.
  *
  *  @param {'text' | 'names'} mode */
-export function open(mode) {
+export async function open(mode) {
   const ws = activeWorkspaceId();
   if (!ws) return toast('no session open');
-  if (state.open && state.ws !== ws) close();
+  /* Re-pointing at another workspace is a close and a reopen, and the close can
+     ask — so it is awaited, and a "keep editing" abandons the open rather than
+     leaving the overlay pointed at one tree with a buffer from another. */
+  if (state.open && state.ws !== ws && !await close()) return;
   state.open = true;
   state.ws = ws;
   if (state.mode !== mode) {
@@ -104,8 +108,11 @@ export function open(mode) {
   run();
 }
 
-export function close() {
+export async function close() {
   if (!state.open) return false;
+  // The buffer answers first: closing over a half-written edit would discard it
+  // without asking, which is the one thing the editor exists to refuse.
+  if (Editor.isOpen() && !await Editor.close()) return false;
   state.open = false;
   state.inflight?.abort();
   state.inflight = null;
@@ -118,7 +125,9 @@ export function close() {
 /** The overlay belongs to the session it was opened from, so switching away
  *  closes it — the same rule `syncDiffToSession` holds for the diff. */
 export function syncToSession() {
-  if (state.open && activeWorkspaceId() !== state.ws) close();
+  // `void`, like `syncDiffToSession`: the close may draw a confirm, and a render
+  // cannot wait for an answer.
+  if (state.open && activeWorkspaceId() !== state.ws) void close();
 }
 
 function renderHead() {
@@ -274,6 +283,9 @@ export function step(step) {
 
 /** Load and draw whatever the cursor is on. */
 async function showCursor() {
+  // The editor owns `#fnsrc` while it is up, so a redraw would tear a buffer out
+  // from under somebody typing into it.
+  if (Editor.isOpen()) return;
   const hit = state.hits[state.cursor];
   if (!hit) {
     $('fnpath').textContent = '';
@@ -406,6 +418,31 @@ function onScroll() {
   src.scrollTop = keep;
 }
 
+/** Open what the cursor is on for editing.
+ *
+ *  **No base pane, and that is the difference from the diff's editor.** A search
+ *  result is usually a file nobody changed, so there is no revision to sit beside
+ *  it — which is why this had to be lifted out of `diff.js` rather than reached
+ *  into.
+ */
+function edit() {
+  const hit = state.hits[state.cursor];
+  if (!hit || !state.file) return toast('nothing to edit here', true);
+  return Editor.open({
+    mount: $('fnsrc'),
+    mountClass: 'fnsrc editing',
+    workspace: state.ws ?? '',
+    path: hit.path,
+    base: null,
+    save: $('fnsave'),
+    edit: $('fnedit'),
+    // Back to the viewer, on the file as it now is: the band is rebuilt from
+    // `state.file`, so a discarded edit must not leave a stale copy behind it.
+    onClosed: () => { state.file = null; void showCursor(); },
+    onSaved: () => { state.file = null; },
+  });
+}
+
 /** Wire the chrome. Called once, at boot. */
 export function init() {
   const box = /** @type {HTMLInputElement} */ ($('fnq'));
@@ -414,6 +451,8 @@ export function init() {
   for (const id of ['fncase', 'fnre', 'fnword']) {
     $(id).onclick = () => { $(id).classList.toggle('on'); run(); };
   }
-  $('fnclose').onclick = () => close();
+  $('fnedit').onclick = () => (Editor.isOpen() ? Editor.close() : edit());
+  $('fnsave').onclick = () => Editor.save();
+  $('fnclose').onclick = () => void close();
   $('fnsrc').onscroll = () => onScroll();
 }
