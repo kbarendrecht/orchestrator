@@ -7,7 +7,7 @@
 // rather than reduce it.
 
 import { el } from './core.js';
-import { langFor, hlTokens, paintRanges } from './diff.js';
+import { langFor, hlTokens, paintRanges } from './source.js';
 
 /** Parse a unified diff into per-path counts — the same arithmetic as
  *  `git apply --numstat`, which is what the daemon re-derives authoritatively

@@ -6,6 +6,7 @@ import {
 $, el, toast, reason, safeHref, call, callHost, get, activeCheckout, CHECKOUTS, setCheckouts, HOST, snapshotOf, repoSummary, everySession, enterCheckout, snap, receive, keyActivate, setZoom, setUiPx, uiPx, saveZoom, onScaleChange, ZOOM, selected, setSelected, onSelection, prForWorkspace, terms, CHROME, stateLabel, dotClass, isWaiting, isArchived, byNewest, currentSession, activeWorkspaceId, currentWorkspaceId, closeMenu, menuOpen, newSession, newWorktree, newShell, mainWorkspace, workspaceById, prState, handedToPr, drawerCollapsed, setDrawerCollapsed, pendingSelect, setPendingSelect, onDrawerChange, onCreatingChange, creating, creatingIn, startingShown, appMod, IS_MAC, MOD_LABEL, closeLegend, typingElsewhere, mark, reportBoot, dialogOpen, dismissDialog, unchanged, tick,
 } from './js/core.js';
 import { onThemeChange } from './js/theme.js';
+import { detailEl } from './js/source.js';
 
 // The daemon owns all state. This SPA is stateless and disposable: closing the
 // browser kills nothing, and reopening replays from the daemon's buffers (§1).
@@ -321,7 +322,7 @@ function renderInteraction() {
   host.appendChild(el('div', 'oqq', q.question));
   // Whatever the agent thought you needed to see to decide: a diff, a file, the
   // reviewer's words. Shown verbatim, in the diff's own type.
-  if (q.detail) host.appendChild(Diff.detailEl(q.detail));
+  if (q.detail) host.appendChild(detailEl(q.detail));
 
   const opts = el('div', 'oqopts');
   // The way back into the cards, first because it is the answer to the question.

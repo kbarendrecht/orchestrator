@@ -3,7 +3,7 @@
 
 import { $, call, compactAge, el, get, MOD_LABEL, reason, selected, setPendingSelect, setSelected, snap, toast, unchanged } from './core.js';
 import * as Diff from './diff.js';
-import { langFor, hlTokens, paintRanges } from './diff.js';
+import { langFor, hlTokens, paintRanges } from './source.js';
 import { patchStats, hunkEl } from './review-diff.js';
 
 
