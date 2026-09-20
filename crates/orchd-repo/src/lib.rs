@@ -19,6 +19,7 @@ pub mod machine;
 pub mod migrate;
 pub mod patch;
 pub mod reviews;
+pub mod search;
 pub mod skills;
 
 // The forge fixtures, shared with `orchd`'s tests. A `#[cfg(test)]` module is

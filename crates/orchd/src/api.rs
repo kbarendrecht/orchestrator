@@ -2078,6 +2078,72 @@ pub async fn diff_summary(
     ))
 }
 
+/// What the search overlay asks for: a workspace, and the query itself.
+#[derive(Deserialize)]
+pub struct SearchQuery {
+    pub workspace: String,
+    #[serde(flatten)]
+    pub find: crate::search::Query,
+}
+
+/// Every matching line in one workspace's working tree.
+pub async fn search(
+    State(app): State<Arc<AppState>>,
+    Query(q): Query<SearchQuery>,
+) -> ApiResult<crate::search::Matches> {
+    let (root, exclude) = searchable(&app, &q.workspace).await?;
+    // Off the runtime: the walk is blocking and owns a thread pool while it runs.
+    Ok(Json(
+        crate::proc::run_blocking("the search", move || {
+            crate::search::search(&root, exclude.as_deref(), &q.find)
+        })
+        .await??,
+    ))
+}
+
+#[derive(Deserialize)]
+pub struct PathsQuery {
+    pub workspace: String,
+}
+
+/// Every file in one workspace, for the name search.
+///
+/// Fetched once per workspace rather than per keystroke — the page does the
+/// matching, because a subsequence rank over a list this size is cheaper than a
+/// round trip.
+pub async fn paths(
+    State(app): State<Arc<AppState>>,
+    Query(q): Query<PathsQuery>,
+) -> ApiResult<crate::search::Paths> {
+    let (root, exclude) = searchable(&app, &q.workspace).await?;
+    // Off the runtime: a whole-tree walk.
+    Ok(Json(
+        crate::proc::run_blocking("listing the paths", move || {
+            crate::search::paths(&root, exclude.as_deref())
+        })
+        .await??,
+    ))
+}
+
+/// Where a workspace's search starts, and what it must not descend into.
+///
+/// **Main's tree contains every worktree**, so it carries the same exclude
+/// `git::status` and the changed-files pane take (§2); a worktree carries none.
+/// Both routes ask through here rather than each deciding, because one of them
+/// forgetting is a search that quietly answers for other people\'s sessions.
+async fn searchable(
+    app: &Arc<AppState>,
+    workspace: &str,
+) -> Result<(std::path::PathBuf, Option<String>), ApiError> {
+    let inner = app.inner.read().await;
+    let w = inner
+        .workspaces
+        .get(workspace)
+        .ok_or_else(|| anyhow::anyhow!("unknown workspace {workspace}"))?;
+    let exclude = w.is_main().then(|| app.cfg.worktrees_subdir_str());
+    Ok((w.path.clone(), exclude))
+}
+
 #[derive(Deserialize)]
 pub struct FileDiffQuery {
     pub workspace: String,

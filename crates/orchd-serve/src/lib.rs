@@ -630,6 +630,8 @@ fn daemon_router(app: Arc<AppState>) -> Router {
         .route("/api/config", get(api::get_config).post(api::set_config))
         .route("/api/diff", get(api::diff_summary))
         .route("/api/diff/file", get(api::diff_file))
+        .route("/api/search", get(api::search))
+        .route("/api/paths", get(api::paths))
         .route("/api/file", get(review_api::read_file))
         .route("/api/file", post(review_api::write_file))
         .route("/api/session", post(api::new_session))

@@ -30,12 +30,43 @@ export type DiffSummary = { base: string, files: Array<DiffFile>, added: number,
 
 export type FileDiff = { path: string, hunks: Array<Hunk>, binary: boolean, truncated: boolean, };
 
+/**
+ * One matching line. `col` and `len` are **byte** offsets within the line, the
+ * same units `diff::Row::words` uses and for the same reason: they come from
+ * Rust and the page converts, rather than the daemon guessing at UTF-16.
+ */
+export type Hit = { 
+/**
+ * Relative to the workspace root, with `/` separators.
+ */
+path: string, 
+/**
+ * 1-based, as every editor counts.
+ */
+line: number, col: number, len: number, 
+/**
+ * The matching line, trailing newline removed. The index does not draw it —
+ * the viewer below shows the file — but a hit with no text is impossible to
+ * assert about in a test, and the page needs the length to place the mark.
+ */
+text: string, };
+
 export type Hunk = { old_start: number, new_start: number, header: string, 
 /**
  * Unchanged lines skipped before this hunk, so the client can render a
  * fold bar and expand on click.
  */
 gap_before: number, rows: Array<Row>, };
+
+/**
+ * What a search answers. `truncated` is what makes the footer honest.
+ */
+export type Matches = { hits: Array<Hit>, truncated: boolean, };
+
+/**
+ * The workspace's files, for the name search.
+ */
+export type Paths = { paths: Array<string>, truncated: boolean, };
 
 export type Pr = { number: number, title: string, url: string, head_ref: string, 
 /**

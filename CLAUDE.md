@@ -120,7 +120,7 @@ mise run paint-check                # which panes rebuild while agents work
 mise run hover-check                # does a hovered row survive a rebuild
 mise run types                      # regenerate the four generated .d.ts, in the one safe order
 mise run notices                    # regenerate THIRD-PARTY-RUST.md
-mise run e2e                        # 28 flows against a real daemon
+mise run e2e                        # 29 flows against a real daemon
 mise run deflake                    # each flow 8x, to name the flaky ones
 cargo run -p orchestrator-desktop   # the app, daemon embedded in-process
 mise run shot                       # screenshot the running SPA (drives Chrome)

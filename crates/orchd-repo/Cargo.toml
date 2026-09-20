@@ -28,6 +28,17 @@ uuid = { version = "1", features = ["v4", "serde"] }
 # the other crates give: as a dev-dependency the derives are invisible to anything
 # that builds this crate as a dependency.
 ts-rs = { version = "12.0.1", features = ["uuid-impl"], optional = true }
+# ripgrep's engine, linked rather than packaged. Measured on the 18,924-file
+# monorepo this daemon is developed against: `git grep` 549ms, `git grep
+# --untracked` 606ms, ripgrep's own binary 25ms, these crates in-process 28ms.
+# Packaging the binary would buy 3ms and cost an asset per platform, a
+# `check-ship` entry and a spawn per keystroke. `regex` is here for `escape`,
+# which is what makes a literal query a literal.
+grep-searcher = "0.1.17"
+grep-regex = "0.1.14"
+grep-matcher = "0.1.9"
+ignore = "0.4.33"
+regex = "1.13.1"
 
 [dev-dependencies]
 orchd-base = { path = "../orchd-base", features = ["test-util"] }
