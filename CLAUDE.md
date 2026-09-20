@@ -306,6 +306,7 @@ together: same entries, same order, same groups.
 - HTML5 drag-and-drop and the native drag destination cannot both be live on one webview.
 - The splash is replaced, never pushed, and `Backspace` is refused outside a text field.
 - The editable buffer is `web/js/editor.js`, and it writes to the workspace it read from.
+- A modifier-click is a guess, so it may only jump when there is exactly one answer.
 
 ### Claude Code, and what it guarantees
 

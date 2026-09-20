@@ -160,3 +160,68 @@ export function paintRanges(/** @type {HTMLElement} */ node, /** @type {string} 
 export function detailEl(/** @type {string} */ text) {
   return paintRanges(el('pre', 'oqd'), text, diffRanges(text));
 }
+
+/** The identifier under a pointer event, or `null` if it landed on anything else.
+ *
+ *  **Shared, because both viewers draw a line the same way**: the text of a line
+ *  lives in an `<s>`, whether `diff.js` built it or `find.js` did. That is the
+ *  return on having one renderer — a modifier-click works in the diff without the
+ *  diff knowing anything about it.
+ *
+ *  The offset comes from the caret API rather than from the clicked element,
+ *  because a line is a run of token spans and bare text nodes: the span under the
+ *  pointer is a *token*, which is `run_blocking` sometimes and `::` just as often.
+ *
+ *  @param {MouseEvent} ev */
+export function symbolAt(ev) {
+  const body = /** @type {HTMLElement} */ (ev.target)?.closest?.('s');
+  if (!body) return null;
+  const text = body.textContent ?? '';
+  const at = caretOffset(ev, body);
+  if (at == null || at > text.length) return null;
+  const word = /[A-Za-z0-9_]/;
+  // From the caret, outward while the characters are still identifier ones. A
+  // caret sits *between* characters, so a click on the last letter of a name
+  // reports the offset after it — which is why the left scan starts at `at`.
+  let s = at;
+  let e = at;
+  while (s > 0 && word.test(text[s - 1] ?? '')) s--;
+  while (e < text.length && word.test(text[e] ?? '')) e++;
+  const found = text.slice(s, e);
+  return found && !/^[0-9]/.test(found) ? found : null;
+}
+
+/** How far into `host`'s text the pointer landed.
+ *
+ *  Two spellings of one API: WebKit and Chrome have `caretRangeFromPoint`, the
+ *  standard is `caretPositionFromPoint`, and this app runs on WebKitGTK and
+ *  WKWebView while its gate runs on Chrome. Neither is assumed present.
+ *
+ *  @param {MouseEvent} ev
+ *  @param {HTMLElement} host */
+function caretOffset(ev, host) {
+  const doc = /** @type {any} */ (document);
+  let node = null;
+  let offset = 0;
+  if (doc.caretRangeFromPoint) {
+    const r = doc.caretRangeFromPoint(ev.clientX, ev.clientY);
+    if (!r) return null;
+    [node, offset] = [r.startContainer, r.startOffset];
+  } else if (doc.caretPositionFromPoint) {
+    const p = doc.caretPositionFromPoint(ev.clientX, ev.clientY);
+    if (!p) return null;
+    [node, offset] = [p.offsetNode, p.offset];
+  } else {
+    return null;
+  }
+  if (!host.contains(node)) return null;
+  // The caret is inside one text node; the word is measured against the whole
+  // line, so the preceding nodes are counted back in.
+  let seen = 0;
+  const walk = document.createTreeWalker(host, NodeFilter.SHOW_TEXT);
+  for (let t = walk.nextNode(); t; t = walk.nextNode()) {
+    if (t === node) return seen + offset;
+    seen += (t.textContent ?? '').length;
+  }
+  return null;
+}

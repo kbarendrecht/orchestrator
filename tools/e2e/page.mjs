@@ -632,6 +632,103 @@ try {
   )
   await page.keyboard.press('Escape')
 
+  /* --- modifier-click goes to a definition ------------------------------------ */
+
+  /* **The branch is what is asserted, not the jump.** One hit moves the viewer;
+     anything else has to stay a list, because a heuristic that guesses silently is
+     worse than no jump at all. Both halves are driven here: a name defined once,
+     and a name defined twice.
+
+     Clicked for real, at the pointer, because the word is read off the caret API
+     rather than off the clicked element — a token span is `run_blocking` sometimes
+     and `::` just as often, and a test that passed the word in would prove none of
+     that. */
+  fs.writeFileSync(
+    path.join(tree, 'lib.rs'),
+    'fn caller() {\n    the_target(1);\n}\nfn the_target(n: u32) {}\nfn twice() {}\n',
+  )
+  fs.writeFileSync(path.join(tree, 'more.rs'), 'fn twice() {}\n')
+
+  await press('#fnclose')
+  await page.keyboard.press('Control+Shift+KeyF')
+  await page.waitForSelector('#fnoverlay.on', { timeout: 5000 })
+  await page.fill('#fnq', 'the_target')
+  await page.waitForFunction(
+    () => document.querySelector('#fnhits .fnhit')?.textContent === 'lib.rs:2',
+    null, { timeout: 5000 })
+  // The index answers before the viewer paints, and the click is at the pointer —
+  // so wait for the line to actually be on screen.
+  await page.waitForFunction(
+    () => document.querySelector('#fnsrc .fnrow.on')?.textContent?.includes('the_target') === true,
+    null, { timeout: 5000 })
+
+  // The call site is on screen; ⌘/Ctrl-click the name in it.
+  const modClick = async (selector, word) => {
+    const box = await page.evaluate(([sel, w]) => {
+      const row = document.querySelector(sel)
+      if (!row) return null
+      const body = row.querySelector('s')
+      const text = body?.textContent ?? ''
+      const at = text.indexOf(w)
+      if (at < 0) return null
+      // The middle of the word, found by measuring the character range itself —
+      // a column guess would land differently at another font size.
+      const walk = document.createTreeWalker(body, NodeFilter.SHOW_TEXT)
+      let seen = 0
+      for (let t = walk.nextNode(); t; t = walk.nextNode()) {
+        const len = (t.textContent ?? '').length
+        if (seen + len > at) {
+          const r = document.createRange()
+          r.setStart(t, at - seen)
+          r.setEnd(t, Math.min(len, at - seen + w.length))
+          const b = r.getBoundingClientRect()
+          return { x: b.x + b.width / 2, y: b.y + b.height / 2 }
+        }
+        seen += len
+      }
+      return null
+    }, [selector, word])
+    if (!box) return false
+    /* The modifier is held around the click rather than passed to it: this
+       playwright drops a `modifiers` list it does not know and the click then
+       arrives bare — which looks exactly like a broken binding. Measured, not
+       guessed: a probe listener saw `ctrlKey: false`. */
+    await page.keyboard.down(process.platform === 'darwin' ? 'Meta' : 'Control')
+    await page.mouse.click(box.x, box.y)
+    await page.keyboard.up(process.platform === 'darwin' ? 'Meta' : 'Control')
+    return true
+  }
+
+  check(await modClick('#fnsrc .fnrow.on', 'the_target'), 'the call site is on screen to click')
+  await page.waitForFunction(
+    () => document.getElementById('fnfoot')?.textContent?.startsWith('one definition') === true,
+    null, { timeout: 5000 })
+  check(
+    await page.$eval('#fnhits .fnhit', (r) => r.textContent) === 'lib.rs:4',
+    'one definition is a jump, and it lands on the definition, not the call',
+  )
+  check(
+    await page.$eval('#fnq', (q) => q.value) === 'the_target',
+    'and the query box carries the symbol, so re-typing is the way back',
+  )
+
+  // Two definitions of one name: a list, never a guess.
+  await page.fill('#fnq', 'twice')
+  // On the row, not merely on a row: the previous jump left one selected, and a
+  // wait that only asks whether `.on` exists is answered by the stale one.
+  await page.waitForFunction(
+    () => document.querySelector('#fnsrc .fnrow.on')?.textContent?.includes('twice') === true,
+    null, { timeout: 5000 })
+  check(await modClick('#fnsrc .fnrow.on', 'twice'), 'a name defined twice is on screen')
+  await page.waitForFunction(
+    () => document.getElementById('fnfoot')?.textContent?.includes('definitions of twice') === true,
+    null, { timeout: 5000 })
+  check(
+    await page.$$eval('#fnhits .fnhit', (rs) => rs.length) === 2,
+    'two definitions stay a list — the jump is refused',
+  )
+  await page.keyboard.press('Escape')
+
   /* --- and the diff's editor is unchanged by the lift ------------------------- */
 
   /* **The regression this step could quietly cause.** `editor.js` was the diff's
@@ -659,6 +756,19 @@ try {
     await page.$eval('#ovsave', (b) => b.hidden) === true,
     'and cancelling puts the Save button away',
   )
+
+  /* **And a modifier-click works in the diff, which is the return on one
+     renderer.** `source.js` reads the word off the caret and neither viewer knows
+     anything about the other; the diff draws `.ln` rows and the search viewer
+     draws `.fnrow`, and the same handler reaches both. Asserted on the diff's own
+     rows so a change that split the renderers again fails here. */
+  check(await modClick('#diffbody .ln.add', 'diff'), 'a diff row is on screen to click')
+  await page.waitForSelector('#fnoverlay.on', { timeout: 5000 })
+  check(
+    await page.$eval('#fnq', (q) => q.value) === 'diff',
+    'a modifier-click in the diff asks about the word under it',
+  )
+  await page.keyboard.press('Escape')
   await page.keyboard.press('Escape')
 
   /* And the content half, on its own chord. `Control+Shift+F` rather than a plain

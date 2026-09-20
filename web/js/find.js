@@ -418,6 +418,63 @@ function onScroll() {
   src.scrollTop = keep;
 }
 
+/** The path the viewer is showing, for a caller that needs to say which file a
+ *  click happened in. */
+export const shownPath = () => state.file?.path ?? state.hits[state.cursor]?.path ?? null;
+
+/** Go to where `symbol` is defined, as far as a regular expression can tell.
+ *
+ *  **The branch is the design.** One hit is a jump; anything else is a list, and
+ *  nothing is a plain search for the word — which is what you wanted anyway. A
+ *  heuristic that jumps when it is sure and shows its working when it is not is
+ *  usable; one that guesses silently is worse than no jump at all.
+ *
+ *  @param {string} inFile the file it was clicked in — its extension names the
+ *         language, because a symbol has none of its own
+ *  @param {string} symbol */
+export async function definitionOf(inFile, symbol) {
+  const ws = activeWorkspaceId();
+  if (!ws) return;
+  if (state.open && state.ws !== ws && !await close()) return;
+  state.open = true;
+  state.ws = ws;
+  state.mode = 'text';
+  $('fnoverlay').classList.add('on');
+  renderHead();
+  // The query box carries the symbol, so the search is reproducible by hand and
+  // re-typing is the way back — there is no history chord, deliberately.
+  /** @type {HTMLInputElement} */ ($('fnq')).value = symbol;
+  const mine = ++state.seq;
+  state.inflight?.abort();
+  clearTimeout(state.timer ?? undefined);
+
+  let answer;
+  try {
+    const p = new URLSearchParams({ workspace: ws, path: inFile, symbol });
+    answer = await get(`/api/def?${p}`);
+  } catch (e) {
+    toast(reason(e), true);
+    return;
+  }
+  if (mine !== state.seq) return;
+  if (!answer.hits.length) {
+    // Nothing that looks like a definition: an unknown language, a generated
+    // name, or a shape the table does not describe. The ordinary search for the
+    // word is the useful answer, and it is one call away.
+    run();
+    return;
+  }
+  state.hits = answer.hits;
+  state.truncated = answer.truncated;
+  state.cursor = 0;
+  renderHits();
+  await showCursor();
+  const n = state.hits.length;
+  $('fnfoot').textContent = n === 1
+    ? `one definition of ${symbol}`
+    : `${n} definitions of ${symbol} — pick one`;
+}
+
 /** Open what the cursor is on for editing.
  *
  *  **No base pane, and that is the difference from the diff's editor.** A search

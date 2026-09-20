@@ -403,3 +403,34 @@ write can only ever reach the tree the read came from. Reach for
 half that already worked: the diff's editor still draws its base pane, the search
 viewer's still does not, and a save from the search viewer is asserted by reading
 the file back off disk.
+
+## A modifier-click is a guess, so it may only jump when there is exactly one answer.
+`crates/orchd-repo/src/symbols.rs` builds a regular expression out of the shapes a
+definition is written in — `fn NAME`, `class NAME`, `func (r *T) NAME` — and runs
+it through the search engine. There is no type information anywhere in it.
+
+**What makes a heuristic usable is the branch, not the accuracy.** One hit is a
+jump; two or more is a list you pick from; none falls back to an ordinary search
+for the word, which is what you wanted anyway. A jump on the *first* of several is
+the version to refuse: a trait with five `impl`s would send you somewhere
+plausible and wrong, and being quietly wrong is worse than not answering.
+`mise run page-check` drives both branches, and returning one hit out of several
+fails it.
+
+Three smaller rules hold it up. The language comes from the **clicked file's**
+extension, because a symbol has none of its own — asking about a Python `def` in
+a `.rs` file finds nothing, which is correct. Case is exact here and smart
+everywhere else (`Query::exact_case`): a typed query wants `run_blocking` to find
+`RUN_BLOCKING`, a jump must not move on it. And the word is rejected before it
+becomes a pattern unless it is an identifier, because the page sends whatever was
+under the pointer and that is punctuation as often as a name.
+
+**The table is in Rust so it can have a test per language**; the same table in the
+page would have had none. The affordance stops at the cursor for a reason too:
+underlining the word under the pointer would need a span per word, which is the
+DOM cost the viewer's banding exists to avoid.
+
+**Not a language server, deliberately.** One process per language per workspace, a
+JSON-RPC client, minutes of indexing and rust-analyzer's memory on every worktree,
+against the rule that a default may only depend on what the daemon already needs.
+Revisit if the guessing proves annoying.

@@ -70,6 +70,14 @@ pub struct Query {
     /// typing it means.
     #[serde(default)]
     pub glob: Option<String>,
+    /// Match the case written, rather than smart-casing it.
+    ///
+    /// The overlay never sets this — smart case is what a person typing a query
+    /// wants. [`crate::symbols`] does, because a definition jump moves the cursor
+    /// on the strength of there being exactly one hit, and folding `run_blocking`
+    /// onto `RUN_BLOCKING` is a way to land somewhere nobody asked for.
+    #[serde(default)]
+    pub exact_case: bool,
 }
 
 /// One matching line. `col` and `len` are **byte** offsets within the line, the
@@ -184,7 +192,7 @@ pub fn search(root: &Path, exclude: Option<&str>, q: &Query) -> Result<Matches> 
         regex::escape(&q.pattern)
     };
     let matcher = RegexMatcherBuilder::new()
-        .case_smart(true)
+        .case_smart(!q.exact_case)
         .word(q.word)
         .build(&pattern)
         .with_context(|| format!("{} is not a pattern", q.pattern))?;

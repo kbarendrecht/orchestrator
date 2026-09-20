@@ -6,7 +6,7 @@ import {
 $, el, toast, reason, safeHref, call, callHost, get, activeCheckout, CHECKOUTS, setCheckouts, HOST, snapshotOf, repoSummary, everySession, enterCheckout, snap, receive, keyActivate, setZoom, setUiPx, uiPx, saveZoom, onScaleChange, ZOOM, selected, setSelected, onSelection, prForWorkspace, terms, CHROME, stateLabel, dotClass, isWaiting, isArchived, byNewest, currentSession, activeWorkspaceId, currentWorkspaceId, closeMenu, menuOpen, newSession, newWorktree, newShell, mainWorkspace, workspaceById, prState, handedToPr, drawerCollapsed, setDrawerCollapsed, pendingSelect, setPendingSelect, onDrawerChange, onCreatingChange, creating, creatingIn, startingShown, appMod, IS_MAC, MOD_LABEL, closeLegend, typingElsewhere, mark, reportBoot, dialogOpen, dismissDialog, unchanged, tick,
 } from './js/core.js';
 import { onThemeChange } from './js/theme.js';
-import { detailEl } from './js/source.js';
+import { detailEl, symbolAt } from './js/source.js';
 
 // The daemon owns all state. This SPA is stateless and disposable: closing the
 // browser kills nothing, and reopening replays from the daemon's buffers (§1).
@@ -872,6 +872,38 @@ $('ovmode').onclick = async () => {
 };
 $('ovedit').onclick = () => (Editor.isOpen() ? Editor.close() : Diff.openEditor());
 $('ovsave').onclick = Editor.save;
+
+/* **Modifier-click goes to a definition, in either viewer.**
+ *
+ * Wired here rather than in one of them because it belongs to neither: `source.js`
+ * knows how to read the word under a pointer, `find.js` knows how to answer, and
+ * the two viewers only have to draw a line the same way — which they do, since the
+ * renderer became one file.
+ *
+ * The modifier is `appMod`, so ⌘ on macOS and Ctrl elsewhere. That is not a
+ * preference: `Ctrl`-click on a Mac is a right-click, and would open a context
+ * menu instead of a definition. */
+for (const [id, where] of [['diffbody', () => Diff.state.path], ['fnsrc', Find.shownPath]]) {
+  $(/** @type {string} */ (id)).addEventListener('click', (ev) => {
+    const click = /** @type {MouseEvent} */ (ev);
+    if (!appMod(click)) return;
+    const inFile = /** @type {() => string | null} */ (where)();
+    const symbol = symbolAt(click);
+    if (!inFile || !symbol) return;
+    // Or the click also starts a selection under the overlay that replaces it.
+    click.preventDefault();
+    void Find.definitionOf(inFile, symbol);
+  });
+}
+
+/* While the modifier is held, source reads as clickable. The affordance stops at
+   the cursor: underlining the word itself would need a span per word, which is
+   the DOM cost the viewer's banding exists to avoid. */
+const modHeld = (/** @type {KeyboardEvent} */ e) => document.body.classList.toggle(
+  'modheld', IS_MAC ? e.metaKey : e.ctrlKey && !e.metaKey);
+window.addEventListener('keydown', modHeld, true);
+window.addEventListener('keyup', modHeld, true);
+window.addEventListener('blur', () => document.body.classList.remove('modheld'));
 // The find overlay's own chrome: its two boxes and three toggles all ask the
 // same question again, so the module wires them rather than five lines here.
 Find.init();

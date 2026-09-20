@@ -2101,6 +2101,40 @@ pub async fn search(
     ))
 }
 
+/// A modifier-click: which file it happened in, and the word under the pointer.
+#[derive(Deserialize)]
+pub struct DefQuery {
+    pub workspace: String,
+    /// The file the symbol was clicked in. Its extension is what names the
+    /// language — a symbol has none of its own.
+    pub path: String,
+    pub symbol: String,
+}
+
+/// Where a symbol looks like it is defined.
+///
+/// **Empty is a normal answer**, not an error: an unknown extension, a word that
+/// is not an identifier, or a definition the shapes do not describe. The page
+/// falls back to an ordinary search for the symbol, which is what was wanted.
+pub async fn definitions(
+    State(app): State<Arc<AppState>>,
+    Query(q): Query<DefQuery>,
+) -> ApiResult<crate::search::Matches> {
+    let (root, exclude) = searchable(&app, &q.workspace).await?;
+    // Off the runtime: the same walk `search` runs.
+    Ok(Json(
+        crate::proc::run_blocking("looking for a definition", move || {
+            crate::symbols::definitions(
+                &root,
+                exclude.as_deref(),
+                std::path::Path::new(&q.path),
+                &q.symbol,
+            )
+        })
+        .await??,
+    ))
+}
+
 #[derive(Deserialize)]
 pub struct PathsQuery {
     pub workspace: String,

@@ -2397,6 +2397,7 @@ select.opfield,input.opfield{appearance:none}
 /* The viewer handing its box to a buffer. No base pane beside it — a search
    result is usually a file nobody changed, so there is no revision to compare —
    which is why the textarea gets the whole width. */
+.modheld .fnrow s,.modheld .ln s{cursor:pointer}
 .fnsrc.editing{overflow:hidden;display:flex}
 .fnsrc.editing .editarea{flex:1}
 .fnfoot{

@@ -1774,7 +1774,12 @@ export const MOD_LABEL = IS_MAC ? '⌘' : 'Ctrl';
  * `Ctrl+N` on Linux has to shadow readline's next-history to exist. Keeping Ctrl
  * for the terminal on macOS is the whole point: `Ctrl+C` must stay an interrupt.
  *
- * @param {KeyboardEvent} e
+ * Takes a mouse event as readily as a key one: the question is which modifiers
+ * are down, and a modifier-click has the same answer to give. ⌘-click on a Mac
+ * matters for a reason beyond consistency — `Ctrl`-click there is a right-click,
+ * so a binding spelled with Ctrl would open a context menu instead.
+ *
+ * @param {KeyboardEvent | MouseEvent} e
  */
 export const appMod = (e) => (IS_MAC ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey) && !e.altKey;
 
