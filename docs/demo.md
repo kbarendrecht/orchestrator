@@ -166,13 +166,21 @@ took a turn. `--diff` and `--find` ask `/api/state` for a session in a
 *main*, because `main_processes` is main's and a worktree's drawer is empty
 unless `worktree_processes` is set.
 
-**Neither pane below the fold may be empty**, and both are configuration rather
-than luck. The PR pane needs the checkout to resolve a GitHub repository — a
+**Neither pane below the fold may be empty**, with one deliberate exception, and
+both are configuration rather than luck. The PR pane needs the checkout to resolve a GitHub repository — a
 clone whose only remote is a local path resolves none, and the pane then reads
 `no GitHub upstream remote configured`; `"repo": "kbarendrecht/orchd-fixture"`
 in the recording checkout's config is what fills it. The review queue needs
 `reviews_command`, below. A take with either one empty has to be recorded again,
 so check both before rolling.
+
+**The exception is the second checkout in `demo-repos.gif`.** It is a clone of
+this repository, which commits straight to `main` and therefore has no open PRs
+and no review requests — so its PR pane reads `none open` and its queue reads
+`Nothing waiting on you`. Both are true of that checkout, and the alternative
+was either a second clone of the fixture (two checkouts of one repository,
+standing in for a claim about two repositories) or fixture rows attributed to a
+repository they do not belong to. Leave it empty; it is the honest frame.
 
 ## `--panes` and `--revive`
 
