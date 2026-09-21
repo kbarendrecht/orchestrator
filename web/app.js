@@ -439,6 +439,13 @@ function renderUpdate() {
   const succeeded = done && !failed;
 
   const link = /** @type {HTMLAnchorElement} */ ($('updatelink'));
+  /* **What an install that cannot upgrade itself is told is the daemon's answer,
+     not this page's.** This branched on `u.tool` and said "Run mise up" to
+     everything mise had not installed — a `.deb`, a cask, an AppImage, a `.dmg`
+     and a checkout alike, and mise can upgrade none of them. The page cannot tell
+     those apart; `offer` is the daemon saying which it is and what may be done. */
+  const offer = u?.offer;
+  const advice = offer?.kind === 'advice' ? ` Run \`${offer.command}\`` : '';
   /* `u` can be gone while a run is not — the release check refreshes on its own
      clock — so every arm that names a version reads it off the run, which carries
      the one it is installing. */
@@ -448,26 +455,26 @@ function renderUpdate() {
       ? `v${run.to} installed — restart to run it`
       : run
         ? `installing v${run.to}\u2026`
-        : u?.tool
-          ? `Update available — v${u?.latest} (you have v${u?.current})`
-          : `Update available — v${u?.latest} (you have v${u?.current}). Run mise up`;
+        : `Update available — v${u?.latest} (you have v${u?.current}).${advice}`;
   link.href = safeHref(u?.url);
   link.title = failed ? run.tail : '';
 
-  /* No button unless mise installed this build. A `.deb` wants apt and a password,
-     an AppImage and a `.dmg` are files somebody downloaded, and offering to
-     upgrade what we cannot is worse than the link. */
+  /* A button only where the daemon says one can be run: mise, a Homebrew cask, or
+     apt on a machine that can ask for a password. An AppImage and a `.dmg` are
+     files somebody downloaded, and offering to upgrade what we cannot is worse
+     than the link. */
   const go = /** @type {HTMLButtonElement} */ ($('updatego'));
-  go.hidden = !(u?.tool || run);
+  const command = offer?.kind === 'button' ? offer.command : null;
+  go.hidden = !(command || run);
   go.disabled = !!run && run.running;
   go.textContent = run?.running ? 'Upgrading\u2026'
     : failed ? 'Retry' : succeeded ? 'Restart' : 'Upgrade';
   go.title = failed ? run.tail
     : succeeded
       ? 'Quits and comes back on the new version. Your sessions are resumed as they were.'
-      : run ? 'Running `mise upgrade`.'
-        : `Runs \`mise upgrade ${u?.tool}\`. Installed beside this build, so nothing `
-          + 'changes until you restart, and your sessions are untouched either way.';
+      : run ? 'The upgrade is running.'
+        : `Runs \`${command}\`. Nothing changes until you restart, and your sessions `
+          + 'are untouched either way.';
   go.onclick = async () => {
     // A restart takes the window down, so there is nothing to report back into:
     // the answer is the app coming back on the new version.

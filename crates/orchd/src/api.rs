@@ -2824,12 +2824,17 @@ pub async fn fix_pr(
 mod tests {
     use super::*;
 
-    /// The button is offered on `tool`, so the refusal has to be on `tool` too: a
-    /// `.deb` or an AppImage has nothing to name in `mise upgrade`, and running it
-    /// anyway would upgrade some *other* copy of the app and report success.
+    /// An install with no installer behind it must refuse, and say what to do.
+    ///
+    /// The test binary runs out of `target/`, so the install this resolves is
+    /// `Checkout` — which is exactly the shape the refusal is for: nothing to ask,
+    /// and upgrading anyway would install over some *other* copy of the app and
+    /// report success. A cask and a `.deb` take the other branch and are covered in
+    /// `update`'s own tests, where the install can be named without lying about the
+    /// machine the suite is on.
     #[tokio::test]
-    async fn a_build_mise_did_not_install_cannot_upgrade_itself() {
-        use crate::model::UpdateInfo;
+    async fn an_install_with_no_installer_cannot_upgrade_itself() {
+        use crate::model::{Offer, UpdateInfo};
 
         let (app, _dir) = crate::testutil::app("selfup");
 
@@ -2841,16 +2846,17 @@ mod tests {
             latest: "2026.9.2".into(),
             url: "https://example.invalid/r".into(),
             tool: None,
+            offer: Offer::LinkOnly,
         };
         app.inner.write().await.update = Some(info.clone());
         let err = match upgrade_app(State(app.clone())).await {
-            Ok(_) => panic!("a non-mise install must refuse"),
+            Ok(_) => panic!("an install with no installer must refuse"),
             Err(e) => e,
         };
+        let said = format!("{}", err.0);
         assert!(
-            format!("{}", err.0).contains("mise"),
-            "the refusal has to say why: {}",
-            err.0
+            said.contains("mise") && said.contains("Homebrew") && said.contains("apt"),
+            "the refusal has to name the channels that could: {said}"
         );
         assert!(
             app.inner.read().await.self_upgrade_run.is_none(),

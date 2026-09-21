@@ -34,8 +34,9 @@ use anyhow::Result;
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::model::{AgentUpdate, UpdateInfo, UpgradeRun};
+use crate::model::{AgentUpdate, Offer, UpdateInfo, UpgradeRun};
 use crate::state::AppState;
+use orchd_base::install::Install;
 
 // ---------------------------------------------------------------------------
 // The agent
@@ -147,13 +148,107 @@ fn parse(stdout: &[u8], tool: &str) -> Option<AgentUpdate> {
     })
 }
 
-/// The command the upgrade button runs.
+/// The cask and the package are both named this, and the name is the argument.
+///
+/// One constant because the two channels were published together and a rename
+/// would have to move both — see CLAUDE.md's *Releases*.
+const PACKAGE: &str = "orchestrator";
+
+/// What an upgrade runs, and what to call it.
+///
+/// `argv` and `shown` are two different strings on purpose. An apt upgrade runs
+/// `pkexec sh -c …` because it needs root, and showing that to somebody is showing
+/// them the plumbing — what they would type is `sudo apt …`, and that is what the
+/// bar and the tooltip say.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Plan {
+    argv: Vec<String>,
+    shown: String,
+}
+
+/// The command that upgrades this install, when one can be run from in here.
 ///
 /// Returned rather than executed so the deadline, the cwd and the reporting all
 /// live with the caller. Run in the main checkout, because that is the config mise
 /// resolves the tool version from.
-fn upgrade_argv(tool: &str) -> Vec<String> {
-    vec!["mise".into(), "upgrade".into(), tool.into()]
+///
+/// **Three channels can be upgraded and three cannot**, and the split is not about
+/// effort. mise installs *beside* the running build; apt replaces the binary and
+/// Linux keeps this process on its old inode; Homebrew replaces the bundle. All
+/// three survive being upgraded under a running app, and all three need the restart
+/// the bar already offers. A `.dmg`, an AppImage and a tarball have no installer to
+/// ask at all — there is nothing to run, so nothing is offered.
+fn plan(install: Install, tool: Option<&str>) -> Option<Plan> {
+    // mise first, and by the tool rather than by the install: it is the one
+    // channel that cannot be read off a path, and `app_providing_tool` has
+    // already asked mise itself.
+    if let Some(tool) = tool {
+        return Some(Plan {
+            argv: vec!["mise".into(), "upgrade".into(), tool.into()],
+            shown: format!("mise upgrade {tool}"),
+        });
+    }
+    match install {
+        Install::Homebrew => Some(Plan {
+            argv: vec![
+                "brew".into(),
+                "upgrade".into(),
+                "--cask".into(),
+                PACKAGE.into(),
+            ],
+            shown: format!("brew upgrade --cask {PACKAGE}"),
+        }),
+        // **`apt-get update` is not optional.** `--only-upgrade` can only install
+        // what the package lists already carry, and the release this bar is
+        // nudging about reached the apt repository minutes ago — so without the
+        // refresh the upgrade succeeds at doing nothing.
+        //
+        // `pkexec` because every apt path needs root and this app has no terminal
+        // to type a password into. `sh -c` because pkexec runs one command and
+        // this is two.
+        Install::Apt => Some(Plan {
+            argv: vec![
+                "pkexec".into(),
+                "sh".into(),
+                "-c".into(),
+                format!("apt-get update && apt-get install -y --only-upgrade {PACKAGE}"),
+            ],
+            shown: format!("sudo apt install --only-upgrade {PACKAGE}"),
+        }),
+        Install::AppImage | Install::MacBundle | Install::Tarball | Install::Checkout => None,
+    }
+}
+
+/// What the bar may offer for this install.
+///
+/// The daemon decides this, rather than the page deriving it from `tool` being
+/// `None`: the page cannot tell a cask from a `.dmg`, and when it tried it told
+/// every non-mise install to run `mise up`.
+///
+/// `have_pkexec` is the one runtime fact that turns a button into advice. An apt
+/// install on a machine with no `pkexec` can still be upgraded — just not from in
+/// here — so the command is named rather than offered.
+fn offer_for(install: Install, tool: Option<&str>, have_pkexec: bool) -> Offer {
+    match plan(install, tool) {
+        Some(p) if install == Install::Apt && !have_pkexec && tool.is_none() => {
+            Offer::Advice { command: p.shown }
+        }
+        Some(p) => Offer::Button { command: p.shown },
+        None => Offer::LinkOnly,
+    }
+}
+
+/// Is this executable on `PATH`?
+///
+/// Read rather than spawned, unlike `machine::on_path`: this runs on a tokio
+/// worker inside the release poller, where `std::process::Command` is the trap
+/// `docs/traps/portability.md` opens with. A missing `PATH` answers "no", which
+/// degrades an apt install to advice rather than to a button that cannot work.
+fn on_path(exe: &str) -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| dir.join(exe).is_file())
 }
 
 /// How long an upgrade may take before it is killed and reported as failed.
@@ -195,8 +290,8 @@ impl Subject {
     /// What to upgrade, and to which version, if there is anything to offer.
     ///
     /// `Err` is the refusal the route reports verbatim: no update found, or an
-    /// install mise did not make and so cannot name in `mise upgrade`.
-    fn offer(self, inner: &crate::state::Inner) -> std::result::Result<(String, Version), String> {
+    /// install with no installer to ask.
+    fn offer(self, inner: &crate::state::Inner) -> std::result::Result<(Plan, Version), String> {
         match self {
             Subject::Agent => {
                 let u = inner
@@ -204,7 +299,10 @@ impl Subject {
                     .clone()
                     .ok_or("no agent update to install — refresh the check first")?;
                 Ok((
-                    u.tool,
+                    Plan {
+                        argv: vec!["mise".into(), "upgrade".into(), u.tool.clone()],
+                        shown: format!("mise upgrade {}", u.tool),
+                    },
                     Version {
                         from: u.current,
                         to: u.latest,
@@ -216,12 +314,28 @@ impl Subject {
                     .update
                     .clone()
                     .ok_or("no release to install — the check has not found one")?;
-                let tool = u
-                    .tool
-                    .clone()
-                    .ok_or("this build was not installed by mise, so it cannot upgrade itself")?;
+                /* **Decided again here, not read out of the snapshot.** What the
+                bar carries is a sentence for a person; what this needs is an
+                argv. Both come from the same [`plan`], so a button the page
+                offered is a plan this can build — and a press cannot outlive
+                the fact that made it, because the fact is re-read. */
+                let install = Install::of_running();
+                let p = plan(install, u.tool.as_deref()).ok_or(
+                    "this install has no installer to ask — \
+                     download the release, or install through mise, Homebrew or apt",
+                )?;
+                if p.argv.first().is_some_and(|a| a == PKEXEC) && !on_path(PKEXEC) {
+                    // Refused in front of the run rather than reported after it:
+                    // spawning a missing binary fails as "No such file", which is
+                    // a sentence about `pkexec` rather than about what to do.
+                    return Err(format!(
+                        "no pkexec on this machine, so the password cannot be asked for — \
+                         run `{}` in a terminal",
+                        p.shown
+                    ));
+                }
                 Ok((
-                    tool,
+                    p,
                     Version {
                         from: u.current,
                         to: u.latest,
@@ -247,7 +361,7 @@ pub async fn start_upgrade(
     app: &Arc<AppState>,
     subject: Subject,
 ) -> std::result::Result<Version, String> {
-    let (tool, version) = {
+    let (plan, version) = {
         let mut inner = app.inner.write().await;
         if subject
             .run_slot(&mut inner)
@@ -256,16 +370,16 @@ pub async fn start_upgrade(
         {
             return Err("that upgrade is already running".to_string());
         }
-        let (tool, version) = subject.offer(&inner)?;
+        let (plan, version) = subject.offer(&inner)?;
         *subject.run_slot(&mut inner) = Some(UpgradeRun {
             to: version.to.clone(),
             running: true,
             tail: String::new(),
         });
-        (tool, version)
+        (plan, version)
     };
     app.notify().await;
-    run_upgrade(app.clone(), tool, version.to.clone(), subject);
+    run_upgrade(app.clone(), plan, version.to.clone(), subject);
     Ok(version)
 }
 
@@ -296,13 +410,14 @@ pub async fn dismiss(app: &Arc<AppState>, subject: Subject) -> std::result::Resu
 /// captured tail is.
 fn run_upgrade(
     app: std::sync::Arc<crate::state::AppState>,
-    tool: String,
+    plan: Plan,
     to: String,
     subject: Subject,
 ) {
     tokio::spawn(async move {
         let main = app.cfg.main_checkout.clone();
-        let argv = upgrade_argv(&tool);
+        let argv = plan.argv.clone();
+        let privileged = plan.argv.first().is_some_and(|a| a == PKEXEC);
         let done = tokio::task::spawn_blocking(move || {
             crate::proc::run_bounded(&main, UPGRADE_TIMEOUT_SECS, &argv, "agent upgrade")
         })
@@ -319,7 +434,7 @@ fn run_upgrade(
                 if text.trim().is_empty() {
                     text = String::from_utf8_lossy(&out.stdout).into_owned();
                 }
-                Some(tail(&text, 12))
+                Some(explain(privileged, &plan.shown, &tail(&text, 12)))
             }
             Ok(Ok(_)) => None,
         };
@@ -341,8 +456,8 @@ fn run_upgrade(
         {
             let mut inner = app.inner.write().await;
             match &failure {
-                Some(text) => tracing::warn!("upgrading {tool} failed: {text}"),
-                None => tracing::info!("upgraded {tool}"),
+                Some(text) => tracing::warn!("`{}` failed: {text}", plan.shown),
+                None => tracing::info!("ran `{}`", plan.shown),
             }
             // Reported rather than cleared: see `tail`. An empty tail on a
             // finished run is the success.
@@ -354,6 +469,34 @@ fn run_upgrade(
         }
         app.notify().await;
     });
+}
+
+/// The program that asks for the password, named once because three places test
+/// for it.
+const PKEXEC: &str = "pkexec";
+
+/// Put a sentence in front of a failure the raw output does not explain.
+///
+/// **The failure this exists for is the one an apt install hits most.** `pkexec`
+/// needs a polkit *authentication agent* to draw the password prompt, and a GNOME
+/// or KDE session has one while a bare X session, an ssh login and WSL do not.
+///
+/// It has two spellings and the substring is what both share. Measured here, from
+/// a daemon-spawned `pkexec true` with no controlling terminal — exit 127, and:
+/// `Error creating textual authentication agent: … ('/dev/tty'): No such device or
+/// address`. The graphical one is `Error executing command as another user: No
+/// authentication agent found`. Both are true and neither says what to do, so the
+/// bar leads with what to do and keeps the original underneath: the tail is what
+/// the link's `title` shows, and a reason that is thrown away is a reason nobody
+/// can act on.
+fn explain(privileged: bool, shown: &str, tail: &str) -> String {
+    if privileged && tail.contains("authentication agent") {
+        return format!(
+            "no password prompt could be shown, so nothing was installed — \
+             run `{shown}` in a terminal\n{tail}"
+        );
+    }
+    tail.to_string()
 }
 
 /// The last `n` non-empty lines, which is what a failure is actually in.
@@ -429,17 +572,25 @@ pub async fn refresh(app: &std::sync::Arc<crate::state::AppState>) -> Result<()>
 // exec, the captured tail and the reporting have one implementation rather than
 // two that drift.
 //
-// **Only a mise install can be upgraded from inside the app**, and that is not a
-// gap to close later. A `.deb` belongs to apt and wants a password; an AppImage
-// and a `.dmg` are files somebody downloaded, and replacing the binary a process
-// is executing is not something to do behind the user's back. Those installs keep
-// the link to the release, which is what they had.
+// **Three installs can be upgraded from inside the app: mise, Homebrew and apt.**
+// It was mise alone, which was right while mise was the only channel with an
+// installer behind it — and wrong the week a cask and an APT repository shipped,
+// because the bar then told both of them to "Run mise up". [`plan`] says what each
+// one runs and why the other three are offered nothing.
 //
-// The upgrade also cannot take effect on its own: this process *is* the old build,
-// and mise installs beside it rather than over it. So a finished run says
-// "restart", and the restart is the same [`crate::window::WindowCmd::Restart`] the
-// agent bar offers — which is why `relaunch` resolves the `latest` symlink instead
-// of re-running the exact path it started from.
+// The upgrade cannot take effect on its own whichever channel it came from: this
+// process *is* the old build. mise installs beside it, apt replaces the binary
+// while Linux keeps this process on its old inode, and Homebrew replaces the
+// bundle — so all three finish with "restart", and the restart is the same
+// [`crate::window::WindowCmd::Restart`] the agent bar offers, which is why
+// `relaunch` resolves the `latest` symlink instead of re-running the exact path it
+// started from.
+//
+// **One thing only macOS does**: a cask upgrade swaps `Orchestrator.app`
+// underneath a process that is running out of it, where mise never touches the
+// build in use. Nothing here can prevent that; what it can do is not leave the old
+// process running longer than it must, which is what the "restart to run it" the
+// bar already shows is for.
 
 /// Which mise tool provides the binary that is running, if mise provides it.
 ///
@@ -595,7 +746,8 @@ pub fn start_release_poller(app: Arc<AppState>) {
                 };
                 // Only when there is something to offer, and off-thread because it
                 // shells mise. `None` is the ordinary answer for every install mise
-                // did not make, and it is what leaves the bar as the link it was.
+                // did not make, and the install kind below is what decides what to
+                // say about those.
                 let tool = if newer {
                     let main = app.cfg.main_checkout.clone();
                     tokio::task::spawn_blocking(move || app_providing_tool(&main))
@@ -604,11 +756,30 @@ pub fn start_release_poller(app: Arc<AppState>) {
                 } else {
                     None
                 };
+                /* Both touch the filesystem — `Install::of_running` probes the
+                Caskroom and may read a bundle marker, `on_path` stats a
+                directory per `PATH` entry — so they go off the runtime with the
+                mise call rather than beside it. */
+                let tool_for_offer = tool.clone();
+                let offer = if newer {
+                    tokio::task::spawn_blocking(move || {
+                        offer_for(
+                            Install::of_running(),
+                            tool_for_offer.as_deref(),
+                            on_path(PKEXEC),
+                        )
+                    })
+                    .await
+                    .unwrap_or(Offer::LinkOnly)
+                } else {
+                    Offer::LinkOnly
+                };
                 let next = newer.then(|| UpdateInfo {
                     current: cur.clone(),
                     latest: tag.trim_start_matches('v').to_string(),
                     url,
                     tool,
+                    offer,
                 });
                 let mut inner = app.inner.write().await;
                 if inner.update != next {
@@ -638,6 +809,134 @@ fn parse_semver(s: &str) -> Option<(u64, u64, u64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each channel runs its own installer, and the apt one carries the two things
+    /// it is easiest to leave out: the refresh, and the program that asks for the
+    /// password.
+    #[test]
+    fn every_channel_that_can_be_upgraded_runs_its_own_installer() {
+        let mise = plan(Install::Tarball, Some("github:kbarendrecht/orchestrator")).expect("mise");
+        assert_eq!(
+            mise.argv,
+            vec!["mise", "upgrade", "github:kbarendrecht/orchestrator"]
+        );
+
+        let brew = plan(Install::Homebrew, None).expect("brew");
+        assert_eq!(brew.argv, vec!["brew", "upgrade", "--cask", "orchestrator"]);
+        assert_eq!(brew.shown, "brew upgrade --cask orchestrator");
+
+        let apt = plan(Install::Apt, None).expect("apt");
+        assert_eq!(apt.argv.first().map(String::as_str), Some(PKEXEC));
+        let script = apt.argv.last().expect("the script");
+        assert!(
+            script.contains("apt-get update") && script.contains("--only-upgrade orchestrator"),
+            "the lists have to be refreshed before the upgrade can see the release: {script}"
+        );
+        // What a person would type, which is not what is run.
+        assert_eq!(apt.shown, "sudo apt install --only-upgrade orchestrator");
+        assert!(!apt.shown.contains(PKEXEC));
+    }
+
+    /// The three with no installer behind them, and the point of them: an install
+    /// this cannot upgrade is offered nothing rather than offered `mise up`.
+    #[test]
+    fn a_downloaded_file_is_offered_nothing() {
+        for install in [
+            Install::MacBundle,
+            Install::AppImage,
+            Install::Tarball,
+            Install::Checkout,
+        ] {
+            assert_eq!(plan(install, None), None, "{install:?}");
+            assert_eq!(
+                offer_for(install, None, true),
+                Offer::LinkOnly,
+                "{install:?}"
+            );
+        }
+    }
+
+    /// The shape the page branches on, asserted here because the page cannot be
+    /// asked from a unit test.
+    ///
+    /// `renderUpdate` reads `offer.kind` and `offer.command`; `snapshot.d.ts` says
+    /// so because `ts_rs` reads the same serde attribute, and `check-web` regenerates
+    /// and diffs it. What neither covers is the JSON actually put on the wire, which
+    /// is this.
+    #[test]
+    fn the_page_gets_a_tagged_offer_with_the_command_beside_it() {
+        assert_eq!(
+            serde_json::to_value(Offer::Button {
+                command: "brew upgrade --cask orchestrator".into()
+            })
+            .expect("serialises"),
+            serde_json::json!({"kind": "button", "command": "brew upgrade --cask orchestrator"})
+        );
+        assert_eq!(
+            serde_json::to_value(Offer::LinkOnly).expect("serialises"),
+            serde_json::json!({"kind": "link_only"})
+        );
+    }
+
+    /// An apt install on a machine with no `pkexec` can still be upgraded — just
+    /// not from in here. Naming the command is the difference between a bar that
+    /// helps and a button that cannot work.
+    #[test]
+    fn apt_without_pkexec_is_advice_rather_than_a_button() {
+        assert_eq!(
+            offer_for(Install::Apt, None, false),
+            Offer::Advice {
+                command: "sudo apt install --only-upgrade orchestrator".into()
+            }
+        );
+        assert_eq!(
+            offer_for(Install::Apt, None, true),
+            Offer::Button {
+                command: "sudo apt install --only-upgrade orchestrator".into()
+            }
+        );
+        // mise's own button never wants pkexec, whatever the packaging under it
+        // looks like to the path rules.
+        assert!(matches!(
+            offer_for(Install::Apt, Some("t"), false),
+            Offer::Button { .. }
+        ));
+    }
+
+    /// The failure an apt install hits on every machine with no desktop session.
+    /// `pkexec`'s own words are true and useless, so the bar leads with what to do
+    /// and keeps them underneath.
+    #[test]
+    fn a_missing_polkit_agent_is_explained_rather_than_quoted() {
+        // Both spellings, because the daemon's own spawn produces the second one:
+        // no controlling terminal, so pkexec cannot even fall back to asking in
+        // text. Measured, and quoted in `explain`'s note.
+        for raw in [
+            "Error executing command as another user: No authentication agent found.",
+            "Error creating textual authentication agent: Error opening current \
+             controlling terminal for the process (`/dev/tty'): No such device or address",
+        ] {
+            let said = explain(true, "sudo apt install --only-upgrade orchestrator", raw);
+            assert!(
+                said.starts_with("no password prompt could be shown"),
+                "{said}"
+            );
+        }
+        let raw = "Error executing command as another user: No authentication agent found.";
+        let said = explain(true, "sudo apt install --only-upgrade orchestrator", raw);
+        assert!(
+            said.contains("sudo apt install --only-upgrade orchestrator"),
+            "it has to name what to run instead: {said}"
+        );
+        assert!(said.contains(raw), "the original reason is not thrown away");
+
+        // Any other failure is reported as it stands: an explanation invented for
+        // an error it does not fit is worse than the error.
+        let other = "E: Could not get lock /var/lib/dpkg/lock-frontend";
+        assert_eq!(explain(true, "x", other), other);
+        // And nothing is explained for a run that never asked for a password.
+        assert_eq!(explain(false, "x", raw), raw);
+    }
 
     /// What the bar shows when an upgrade fails is the *end* of the output, and
     /// mise pads its errors with blank lines — so a naive last-N-lines would hand
@@ -673,10 +972,11 @@ mod tests {
         assert_eq!(u.tool, "claude-code");
         assert_eq!(u.current, "2.1.232");
         assert_eq!(u.latest, "2.1.240");
-        assert_eq!(
-            upgrade_argv(&u.tool),
-            vec!["mise", "upgrade", "claude-code"]
-        );
+        // The agent is always mise's, so the tool decides the plan whatever the
+        // app itself was installed by.
+        let p = plan(Install::Apt, Some(&u.tool)).expect("a plan");
+        assert_eq!(p.argv, vec!["mise", "upgrade", "claude-code"]);
+        assert_eq!(p.shown, "mise upgrade claude-code");
     }
 
     #[test]

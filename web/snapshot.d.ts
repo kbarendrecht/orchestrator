@@ -170,6 +170,15 @@ value: string, label: string, sub: string,
 free: boolean, };
 
 /**
+ * What the update bar may offer for this install.
+ *
+ * Three arms because there are three honest answers, not because there are three
+ * install kinds: something the app can run for you, something only you can run,
+ * and nothing beyond the release link.
+ */
+export type Offer = { "kind": "button", command: string, } | { "kind": "advice", command: string, } | { "kind": "link_only" };
+
+/**
  * The PR pass a session was started to run, when it was started as one.
  *
  * **One field rather than two.** `pr` and `command` are inseparable — a pass with
@@ -539,13 +548,21 @@ export type UpdateInfo = { current: string, latest: string, url: string,
 /**
  * The mise tool that installed this binary, when one did.
  *
- * What decides whether the bar can offer a button at all: `Some` is an install
- * the app can upgrade itself (`mise upgrade <tool>`), `None` is a `.deb`, an
- * AppImage, a `.dmg` or a checkout, where the honest offer is the release link
- * it already had. Resolved by `update::app_providing_tool` at check time,
- * off-thread, because it shells mise.
+ * Still here because it is what `mise upgrade` is given, and because it is the
+ * one install kind that cannot be read off a path — `update::app_providing_tool`
+ * asks mise itself. What the *bar* branches on is [`Offer`], which this is only
+ * one input to.
  */
-tool: string | null, };
+tool: string | null, 
+/**
+ * What the bar may offer, and it is the whole of what the page decides from.
+ *
+ * The page used to derive this from `tool` being `None`, and got it wrong for
+ * everything that is not mise: it told a `.deb`, a cask, an AppImage and a
+ * checkout alike to "Run mise up". The daemon knows which install it is, so
+ * the daemon says what can be done about it.
+ */
+offer: Offer, };
 
 /**
  * An upgrade the daemon is running, or the failure it left behind.

@@ -18,6 +18,7 @@ pub mod edit;
 pub mod git;
 pub mod guard;
 pub mod headroom;
+pub mod install;
 pub mod model;
 pub mod proc;
 pub mod proposal;

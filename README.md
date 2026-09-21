@@ -69,7 +69,12 @@ sudo apt update && sudo apt install orchestrator
 ```
 
 Each of those installs the app, the `orchd` daemon it runs per checkout, and the
-`orch` CLI, and upgrades in place. The
+`orch` CLI. **All three upgrade from inside the app**: when a release lands, the
+bar at the top carries an Upgrade button that runs your own channel's command —
+`mise upgrade`, `brew upgrade --cask`, or apt behind a password prompt — and then
+a Restart button, because the running process is the old build until it goes. A
+downloaded `.dmg`, AppImage or tarball gets the release link instead, since there
+is no installer to ask. The
 [release page](https://github.com/kbarendrecht/orchestrator/releases/latest) also
 attaches a `.dmg`, a `.deb`, an AppImage and a tarball for anyone who would rather
 download one. Apple Silicon and x86-64 Linux are built.
@@ -359,6 +364,7 @@ crates/orchd-base/    the primitives. Nothing here may import anything below.
   guard.rs        the git rules (push blast radius, reach), run by `orch guard push`
   edit.rs         file read/write with containment and conflict detection
   headroom.rs     the pre-spawn resource check every session goes through
+  install.rs      which packaging put this binary here: mise, brew, apt, a file
   window.rs       Chrome, and the handle the desktop shell registers
   timing.rs       per-start phase lines: exec counts, share of the time, slow git
   secret.rs       one fresh token, and the leaf that broke a cycle to get here
@@ -395,8 +401,8 @@ crates/orchd/         the runtime core: the `orchd` library, what the daemon kno
   post.rs         one thread's outward words: the story, the reply, the reaction
   fix_pr.rs       automation state, the fix-pr guard table, a run's verdict
   story.rs        filing a tracker story for a fair-but-out-of-scope point
-  update.rs       both upgrade bars: is Claude Code behind, and which mise tool
-                  installed *us*, so the app can upgrade itself
+  update.rs       both upgrade bars: is Claude Code behind, and what this
+                  install's own upgrade command is, so the app can run it
   health.rs       a managed process's output → health
   names.rs        the worktree names the rail offers
 
