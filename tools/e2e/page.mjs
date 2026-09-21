@@ -66,6 +66,20 @@ import { chromium } from 'playwright-core'
 import { sandbox } from './harness.mjs'
 
 const asMac = process.argv.includes('--mac')
+/* **The modifier the *page* is waiting for, not the one this machine has.**
+   `--mac` tells the page it is macOS, so `IS_MAC` is true and `appMod`/`modheld`
+   want ⌘ — while `process.platform` on the runner still says linux. Reading the
+   runner meant the simulated run pressed `Control` at a page waiting for `Meta`,
+   and every modifier-click assertion would have failed for a reason that has
+   nothing to do with the code. It never did fail only because nothing ran this
+   file with `--mac`; the Linux job does now. */
+const MOD_KEY = asMac || process.platform === 'darwin' ? 'Meta' : 'Control'
+/** An app chord, spelled for whichever modifier the page is waiting for.
+ *
+ *  `appMod` is ⌘ on macOS and Ctrl elsewhere — one rule, two spellings — so a
+ *  test that hardcodes `Control+Shift+F` is testing one of the two branches and
+ *  silently skipping the other. */
+const chord = (/** @type {string} */ rest) => `${MOD_KEY}+${rest}`
 const keep = process.argv.includes('--keep')
 
 let failed = false
@@ -99,7 +113,12 @@ try {
       Object.defineProperty(window, '__ORCH__', {
         configurable: true,
         get: () => held,
-        set: (v) => { held = { ...v, platform: 'macos', chrome: 'overlay' } },
+        /* `mac`, which is the word the daemon sends and the word `IS_MAC` reads
+           (`host.rs` and `core.js`). It said `macos` here, so this mode has never
+           actually made the page believe it was macOS — every assertion under
+           `--mac` was running the Linux branch, quietly. `renderer.mjs` had it
+           right, which is why nothing noticed. */
+        set: (v) => { held = { ...v, platform: 'mac', chrome: 'overlay' } },
       })
     })
   }
@@ -109,7 +128,7 @@ try {
   // Asserting on text before that would read an empty document and pass.
   await page.waitForFunction(() => document.body.classList.contains('ready'), null, { timeout: 15_000 })
   // The legend is where the placeholders live, and it is hidden until asked for.
-  await page.keyboard.press('Control+Shift+?')
+  await page.keyboard.press(chord('Shift+?'))
   await page.waitForSelector('#keyhelp:not([hidden])', { timeout: 5000 })
 
   const seen = await page.evaluate(() => {
@@ -607,7 +626,7 @@ try {
     path.join(tree, 'haystack.txt'),
     'first line\nsecond line\nthe frobnicate word is here\nfourth line\n',
   )
-  await page.keyboard.press('Control+Shift+KeyF')
+  await page.keyboard.press(chord('Shift+KeyF'))
   await page.waitForSelector('#fnoverlay.on', { timeout: 5000 })
   await page.fill('#fnq', 'frobnicate')
   await page.waitForFunction(
@@ -829,7 +848,7 @@ try {
   fs.writeFileSync(path.join(tree, 'more.rs'), 'fn twice() {}\n')
 
   await press('#fnclose')
-  await page.keyboard.press('Control+Shift+KeyF')
+  await page.keyboard.press(chord('Shift+KeyF'))
   await page.waitForSelector('#fnoverlay.on', { timeout: 5000 })
   await page.fill('#fnq', 'the_target')
   await page.waitForFunction(
@@ -872,9 +891,9 @@ try {
        playwright drops a `modifiers` list it does not know and the click then
        arrives bare — which looks exactly like a broken binding. Measured, not
        guessed: a probe listener saw `ctrlKey: false`. */
-    await page.keyboard.down(process.platform === 'darwin' ? 'Meta' : 'Control')
+    await page.keyboard.down(MOD_KEY)
     await page.mouse.click(box.x, box.y)
-    await page.keyboard.up(process.platform === 'darwin' ? 'Meta' : 'Control')
+    await page.keyboard.up(MOD_KEY)
     return true
   }
 
@@ -936,7 +955,7 @@ try {
      the diff opens one, the search viewer does not. */
   // A tracked file, changed: the diff is a changeset, so it needs one to draw.
   fs.appendFileSync(path.join(tree, 'README.md'), 'a line the diff can show\n')
-  await page.keyboard.press('Control+Shift+KeyD')
+  await page.keyboard.press(chord('Shift+KeyD'))
   await page.waitForSelector('#overlay.on', { timeout: 5000 })
   await page.waitForFunction(
     () => !!document.querySelector('#diffbody .ln'), null, { timeout: 10_000 })
@@ -971,7 +990,7 @@ try {
 
   /* And the content half, on its own chord. `Control+Shift+F` rather than a plain
      `Control+F`, which is readline's forward-char and the pty's to keep. */
-  await page.keyboard.press('Control+Shift+KeyF')
+  await page.keyboard.press(chord('Shift+KeyF'))
   await page.waitForTimeout(150)
   check(await findUp() === true, 'Ctrl Shift F opens the search in contents mode')
   check(
@@ -992,14 +1011,17 @@ try {
 
      A shell rather than the agent pane, for the one property a test needs: its
      output is whatever this types into it. */
-  await page.addInitScript(() => {
+  /* **The mac amend has to survive this**, or the reload puts the page back on
+     Linux while the rest of the run is pressing ⌘. Passed in rather than closed
+     over: an init script is serialised into the page and cannot see `asMac`. */
+  await page.addInitScript((mac) => {
     let held
     Object.defineProperty(window, '__ORCH__', {
       configurable: true,
       get: () => held,
-      set: (v) => { held = { ...v, chrome: 'custom' } },
+      set: (v) => { held = { ...v, chrome: 'custom', ...(mac ? { platform: 'mac' } : {}) } },
     })
-  })
+  }, asMac)
   await page.reload({ waitUntil: 'domcontentloaded' })
   await page.waitForFunction(() => document.body.classList.contains('ready'), null, { timeout: 15_000 })
 
@@ -1289,7 +1311,7 @@ try {
      needs a way out to the pane that has both — on `Enter`, which the overlay
      contract gives to whatever is open, and on a button for the people who do not
      know that. */
-  await page.keyboard.press('Control+Shift+KeyF')
+  await page.keyboard.press(chord('Shift+KeyF'))
   await page.waitForSelector('#fnoverlay.on', { timeout: 5000 })
   await page.fill('#fnq', 'frobnicate')
   await page.waitForFunction(

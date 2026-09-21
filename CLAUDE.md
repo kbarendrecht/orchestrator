@@ -378,6 +378,7 @@ together: same entries, same order, same groups.
 [docs/traps/ui.md](docs/traps/ui.md)
 
 - The keyboard map has a contract, and it is the reason the next binding is obvious.
+- `page-check --mac` ran the Linux branch for its whole life, because of one letter.
 - The rail's `handle` button starts a pane, not the overlay.
 - An ask the review overlay does not own must still be answerable in the box.
 - Two panels dock at the bottom of the terminal, and they must not sit on each other.

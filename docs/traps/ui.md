@@ -25,6 +25,36 @@ branch lives under `if (Diff.state.open)`, so the first version of the assertion
 passed on a board with no diff up and proved nothing. `Ctrl+Left still steps the
 changeset` is what makes the refusal beside it mean something.
 
+## `page-check --mac` ran the Linux branch for its whole life, because of one letter.
+The daemon sends `platform: "mac"` (`host.rs`) and the page reads
+`IS_MAC = platform === 'mac'` (`web/js/core.js`). `tools/e2e/page.mjs`'s `--mac`
+mode set `macos`, so `IS_MAC` stayed **false**: every assertion under that flag
+was running the Linux branch while claiming to be the macOS one.
+`tools/e2e/renderer.mjs` sets `mac` and is unaffected, which is exactly why
+nobody noticed — the two simulations disagreed and only one of them was ever
+wrong.
+
+Found by asking a plainer question: **do the tests that press keys ever run on a
+Mac?** They do not. The matrix is `ubuntu-22.04` and `macos-14`, but every
+keyboard-driving step is `if: runner.os == 'Linux'`; what runs on the Mac is the
+30 e2e flows, which drive the HTTP API and press nothing, and `app-check`, which
+presses nothing either. So `appMod`'s ⌘ branch — the keyboard map, the
+modifier-click, the window chrome — had no gate at all.
+
+It has one now: the Linux job runs `page.mjs` twice, plain and `--mac`, the way it
+already runs the renderers. Three things had to be fixed to make the second run
+mean anything. The platform string above. The modifier the test presses, which
+read `process.platform` — the *runner's* OS — rather than the platform being
+simulated, so it pressed `Control` at a page waiting for `Meta`. And every app
+chord was written `Control+Shift+…`, which is one of the two spellings `appMod`
+accepts; they go through a `chord()` helper now. `Ctrl+←/→` deliberately does
+**not**: that binding is literally `ctrlKey` on both platforms.
+
+**What it still cannot answer** is what only a Mac can: whether ⌘ reaches
+WKWebView, and that `Ctrl`-click there is a right-click rather than a modifier
+click. That would need `page.mjs` on `macos-14` with a browser, which the job does
+not set up today.
+
 ## The rail's `handle` button starts a pane, not the overlay.
 `/orchd:handle-review`
 (`skills/handle-review/SKILL.md`, vendored from the monorepo's own `/resolve` and

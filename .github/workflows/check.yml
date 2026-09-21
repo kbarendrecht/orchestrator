@@ -209,11 +209,22 @@ jobs:
       # the ubuntu runner already, so this costs a daemon build and five seconds.
       #
       # Not screenshots, deliberately: `tools/e2e/page.mjs` has the argument.
+      #
+      # **Both variants, for the reason the renderers run both.** The app's
+      # modifier is ⌘ on macOS and Ctrl elsewhere — `appMod`, one rule with two
+      # spellings — and the keyboard map, the modifier-click and the window chrome
+      # all branch on it. The plain run exercises one side and the `--mac` run the
+      # other, which is as close as a Linux box gets: what it cannot answer is
+      # whether ⌘ reaches WKWebView at all, or that `Ctrl`-click there is a
+      # right-click. `platform` and `chrome` are values the daemon substitutes
+      # into the page rather than things the page sniffs, so setting them
+      # exercises the real branch.
       - name: Check the page
         if: runner.os == 'Linux'
         run: |
           cargo build -p orchd-serve --bin orchd
           node tools/e2e/page.mjs
+          node tools/e2e/page.mjs --mac
 
       # Which renderer each terminal opens with — the fix for #8, where WKWebView
       # miscomposited xterm's WebGL atlas. It was a `mise` task and nothing else, so
