@@ -7,16 +7,9 @@
 
 Run several Claude Code sessions over one repository, from a single window — and
 see at a glance which ones are working, which are waiting on you, and which of
-your PRs have review threads to answer.
+your or your repository's PRs need attention.
 
 ![orchestrator](docs/demo.gif)
-
-**Install it** with `brew install --cask kbarendrecht/tap/orchestrator` on
-Apple Silicon, from the [apt repository](#apt-debianubuntu) on Debian and Ubuntu,
-or `mise use -g github:kbarendrecht/orchestrator` anywhere. The
-[release](https://github.com/kbarendrecht/orchestrator/releases/latest) also
-attaches a `.dmg`, a `.deb`, an AppImage and a tarball. [Install](#install) has
-the rest.
 
 Each session lives in its own git worktree with its own terminal. The daemon owns
 every process, so closing the window kills nothing you did not mean to and losing
@@ -24,59 +17,24 @@ the browser tab loses nothing at all. Beside the sessions it polls your open PRs
 lists the reviews waiting on you, and drives a review-resolve flow that drafts
 replies you approve before anything is posted.
 
-Several repositories go in the same window, each with its own sessions, its own
-changed files and its own PRs:
+## What it does
 
-![two checkouts in one window](docs/demo-repos.gif)
+Each row is real: the agents are Claude Code, the diffs are what they wrote.
+[`docs/demo.md`](docs/demo.md) says how the recordings are made.
 
-Both recordings are real, not mock-ups. The agents are Claude Code, the diffs are
-what they wrote, and the second one is this repository beside a throwaway.
-`mise run demo` records them again — [`docs/demo.md`](docs/demo.md) says how.
+| | |
+| --- | --- |
+| **Several repositories, one window.** Each checkout keeps its own sessions, changed files and PRs, and the panes swap with the row you click. | ![two checkouts in one window](docs/demo-repos.gif) |
+| **The PRs, and the reviews you owe.** Every open PR with the threads still waiting on you, and a queue of other people's PRs ranked by who is blocked. The queue rows are demo data — [why](docs/demo.md). | ![the PR pane and the review queue](docs/demo-panes.gif) |
+| **A diff you can edit.** Changed files against the merge-base, word-level. The pane is editable, and the agent is told when you have changed a file under it. | ![the diff viewer](docs/demo-diff.gif) |
+| **Find, read, jump.** Search a workspace with ripgrep's engine, open a hit in its own file pane, and modifier-click a path or a symbol to go there. | ![find in a workspace, and the file viewer](docs/demo-find.gif) |
+| **Processes beside the agents.** A build watcher or a container stack in the drawer, with its health folded into the rail beside the session that broke it. | ![a managed process in the drawer](docs/demo-procs.gif) |
+| **Nothing dies with the window.** The daemon owns every pty. Close the window, lose the tab, kill the daemon outright — the sessions come back with their conversations. | ![sessions surviving a daemon restart](docs/demo-revive.gif) |
 
-## What it is
-
-A Rust daemon plus a small vanilla-JS web app, shipped as one desktop application
-(the daemon runs in-process behind a webview) and also runnable headless in a
-browser tab. It hosts [Claude Code](https://www.anthropic.com/claude-code)
-sessions; it is not itself an agent.
-
-The pieces:
-
-- **A pty host.** Every session and managed process runs in a daemon-owned pty
-  with a replayable scrollback buffer. The web UI is a disposable view of it —
-  close it, reopen it, attach from a second window; nothing restarts.
-- **A session board.** Spawn a session in the main checkout or in a fresh
-  worktree. A state machine (driven by Claude Code's hooks) shows each as
-  working, waiting on you, or done, with the build status of any process beside
-  it folded in.
-- **A PR pane.** Your open PRs, polled from GitHub, with review-thread counts and
-  a one-click resolve flow.
-- **A review queue.** Optionally, the PRs where your review is requested, ranked
-  by a command you configure.
-- **A diff viewer** against the merge-base, with an editable pane that warns the
-  agent when you have changed a file under it.
-- **A CLI.** `orch` drives a running daemon from your shell, and from inside a
-  session, so an agent can open a helper session for a subtask, or ask you a
-  question and block until you answer. [Install](#install) lists what it does.
-
-The PR pane and the review queue, which sit under the rail and the changed files:
-
-![the PR pane and the review queue](docs/demo-panes.gif)
-
-Each PR row carries the threads still waiting on you and the button that hands
-them to an agent. The queue ranks other people's PRs: red where you are the
-stopper, amber where somebody asked for you by name, grey for a team request.
-**The rows in that recording are demo data** — see
-[`docs/demo.md`](docs/demo.md) for why they have to be.
-
-And the claim that the daemon owns the work, not the window — a changed file
-opened as a real diff, then the checkout's daemon killed outright:
-
-![the diff viewer, and sessions surviving a daemon restart](docs/demo-revive.gif)
-
-Nothing reloads. The host notices the daemon is gone, starts it again, and hands
-the page the new port and token; `auto_resume` brings every session back with its
-conversation where it was.
+Under it: a Rust daemon plus a small vanilla-JS web app, shipped as one desktop
+application and also runnable headless in a browser tab. It hosts
+[Claude Code](https://www.anthropic.com/claude-code) sessions; it is not itself an
+agent. [`docs/architecture.md`](docs/architecture.md) is how the pieces fit.
 
 ## What you need
 
@@ -95,41 +53,12 @@ is missing and what stops working, and starts anyway.
 
 ## Install
 
-A release attaches an installer per platform and a tarball beside it. The
-installers are the shortest path: a `.deb` or the `.dmg` gives you an app in your
-launcher, with an icon, and puts `orch` where the shell can find it. The tarball
-is what `mise` reads, and is still two binaries you place yourself.
-
-- **`orchestrator-desktop`** is the app. The daemon and the web UI are compiled
-  into it, so this one binary on its own is a complete install.
-- **`orch` is optional.** `orch new` starts another session with a prompt,
-  `orch kill` undoes one of its own spawns, `orch teardown` removes a clean worktree
-  through the same checks as the button, `orch ask` puts a question in front of
-  you and blocks until you answer, `orch ls` lists what is running.
-  `orch new --worktree` gives a helper session its own tree and branch, which is the
-  difference between two parallel jobs and two agents sharing one git index.
-  `orch <command> --help` documents the flags. Nothing requires it.
-  Every session is told it is there: the daemon hands each spawn a vendored
-  `orch` skill, so an agent reaches for the CLI without being told to in a prompt.
-
-Apple Silicon and x86-64 Linux are built.
-
-### Homebrew (macOS)
-
 ```
-brew install --cask kbarendrecht/tap/orchestrator
-brew upgrade --cask orchestrator   # later
+brew install --cask kbarendrecht/tap/orchestrator   # macOS, Apple Silicon
+mise use -g github:kbarendrecht/orchestrator        # anywhere
 ```
 
-Installs `Orchestrator.app` and symlinks `orch` onto your `PATH`. Apple Silicon
-only, which is what the release builds. Homebrew clears the download quarantine,
-so the app opens on a double-click — the one thing this route does that opening
-the `.dmg` by hand does not.
-
-`brew uninstall --cask orchestrator` removes it; add `--zap` to take
-`~/Library/Application Support/orchd` with it.
-
-### apt (Debian/Ubuntu)
+On Debian and Ubuntu, from the apt repository:
 
 ```
 curl -fsSL https://kbarendrecht.github.io/apt/orchestrator.asc \
@@ -139,94 +68,26 @@ echo "deb [arch=amd64 signed-by=/usr/share/keyrings/orchestrator.asc] https://kb
 sudo apt update && sudo apt install orchestrator
 ```
 
-The same package as the `.deb` below, with `apt upgrade` carrying you to each new
-release. amd64 only.
+Each of those installs the app, the `orchd` daemon it runs per checkout, and the
+`orch` CLI, and upgrades in place. The
+[release page](https://github.com/kbarendrecht/orchestrator/releases/latest) also
+attaches a `.dmg`, a `.deb`, an AppImage and a tarball for anyone who would rather
+download one. Apple Silicon and x86-64 Linux are built.
 
-### From an installer
-
-```
-sudo apt install ./Orchestrator_<version>_amd64.deb   # Debian/Ubuntu
-```
-
-Puts the app at `/usr/bin/orchestrator-desktop`, `orch` on your `PATH`, and a
-launcher entry with its icon. `apt remove orchestrator` takes all of it away.
-
-The **AppImage** is the same app for everything that is not Debian: `chmod +x`
-and run it. It carries its own GTK/WebKit, so it is an order of magnitude
-larger than the deb, and `orch` rides inside it: the daemon puts its own directory
-on each session's `PATH`, so an agent can still reach it.
-
-On **macOS**, open the `.dmg` and drag the app to Applications. It carries an ad
-hoc signature rather than a Developer ID, so a downloaded copy is quarantined and
-the first launch is right-click → Open rather than a double-click. Homebrew
-clears that quarantine; opening the `.dmg` by hand does not.
-
-### Through mise (with the `github` backend)
-
-```
-mise use -g "github:kbarendrecht/orchestrator"
-mise up          # upgrade to the newest release later
-```
-
-mise picks the right asset for your platform, verifies its checksum and release
-provenance, and extracts **both** binaries — so `orch` lands beside
-`orchestrator-desktop` and no second entry is needed. (The older `ubi:` backend
-still resolves these releases, but mise has deprecated it.)
-
-Installed this way, **the app upgrades itself**: the release nudge carries an
-Upgrade button that runs `mise upgrade` for you, then a Restart button, because the
-new build is installed beside the running one and a restart is what picks it up.
-Every other install keeps the link to the release instead — a `.deb` belongs to
-apt, a cask belongs to Homebrew, and an AppImage or a `.dmg` is a file you
-downloaded.
-
-### From a release tarball
-
-```
-tar -xzf orchestrator-<version>-<platform>.tar.gz   # → orchestrator-desktop, orch
-# macOS: the binaries are unsigned, so clear the download quarantine first
-xattr -dr com.apple.quarantine orchestrator-desktop orch
-```
-
-Put them on your `PATH` (`orch` only if you want it) and run
-`orchestrator-desktop`.
-
-A tarball or a mise install carries no launcher entry, because there is no
-installer to write one. **The app writes its own on first launch**: a `.desktop`
-file under `~/.local/share/applications` on Linux, and an
-`~/Applications/Orchestrator.app` on macOS, which is what puts it in Finder,
-Spotlight and Launchpad. Force it, or write it again after moving the binary, with:
-
-```
-orchestrator-desktop --install-desktop-entry
-```
-
-It points at the binary that ran it and uses the same id the packages do, so
-installing a `.deb` or the `.dmg` later replaces the entry instead of listing the
-app twice. Two things it will not do: write anything for an install that carries
-its own entry (the `.deb`, the AppImage, the `.dmg`), and write anything from a
-build tree, where the shared id would let `cargo run` shadow a real install.
-
-Because a mise install lives at a version-pinned path, the entry names the
-`latest` symlink beside it where there is one, and is rewritten at the next launch
-when the binary has moved. A bundle built this way is also unquarantined, so it
-opens on a plain double-click, like a cask and unlike a downloaded `.dmg`.
-
-**Linux** needs **WebKitGTK 4.1** at runtime (Ubuntu 22.04 / Debian 12 or newer;
-20.04 ships only 4.0 and will not work). **macOS** uses the system WebView and
-needs nothing extra.
-
-**After a mise or tarball install, run `orchestrator-desktop` once from a
-terminal.** That first launch writes the launcher entry: a Finder and Spotlight
-entry on macOS, an application-menu entry on Linux. From then on you can start it
-the way you start anything else, and an upgrade keeps the entry pointing at the
-build you are running.
-
-Then launch it and point it at a git checkout when it asks (it shows a folder
-picker when it has no config, or when the one on record has moved). That checkout
-is *main*; worktrees are cut inside it under `.claude/worktrees/`. State lives in
+Launch it and point it at a git checkout when it asks. That checkout is *main*;
+worktrees are cut inside it under `.claude/worktrees/`. State lives in
 `~/.config/orchd/` on Linux and `~/Library/Application Support/orchd/` on macOS —
 move it with `ORCHD_CONFIG_DIR`.
+
+A mise or tarball install has no launcher entry until the app writes one, so
+**run `orchestrator-desktop` once from a terminal**: that first launch puts it in
+Finder, Spotlight or your application menu. `orchestrator-desktop
+--install-desktop-entry` writes it again after a move.
+
+`orch` is optional and nothing requires it: `orch new` starts a session with a
+prompt, `orch ask` puts a question in front of you and blocks, `orch ls` lists
+what is running. Every session is told it is there, so an agent reaches for it
+without being prompted.
 
 ## Configuring it for your repo
 
@@ -272,117 +133,61 @@ just leaves the default in force, and the daemon says which key it did not know
 on the `WARN` line at start-up. Ignoring it is deliberate: a config this build
 rejects costs you the daemon, and an old file with a stale key must still load.
 
-### Fork workflow, or not
-
-Both are supported and neither needs configuring by hand.
-
-**Not a fork** — one remote, branches pushed to it. This is the default:
-`origin/HEAD` is the base, so diffs and worktrees are measured against whatever
-your remote's default branch is, whether that is `main`, `master` or something
-else. Nothing to set.
-
-**A fork** — `origin` is yours, `upstream` is the one PRs are opened against. A
-first run sees the `upstream` remote and writes `upstream/<its default branch>`
-into `config.json` itself. If you add the remote later, set the two keys in
-settings; naming the remote in `upstream_ref` is enough, since the other is
-inferred from it.
-
-Either way the base ref is one setting and both halves of it agree, which is what
-`git::detect_base` and the reconciliation in `Config::parse` are for.
-
 ### The review queue
 
 The daemon builds one itself, so the pane works on a fresh install with nothing
-configured. It asks GitHub for the open PRs in your repo where your review is
-requested — the same token and the same `curl` the PR pane already uses, so a
-checkout that can list its PRs can show its queue. No script, no `node`, no `gh`.
+configured: it asks GitHub for `review-requested:@me`, using the same token and
+the same `curl` the PR pane already uses. No script, no `node`, no `gh`.
 
-**Four rules, and that is all of them.** They are deliberately few, because the
-ranking this replaced guessed at `stopper` and `prio` labels, and a label is a
-convention one team agreed to: ranking on them ranks wrongly in every repository
-that has never heard of them.
+- **Age orders it**, oldest first. How long somebody has waited is true whatever a
+  team's labels mean.
+- **Amber means you were named.** A request to a team you belong to stays grey and
+  says `team`.
+- **Draft, conflicting and failing rows sink** below a "not reviewable" fold. They
+  are waiting on their author.
 
-- **What is in it**: whatever GitHub answers for `review-requested:@me`, which
-  includes a team you are in.
-- **Age orders it**, oldest first. How long somebody has waited is true regardless
-  of how their team labels work.
-- **Amber means you were named.** A request that went to a team you belong to
-  stays grey and says `team` — it is waiting on the team, not on you.
-- **Draft, conflicting and failing rows sink** below a "not reviewable" fold.
-  Those are waiting on their author.
-
-**Your team's real ranking wins if you have one.** Set `reviews_command` to a
-script, a `mise` task, anything that prints the JSON in
-[`docs/reviews-json.md`](docs/reviews-json.md), and the built-in never runs. That
-contract is unchanged and carries more than the built-in fills — label ranks, a
-changed-file count — so nothing that already works has to be rewritten.
-
-A non-zero exit from such a command shows the pane as *degraded* with its own
-stderr, deliberately distinct from "no reviews", because silently showing an empty
-queue when the source is broken is the failure that would actually cost a
-colleague a day. A checkout with no GitHub repository behind it reads *off*
-instead: there is nothing to ask about.
+**Your team's ranking wins if you have one.** Point `reviews_command` at anything
+that prints the JSON in [`docs/reviews-json.md`](docs/reviews-json.md) and the
+built-in never runs. A non-zero exit shows the pane as *degraded* with its own
+stderr, deliberately distinct from "no reviews": silently showing an empty queue
+when the source is broken is what would cost a colleague a day.
 
 ### Filing stories in a tracker
 
 With `tracker` set, a review point that is fair but out of scope can be filed as a
-story and answered with its id, instead of a promise nobody is holding.
+story and answered with its id. The tracker is reached over MCP, by an agent the
+daemon borrows, so three things have to line up:
 
-The tracker is reached **over MCP**, by an agent the daemon borrows for the value.
-So two things have to be true beyond the token, and both live in the repo you
-pointed the daemon at, not in its config:
+- **`tracker` is three fields**, one shape only: `{"mcp_server": "shortcut",
+  "host": "app.shortcut.com", "token_env": "SHORTCUT_API_TOKEN"}`. `token_env` is
+  optional — name it and the daemon pushes that variable into the agent's
+  environment instead of the server authenticating itself.
+- **`.mcp.json` declares a server named by `tracker.mcp_server`.** The daemon
+  approves that one server for the sessions it spawns, never all of them.
+- **A tracker skill** (`.claude/skills/*/SKILL.md`) holds the team id, the
+  workflow state and the story type. Those are yours, which is why they are not
+  settings.
 
-- **`tracker` in `config.json` is three fields**, and one shape only:
-  `{"mcp_server": "shortcut", "host": "app.shortcut.com", "token_env":
-  "SHORTCUT_API_TOKEN"}`. Absent means no tracker, and a bare name is refused with
-  the object to write. It is not settable from the settings pane, which shows it
-  read-only: a per-site host is not a dropdown, and a partial write would replace
-  what you hand-edited.
-- **`.mcp.json` declares a server named for the tracker**, and `tracker.mcp_server`
-  in the config is that name. The daemon approves that one server for the sessions
-  it spawns — never all of them, since a repo may declare a dozen and a
-  story-filing agent has business with none of the others. Remote or stdio makes no
-  difference: it is a name in that file either way.
-- **`tracker.token_env` is optional.** Name it and the daemon resolves the variable
-  and pushes it into the agent's environment, so the token never reaches a prompt or
-  a transcript. Leave it out and the MCP server authenticates itself — which is what
-  the official Linear and Atlassian servers do, both being OAuth-first. Naming one
-  is a preference: it is fewer logins.
-- **A tracker skill** (`.claude/skills/*/SKILL.md`) holds the team id, the workflow
-  state, the story type and the epic routing. Those are yours and they change
-  without this project changing, which is why they are not settings.
-
-Get the first one wrong and Claude Code drops the server **silently** — the tool is
-simply absent and the run burns its whole timeout mid-review. That is why the
-daemon checks at boot and says so.
+Get the server name wrong and Claude Code drops it **silently**: the tool is
+simply absent and the run burns its timeout mid-review. The daemon checks at boot
+and says so.
 
 ### The environment a session gets
 
 A session gets the daemon's environment plus whatever `env_source` says the
-session's own directory exports. That second half exists because the first is not
-what you think it is: the daemon's environment is whatever started it, and started
-from a desktop launcher that is the systemd user manager's, which holds no
-checkout's variables at all.
+session's own directory exports — `mise env --json` or `direnv export json`, per
+spawn, in that directory.
 
-It stays hidden because typing `claude` in that checkout still works: `mise
-activate` exports at a shell prompt, and an app has no prompt. So anything that
-expands a variable from the process environment — an `.mcp.json` header, a tool a
-session shells — gets the empty string and fails in its own words rather than in
-words about `PATH`.
+That second half is not optional in practice. The daemon's environment is
+whatever started it, and a desktop launcher's holds no checkout's variables at
+all — so an `.mcp.json` header or a tool a session shells gets the empty string
+and fails in its own words.
 
-So the daemon asks the tool directly, per spawn, in the session's own directory:
-`mise env --json` or `direnv export json`. Two things worth knowing:
-
-- **Every failure is silent by design.** No tool, no config, no trust, unreadable
-  output: the session starts with what it had. A missing variable is a degraded
-  session; a refused spawn is a lost one. An untrusted config is the one case that
-  logs a warning, because the variables exist and the session is not getting them.
-- **Trust is per config file.** mise refuses a `mise.toml` it has not been told to
-  trust, and a worktree is a new path — so a fresh worktree can need `mise trust`
-  before its sessions see anything. `worktree_setup` is the place to put that.
-
-Set `env_source` to `none` if the daemon is already started with everything the
-checkouts need.
+Every failure is silent by design: no tool, no config, unreadable output, and the
+session starts with what it had. An **untrusted** `mise.toml` is the one case that
+logs a warning, because the variables exist and the session is not getting them —
+a fresh worktree is a new path, so `mise trust` belongs in `worktree_setup`. Set
+`env_source` to `none` if the daemon already has everything.
 
 ### Worktree hooks
 
@@ -480,98 +285,25 @@ is logged and the pty is killed anyway.
   `mise.toml` is the one case that logs a warning instead of degrading quietly. See
   [The environment a session gets](#the-environment-a-session-gets).
 
-## How it works
-
-- **A host, and a daemon per checkout.** `desktop/` is a
-  [Tauri](https://v2.tauri.app/) v2 shell that runs `host::serve` on a loopback
-  port, spawns one `orchd` child per open checkout, and points the webview at the
-  host. The page comes from the host; every `/api/*` call goes to the checkout's
-  own child, which mints its own token. No sidecar, no fixed port, nothing left
-  running. The window is
-  frameless and the web UI draws its own titlebar (real traffic lights on macOS);
-  window controls go over the same authenticated HTTP as everything else, never
-  Tauri IPC.
-- **Sessions are the daemon's.** It spawns every one with `--session-id`, so its
-  own id and Claude Code's are the same value and hook correlation needs no
-  mapping. It never adopts a shell-started session — that exactness is the point.
-- **Hooks drive the state.** Claude Code's hooks (`SessionStart`, `PostToolUse`,
-  `Stop`, `SessionEnd`, …) POST to the daemon, which is how a row knows whether it
-  is working or waiting. The daemon's hook settings *merge* with the repo's own,
-  so your project hooks keep firing.
-- **Worktrees.** The daemon makes the tree, at whatever layout your repo uses: it
-  asks your repo's `WorktreeCreate` hook first and adopts what that hook made, cuts
-  its own with `git worktree add` when the hook declines, then runs `worktree_init`
-  and `worktree_setup`, then starts a session *in* the tree. It used to hand the cut
-  to `claude --worktree` at Claude Code's own layout, which pinned that session into
-  worktree isolation — and that pin refuses writes as well as git, so a scratch dir
-  shared into the tree by symlink could not be written from either side of the link.
-  The isolation the daemon needs instead is its own, on the agent's Bash, and it is
-  git-only: see the push guard below. Teardown is a seven-check preflight, then your
-  repo's `WorktreeRemove` hooks, then `git worktree remove`. Never `rm -rf`, because
-  a worktree is full of symlinks into main.
-- **The review flow, and there are two.** The rail's `handle` button starts
-  `/orchd:handle-review` in a pane: one agent in the PR's worktree, reading the
-  threads, applying what is right, asking you about the rest, and drafting replies
-  it posts only on an explicit go. That is the default because the other one is not
-  finished. The other one is the review session — the same agent, in the same
-  worktree, but it proposes a stance per thread and the overlay puts those on
-  cards; it then writes the code and drafts each reply, which the daemon posts on
-  its own credentials. It is the second review item in a PR row's menu. Resolving
-  a thread stays your button either way, by design.
-- **`fix-pr` is hand-triggered, never automatic.** The guards that protect the
-  machine and the repo remain (authorship, one run per PR, a busy branch, the push
-  guard below); the automatic trigger does not. It is a gate you read before starting, not one that trips
-  while you look elsewhere.
-
-The web UI is compiled into the binary with `include_str!`, so it can never drift
-from the daemon serving it — and a change under `web/` needs a rebuild.
-
 ## Security
 
-Bound to `127.0.0.1` only, with Origin/Host validation and a per-start token
-required on the WebSocket and every mutating route. Hook endpoints are exempt from
-the token, because a hook Claude Code spawns cannot easily carry a per-start one.
-They are confined to their own prefix and a schema that can only ever update state.
-GitHub **reads** resolve `ORCHD_GITHUB_TOKEN`, then a `0600` `github_token_file`,
-then `gh auth token`, and read scopes are all they need. **Writes are the other
-half**: a thread reply, a 👍 and a re-requested review shell `gh` and use gh's own
-credential, whatever you set here. So a read-only token does not make the daemon
-read-only, and the resolve flow wants `gh` signed in.
+Bound to `127.0.0.1`, with Origin and Host validation and a per-start token on the
+WebSocket and every mutating route. GitHub reads use `ORCHD_GITHUB_TOKEN`, a
+`0600` `github_token_file` or `gh auth token`; every write shells `gh` and uses
+its credential.
 
-**The trust boundary is your user account, not the process.** Loopback keeps the
-network out and the Origin check keeps other web pages out. But `GET /` returns
-the page with the token substituted into it and is deliberately not gated, so any
-process running as you can read the token and then hold everything — including the
-pty attach, which means typing into a live agent's terminal. Do not run this on a
-machine you share with people you do not trust.
+**The trust boundary is your user account, not the process.** `GET /` hands out
+the token, so any process running as you can hold everything, including a live
+agent's terminal. Do not run this on a machine you share with people you do not
+trust.
 
-That is a trade rather than an oversight: on a single-user machine a hostile local
-process can already ptrace the daemon, and gating the page would break the token
-discovery the tooling depends on. It is written down because the alternative is a
-sentence that earns trust it has not got.
+Agents get narrower credentials than the page does, and a `PreToolUse` guard
+refuses three things on the agent's git: a lease-less `--force`, a push to the
+base branch, and git aimed outside the session's worktree. Read it as a
+mistake-catcher, not a control — it sees `Bash` calls only.
 
-Agents get narrower credentials than the SPA does, and that part *is* enforced: a
-session asks with `ORCH_ASK_TOKEN`, good for its own session's routes, and a review
-session posts with `ORCH_POST_TOKEN`, good for one route on one PR. Neither is the app
-token — which matters because those are the runs that read other people's review
-comments.
-
-There is a `PreToolUse` guard on the agent's git (`orch guard push`) with three
-rules: no lease-less `--force`, no push to the base branch, and no git aimed out of
-the worktree the session works in. The third replaces the isolation
-`claude --worktree` used to pin, and it is deliberately narrower — git only, never
-your writes, because main's branch and its recorded occupant are what the daemon
-needs protected and a shared scratch dir is not its business.
-
-The third rule is a question rather than a wall: its refusal names `orch outside
-<path>`, which puts "may this session run git there?" to you through the same ask
-box every other question uses. A yes is remembered **for that folder and what is
-under it**, for the rest of that session, so the next checkout is a question of its
-own. Nothing persists it, so a restart asks again. Read all three as a
-**mistake-catcher, not a control**: it sees `Bash` tool calls only, so `gh`, an MCP
-git server, or a script the agent writes and then runs all go around it. It is there
-because a fix-pr run force-pushes with nobody watching, and that is the mistake
-worth catching — not because an agent could be prevented from pushing.
+[`docs/security.md`](docs/security.md) has the reasoning behind each of those, and
+what each one does not cover.
 
 ## Developing
 
@@ -594,7 +326,8 @@ headless and prints a tokened URL. The binaries live in `orchd-serve` since the
 split, so `--bin orchd` from the root no longer resolves. `mise run shot` drives Chrome while the
 app runs in **WebKitGTK**, so it is good for layout and not the last word.
 
-[`CLAUDE.md`](CLAUDE.md) has the traps as one line each and
+[`docs/architecture.md`](docs/architecture.md) is how the running system fits
+together, [`CLAUDE.md`](CLAUDE.md) has the traps as one line each and
 [`docs/traps/`](docs/traps/gates.md) what each one cost, [`TODO.md`](TODO.md) what is open,
 [`docs/assumptions.md`](docs/assumptions.md) what the daemon assumes and what breaks
 when each is false, and [`docs/spec.md`](docs/spec.md) the requirements the `(§N)`

@@ -1,6 +1,6 @@
 # Recording the README's demos
 
-[`tools/demo.mjs`](../tools/demo.mjs) records all four GIFs in the README:
+[`tools/demo.mjs`](../tools/demo.mjs) records every GIF in the README:
 
 - [`demo.gif`](demo.gif) — three agents over **one** repository, swapped between,
   then asked a question live.
@@ -10,6 +10,12 @@
   (`--panes`), cropped to the band that holds both.
 - [`demo-revive.gif`](demo-revive.gif) — the diff viewer, then the checkout's
   daemon killed and every session coming back (`--revive`).
+- [`demo-diff.gif`](demo-diff.gif) — one changed file read as a diff, split, then
+  made editable in place (`--diff`).
+- [`demo-find.gif`](demo-find.gif) — a workspace searched, the hits narrowing per
+  keystroke, one opened as its own file pane (`--find`).
+- [`demo-procs.gif`](demo-procs.gif) — a managed process in the drawer, restarted
+  on camera so its own output decides the health dot (`--procs`).
 
 The script's own header carries the mistakes that cost a take each. This is the
 setup it assumes, and every step below is here because skipping it produced a GIF
@@ -150,6 +156,23 @@ That is an ordinary documented setting, not a patch: nothing in a release reads
 that file, no default points at it, and the repository the rows describe is the
 same throwaway fixture the rest of the recording uses. The README says so under
 the picture.
+
+## Which workspace a scene wants
+
+**Three scenes name their own row rather than taking the first one**, and that is
+not tidiness: the rail sorts by recency, so `ids[0]` is whichever session last
+took a turn. `--diff` and `--find` ask `/api/state` for a session in a
+*worktree*, because main carries no agent's diff; `--procs` asks for the one in
+*main*, because `main_processes` is main's and a worktree's drawer is empty
+unless `worktree_processes` is set.
+
+**Neither pane below the fold may be empty**, and both are configuration rather
+than luck. The PR pane needs the checkout to resolve a GitHub repository — a
+clone whose only remote is a local path resolves none, and the pane then reads
+`no GitHub upstream remote configured`; `"repo": "kbarendrecht/orchd-fixture"`
+in the recording checkout's config is what fills it. The review queue needs
+`reviews_command`, below. A take with either one empty has to be recorded again,
+so check both before rolling.
 
 ## `--panes` and `--revive`
 

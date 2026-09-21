@@ -156,6 +156,21 @@ if (count < 2) {
   process.exit(1);
 }
 
+/** The id of a live session in a workspace this predicate accepts.
+ *
+ *  **Asked of the daemon, not of the rail.** The rail sorts by recency, so "the
+ *  first row" is whichever session last took a turn — and a scene about the
+ *  changed-files pane wants a *worktree*, while the drawer scene wants *main*,
+ *  because `main_processes` is main's. Both were `ids[0]` and both recorded
+ *  whatever had moved last.
+ */
+async function sessionWhere(pred) {
+  const state = await (await fetch(`${base}/api/state`, {
+    headers: { 'x-orch-token': token },
+  })).json();
+  return (state.sessions ?? []).find((s) => pred(s.workspace))?.id;
+}
+
 /** Hold the frame, so a reader can register what just changed. */
 const beat = (ms) => page.waitForTimeout(ms);
 
@@ -262,7 +277,7 @@ if (has('--seed-only')) {
 // Rolling from here, so none of the setting-up is in the picture. `--panes` and
 // `--revive` start it themselves, because each has a beat that must happen before
 // the camera does.
-if (!has('--panes') && !has('--revive')) await cdp.send('Page.startScreencast', {
+if (!has('--panes') && !has('--revive') && !has('--procs')) await cdp.send('Page.startScreencast', {
   format: 'jpeg',
   // High, because this is re-encoded to a GIF palette afterwards and every
   // artefact introduced here survives into that.
@@ -380,6 +395,80 @@ if (has('--panes')) {
     )
     .catch(() => console.error('warning: the page was still reconnecting'));
   await beat(4500);
+} else if (has('--diff')) {
+  /* **One claim: a changed file is a diff you can read and then type into.** The
+     seeded turns are what put a real diff there — an unseeded worktree reads
+     `Nothing changed in this worktree yet.` and the take is of an empty pane. */
+  const wt = await sessionWhere((w) => w !== 'main');
+  if (!wt) {
+    console.error('--diff wants a session in a worktree; main has no agent diff to show');
+    process.exit(1);
+  }
+  await page.locator(`#rail button.sess:not(.arc)[data-id="${wt}"]`).click();
+  await beat(1800);
+  await page.locator('.frow').first().click();
+  await beat(3200);
+  await page.locator('#ovnext').click().catch(() => {});
+  await beat(2600);
+  // Split, because word-level highlighting is what the unified view understates.
+  await page.locator('#ovmode').click().catch(() => {});
+  await beat(3000);
+  // And the half the row's sentence is about: the pane becomes editable in place.
+  await page.locator('#ovedit').click().catch(() => {});
+  await beat(3200);
+  await page.locator('body').press('Escape');
+  await beat(1400);
+} else if (has('--find')) {
+  /* **A workspace has to be selected first.** Find searches the active
+     workspace, and a page that has clicked nothing has none — the overlay then
+     opens on an empty index and the take shows a spinner. */
+  const ws = await sessionWhere((w) => w !== 'main');
+  await page.locator(`#rail button.sess:not(.arc)[data-id="${ws ?? ids[0]}"]`).click();
+  await beat(1600);
+  await page.locator('body').press('Control+Shift+F');
+  await beat(1200);
+  /* Typed rather than filled: the hit list answers per keystroke, and the list
+     narrowing under the query is the thing the row claims. `fill` sets the value
+     in one event and records as a list that was already there. */
+  await page.locator('#fnq').type('available', { delay: 110 });
+  await beat(2600);
+  // Down the hits, with the preview band following.
+  for (let i = 0; i < 2; i += 1) {
+    await page.locator('body').press('ArrowDown');
+    await beat(1300);
+  }
+  await beat(1200);
+  // And a hit opened as its own file pane, which is where reading continues.
+  await page.locator('#fnopen').click().catch(() => {});
+  await beat(3600);
+  await page.locator('body').press('Escape');
+  await beat(1200);
+} else if (has('--procs')) {
+  /* **The drawer belongs to a workspace, so the row is clicked first**, and it
+     has to be a workspace that *has* a managed process: `main_processes` is
+     main's, and a worktree's drawer is empty unless `worktree_processes` is set.
+     The camera starts after that click, because the click is setting up rather
+     than part of the claim. */
+  const inMain = await sessionWhere((w) => w === 'main');
+  if (!inMain) {
+    console.error('--procs wants a live session in main; the drawer is a workspace\'s');
+    process.exit(1);
+  }
+  await page.locator(`#rail button.sess:not(.arc)[data-id="${inMain}"]`).click();
+  await beat(2000);
+  await cdp.send('Page.startScreencast', { format: 'jpeg', quality: 92, maxWidth: width, maxHeight: height });
+  await beat(2400);
+  // The tab, and the watcher's own output under it.
+  const tab = page.locator('#dtabs button').first();
+  await tab.click().catch(() => {});
+  await beat(2600);
+  /* **Restarted on camera.** A watcher that has been up for minutes has its last
+     run scrolled out of the pane, so the take showed three `Restarted at …`
+     lines and none of the output that decides the health dot. The restart is the
+     drawer's own button, and the suite then reports into an empty pane. */
+  await page.locator('#dtabs span[title="Restart"]').first().click().catch(() => {});
+  await beat(5000);
+  await beat(2500);
 } else if (has('--multi')) {
   const blocks = await page.$$eval('#rail .co-block', (els) =>
     els.map((e) => e.getAttribute('aria-label')),
