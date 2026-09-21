@@ -211,3 +211,47 @@ with a probe executable — LaunchServices reads the plist, and the executable i
 `/bin/sh` either way, so the substitution changes nothing it looks at — and the
 step fails unless `sysctl.proc_translated` comes back `0`. One `open`, no window,
 and it is the assertion a unit test on generated text cannot make.
+
+## A bundle the linker signed is not a signed bundle, and macOS refuses it as damaged.
+
+`release.yml` built the `.dmg` with no signature at all, and the comment on the
+macOS matrix leg said what that would cost: "Unsigned, so Gatekeeper asks the
+first time." It does not ask. v2026.9.22 shipped a bundle macOS reports as
+**damaged**, which is a refusal rather than a question, and the only way past it
+was to re-sign the bundle by hand (#26).
+
+The distinction the comment missed is that the binary is signed and the bundle is
+not. arm64 cannot execute an unsigned Mach-O, so the linker writes an ad hoc
+signature — `flags=0x20002(adhoc,linker-signed)` on `orchestrator-desktop`. That
+covers the executable and nothing else. The bundle carries
+`Resources/Orchestrator.icns`, so a strict check wants a `_CodeSignature`
+directory of resource hashes, `Contents/` has none, and the verify fails:
+
+```
+$ codesign --verify --deep --strict Orchestrator.app
+Orchestrator.app: code has no resources but signature indicates they must be present
+```
+
+`spctl --assess --type execute` fails the same way, and that is what the Finder
+reports as damaged.
+
+**The paid Developer ID was the reason given for signing nothing, and it answers a
+different question.** An ad hoc bundle signature costs nothing, needs no secret and
+no account, and is what moves this from "damaged" to the first-run warning the
+comment had promised. Only notarization removes that warning. The two are separate
+decisions, and conflating them is what left the release unopenable.
+
+`"signingIdentity": "-"` in the `macOS` bundle block is the fix, so the bundler
+signs `Orchestrator.app` before it packs the `.dmg` around it.
+
+Two gates, because the key can be lost in two ways. `release.yml` runs the real
+`codesign --verify --deep --strict` on macos-14, before the bundle is driven and
+long before it is packed — that is the check the user's machine runs. And
+`check-ship` asserts the key is declared at all, which is worth having separately
+because it runs on Linux on every push rather than once per tag.
+
+**The tarball is not affected, and that is why this was invisible.** `mise` and
+`ubi` install three bare binaries, which carry their linker signatures and are
+never assessed, so every machine that installs that way — including the one this
+repo is developed on — sees nothing wrong.
+

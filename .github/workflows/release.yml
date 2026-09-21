@@ -43,8 +43,16 @@ jobs:
           # system WKWebView, so unlike Linux there are no libraries to install.
           - os: macos-14
             slug: aarch64-macos
-            # Unsigned, so Gatekeeper asks the first time. Still better than a
-            # tarball, and signing wants a paid Developer ID.
+            # **Ad hoc signed, by `signingIdentity` in tauri.conf.json.** Not
+            # signing at all is what this comment used to describe, and it did
+            # not produce the "Gatekeeper asks the first time" it promised: the
+            # bundle carries `Resources/Orchestrator.icns`, so the linker
+            # signature on the binary does not cover it, `codesign --verify
+            # --deep --strict` fails, and macOS 27 refuses the app as *damaged*
+            # rather than asking. v2026.9.22 shipped a dmg nobody could open
+            # (#26). An ad hoc signature costs nothing and no secret; the paid
+            # Developer ID is what would remove the remaining warning, and is a
+            # separate decision.
             #
             # **`app` as well as `dmg`, and that is not a second artifact.** The
             # bundler treats `Orchestrator.app` as scratch when only `dmg` is
@@ -169,6 +177,15 @@ jobs:
           # one build nobody re-runs to compare. Bump it deliberately, like the
           # toolchain.
           npx -y @tauri-apps/cli@2.11.4 build --bundles ${{ matrix.bundles }}
+
+      # **The signature, before the app is driven and long before it is packed.**
+      # The bundler signs only when `signingIdentity` is set, and a config that
+      # loses that key fails nowhere else: the app still builds, still starts on
+      # the runner, and is refused as damaged on the first machine that mounts
+      # the dmg. `--deep --strict` is the check that machine runs, so run it here.
+      - name: The bundle is signed
+        if: runner.os == 'macOS'
+        run: codesign --verify --deep --strict target/release/bundle/macos/Orchestrator.app
 
       # The packed app, driven before anything is uploaded. `check-ship` reads the
       # config and says the bundle *should* carry `orchd`; this opens the bundle

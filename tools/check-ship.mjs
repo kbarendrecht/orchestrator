@@ -125,5 +125,17 @@ for (const [which, files] of Object.entries(maps)) {
   }
 }
 
+/* **The macOS bundle is signed, or it is refused as damaged.** The bundler signs
+   only when this key is set, and losing it fails nowhere else: the app builds, the
+   release publishes, `app-check` drives it on the runner, and the first machine to
+   mount the dmg is told the app is damaged — v2026.9.22 (#26). `release.yml` runs
+   the real `codesign --verify --deep --strict`, which is the stronger check and
+   the one that machine runs; this one is here because it runs on Linux, on every
+   push, rather than once per tag.
+
+   `-` is ad hoc. A Developer ID identity is a longer string, and also passes. */
+check(typeof tauri.bundle?.macOS?.signingIdentity === 'string',
+  'the macOS bundle declares a signing identity')
+
 console.log(`\ncheck-ship: ${failed ? 'FAILED' : 'ok'}`)
 process.exit(failed ? 1 : 0)
