@@ -2402,7 +2402,7 @@ select.opfield,input.opfield{appearance:none}
    shrinkable item at once, so a long line squeezed the path's *box* while the
    text inside it kept its size and spilled past the pane's edge. So the line
    gives way first (`flex:1 1 auto` over `min-width:0`), and the path is held to
-   45% of the row, where the directory is what ellipsises — the basename and the
+   45% of the row, where the directory is what gives way — the basename and the
    line number are the half that tells two hits apart. */
 .fnat{display:flex;flex:0 0 auto;max-width:45%}
 /* Except when it is the row: `names` mode draws the path alone, and half a row

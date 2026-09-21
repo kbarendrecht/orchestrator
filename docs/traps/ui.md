@@ -116,7 +116,7 @@ wrong the moment the font-size setting moves, and that setting is a slider in th
 app.
 
 **The index row above it is a flex line with a priority, and getting that wrong
-clipped a column of paths.** The matched line takes the space and ellipsises; the
+clipped a column of paths.** The matched line takes the space and is cut with an ellipsis; the
 path is capped at 45% of the row and does not shrink with it. The first cut made
 both shrinkable, and flex then took the slack out of *both* — squeezing the path's
 box while the basename and line number inside it kept their size and ran off the
