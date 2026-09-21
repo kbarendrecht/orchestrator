@@ -410,6 +410,7 @@ together: same entries, same order, same groups.
 - A spawned `sysctl` answers for the child, not for this process.
 - A shell-script `CFBundleExecutable` has no architecture, so the plist must declare one.
 - A bundle the linker signed is not a signed bundle, and macOS refuses it as damaged.
+- A process outside a bundle is a window macOS will not manage.
 
 ### The crates, and what a move breaks
 

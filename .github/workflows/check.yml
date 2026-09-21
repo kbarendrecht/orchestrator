@@ -289,13 +289,21 @@ jobs:
       # both numbers.
       #
       # The app's own plist, paired with a probe executable rather than the app
-      # itself: LaunchServices reads the plist and the script is `/bin/sh` either
-      # way, so the substitution changes nothing it looks at — and it costs one
-      # `open` rather than a window.
+      # itself: LaunchServices reads the architecture out of the plist, and the
+      # probe's executable is a `/bin/sh` script, which is the case that launches
+      # translated when the key is absent. One `open`, and no window.
+      #
+      # **The key is belt and braces since #24 rather than the only answer.** The
+      # bundle's executable is a copied Mach-O now, so LaunchServices has an
+      # architecture to read whatever the plist says. This still guards the
+      # generator, and it is the only step that runs LaunchServices at all.
       - name: The bundle runs native
         if: runner.os == 'macOS'
         run: |
           set -eu
+          # The bundle copies all three binaries in, because the app resolves
+          # `orchd` beside itself — so it refuses to write one until they exist.
+          cargo build -p orchd-serve --bins
           ./target/debug/orchestrator-desktop --install-desktop-entry
           app="$HOME/Applications/Orchestrator.app"
           plutil -p "$app/Contents/Info.plist" | grep -i architecture \
@@ -305,7 +313,12 @@ jobs:
           rm -rf "$probe"; mkdir -p "$probe/Contents/MacOS"
           # The real plist, with only the identity changed so LaunchServices does
           # not confuse this with the app it was generated for.
+          # `CFBundleExecutable` as well as the names: it is `orchestrator-desktop`
+          # since #24, and a probe whose plist names a binary it does not carry
+          # never launches — which reads here as "never ran" rather than as a
+          # translated launch.
           sed -e 's/<string>Orchestrator<\/string>/<string>ArchProbe<\/string>/g' \
+              -e 's/<string>orchestrator-desktop<\/string>/<string>ArchProbe<\/string>/' \
               -e 's/dev\.orchd\.orchestrator/dev.orchd.archprobe/' \
               "$app/Contents/Info.plist" > "$probe/Contents/Info.plist"
           printf '#!/bin/sh\nsysctl -n sysctl.proc_translated > /tmp/archprobe.txt\n' \

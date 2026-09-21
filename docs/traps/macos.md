@@ -187,6 +187,12 @@ binaries are all arm64, and `file` on every one of them says so.
 `std::env::consts::ARCH` rather than a literal `arm64` — the bug reversed is just
 as bad, and `--install-desktop-entry` runs on whatever machine installed the
 binary rather than only on the one that released it.
+
+**The script is gone, so the key is belt and braces rather than the only answer.**
+The entry below is why: `CFBundleExecutable` is a copied Mach-O since #24, and
+LaunchServices can read an architecture straight out of it. The key stays because
+it is still true and costs nothing, and the CI step below still guards the
+generator — but this bug cannot recur through the executable it was written for.
 **The effect is reproducible on a macos-14 runner, and was measured.** A throwaway
 `workflow_dispatch` probe — the same method as the entry above, deleted once it had
 answered — built two bundles differing *only* in that key, each with a `/bin/sh`
@@ -255,3 +261,65 @@ because it runs on Linux on every push rather than once per tag.
 never assessed, so every machine that installs that way — including the one this
 repo is developed on — sees nothing wrong.
 
+## A process outside a bundle is a window macOS will not manage.
+
+Rectangle moved and resized every window on the reporter's machine except this
+one. Its chords reach the app through no keystroke at all: it holds the hotkey
+itself and then sets the frontmost window's position and size over the
+Accessibility API, so nothing the page does with a chord can be the cause — which
+is what ruled out #20, where the diff overlay had claimed `ctrl`+arrow.
+
+Two hypotheses were read off the source and both were wrong. The shell does not
+re-apply its stored geometry: `remember_window` only *writes* `window.json`, and
+`restore_state` runs once while the window is built. And a `maximized` record does
+leave a zoomed `NSWindow` rather than one sized to the screen — tao takes
+`ns_window.zoom` when the style mask carries `Resizable` and `Titled`, which this
+window does — but un-maximizing first changed nothing.
+
+**The cause was the launcher, and the second symptom is what names it.** A drag to
+the top edge opened Mission Control instead of the macOS tiling preview. macOS was
+not refusing a resize; it was not treating this as a manageable window at all. A
+mise install ran through `~/Applications/Orchestrator.app`, whose
+`CFBundleExecutable` was a four-line `sh` stub that `exec`d the binary out of the
+mise install directory. A process started that way has no bundle and no bundle
+identifier. The reporter settled it by swapping the `.dmg`'s bundle in, re-signed
+ad hoc because the shipped one does not open (#26), and changing nothing else:
+every chord worked and the tiling preview came back.
+
+So `write_app_bundle` copies the binaries in. All three, because `daemon_binary`
+resolves `orchd` beside `current_exe` and a session's `orch` the same way — a
+bundle holding the app alone opens a window that can do nothing, which is #16
+again by another route.
+
+**The stub's reasons were good, and each one is paid for rather than dismissed.**
+It cost no disk, and three copies do. It never went stale, and a copy would: the
+marker at `Contents/Resources/source` records the install the copies came from,
+and a stamp of the canonical directory plus each binary's length and mtime says
+when they are behind. `canonicalize` is what makes `mise up` visible, because
+mise installs each version beside the last and moves `latest` onto it. And it kept
+mise the owner of the binary, which it still is — this only ever copies *from* the
+install.
+
+Three things the copy needs that the stub did not:
+
+- **`packaged()` had to learn the difference.** It declined the refresh for
+  anything under `/Contents/MacOS/`, which is now where an ordinary mise install
+  starts. Left alone, every launch would have declined and the copies would have
+  been pinned to whatever version wrote them, permanently. The marker is the
+  discriminator, and a `.dmg` install has none.
+- **The copy must not be written through.** `fs::copy` truncates in place, and the
+  destination is the executable the person launched this process from. Write a
+  neighbour and rename; the running process keeps its inode.
+- **The old stub has to be removed, not written beside.** Every bundle written
+  before this holds `MacOS/Orchestrator`, and `codesign` seals everything in that
+  directory as code.
+
+One behaviour genuinely changes, and it is the stub's last advantage: a launch
+after `mise up` refreshes the copies and then goes on running the old ones,
+because they are already mapped. The new version arrives at the launch after that.
+
+**What is still a written rule.** Nothing on a Linux box can assert that a window
+answers the Accessibility API, and `mise run app-check` drives the bare binary
+rather than a bundle. The unit tests cover the file writing — the copies, the
+marker, the rename, the stub's removal — and the thing they cannot reach is the
+one the reporter measured by hand.
