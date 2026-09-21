@@ -120,7 +120,7 @@ mise run paint-check                # which panes rebuild while agents work
 mise run hover-check                # does a hovered row survive a rebuild
 mise run types                      # regenerate the four generated .d.ts, in the one safe order
 mise run notices                    # regenerate THIRD-PARTY-RUST.md
-mise run e2e                        # 29 flows against a real daemon
+mise run e2e                        # 30 flows against a real daemon
 mise run deflake                    # each flow 8x, to name the flaky ones
 cargo run -p orchestrator-desktop   # the app, daemon embedded in-process
 mise run shot                       # screenshot the running SPA (drives Chrome)
@@ -259,6 +259,7 @@ together: same entries, same order, same groups.
 - A child that will not start leaves one sentence, and it used to name nothing.
 - A deadline checked after a blocking read is not a deadline.
 - A buffer another thread is filling is empty when you read it, and a release paid for that.
+- The checkout's daemon is a second binary, and building the app alone leaves it stale.
 
 ### The gates, and what each one caught
 
@@ -298,9 +299,11 @@ together: same entries, same order, same groups.
 - `snap` is a live binding, and only `receive()` may replace it.
 - Never rewrite an identifier across an SPA file with a regex.
 - The app is WebKitGTK, not Chrome.
+- WebKitGTK can take the whole process down, and the log used to say nothing at all.
 - The DOM renderer is a WebKitGTK workaround, and only WebKitGTK's.
 - Slow trackpad scroll in an agent pane is xterm's wheel maths, not the renderer.
 - A window drag is the one call in this app that can abort the process, and it is guarded in two places.
+- A pane with nothing on it says so in the middle, and a reconnecting one does not.
 - `window.confirm`, `window.prompt` and `window.alert` do nothing in this app on macOS.
 - A socket may freeze which checkout it serves, never where that checkout is.
 - HTML5 drag-and-drop and the native drag destination cannot both be live on one webview.
@@ -359,6 +362,7 @@ together: same entries, same order, same groups.
 - A resume rebuilds a session's environment, so anything the daemon put there has to be re-handed.
 - A spare worktree is a workspace with no session, and that is the shape the reaper hunts.
 - Two `git worktree add`s at once fail on the config lock, and the spare pool made that reachable.
+- The search honours `.gitignore`, and a small ignored directory is searched anyway.
 
 ### The e2e flows
 
@@ -379,6 +383,8 @@ together: same entries, same order, same groups.
 - Two panels dock at the bottom of the terminal, and they must not sit on each other.
 - Shift-Shift is the one gesture that costs no chord, and the guard is the whole of it.
 - The find viewer draws a band of the file, and the spacers are what make it scroll.
+- The mouse's back button undoes a jump, and no gate here can prove the webview delivers it.
+- A path an agent printed is clickable, and three modules each own one third of that.
 
 ### Performance, measured
 

@@ -253,3 +253,18 @@ reaches EOF, and that is exactly the case this path may be in.
 **Measured, because a race that is argued about is a race nobody fixed.** With
 sixteen `yes` processes competing, the wait removed again fails 2 runs in 8; with
 it, 0 in 12.
+
+## The checkout's daemon is a second binary, and building the app alone leaves it stale.
+`cargo build --release -p orchestrator-desktop` builds the window. Every checkout
+runs `target/release/orchd`, which comes out of `orchd-serve` — so a route added
+to the daemon and tested by rebuilding only the app is a route the running child
+does not have. Build both: `cargo build --release -p orchd-serve --bins -p
+orchestrator-desktop`.
+
+**It fails silently, and that is the expensive half.** An unknown route on this
+daemon answers `200 {}` rather than a 404 (the same fact `docs/traps/git.md`
+records for driving the API by hand), so `callOn` sees a successful call with no
+error field and the page does nothing at all — no toast, no log line, nothing to
+search for. It cost a bug report that read as "both right-click actions did not
+work", on a feature whose daemon half had never been built.
+

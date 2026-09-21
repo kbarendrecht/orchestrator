@@ -44,7 +44,7 @@ export const SAVE_LABEL = `Save ${MOD_LABEL} S`;
  *
  *  @type {{ on: boolean, path: string | null, version: string | null,
  *           dirty: boolean, watch: ReturnType<typeof setInterval> | null,
- *           host: Host | null }}
+ *           host: Host | null, mountWas: string | null }}
  */
 export const state = {
   on: false,
@@ -53,6 +53,16 @@ export const state = {
   dirty: false,
   watch: null,
   host: null,
+  /** The mount's own class, to put back when the buffer goes away.
+   *
+   *  **Restored here rather than by each caller**, which is what the diff had
+   *  been doing by accident: its `onClosed` rebuilds the pane and reassigns the
+   *  class on the way past, so nothing missed it until two overlays used this
+   *  that only replace their children. Then `fnsrc editing` — `overflow:hidden`
+   *  and a row-direction flex — stayed on the viewer for the life of the page,
+   *  and the band's three children laid out as columns in a pane that no longer
+   *  scrolled. */
+  mountWas: null,
 };
 
 /** The `/api/file` query for whatever is open. One place, so the read, the poll
@@ -97,6 +107,7 @@ export async function open(host) {
 
   const body = host.mount;
   body.replaceChildren();
+  state.mountWas = body.className;
   body.className = host.mountClass;
 
   if (base) {
@@ -158,6 +169,10 @@ export async function close(silent) {
     host.save.hidden = true;
     host.save.textContent = SAVE_LABEL;
     host.edit.textContent = 'Edit';
+    // Before `onClosed`, so a caller that redraws into the mount finds the class
+    // it had rather than the editor's.
+    if (state.mountWas !== null) host.mount.className = state.mountWas;
+    state.mountWas = null;
     host.onClosed();
   }
   return true;

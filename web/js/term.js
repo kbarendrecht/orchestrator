@@ -5,6 +5,7 @@
 import { $, CHECKOUTS, CHROME, IS_MAC, copyText, el, mark, note, reason, reportBoot, selected, terms, termKey, typingElsewhere, uiScale, wheelScale } from './core.js';
 import { fontStack, theme } from './theme.js';
 import { termColours } from './palette.js';
+import { pathsIn } from './pathlink.js';
 
 
 const THEME = {
@@ -37,6 +38,185 @@ const OBSERVE = new URLSearchParams(location.search).has('observe');
  *  everything except the terminal. 12 was the constant this replaces, and it is
  *  still the default. */
 const termFontSize = () => Math.round(theme.termSize * uiScale());
+
+/** Told when a path printed in a terminal is clicked.
+ *
+ *  **Set from `app.js`, for the reason the modifier-click in the two viewers is
+ *  wired there**: turning `src/main.rs:12` into an open file needs the snapshot
+ *  to say which workspace and where its root is, and a terminal has no business
+ *  knowing either. What belongs here is the half that is terminal knowledge — the
+ *  buffer, the wrapping and the cells.
+ *
+ *  **`checkout` is the path, not the object.** `core.setCheckouts` replaces every
+ *  `Target` on each snapshot, so a handler that closed over one is holding a dead
+ *  `base` and a token that will be refused as soon as that checkout's daemon
+ *  restarts — which is exactly why the pty socket re-looks-up by path in
+ *  `address` rather than keeping the object it was opened with. This hands on the
+ *  one field that does not change.
+ *
+ *  @type {((hit: { checkout: string, target: string,
+ *            path: string, line: number, last: number, col: number,
+ *            ev: MouseEvent }) => void) | null} */
+let pathClick = null;
+export function onPathClick(/** @type {NonNullable<typeof pathClick>} */ fn) {
+  pathClick = fn;
+}
+
+/** Told when a path in a terminal is right-clicked, with the pointer event so a
+ *  menu can be hung off it. Set from `app.js`, for the reason `onPathClick` is.
+ *
+ *  `checkout` is the path, for the reason `onPathClick` says.
+ *
+ *  @type {((hit: { checkout: string, target: string,
+ *            path: string, line: number, last: number, col: number,
+ *            ev: MouseEvent }) => void) | null} */
+let pathMenu = null;
+export function onPathMenu(/** @type {NonNullable<typeof pathMenu>} */ fn) {
+  pathMenu = fn;
+}
+
+/** The path under a pointer, found by arithmetic rather than by the DOM.
+ *
+ *  **Cells, not text nodes.** The rows are text only under the DOM renderer; a
+ *  WebGL pane is a canvas with nothing in it to hit-test, and the same right-click
+ *  has to work in both. The cell size comes from the host box divided by the
+ *  terminal's own rows and columns, which is what the wheel handler already does
+ *  a few lines down.
+ *
+ *  @param {any} term
+ *  @param {HTMLElement} host
+ *  @param {MouseEvent} ev */
+function pathUnder(term, host, ev) {
+  /* The screen, not the host: a whole number of cells rarely fills the pane, and
+     the few pixels left over would make every column past the first drift. */
+  const screen = host.querySelector('.xterm-screen') ?? host;
+  const box = screen.getBoundingClientRect();
+  const cellH = box.height / term.rows;
+  const cellW = box.width / term.cols;
+  if (!(cellH > 0) || !(cellW > 0)) return null;
+  const col = Math.floor((ev.clientX - box.left) / cellW);
+  const row = Math.floor((ev.clientY - box.top) / cellH);
+  if (col < 0 || col >= term.cols || row < 0 || row >= term.rows) return null;
+  // `viewportY` is how far the buffer is scrolled, so this is the absolute line
+  // the provider would be asked about, 1-based like everything else here.
+  const y = term.buffer.active.viewportY + row + 1;
+  const found = logicalLine(term, y);
+  if (!found) return null;
+  /* The offset whose cell is the one under the pointer, looked up in the same map
+     the links are drawn from — the arithmetic that used to do this drifted on
+     every line with a wide character in it. */
+  const at = found.map.findIndex((c) => c.y === y && c.x === col + 1);
+  if (at < 0) return null;
+  return pathsIn(found.text).find((p) => at >= p.start && at < p.end) ?? null;
+}
+
+/** Offer the paths in a row as links.
+ *
+ *  **A plain click opens them, and the underline follows the pointer**, which is
+ *  what a link is everywhere else. It was behind the app's modifier first, on the
+ *  argument that a terminal full of prose should not underline itself; the
+ *  argument lost, because the whole point is to click what an agent just printed
+ *  and holding a key to do it is the thing you forget. The modifier still works:
+ *  it is the same link either way.
+ *
+ *  **What that costs is one thing, and it is xterm's rule rather than a choice.**
+ *  `shouldForceSelection` withholds the mouse report for Shift only (Option on
+ *  macOS), so a click on a path is reported to whatever asked for `?1003h` *as
+ *  well as* opening the file. In an agent pane that means Claude Code sees the
+ *  click too. Read from the vendored source. Shift would avoid it and is not
+ *  available: on macOS xterm spends it on extending a selection.
+ *
+ *  The guard against underlining a sentence is `pathlink.js` instead, and its
+ *  refusals are most of what it does.
+ *
+ *  @param {any} term
+ *  @param {import('./core.js').Target} checkout
+ *  @param {string} target */
+function linkPaths(term, checkout, target) {
+  term.registerLinkProvider({
+    provideLinks(/** @type {number} */ y, /** @type {(l: any) => void} */ callback) {
+      if (!pathClick) return callback(undefined);
+      const found = logicalLine(term, y);
+      if (!found) return callback(undefined);
+      const { text, from, map } = found;
+      const links = pathsIn(text).map((p) => ({
+        text: p.path,
+        // `end` is the last cell rather than one past it, which is xterm's own
+        // convention — read from the OSC-8 provider in the vendored build.
+        range: { start: cell(p.start, map, from), end: cell(p.end - 1, map, from) },
+        activate: (/** @type {MouseEvent} */ ev) => {
+          ev.preventDefault();
+          pathClick?.({
+            checkout: checkout.path, target, path: p.path, line: p.line, last: p.last, col: p.col, ev,
+          });
+        },
+      }));
+      callback(links.length ? links : undefined);
+    },
+  });
+}
+
+/** An offset into a logical line, as the cell xterm names it: both 1-based, and
+ *  `y` counted over the whole buffer rather than the viewport.
+ *
+ *  **Read from the map the line was built with, never divided out of it.** A
+ *  string index is not a column: `translateToString` emits one string per cell
+ *  but a cell can be two columns wide (`漢`, `✅`) or carry a combining mark that
+ *  is several code units in one column, so `at % cols` drifts for every line with
+ *  one in it — and an agent's output is full of them. The drift moved both the
+ *  underline and the click target.
+ *
+ *  @param {number} at
+ *  @param {{ x: number, y: number }[]} map
+ *  @param {number} from */
+function cell(at, map, from) {
+  const found = map[Math.max(0, Math.min(at, map.length - 1))];
+  return found ?? { x: 1, y: from };
+}
+
+/** The whole line row `y` belongs to, rejoined across the wraps.
+ *
+ *  **A path is one string and a terminal row is a fixed width**, so a path that
+ *  reached the right edge is two rows and matches nothing on either. Walking back
+ *  to the row that started it and forward through the continuations is what makes
+ *  it one string again.
+ *
+ *  Every row contributes exactly `cols` characters, untrimmed, so an offset into
+ *  the joined text divides straight back into a row and a column. Trimming would
+ *  be tidier and would put the underline in the wrong place.
+ *
+ *  @param {any} term
+ *  @param {number} y 1-based, over the whole buffer, which is what a provider is
+ *         handed */
+function logicalLine(term, y) {
+  const buf = term.buffer.active;
+  let from = y;
+  while (from > 1 && buf.getLine(from - 1)?.isWrapped) from--;
+  let text = '';
+  /** Where each character of `text` sits, 1-based, so an offset never has to be
+   *  divided back into a row and a column. */
+  const map = [];
+  const cellOf = buf.getNullCell ? buf.getNullCell() : null;
+  for (let row = from; ; row++) {
+    const line = buf.getLine(row - 1);
+    if (!line || (row > from && !line.isWrapped)) break;
+    /* Cell by cell, because the column is the thing being recorded. A cell of
+       width 0 is the second half of a wide character and carries no string of its
+       own; a cell whose string is several code units contributes several offsets
+       at the one column. */
+    for (let x = 0; x < line.length; x++) {
+      const c = cellOf ? line.getCell(x, cellOf) : line.getCell(x);
+      const got = c ?? cellOf;
+      const chars = got ? got.getChars() : '';
+      const width = got ? got.getWidth() : 1;
+      if (width === 0) continue;
+      const piece = chars || ' ';
+      text += piece;
+      for (let k = 0; k < piece.length; k++) map.push({ x: x + 1, y: row });
+    }
+  }
+  return text.trim() ? { text, from, map } : null;
+}
 
 /** Attach to a pty, replaying the daemon's buffer first.
  *
@@ -84,6 +264,42 @@ function openTerm(checkout, target, parent) {
   const fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
   term.open(host);
+  /* **The right-click menu is the app's, not the machine's.** A path is the one
+     thing in a terminal with more than one obvious thing to do to it, and the
+     menu is where "open the folder" lives — which a click cannot offer without
+     guessing which of the two you meant. Nothing under the pointer means the
+     event is left alone, so a right-click on ordinary output still does whatever
+     it did before. */
+  host.addEventListener('contextmenu', (ev) => {
+    const e = /** @type {MouseEvent} */ (ev);
+    if (!pathMenu) return;
+    const found = pathUnder(term, host, e);
+    if (!found) return;
+    e.preventDefault();
+    /* **And stopped, which `preventDefault` alone does not do.** The drawer hangs
+       its own menu off the pane — "send the last lines to the session" — and it is
+       an ancestor, so without this the event bubbles on and that menu replaces
+       this one a moment after it opens. */
+    e.stopPropagation();
+    pathMenu({
+      checkout: checkout.path, target, path: found.path,
+      line: found.line, last: found.last, col: found.col, ev: e,
+    });
+  });
+  /* **xterm paints its own frame black, and the theme only reaches the cells.**
+     `web/vendor/xterm.css` sets `.xterm` and `.xterm-viewport` to `#000`, while
+     the renderer draws `theme.background` onto the cells — so a board whose ground
+     is `#101010` shows pure black in the margin the host is inset by and in the
+     few pixels a whole number of cells leaves over. Against the drawer's panel
+     that frame reads as grey padding, which is how it was reported. Cleared, so
+     the one background in the pane is the host's, which is the theme's.
+     In CSS this would be a rule for a class nothing in the page produces, and
+     `check-dead-css` refuses those — rightly, since it cannot tell that one from
+     a typo. */
+  for (const own of [term.element, host.querySelector('.xterm-viewport')]) {
+    if (own) /** @type {HTMLElement} */ (own).style.backgroundColor = 'transparent';
+  }
+  linkPaths(term, checkout, target);
 
   // Declared before the key and wheel handlers below so they can send through
   // `entry.sock`, which `connect` replaces on a reconnect. Closing over the socket
@@ -469,6 +685,11 @@ function setBadge(/** @type {import('./core.js').TermEntry} */ entry, /** @type 
      one lever that reaches both. */
   entry.term.options.theme = state ? { ...THEME, cursor: THEME.background } : THEME;
   if (!state) { b.hidden = true; return; }
+  /* Middle of the pane while it is empty, corner once there is scrollback under
+     it. `connecting` and `starting` are both "nothing here yet"; `reconnecting`
+     is "this text is no longer live", and covering that text to say so would be
+     taking away the thing being talked about. */
+  b.classList.toggle('mid', state !== 'reconnecting');
   const t = b.querySelector('.term-badge-t');
   if (t) t.textContent = (state && BADGE[state]) || BADGE.connecting;
   b.hidden = false;

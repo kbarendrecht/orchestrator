@@ -31,3 +31,5 @@ node tools/check-palette.mjs
 node tools/check-dead-css.mjs
 node tools/check-drop-lists.mjs
 node tools/check-module-routes.mjs
+node tools/check-pathlink.mjs
+node tools/check-markdown.mjs

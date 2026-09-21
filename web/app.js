@@ -3,7 +3,7 @@
 // The SPA is a module now, so what it reaches for is written down. `core.js` holds
 // the primitives every part needs; `queue.js` is the first seam extracted whole.
 import {
-$, el, toast, reason, safeHref, call, callHost, get, activeCheckout, CHECKOUTS, setCheckouts, HOST, snapshotOf, repoSummary, everySession, enterCheckout, snap, receive, keyActivate, setZoom, setUiPx, uiPx, saveZoom, onScaleChange, ZOOM, selected, setSelected, onSelection, prForWorkspace, terms, CHROME, stateLabel, dotClass, isWaiting, isArchived, byNewest, currentSession, activeWorkspaceId, currentWorkspaceId, closeMenu, menuOpen, newSession, newWorktree, newShell, mainWorkspace, workspaceById, prState, handedToPr, drawerCollapsed, setDrawerCollapsed, pendingSelect, setPendingSelect, onDrawerChange, onCreatingChange, creating, creatingIn, startingShown, appMod, IS_MAC, MOD_LABEL, closeLegend, typingElsewhere, mark, reportBoot, dialogOpen, dismissDialog, unchanged, tick,
+$, el, toast, reason, safeHref, call, callHost, get, activeCheckout, CHECKOUTS, setCheckouts, HOST, snapshotOf, repoSummary, everySession, enterCheckout, snap, receive, keyActivate, setZoom, setUiPx, uiPx, saveZoom, onScaleChange, ZOOM, selected, setSelected, onSelection, prForWorkspace, terms, CHROME, stateLabel, dotClass, isWaiting, isArchived, byNewest, currentSession, activeWorkspaceId, currentWorkspaceId, closeMenu, menuOpen, openMenu, callOn, newSession, newWorktree, newShell, mainWorkspace, workspaceById, prState, handedToPr, drawerCollapsed, setDrawerCollapsed, pendingSelect, setPendingSelect, onDrawerChange, onCreatingChange, creating, creatingIn, startingShown, appMod, IS_MAC, MOD_LABEL, closeLegend, typingElsewhere, mark, reportBoot, dialogOpen, dismissDialog, unchanged, tick,
 } from './js/core.js';
 import { onThemeChange } from './js/theme.js';
 import { detailEl, symbolAt } from './js/source.js';
@@ -154,6 +154,7 @@ function render() {
   // for the reason the diff does. A search pinned to one worktree quietly
   // answering about another is the failure being avoided.
   Find.syncToSession();
+  FileView.syncToSession();
   Rail.render();
   // The create in flight reports through the snapshot, so its overlay is redrawn
   // with everything else rather than only when the press changed.
@@ -780,6 +781,7 @@ import * as Review from './js/review.js';
 import * as Queue from './js/queue.js';
 import * as Find from './js/find.js';
 import * as Editor from './js/editor.js';
+import * as FileView from './js/fileview.js';
 
 
 
@@ -883,7 +885,10 @@ $('ovsave').onclick = Editor.save;
  * The modifier is `appMod`, so ⌘ on macOS and Ctrl elsewhere. That is not a
  * preference: `Ctrl`-click on a Mac is a right-click, and would open a context
  * menu instead of a definition. */
-for (const [id, where] of [['diffbody', () => Diff.state.path], ['fnsrc', Find.shownPath]]) {
+for (const [id, where] of [['diffbody', () => Diff.state.path], ['fnsrc', Find.shownPath], ['fvsrc', FileView.shownPath]]) {
+  /* The file pane sits over the finder — same `z-index`, later in the document —
+     so a jump made *from* it has to take it down, or the search runs and repaints
+     behind a pane that covers it and nothing appears to happen. */
   $(/** @type {string} */ (id)).addEventListener('click', (ev) => {
     const click = /** @type {MouseEvent} */ (ev);
     if (!appMod(click)) return;
@@ -892,8 +897,126 @@ for (const [id, where] of [['diffbody', () => Diff.state.path], ['fnsrc', Find.s
     if (!inFile || !symbol) return;
     // Or the click also starts a selection under the overlay that replaces it.
     click.preventDefault();
-    void Find.definitionOf(inFile, symbol);
+    void (async () => {
+      if (id === 'fvsrc' && !await FileView.close()) return;
+      await Find.definitionOf(inFile, symbol);
+    })();
   });
+}
+
+/* **And a path the agent printed opens the same viewer.** `term.js` finds it in
+   the buffer and knows nothing else; this half is the part that needs the
+   snapshot, which is the same division the modifier-click above follows.
+
+   Two answers have to come from somewhere other than the text. **Which workspace**,
+   because a drawer terminal is not always the session you are looking at; and
+   **what a relative path is relative to**, which is the pty's own directory
+   rather than the workspace root — a shell started somewhere else prints paths
+   from there. */
+Term.onPathClick(({ checkout, target, path, line, last, ev }) => {
+  const state = snapshotOf(checkout) ?? snap;
+  const where = ptyRoot(state, target);
+  if (!where) return;
+  const rel = insideWorkspace(where, path);
+  // Refused rather than opened and failed: `/etc/hosts` is a real file and not
+  // this workspace's, and a viewer that answers "no such file" would be lying
+  // about which of the two went wrong.
+  if (!rel) return toast(`${path} is outside this workspace`, true);
+  /* **The file viewer, not the finder.** Opening one file used to take over the
+     search overlay, which threw away whatever search was in it and answered a
+     question about a single file with the machine built to list many. */
+  void FileView.candidates(where.workspace, rel).then((found) => {
+    if (!found.length) return toast(`no ${rel} in this workspace`, true);
+    void FileView.open(where.workspace, found, line, last, ev);
+  });
+});
+
+/* **The same path, with the other two things you can do to it.** A click opens
+   the file here; the menu is where "open the folder" and "hand it to the machine"
+   live, because a click cannot offer three answers without guessing which one was
+   meant. The items are the daemon's to carry out: the page knows a
+   workspace-relative path and nothing about what that is on disk, which is the
+   boundary that keeps a path an agent printed from becoming a way to open
+   anything on the machine. */
+Term.onPathMenu(({ checkout, target, path, line, last, ev }) => {
+  const state = snapshotOf(checkout) ?? snap;
+  const where = ptyRoot(state, target);
+  if (!where) return;
+  const rel = insideWorkspace(where, path);
+  if (!rel) return toast(`${path} is outside this workspace`, true);
+  /* `callOn` with the terminal's own checkout, not `call`: the pane you
+     right-clicked is not always the one the selection is in. **Looked up by path
+     at the moment of the click**, because `setCheckouts` replaces every `Target`
+     on each snapshot — a captured one holds a base and a token that a daemon
+     restart makes worthless. */
+  const reveal = (/** @type {string[]} */ found, /** @type {boolean} */ folder) => {
+    const [first] = found;
+    if (!first) return toast(`no ${rel} in this workspace`, true);
+    const at = CHECKOUTS.find((c) => c.path === checkout) ?? activeCheckout();
+    void callOn(at, '/api/open/reveal', { workspace: where.workspace, path: first, folder })
+      .catch((e) => toast(reason(e), true));
+  };
+  /* **All three items resolve the text the same way.** The two OS ones used to
+     take `rel` straight from the pty's own directory, which is the case the
+     lookup exists for: an agent names a file, and joining that onto the cwd
+     points at a folder that merely *could* hold it. `resolve_in_workspace` only
+     needs the parent to exist, so the daemon then opened the wrong directory
+     while "Open here" on the same menu found the real file. One answer per
+     menu. */
+  const resolved = () => FileView.candidates(where.workspace, rel);
+  openMenu(ev, [
+    ['Open here', null, () => void resolved()
+      .then((found) => FileView.open(where.workspace, found, line, last, ev))],
+    ['Open the folder', null, () => void resolved().then((found) => reveal(found, true))],
+    [IS_MAC ? 'Open with Finder' : 'Open with the file manager', null,
+      () => void resolved().then((found) => reveal(found, false))],
+  ]);
+});
+
+/** The workspace a terminal belongs to, and the directory its output is written
+ *  from.
+ *
+ *  @param {any} state the snapshot of the checkout that terminal belongs to
+ *  @param {string} target `session:<id>` or `proc:<id>`, as `Term.show` names them
+ */
+function ptyRoot(state, target) {
+  const id = target.slice(target.indexOf(':') + 1);
+  if (target.startsWith('session:')) {
+    const s = state.sessions.find((/** @type {any} */ x) => x.id === id);
+    const w = workspaceById(s?.workspace ?? null, state);
+    return s && w ? { workspace: w.id, root: w.path, cwd: s.cwd || w.path } : null;
+  }
+  for (const w of state.workspaces) {
+    const p = (w.processes ?? []).find((/** @type {any} */ x) => x.id === id);
+    if (p) return { workspace: w.id, root: w.path, cwd: p.cwd || w.path };
+  }
+  return null;
+}
+
+/** `path` as `/api/file` wants it — relative to the workspace root — or `null`
+ *  when it does not live there.
+ *
+ *  The `..` walk is not ceremony: `src/../../../etc/passwd` starts with the root
+ *  as a string and leaves it as a path, and a check that compares before
+ *  resolving is a check that reads the wrong file.
+ *
+ *  @param {{ root: string, cwd: string }} where
+ *  @param {string} path */
+function insideWorkspace(where, path) {
+  const root = resolvePath(where.root.startsWith('/') ? where.root : `/${where.root}`);
+  const abs = resolvePath(path.startsWith('/') ? path : `${where.cwd}/${path}`);
+  return abs.startsWith(`${root}/`) ? abs.slice(root.length + 1) : null;
+}
+
+/** An absolute path with its `.` and `..` segments taken out. */
+function resolvePath(/** @type {string} */ path) {
+  const out = [];
+  for (const part of path.split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') out.pop();
+    else out.push(part);
+  }
+  return `/${out.join('/')}`;
 }
 
 /* While the modifier is held, source reads as clickable. The affordance stops at
@@ -907,6 +1030,7 @@ window.addEventListener('blur', () => document.body.classList.remove('modheld'))
 // The find overlay's own chrome: its two boxes and three toggles all ask the
 // same question again, so the module wires them rather than five lines here.
 Find.init();
+FileView.init();
 $('addshell').onclick = newShell;
 $('keyhelpx').onclick = () => { $('keyhelp').hidden = true; };
 // The visible way in, beside the gear. Its tooltip names the chord — the whole
@@ -1237,9 +1361,29 @@ function keymap(/** @type {KeyboardEvent} */ e) {
   /* The find overlay: bare keys are its while it is up, which is the contract's
      first line. `j`/`k` only once focus has left the query box — it is a text
      field, so the letters belong to what you are typing until Tab moves off it. */
+  if (FileView.isOpen() && e.key === 'Escape') {
+    e.preventDefault();
+    void FileView.close();
+    return;
+  }
   if (Find.isOpen()) {
     if (e.key === 'Escape') { e.preventDefault(); void Find.close(); return; }
     const typingInFind = !!/** @type {HTMLElement} */ (e.target).closest?.('input, textarea');
+    /* **Enter opens what the index is on, in the file pane.** A bare key belongs
+       to the open overlay, and this one belongs here rather than to the query box:
+       the search already runs as you type, so Enter had nothing else to mean.
+       **Except in a buffer, and that is not caution.** This listener is on
+       `window` in the capture phase and stops propagation once it has taken a
+       key, so without the guard `Enter` never reaches an editor's textarea — you
+       could not type a line break in either the finder's buffer or the file
+       pane's, since `Find.isOpen()` is still true there. The `j`/`k` alias below
+       has carried `typingInFind` from the start, so the file already held its own
+       answer. */
+    if (!typingInFind && e.key === 'Enter' && !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey) {
+      e.preventDefault();
+      Find.openCurrent();
+      return;
+    }
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp'
         || (!typingInFind && !e.ctrlKey && !e.altKey && !e.metaKey && (e.key === 'j' || e.key === 'k'))) {
       e.preventDefault();

@@ -11,7 +11,12 @@
 //!
 //! **The walk honours `.gitignore` and nothing else does the honouring.** So an
 //! untracked file an agent wrote ten seconds ago is found, which `git grep` needs
-//! `--untracked` and 57ms for, and `target/` is not walked at all.
+//! `--untracked` and 57ms for, and `target/` is not walked — *unless it is small*.
+//! `small_ignored_dirs` is the one exception and it is measured rather than
+//! configured: an ignored directory under `IGNORED_CAP` files is searched anyway,
+//! because that is where a repo keeps the notes an agent writes. A fixture's
+//! one-file `target/` therefore does turn up, which is the reading the tests
+//! carry.
 //!
 //! **Hidden files are searched on purpose, and `.git` is skipped by hand.**
 //! ripgrep skips dotfiles by default and gets `.git` for free as a consequence.
@@ -96,9 +101,9 @@ pub struct Hit {
     pub line: u32,
     pub col: u32,
     pub len: u32,
-    /// The matching line, trailing newline removed. The index does not draw it —
-    /// the viewer below shows the file — but a hit with no text is impossible to
-    /// assert about in a test, and the page needs the length to place the mark.
+    /// The matching line, trailing newline removed. The index draws it, cut to a
+    /// window around the match, which is what lets two hits in one file be told
+    /// apart without moving the cursor onto each of them.
     pub text: String,
 }
 
@@ -133,6 +138,314 @@ fn as_glob(raw: &str) -> String {
         Some(dir) => format!("{dir}/**"),
         None => g.to_string(),
     }
+}
+
+/// How deep the scan for ignored directories looks.
+///
+/// **Two, and the third level is what makes it slow rather than better.**
+/// Measured on the monorepo this is developed against: depth 1 offers git 30
+/// directories, depth 2 offers 268 and depth 3 offers 2,343 — and `check-ignore`
+/// costs 0.02s, 0.10s and 0.71s on those. What the third level adds is
+/// `libraries/*/dist` and `tests/e2e/blob-report`: build output, which the cap
+/// below would drop anyway. Notes live at the top or one under it.
+const IGNORED_SCAN_DEPTH: usize = 2;
+/// How long git gets to answer which paths are ignored.
+///
+/// A bound rather than a hope: this runs on a blocking thread that a search is
+/// waiting on, and the failure it guards is a wedged child rather than a slow
+/// repo. Generous next to the 0.10s it takes over 268 directories.
+const IGNORED_GIT_TIMEOUT: u64 = 10;
+/// Directories offered to git at once.
+///
+/// **A bound on the question, not on the tree.** `dirs_to_depth` answers with
+/// whatever the first two levels hold, and that is 268 on the monorepo this was
+/// measured against — but nothing in a repo's shape promises a number like that,
+/// and a list long enough to matter is one this feature should decline rather
+/// than spend a search on. Shallowest first, which is the order the scan already
+/// produces, so what a cap drops is the deepest and least likely to be notes.
+const IGNORED_CANDIDATES: usize = 2_000;
+/// Files an ignored directory may hold and still be searched.
+///
+/// The measurement this comes from, on the same repo: `.plan` is 25 files and
+/// `.idea` is 16, while `.playwright-mcp` is 524, `var` 22,656, `vendor` 30,749
+/// and `node_modules` 143,465. Notes are tens of files and output starts in the
+/// hundreds, so the line is drawn between them — and it is drawn low on purpose,
+/// because `MAX_PATHS` is 20,000 and this repo already lists 19,043. A generous
+/// cap does not merely add noise, it truncates the list and loses real files.
+const IGNORED_CAP: usize = 200;
+
+/// The directories git ignores that are small enough to search anyway, as roots
+/// of their own.
+///
+/// **A `.gitignore` is the right default and the wrong answer for one directory.**
+/// Without it the walk is 3.2 million files against 19,043 — and `MAX_PATHS` is
+/// 20,000, so an unfiltered list would not merely be slow, it would push every
+/// real file out. With it, the notes an agent writes into an ignored folder
+/// cannot be found at all, which is how this arrived: "why can't I find `.plan`".
+///
+/// **Size is the only signal that separates the two, and only after the ignore
+/// verdict.** A cap on its own abandons `src`, `tests` and `libraries` too —
+/// measured, and the reason this is not simply a size rule. So: ask git which
+/// directories are ignored, then keep the small ones.
+///
+/// No configuration, deliberately. A setting would have to be found and
+/// understood before a file could be found, which is the flow this exists to fix.
+fn small_ignored_dirs(root: &Path, exclude: Option<&str>) -> Vec<std::path::PathBuf> {
+    /* **A stateless module grows one piece of state here, and the measurement is
+    why.** The discovery is ~0.2s — `check-ignore` over 268 directories plus a
+    capped probe of each ignored one — against a walk of 0.11s, and the content
+    search would pay it per keystroke. Ignored directories change about as often
+    as a `.gitignore` is edited, so a short life costs correctness nothing and
+    gives the search its speed back: 0.25s to 0.13s, measured. */
+    /* **Keyed on the exclude as well as the root, because the answer depends on
+    both.** Main excludes its worktrees and a worktree excludes nothing, so one
+    tree is asked two different questions — and keying on the path alone let
+    main reuse a worktree's answer, which is how an ignored build directory
+    inside a sibling session's worktree gets added back as a root of main's own
+    search. That is the leak `exclude` exists to prevent, and this file's own
+    test asks both ways of one tempdir microseconds apart, well inside the
+    window. */
+    type Key = (std::path::PathBuf, Option<String>);
+    type Remembered = std::collections::HashMap<Key, (std::time::Instant, Vec<std::path::PathBuf>)>;
+    static SEEN: std::sync::OnceLock<Mutex<Remembered>> = std::sync::OnceLock::new();
+    let seen = SEEN.get_or_init(|| Mutex::new(Remembered::new()));
+    let key: Key = (root.to_path_buf(), exclude.map(str::to_string));
+    if let Ok(map) = seen.lock() {
+        if let Some((at, dirs)) = map.get(&key) {
+            if at.elapsed() < IGNORED_TTL {
+                return dirs.clone();
+            }
+        }
+    }
+    let found = discover_small_ignored_dirs(root, exclude);
+    if let Ok(mut map) = seen.lock() {
+        // Nothing else evicts a workspace that is gone, so the answers that have
+        // expired are dropped on the way past rather than kept for the life of
+        // the daemon.
+        map.retain(|_, (at, _)| at.elapsed() < IGNORED_TTL);
+        map.insert(key, (std::time::Instant::now(), found.clone()));
+    }
+    found
+}
+
+/// How long the answer above is trusted. Long enough that a burst of searches
+/// pays for it once, short enough that a `.gitignore` edit is picked up while you
+/// are still wondering why.
+const IGNORED_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+
+fn discover_small_ignored_dirs(root: &Path, exclude: Option<&str>) -> Vec<std::path::PathBuf> {
+    let mut candidates = dirs_to_depth(root, exclude, IGNORED_SCAN_DEPTH);
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+    if candidates.len() > IGNORED_CANDIDATES {
+        tracing::debug!(
+            "{} directories in the first {IGNORED_SCAN_DEPTH} levels; asking git about the first {IGNORED_CANDIDATES}",
+            candidates.len(),
+        );
+        candidates.truncate(IGNORED_CANDIDATES);
+    }
+    let mut ignored = ask_git_which_are_ignored(root, &candidates);
+    ignored.sort();
+    /* **The cap is applied before the outermost reduction, and the order was
+    wrong first.** Reducing first throws away a small ignored directory that
+    sits inside a big one — `build/` over the cap holding `build/notes/`, which
+    is this feature's own case one level deeper, and it failed in silence. So a
+    directory that fits is kept whatever its parent does, and one that does not
+    is skipped *without* taking its children with it. What the reduction is
+    still for is the pair where both fit: `.plan` and `.plan/old` are one root
+    rather than two walks of the same files. */
+    /* **Two passes, because the second decision needs the whole of the first.**
+    Sorted, so a parent is seen before its children: each ignored directory
+    either fits the cap or does not, and one already covered by a kept ancestor
+    is not a separate walk. */
+    let mut fits: Vec<std::path::PathBuf> = Vec::new();
+    let mut refused: Vec<std::path::PathBuf> = Vec::new();
+    for at in ignored {
+        if fits.iter().any(|kept| at.starts_with(kept)) {
+            continue;
+        }
+        if subtree_fits(&at, IGNORED_CAP) {
+            fits.push(at);
+        } else {
+            refused.push(at);
+        }
+    }
+    /* **A refused directory with many fitting children is a package tree, and
+    none of them are notes.** Measured on the monorepo this is developed
+    against: taking every child that fits filled `MAX_PATHS`, because
+    `node_modules` is refused whole and then a thousand of its packages each
+    fit on their own — the same failure a generous cap caused, by another
+    route. The `build/notes` shape this exists for is one or two directories.
+    Counted over the candidates rather than over what has been accepted so
+    far, or the first `IGNORED_SIBLINGS` of a thousand get in. */
+    fits.iter()
+        .filter(|at| {
+            refused
+                .iter()
+                .find(|big| at.starts_with(big))
+                .is_none_or(|big| {
+                    fits.iter().filter(|x| x.starts_with(big)).count() <= IGNORED_SIBLINGS
+                })
+        })
+        .cloned()
+        .collect()
+}
+
+/// Every directory under `root` down to `depth`, as repo-relative paths.
+///
+/// Its own scan rather than the walk below, because this has to see what the walk
+/// is about to refuse: the `ignore` crate applies its matchers before
+/// `filter_entry`, so a directory dropped by a `.gitignore` never reaches a
+/// callback at all. Symlinked directories are left alone — following one is how a
+/// scan leaves the repo.
+fn dirs_to_depth(root: &Path, exclude: Option<&str>, depth: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut level = vec![root.to_path_buf()];
+    for _ in 0..depth {
+        let mut next = Vec::new();
+        for at in &level {
+            let Ok(entries) = std::fs::read_dir(at) else {
+                continue;
+            };
+            for e in entries.flatten() {
+                if !e.file_type().is_ok_and(|t| t.is_dir()) {
+                    continue;
+                }
+                if e.file_name() == ".git" {
+                    continue;
+                }
+                let rel_path = rel(root, &e.path());
+                if exclude.is_some_and(|prefix| format!("{rel_path}/").starts_with(prefix)) {
+                    continue;
+                }
+                out.push(rel_path);
+                next.push(e.path());
+            }
+        }
+        level = next;
+    }
+    out
+}
+
+/// Which of `candidates` git ignores, in one call.
+///
+/// `check-ignore --stdin -z` answers for a whole list at once, which is the
+/// difference between one process and one per directory. Exit 1 means "none of
+/// them", not a failure; a repo git cannot answer for (no git, not a work tree)
+/// gives an empty list and the search behaves exactly as it did before.
+///
+/// **Through `run_bounded_with_input`, and the first version deadlocked without
+/// it.** Writing the list to a child's stdin and only then reading its stdout
+/// hangs as soon as both pipes are full: measured against a repo whose
+/// `.gitignore` is `*`, so every candidate comes back — 3,000 paths completed and
+/// 3,500 never returned. That runner writes stdin on a thread, drains both output
+/// pipes while it does, and carries a deadline, which is why its own doc names
+/// this exact failure.
+fn ask_git_which_are_ignored(root: &Path, candidates: &[String]) -> Vec<std::path::PathBuf> {
+    let argv: Vec<String> = ["git", "check-ignore", "--stdin", "-z"]
+        .iter()
+        .map(|a| (*a).to_string())
+        .collect();
+    let input = candidates.join("\0").into_bytes();
+    let out = match orchd_base::proc::run_bounded_with_input(
+        root,
+        IGNORED_GIT_TIMEOUT,
+        &argv,
+        "asking git which paths are ignored",
+        Some(input),
+        &[],
+        None,
+    ) {
+        Ok(out) => out,
+        Err(e) => {
+            // Not an error worth a refusal: the search works without this, it
+            // just cannot see into an ignored directory.
+            tracing::debug!("could not ask git about ignored paths: {e:#}");
+            return Vec::new();
+        }
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .split('\0')
+        .filter(|l| !l.is_empty())
+        .map(|l| root.join(l))
+        .collect()
+}
+
+/// How many of one refused directory's children may be searched on their own.
+///
+/// **Measured, and the number is doing real work.** Without a limit the monorepo
+/// this is developed against filled `MAX_PATHS`: `node_modules` is refused whole,
+/// and then a thousand of its packages each came in under `IGNORED_CAP`. A
+/// notes folder under an ignored build root — the case this allows — is one or
+/// two directories, never a thousand.
+const IGNORED_SIBLINGS: usize = 4;
+
+/// Whether a subtree holds no more than `cap` files.
+///
+/// Bounded by the cap rather than by the directory: a probe of `node_modules`
+/// stops after `cap` entries, so the cost of refusing a huge directory is the
+/// same as the cost of accepting a small one.
+fn subtree_fits(at: &Path, cap: usize) -> bool {
+    let mut n = 0;
+    for e in WalkBuilder::new(at)
+        .hidden(false)
+        .git_ignore(false)
+        .ignore(false)
+        .parents(false)
+        .build()
+        .flatten()
+    {
+        if e.file_type().is_some_and(|t| t.is_file()) {
+            n += 1;
+            if n > cap {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// A walk of its own for each small ignored directory, with the ignore machinery
+/// off.
+///
+/// **Adding them as roots of the main walk is not enough, and that was the first
+/// version.** A root the `ignore` crate is given is not itself filtered, but its
+/// *children* are still matched against the ignore files above it — so
+/// `build/notes` handed to `WalkBuilder::add` walked and then dropped
+/// `build/notes/plan.md`, because `build/` in the repo's `.gitignore` matches it.
+/// It worked for a directory named directly (`.plan`) and silently did not for one
+/// a level down, which is the shape a review caught.
+///
+/// So each one gets a builder with `git_ignore`, `ignore` and `parents` all off:
+/// the decision "is this directory worth searching" has already been made, and
+/// asking the ignore files again can only unmake it. The glob still applies,
+/// because a path filter is the caller's question rather than the repo's.
+fn ignored_walkers(root: &Path, exclude: Option<&str>, glob: Option<&str>) -> Vec<WalkBuilder> {
+    let mut out = Vec::new();
+    for at in small_ignored_dirs(root, exclude) {
+        let mut w = WalkBuilder::new(&at);
+        w.hidden(false)
+            .threads(0)
+            .git_ignore(false)
+            .git_global(false)
+            .git_exclude(false)
+            .ignore(false)
+            .parents(false)
+            .filter_entry(|e| e.file_name() != ".git");
+        if let Some(g) = glob.map(as_glob).filter(|g| !g.is_empty()) {
+            // Relative to the *repo* root, because that is what a person typing a
+            // path filter means and what the main walk matches against.
+            let mut ov = OverrideBuilder::new(root);
+            if ov.add(&g).is_ok() {
+                if let Ok(built) = ov.build() {
+                    w.overrides(built);
+                }
+            }
+        }
+        out.push(w);
+    }
+    out
 }
 
 /// The walk both entry points share: `.gitignore` honoured, dotfiles kept,
@@ -202,9 +515,10 @@ pub fn search(root: &Path, exclude: Option<&str>, q: &Query) -> Result<Matches> 
     // Borrowed, not moved: one visitor is built per worker thread, and each needs
     // the same two.
     let (shared, stop) = (&found, &truncated);
-    walker(root, exclude, q.glob.as_deref())?
-        .build_parallel()
-        .run(|| {
+    let mut walks = vec![walker(root, exclude, q.glob.as_deref())?];
+    walks.extend(ignored_walkers(root, exclude, q.glob.as_deref()));
+    for w in walks {
+        w.build_parallel().run(|| {
             let matcher = matcher.clone();
             let mut searcher = SearcherBuilder::new()
                 // A match inside a PNG is never what was wanted.
@@ -253,6 +567,12 @@ pub fn search(root: &Path, exclude: Option<&str>, q: &Query) -> Result<Matches> 
                 WalkState::Continue
             })
         });
+        // One `Quit` is the whole answer: the cap is global, so an extra walk after
+        // it would only read files nobody will see.
+        if truncated.load(std::sync::atomic::Ordering::Relaxed) {
+            break;
+        }
+    }
 
     let mut hits = found.into_inner().unwrap_or_else(|e| e.into_inner());
     /* **Sorted, because a parallel walk is not ordered and the index is a list a
@@ -275,11 +595,15 @@ pub fn search(root: &Path, exclude: Option<&str>, q: &Query) -> Result<Matches> 
 /// Blocking, for the reason [`search`] is.
 pub fn paths(root: &Path, exclude: Option<&str>) -> Result<Paths> {
     let mut out: Vec<String> = Vec::new();
-    for entry in walker(root, exclude, None)?.build().flatten() {
-        if entry.file_type().is_some_and(|t| t.is_file()) {
-            out.push(rel(root, entry.path()));
-            if out.len() > MAX_PATHS {
-                break;
+    let mut walks = vec![walker(root, exclude, None)?];
+    walks.extend(ignored_walkers(root, exclude, None));
+    'walks: for w in walks {
+        for entry in w.build().flatten() {
+            if entry.file_type().is_some_and(|t| t.is_file()) {
+                out.push(rel(root, entry.path()));
+                if out.len() > MAX_PATHS {
+                    break 'walks;
+                }
             }
         }
     }
@@ -350,9 +674,13 @@ mod tests {
             got.contains(&"src/main.rs"),
             "an untracked file must be found: {got:?}"
         );
+        /* **A small ignored directory *is* searched now**, and this fixture's
+        `target/` is one file — the rule is the cap, not the ignore verdict
+        alone, and `a_small_ignored_directory_is_searched_and_a_big_one_is_not`
+        is where both halves of it are asserted. */
         assert!(
-            !got.iter().any(|p| p.starts_with("target/")),
-            "an ignored directory must not be: {got:?}"
+            got.contains(&"target/built.rs"),
+            "a small ignored directory is searched: {got:?}"
         );
         assert!(
             !got.iter().any(|p| p.starts_with(".git/")),
@@ -547,6 +875,137 @@ mod tests {
         assert!(lots.truncated, "hitting the total cap must be admitted");
     }
 
+    /// A small ignored directory is searched; a big one is not.
+    ///
+    /// **This is the one exception to "the walk honours `.gitignore`", and it is
+    /// measured rather than configured.** The default is right — without it the
+    /// walk is 3.2M files against 19,043 — and it hides exactly the directory an
+    /// agent writes its notes into. Size is what separates the two, but only
+    /// after the ignore verdict: a cap on its own abandons `src` and `tests` too.
+    /// Asserted from both sides, because a rule only the content search honoured
+    /// is one the name search would quietly disagree with.
+    #[test]
+    fn a_small_ignored_directory_is_searched_and_a_big_one_is_not() {
+        let dir = orchd_base::testutil::scratch_repo("search-ignored");
+        fs::write(dir.join(".gitignore"), ".plan\nheap/\n").unwrap();
+        fs::create_dir_all(dir.join(".plan")).unwrap();
+        fs::create_dir_all(dir.join("heap")).unwrap();
+        fs::write(dir.join(".plan/notes.md"), "the needle is here\n").unwrap();
+        // Over the cap, so it stays out however loudly it matches.
+        for i in 0..(IGNORED_CAP + 5) {
+            fs::write(
+                dir.join(format!("heap/f{i:05}.txt")),
+                "the needle is here too\n",
+            )
+            .unwrap();
+        }
+
+        let found = find(&dir, "needle");
+        let got: Vec<&str> = found.hits.iter().map(|h| h.path.as_str()).collect();
+        assert_eq!(
+            got,
+            vec![".plan/notes.md"],
+            "the small one is searched and the big one is not",
+        );
+
+        let listed = paths(&dir, None).unwrap().paths;
+        assert!(listed.contains(&".plan/notes.md".to_string()), "{listed:?}");
+        assert!(
+            !listed.iter().any(|p| p.starts_with("heap/")),
+            "the name search agrees with the content search",
+        );
+    }
+
+    /// A small ignored directory inside a big one is still reachable.
+    ///
+    /// **The reduction to outermost roots used to run before the cap**, which
+    /// threw away exactly the case the feature exists for, one level deeper: a
+    /// notes folder under an ignored build root. Found by review, reproduced
+    /// here, and it failed in silence — no truncation flag, the file simply gone.
+    #[test]
+    fn a_small_ignored_directory_inside_a_big_one_is_still_searched() {
+        let dir = orchd_base::testutil::scratch_repo("search-nested-ignored");
+        fs::write(dir.join(".gitignore"), "build/\n").unwrap();
+        fs::create_dir_all(dir.join("build/notes")).unwrap();
+        for i in 0..(IGNORED_CAP + 1) {
+            fs::write(dir.join(format!("build/o{i:05}.txt")), "output\n").unwrap();
+        }
+        fs::write(dir.join("build/notes/plan.md"), "the needle is here\n").unwrap();
+
+        let found = find(&dir, "needle");
+        let got: Vec<&str> = found.hits.iter().map(|h| h.path.as_str()).collect();
+        assert_eq!(
+            got,
+            vec!["build/notes/plan.md"],
+            "the small child is searched and the big parent is not",
+        );
+        let listed = paths(&dir, None).unwrap().paths;
+        assert!(
+            listed.contains(&"build/notes/plan.md".to_string()),
+            "{listed:?}"
+        );
+        assert!(
+            !listed.iter().any(|p| p.starts_with("build/o")),
+            "and the parent's own files stay out: {listed:?}",
+        );
+    }
+
+    /// A refused directory with many small children contributes none of them.
+    ///
+    /// **This is the other half of the fix above, and it was measured rather than
+    /// reasoned.** Letting every child of an over-cap directory in filled
+    /// `MAX_PATHS` on a real monorepo: `node_modules` is refused whole, then a
+    /// thousand of its packages each fit on their own. So the shape is the test —
+    /// one notes folder under a build root comes in, a package tree does not.
+    #[test]
+    fn a_package_tree_contributes_nothing_however_small_its_packages_are() {
+        let dir = orchd_base::testutil::scratch_repo("search-packages");
+        fs::write(dir.join(".gitignore"), "deps/\n").unwrap();
+        for i in 0..(IGNORED_SIBLINGS + 3) {
+            fs::create_dir_all(dir.join(format!("deps/p{i}"))).unwrap();
+            fs::write(dir.join(format!("deps/p{i}/index.js")), "the needle\n").unwrap();
+        }
+        // The parent itself is over the cap, so only its children could qualify.
+        for i in 0..(IGNORED_CAP + 1) {
+            fs::write(dir.join(format!("deps/o{i:05}.txt")), "output\n").unwrap();
+        }
+        let found = find(&dir, "needle");
+        assert!(
+            found.hits.is_empty(),
+            "a dependency tree stays out: {:?}",
+            found.hits.iter().map(|h| &h.path).collect::<Vec<_>>(),
+        );
+    }
+
+    /// The list handed to git is bounded, and a long one does not hang.
+    ///
+    /// **The first version deadlocked**: it wrote every candidate to git's stdin
+    /// and only drained stdout afterwards, so both pipes filling meant neither
+    /// side moved again. Measured at the time: 3,000 paths through, 3,500 wedged
+    /// forever. This drives the shape that broke it — a `.gitignore` of `*`, so
+    /// every path git is asked about comes straight back down the other pipe.
+    #[test]
+    fn a_long_list_of_ignored_directories_answers_rather_than_hanging() {
+        let dir = orchd_base::testutil::scratch_repo("search-ignored-many");
+        fs::write(dir.join(".gitignore"), "*\n").unwrap();
+        // Two levels, so the scan offers both the parents and the children.
+        for i in 0..70 {
+            for j in 0..30 {
+                fs::create_dir_all(dir.join(format!("d{i:03}/n{j:03}"))).unwrap();
+            }
+        }
+        fs::write(dir.join("d000/n000/x.txt"), "needle\n").unwrap();
+        let began = std::time::Instant::now();
+        let found = find(&dir, "needle");
+        assert!(
+            began.elapsed() < std::time::Duration::from_secs(20),
+            "the walk answered in {:?}",
+            began.elapsed(),
+        );
+        // What it answers with is not the point; that it answers is.
+        assert!(found.hits.len() <= 1, "{found:?}");
+    }
+
     /// A binary file is skipped rather than spilling bytes into the index.
     #[test]
     fn binary_files_are_not_searched() {
@@ -566,7 +1025,9 @@ mod tests {
         let got = paths(&dir, None).unwrap().paths;
         assert!(got.contains(&".githooks/pre-commit".to_string()), "{got:?}");
         assert!(got.contains(&"src/main.rs".to_string()), "{got:?}");
-        assert!(!got.iter().any(|p| p.starts_with("target/")), "{got:?}");
+        // Small and ignored is reachable; `.git` never is. The cap that keeps a
+        // big one out has its own test.
+        assert!(got.contains(&"target/built.rs".to_string()), "{got:?}");
         assert!(!got.iter().any(|p| p.starts_with(".git/")), "{got:?}");
         let mut sorted = got.clone();
         sorted.sort();

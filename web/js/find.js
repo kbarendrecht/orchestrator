@@ -10,32 +10,47 @@
 // paths. They differ in what the index lists and where the answer comes from;
 // everything below the index is the same file viewer, so the two are one habit.
 //
-// **The index is `path:line` and nothing else.** The line itself is on screen
-// already, six rows down, and a snippet column costs the width the path needs.
-// The trade is that two hits in one file look alike — which is cheap here,
-// because moving the cursor moves the viewer with no click and no load.
+// **The index draws the matched line, and the path sits on the right.** It used
+// to be `path:line` and nothing else, on the argument that the line is on screen
+// six rows down anyway. What that costs is the scan: two hits in one file read
+// alike, and telling them apart means moving the cursor to each one. The line is
+// the answer, so it takes the left edge where the eye already is, and the path
+// keeps the right where a column of them still lines up.
 
 import {
-  $, activeWorkspaceId, el, get, reason, toast,
+  $, activeWorkspaceId, el, get, MOD_LABEL, reason, toast,
 } from './core.js';
 import * as Editor from './editor.js';
-import { charRanges, hlTokens, langFor, paintRanges } from './source.js';
+import { charRanges, paintRanges } from './source.js';
+import * as Viewer from './viewer.js';
+import * as FileView from './fileview.js';
 
 /** How long the query rests before it is sent. Long enough that typing a symbol
  *  is one search rather than eight, short enough to feel like none. */
 const DEBOUNCE = 120;
-/** Rows rendered around the cursor, and how close to the edge the viewport gets
- *  before the band moves. A whole file would be a DOM node per line — `core.js`
- *  is 2,002 of them — and this app draws into WebKitGTK. */
-const BAND = 320;
-const MARGIN = 80;
-/** Past this the file is shown without colour, and the header says so. Prism
- *  tokenises a line at a time here, so the cost is the band; the cap is about the
- *  fetch and the string, not the highlighting. */
-const HUGE = 512 * 1024;
+/** The pane under the index, and the one thing the finder does not own: a search
+ *  result and a path an agent printed want the same picture of a file, so the
+ *  picture lives in `viewer.js` and this is one of its two callers. */
+let view = null;
+const viewer = () => {
+  view ??= Viewer.create({ mount: $('fnsrc'), path: $('fnpath'), where: $('fnwhere') });
+  return view;
+};
 /** Paths offered at once in `names` mode. The ranking is the useful part; a
  *  thousand rows of it is a list nobody reads. */
 const SHOWN = 200;
+/** How long the workspace's file list is trusted.
+ *
+ *  **It used to be forever**, which meant `find files` could not see a file an
+ *  agent had just written — and in this app that is the normal case rather than
+ *  an edge one. The walk is 100-130ms over 19,029 files on the repo this is
+ *  developed against, so half a minute of staleness is the whole price of not
+ *  paying it per keystroke. */
+const PATHS_TTL = 30_000;
+/** Characters of a matched line drawn in the index, and how much of the line
+ *  before the match is kept when the window has to move to reach it. */
+const SNIP = 240;
+const LEADIN = 40;
 
 /** The open overlay.
  *
@@ -45,11 +60,10 @@ const SHOWN = 200;
  *
  *  @type {{
  *    open: boolean, mode: 'text' | 'names', ws: string | null,
- *    hits: { path: string, line: number, col: number, len: number }[],
+ *    hits: { path: string, line: number, last?: number, col: number, len: number, text?: string }[],
  *    truncated: boolean, cursor: number,
- *    paths: string[] | null, pathsFor: string | null,
- *    file: { path: string, lines: string[], lang: string | null, plain: boolean } | null,
- *    from: number, to: number, rowH: number,
+ *    paths: string[] | null, pathsFor: string | null, pathsAt: number,
+ *    pathsTruncated: boolean,
  *    seq: number, timer: ReturnType<typeof setTimeout> | null,
  *    inflight: AbortController | null,
  *  }} */
@@ -62,16 +76,29 @@ const state = {
   cursor: 0,
   paths: null,
   pathsFor: null,
-  file: null,
-  from: 0,
-  to: 0,
-  rowH: 0,
+  pathsAt: 0,
+  pathsTruncated: false,
   seq: 0,
   timer: null,
   inflight: null,
 };
 
 export const isOpen = () => state.open;
+
+/** Where each jump came from, newest last, so the mouse's back button can return.
+ *
+ *  **Only a jump pushes.** Typing a new query is not a place you were sent to, it
+ *  is a place you went, and a back button that undid your own typing would be a
+ *  different feature. A jump from a closed overlay pushes a closed snapshot, so
+ *  the way back out of the first one is the same gesture as the way back through
+ *  the rest.
+ *
+ *  @type {{ open: boolean, mode: 'text' | 'names', q: string,
+ *           hits: typeof state.hits, truncated: boolean, cursor: number }[]} */
+const trail = [];
+/** How far back the button goes. A jump chain longer than this is somebody
+ *  reading, not somebody who means to walk it back. */
+const TRAIL = 20;
 
 /** Open the overlay in one of its two modes, or switch mode while it is up.
  *
@@ -100,6 +127,7 @@ export async function open(mode) {
     void showCursor();
   }
   $('fnoverlay').classList.add('on');
+  clampSplit();
   renderHead();
   const box = /** @type {HTMLInputElement} */ ($('fnq'));
   box.placeholder = mode === 'text' ? 'find in files' : 'find a file';
@@ -114,6 +142,9 @@ export async function close() {
   // without asking, which is the one thing the editor exists to refuse.
   if (Editor.isOpen() && !await Editor.close()) return false;
   state.open = false;
+  // The trail is a walk through one open overlay. Closing ends the walk, or the
+  // next open would hand the button somewhere nobody has been.
+  trail.length = 0;
   state.inflight?.abort();
   state.inflight = null;
   clearTimeout(state.timer ?? undefined);
@@ -131,7 +162,15 @@ export function syncToSession() {
 }
 
 function renderHead() {
-  $('fnmode').textContent = state.mode === 'text' ? 'contents' : 'names';
+  /* The label says which question is being asked, not which one the button would
+     ask next. "contents" and "names" were the shorter words and the wrong ones:
+     they name the *object* of the search, so neither says that the thing in front
+     of you is a search at all. */
+  const text = state.mode === 'text';
+  $('fnmode').textContent = text ? 'find contents' : 'find files';
+  $('fnmode').title = text
+    ? 'Searching file contents. Click to search file names instead (Shift Shift)'
+    : `Searching file names. Click to search contents instead (${MOD_LABEL}+Shift+F)`;
   for (const id of ['fncase', 'fnre', 'fnword']) {
     // The three toggles ask about text. In `names` mode the ranking is the page's
     // own, so they would be controls that do nothing.
@@ -166,7 +205,12 @@ async function search() {
       await loadPaths(ctl.signal);
       if (mine !== state.seq) return;
       state.hits = rank(state.paths ?? [], q).map((path) => ({ path, line: 1, col: 0, len: 0 }));
-      state.truncated = false;
+      /* **The daemon's own flag, not `false`.** `MAX_PATHS` is 20,000 and this
+         repo lists 19,043 of them, so the cap is reachable — and past it the
+         footer said nothing while the list was quietly short. Worse, a path click
+         then toasts "no such file in this workspace" about a file that plainly
+         exists, blaming the workspace for the cap. */
+      state.truncated = !!state.pathsTruncated;
     } else if (!q) {
       state.hits = [];
       state.truncated = false;
@@ -200,11 +244,16 @@ async function search() {
  *  Per workspace rather than per keystroke: the ranking is a string walk over a
  *  list this size, and a round trip per character would be slower than the answer.
  */
-async function loadPaths(/** @type {AbortSignal} */ signal) {
-  if (state.paths && state.pathsFor === state.ws) return;
-  const answer = await get(`/api/paths?workspace=${encodeURIComponent(state.ws ?? '')}`, signal);
+async function loadPaths(/** @type {AbortSignal | undefined} */ signal) {
+  const fresh = state.paths && state.pathsFor === state.ws
+    && Date.now() - state.pathsAt < PATHS_TTL;
+  if (fresh) return;
+  const url = `/api/paths?workspace=${encodeURIComponent(state.ws ?? '')}`;
+  const answer = signal ? await get(url, signal) : await get(url);
   state.paths = answer.paths;
   state.pathsFor = state.ws;
+  state.pathsAt = Date.now();
+  state.pathsTruncated = !!answer.truncated;
 }
 
 /** Rank paths against a query, best first.
@@ -247,16 +296,17 @@ export function rank(paths, q) {
   return scored.slice(0, SHOWN).map((s) => s.path);
 }
 
-/** The index: one row per hit, `path:line`, nothing else. */
+/** The index: the line that matched on the left, the path it is in on the right.
+ *
+ *  In `names` mode the path *is* what was found, so it is the row's content and
+ *  there is nothing to its left. */
 function renderHits() {
   const box = $('fnhits');
   box.replaceChildren();
   for (const [i, hit] of state.hits.entries()) {
     const row = el('div', 'fnhit' + (i === state.cursor ? ' sel' : ''));
-    const slash = hit.path.lastIndexOf('/') + 1;
-    row.appendChild(el('span', 'fndir', hit.path.slice(0, slash)));
-    row.appendChild(el('span', 'fnbase', hit.path.slice(slash)));
-    if (state.mode === 'text') row.appendChild(el('span', 'fnline', `:${hit.line}`));
+    if (state.mode === 'text') row.appendChild(snippet(hit));
+    row.appendChild(where(hit));
     row.onclick = () => { state.cursor = i; renderHits(); void showCursor(); };
     box.appendChild(row);
   }
@@ -267,6 +317,59 @@ function renderHits() {
   $('fnfoot').textContent = n
     ? what + (state.truncated ? ' — and more; narrow the query' : '')
     : '';
+}
+
+/** The matched line, with the match marked the way the viewer marks it.
+ *
+ *  **Not syntax-coloured, and that is the difference from the viewer.** Prism
+ *  would tokenise up to 400 lines here for a colour nobody reads at this size,
+ *  and the row's job is to say which of the matches this one is. The mark is the
+ *  one range worth drawing, and it is the same `tok-find` the file below carries,
+ *  so the eye follows one colour from the index into the viewer.
+ *
+ *  @param {{ text?: string, col: number, len: number }} hit */
+function snippet(hit) {
+  const line = hit.text ?? '';
+  const [span] = hit.len ? charRanges(line, [[hit.col, hit.col + hit.len]]) : [];
+  const { text, cut } = windowed(line, span);
+  const ranges = [];
+  if (span) {
+    const s = Math.max(0, span.s - cut);
+    const e = Math.min(text.length, span.e - cut);
+    if (e > s) ranges.push({ s, e, cls: 'find' });
+  }
+  return paintRanges(el('span', 'fnsnip'), text, ranges);
+}
+
+/** The part of a line worth drawing, and how many characters were cut off its
+ *  left.
+ *
+ *  Two things are being cut. The indent, because a row that starts eight levels
+ *  in is a row of nothing; and the length, because one minified file is a single
+ *  line of tens of thousands of characters and the index holds up to 400 rows.
+ *  When the match sits past the window the window moves to it rather than
+ *  dropping it — a snippet that does not contain what you searched for is worse
+ *  than no snippet.
+ *
+ *  @param {string} line
+ *  @param {{ s: number, e: number } | undefined} span */
+function windowed(line, span) {
+  const indent = line.length - line.trimStart().length;
+  let cut = indent;
+  if (span && span.s - cut > SNIP - LEADIN) cut = Math.max(indent, span.s - LEADIN);
+  return { text: line.slice(cut, cut + SNIP), cut };
+}
+
+/** Which file the hit is in, and which line of it.
+ *
+ *  @param {{ path: string, line: number }} hit */
+function where(hit) {
+  const box = el('span', 'fnat');
+  const slash = hit.path.lastIndexOf('/') + 1;
+  box.appendChild(el('span', 'fndir', hit.path.slice(0, slash)));
+  box.appendChild(el('span', 'fnbase', hit.path.slice(slash)));
+  if (state.mode === 'text') box.appendChild(el('span', 'fnline', `:${hit.line}`));
+  return box;
 }
 
 /** Move the cursor, and the file under it.
@@ -283,144 +386,17 @@ export function step(step) {
 
 /** Load and draw whatever the cursor is on. */
 async function showCursor() {
-  // The editor owns `#fnsrc` while it is up, so a redraw would tear a buffer out
+  // The editor owns the pane while it is up, so a redraw would tear a buffer out
   // from under somebody typing into it.
   if (Editor.isOpen()) return;
   const hit = state.hits[state.cursor];
-  if (!hit) {
-    $('fnpath').textContent = '';
-    $('fnsrc').replaceChildren();
-    return;
-  }
-  if (state.file?.path !== hit.path) {
-    const mine = state.seq;
-    let answer;
-    try {
-      answer = await get(
-        `/api/file?workspace=${encodeURIComponent(state.ws ?? '')}&path=${encodeURIComponent(hit.path)}`);
-    } catch (e) {
-      // A refusal is a sentence in the pane, never a blank one: an empty viewer
-      // is indistinguishable from a broken viewer.
-      state.file = null;
-      $('fnpath').textContent = hit.path;
-      $('fnsrc').replaceChildren(el('div', 'fnsay', reason(e)));
-      return;
-    }
-    if (mine !== state.seq && state.hits[state.cursor]?.path !== hit.path) return;
-    const plain = (answer.content?.length ?? 0) > HUGE;
-    state.file = {
-      path: hit.path,
-      lines: String(answer.content ?? '').split('\n'),
-      lang: plain ? null : langFor(hit.path),
-      plain,
-    };
-    state.rowH = 0;
-  }
-  paint(hit);
-}
-
-/** Draw a band of the file around the hit, and say where it is.
- *
- *  @param {{ line: number, col: number, len: number }} hit */
-function paint(hit) {
-  const file = state.file;
-  if (!file) return;
-  const total = file.lines.length;
-  $('fnpath').textContent = file.path;
-  $('fnwhere').textContent = `${hit.line} of ${total}`
-    + (file.plain ? ' · too large to colour' : file.lang ? ` · ${file.lang}` : '');
-  const from = Math.max(0, hit.line - 1 - Math.floor(BAND / 2));
-  band(from, hit);
-  // The hit, in the middle of the viewport rather than at its edge.
-  const row = $('fnsrc').querySelector('.fnrow.on');
-  row?.scrollIntoView({ block: 'center' });
-}
-
-/** Render lines `[from, from + BAND)` with spacers standing in for the rest.
- *
- *  The spacers are what keep the scrollbar honest: without them the file is as
- *  tall as the band and scrolling ends after 320 lines. Their height is the
- *  measured height of a real row, taken once per file — a CSS-derived guess goes
- *  wrong the moment the font-size setting moves.
- *
- *  @param {number} from
- *  @param {{ line: number, col: number, len: number }} hit */
-function band(from, hit) {
-  const file = state.file;
-  if (!file) return;
-  const total = file.lines.length;
-  const to = Math.min(total, from + BAND);
-  state.from = from;
-  state.to = to;
-
-  const src = $('fnsrc');
-  const rows = el('div', 'fnrows');
-  for (let i = from; i < to; i++) {
-    const text = file.lines[i] ?? '';
-    const row = el('div', 'fnrow' + (i + 1 === hit.line ? ' on' : ''));
-    // Drawn, not written: a `user-select:none` gutter is still taken by a
-    // selection that crosses it, so the numbers would ride along into every
-    // copied snippet. Generated content is not in the document to be taken.
-    const num = el('i');
-    num.dataset.n = String(i + 1);
-    row.appendChild(num);
-    const body = el('s');
-    const ranges = hlTokens(text, file.lang);
-    if (i + 1 === hit.line && hit.len) {
-      // The match, marked through the same range machinery the word-diff paints
-      // with. Byte offsets from Rust, so they are converted rather than assumed.
-      const [span] = charRanges(text, [[hit.col, hit.col + hit.len]]);
-      if (span) ranges.push({ ...span, cls: 'find' });
-      ranges.sort((a, b) => a.s - b.s || a.e - b.e);
-    }
-    paintRanges(body, text || ' ', dedupe(ranges));
-    row.appendChild(body);
-    rows.appendChild(row);
-  }
-
-  const top = el('div', 'fnpad');
-  const bot = el('div', 'fnpad');
-  src.replaceChildren(top, rows, bot);
-  if (!state.rowH) {
-    const one = rows.firstElementChild;
-    state.rowH = one ? one.getBoundingClientRect().height : 0;
-  }
-  top.style.height = `${from * state.rowH}px`;
-  bot.style.height = `${Math.max(0, total - to) * state.rowH}px`;
-}
-
-/** `paintRanges` needs ranges that do not overlap, and a syntax token can sit
- *  under the match. The match wins, because it is why you are looking. */
-function dedupe(/** @type {{ s: number, e: number, cls?: string }[]} */ ranges) {
-  const out = [];
-  let at = 0;
-  for (const r of ranges) {
-    if (r.e <= at) continue;
-    out.push(r.s < at ? { ...r, s: at } : r);
-    at = r.e;
-  }
-  return out;
-}
-
-/** Keep the band under the viewport as it is scrolled. */
-function onScroll() {
-  const file = state.file;
-  if (!file || !state.rowH) return;
-  const src = $('fnsrc');
-  const first = Math.floor(src.scrollTop / state.rowH);
-  const last = Math.ceil((src.scrollTop + src.clientHeight) / state.rowH);
-  if (first >= state.from + MARGIN && last <= state.to - MARGIN) return;
-  if (state.from === 0 && last <= state.to - MARGIN) return;
-  const hit = state.hits[state.cursor];
-  if (!hit) return;
-  const keep = src.scrollTop;
-  band(Math.max(0, first - Math.floor(BAND / 3)), hit);
-  src.scrollTop = keep;
+  if (!hit) return viewer().clear();
+  await viewer().show(state.ws ?? '', hit.path, hit);
 }
 
 /** The path the viewer is showing, for a caller that needs to say which file a
  *  click happened in. */
-export const shownPath = () => state.file?.path ?? state.hits[state.cursor]?.path ?? null;
+export const shownPath = () => viewer().shownPath() ?? state.hits[state.cursor]?.path ?? null;
 
 /** Go to where `symbol` is defined, as far as a regular expression can tell.
  *
@@ -436,13 +412,25 @@ export async function definitionOf(inFile, symbol) {
   const ws = activeWorkspaceId();
   if (!ws) return;
   if (state.open && state.ws !== ws && !await close()) return;
+  /* Pushed before anything is replaced, so the button returns to the search that
+     was on screen and not to the jump's own answer. */
+  trail.push({
+    open: state.open,
+    mode: state.mode,
+    q: /** @type {HTMLInputElement} */ ($('fnq')).value,
+    hits: state.hits,
+    truncated: state.truncated,
+    cursor: state.cursor,
+  });
+  if (trail.length > TRAIL) trail.shift();
   state.open = true;
   state.ws = ws;
   state.mode = 'text';
   $('fnoverlay').classList.add('on');
+  clampSplit();
   renderHead();
-  // The query box carries the symbol, so the search is reproducible by hand and
-  // re-typing is the way back — there is no history chord, deliberately.
+  // The query box carries the symbol, so the search is reproducible by hand. The
+  // way back is the mouse's back button; see `trail`.
   /** @type {HTMLInputElement} */ ($('fnq')).value = symbol;
   const mine = ++state.seq;
   state.inflight?.abort();
@@ -475,6 +463,56 @@ export async function definitionOf(inFile, symbol) {
     : `${n} definitions of ${symbol} — pick one`;
 }
 
+/** Undo the last jump: back to the search it was made from.
+ *
+ *  **The answers are restored, not asked for again.** The hits are what was on
+ *  screen, so putting them back is instant and cannot come back different because
+ *  a file changed underneath. The query box is set for the same reason, and
+ *  setting `value` raises no `input` event, so nothing re-runs.
+ *
+ *  The one thing it will not do is discard an edit: the buffer answers first,
+ *  exactly as closing does, and a "keep editing" puts the step back on the trail.
+ */
+export async function back() {
+  const prev = trail.pop();
+  if (!prev) return false;
+  if (Editor.isOpen() && !await Editor.close()) {
+    trail.push(prev);
+    return false;
+  }
+  // The overlay was not up when the jump was made, so the way back is out.
+  if (!prev.open) return close();
+  // Any answer still in flight belongs to the jump being undone.
+  state.inflight?.abort();
+  state.inflight = null;
+  clearTimeout(state.timer ?? undefined);
+  state.timer = null;
+  state.seq++;
+  state.mode = prev.mode;
+  state.hits = prev.hits;
+  state.truncated = prev.truncated;
+  state.cursor = prev.cursor;
+  /** @type {HTMLInputElement} */ ($('fnq')).value = prev.q;
+  renderHead();
+  renderHits();
+  await showCursor();
+  return true;
+}
+
+/** Hand what the cursor is on to the file viewer.
+ *
+ *  **The index is for finding and the file pane is for reading**, and the
+ *  difference is the whole window: below an index the file gets two thirds of the
+ *  height and no markdown mode, because a search result is a line you are looking
+ *  *at* rather than a document you are reading. So this is the bridge, on the key
+ *  the overlay contract gives it — a bare one, which belongs to whatever is open.
+ */
+export function openCurrent() {
+  const hit = state.hits[state.cursor];
+  if (!hit || !state.ws) return;
+  void FileView.open(state.ws, [hit.path], hit.line, hit.last);
+}
+
 /** Open what the cursor is on for editing.
  *
  *  **No base pane, and that is the difference from the diff's editor.** A search
@@ -484,7 +522,7 @@ export async function definitionOf(inFile, symbol) {
  */
 function edit() {
   const hit = state.hits[state.cursor];
-  if (!hit || !state.file) return toast('nothing to edit here', true);
+  if (!hit || !viewer().shownPath()) return toast('nothing to edit here', true);
   return Editor.open({
     mount: $('fnsrc'),
     mountClass: 'fnsrc editing',
@@ -494,22 +532,105 @@ function edit() {
     save: $('fnsave'),
     edit: $('fnedit'),
     // Back to the viewer, on the file as it now is: the band is rebuilt from
-    // `state.file`, so a discarded edit must not leave a stale copy behind it.
-    onClosed: () => { state.file = null; void showCursor(); },
-    onSaved: () => { state.file = null; },
+    // the viewer's own copy, so a discarded edit must not leave a stale one.
+    onClosed: () => { viewer().drop(); void showCursor(); },
+    onSaved: () => { viewer().drop(); },
   });
+}
+
+/** How tall the index is, as the stylesheet reads it, and where that is
+ *  remembered. The default is `--fnhits` on `:root`, so nothing here has to agree
+ *  with it: a drag sets the property on `documentElement`, which wins over the
+ *  rule, and the reset removes it again. */
+const SPLIT = { prop: '--fnhits', key: 'orch.findIndexHeight', min: 44, viewerMin: 120 };
+
+/** Put the index at `px`, never so tall that the file below it has nowhere to go
+ *  and never so short that the handle is off the end of what it moves. */
+function setSplit(/** @type {number} */ px) {
+  const box = $('fnoverlay').getBoundingClientRect();
+  const room = Math.max(SPLIT.min, box.height - SPLIT.viewerMin);
+  document.documentElement.style.setProperty(
+    SPLIT.prop, `${Math.round(Math.max(SPLIT.min, Math.min(px, room)))}px`);
+}
+
+/** Re-clamp what was remembered against the window as it is now.
+ *
+ *  A height dragged on one screen is a height that can bury the viewer on a
+ *  shorter one, and the overlay has no size to measure while it is closed — so
+ *  the check happens when it opens rather than when it is read. Left alone while
+ *  the stylesheet's own default is in force: a percentage cannot be out of range.
+ */
+function clampSplit() {
+  const now = $('fnhits').getBoundingClientRect().height;
+  if (document.documentElement.style.getPropertyValue(SPLIT.prop)) setSplit(now);
+}
+
+/** Drag the line between the index and the file.
+ *
+ *  **The same handle the drawer has**, on the same axis and with the same two
+ *  gestures, because a window that resizes one way in one place and another way
+ *  in another is a window you have to learn twice.
+ *
+ *  Clamped from both ends: an index with no rows in it and a viewer with no file
+ *  in it are each a pane you cannot get back by dragging, because the handle
+ *  would be off the end of what it moves.
+ */
+function dragSplit() {
+  const handle = $('fnsplit');
+  handle.addEventListener('mousedown', (ev) => {
+    const e = /** @type {MouseEvent} */ (ev);
+    if (e.button !== 0) return;
+    e.preventDefault();
+    handle.classList.add('dragging');
+    document.body.classList.add('row-resizing');
+    const top = $('fnhits').getBoundingClientRect().top;
+    const move = (/** @type {MouseEvent} */ m) => setSplit(m.clientY - top);
+    const done = () => {
+      window.removeEventListener('mousemove', move);
+      handle.classList.remove('dragging');
+      document.body.classList.remove('row-resizing');
+      try {
+        localStorage.setItem(SPLIT.key, String($('fnhits').getBoundingClientRect().height));
+      } catch (err) { /* private mode: the drag still worked for this session */ }
+    };
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', done, { once: true });
+  });
+  handle.addEventListener('dblclick', () => {
+    document.documentElement.style.removeProperty(SPLIT.prop);
+    try {
+      localStorage.removeItem(SPLIT.key);
+    } catch (err) { /* nothing to forget */ }
+  });
+  const saved = Number(localStorage.getItem(SPLIT.key));
+  // Applied at boot rather than on open: the overlay has no size while it is
+  // `display:none`, so a clamp measured then would read zero and pin it to `min`.
+  if (saved) document.documentElement.style.setProperty(SPLIT.prop, `${Math.round(saved)}px`);
 }
 
 /** Wire the chrome. Called once, at boot. */
 export function init() {
+  dragSplit();
   const box = /** @type {HTMLInputElement} */ ($('fnq'));
   box.oninput = () => run();
   /** @type {HTMLInputElement} */ ($('fnglob')).oninput = () => run();
   for (const id of ['fncase', 'fnre', 'fnword']) {
     $(id).onclick = () => { $(id).classList.toggle('on'); run(); };
   }
+  $('fnmode').onclick = () => void open(state.mode === 'text' ? 'names' : 'text');
+  $('fnopen').onclick = () => openCurrent();
   $('fnedit').onclick = () => (Editor.isOpen() ? Editor.close() : edit());
   $('fnsave').onclick = () => Editor.save();
   $('fnclose').onclick = () => void close();
-  $('fnsrc').onscroll = () => onScroll();
+  /* The mouse's back button undoes a jump, which is what that button means
+     everywhere else. Button 3 is the back one (4 is forward) and `mousedown` is
+     where it arrives; `preventDefault` keeps the webview from treating it as its
+     own history, which in an app with one page would be a navigation to nothing.
+     Bound to the overlay rather than the window, because outside it there is no
+     trail and the button should stay the platform's. */
+  $('fnoverlay').addEventListener('mousedown', (ev) => {
+    if (/** @type {MouseEvent} */ (ev).button !== 3) return;
+    ev.preventDefault();
+    void back();
+  });
 }

@@ -179,6 +179,33 @@ for layout and copy, but the two engines disagree often enough to matter.
 an engine-specific fault can be reproduced; stub `/vendor/addon-webgl.js` in
 such a test, because headless WebKit dies on xterm's WebGL renderer.
 
+## WebKitGTK can take the whole process down, and the log used to say nothing at all.
+Twice, on 2026-09-09 and 2026-09-21, the app died on Linux as this pair:
+`gdk_wayland_window_get_wl_surface: assertion 'GDK_IS_WAYLAND_WINDOW (window)'
+failed`, then `Error 22 (Invalid argument) dispatching to Wayland display`. GDK
+raises the second from `g_error`, which aborts without unwinding, so the panic
+hook never runs and `orchd.log` simply stops. Both lines went to journald and
+nowhere else.
+**The caller is WebKitGTK, and `nm` is what says so**: `libwebkit2gtk-4.1` is the
+only library in the process with an undefined reference to that symbol and
+`libgtk-3` has none, so this is not the window code and not the drag guard below.
+WebKit asks for the `wl_surface` of a window GDK will not accept, gets NULL, and
+sends NULL as a non-nullable Wayland argument, which is the `EINVAL`. What
+triggers it is still open: neither death was near a start, and the second had been
+running 13 minutes of CPU time.
+**The second one took GNOME Shell with it**, which is the part worth knowing
+before reading a bug report. The window vanished mid-drag, Tiling Assistant then
+tiled a window that no longer existed, and mutter aborted on
+`meta_window_get_workspaces`. The session restarted and every app on the desktop
+went with it, so "orchd crashed my desktop" is a true sentence with two bugs
+behind it and only one of them ours.
+`desktop/src/glib_log.rs` is the answer to the silence, not to the crash: every
+GLib warning and fault now lands in `orchd.log` with a backtrace, and the
+backtrace symbolises C frames, so the next one names the WebKit frame this one
+needed `nm` to guess at. Checked against deliberate breakage, which is what says
+it has any power: a `g_warning` and a `g_critical` planted at startup both
+arrived, at the right level, with the stack, and still reached stderr afterwards.
+
 ## The DOM renderer is a WebKitGTK workaround, and only WebKitGTK's.
 WebGL
 garbles glyphs there: text arrives as noise and only comes back when a scroll or
@@ -261,6 +288,26 @@ Rust panic hook never runs and `orchd.log` simply stops — a crash that says
 nothing is what made the first round take two passes over vendored source. The
 handler cannot prevent the abort and does not try; it writes the exception's name,
 reason and `callStackSymbols` into the log first, so the next one names itself.
+
+## A pane with nothing on it says so in the middle, and a reconnecting one does not.
+The pty badge is one pill in three states — `connecting…`, `starting…`,
+`reconnecting…` — and where it sits is the difference between an answer and a
+decoration. It lived in the top right corner, which is not where anybody looks at
+a blank pane; the first two states are centred now, the same place `.connbar`
+puts the same pill for the same kind of news.
+
+**A reconnect keeps the corner, and that is the rule rather than an exception.**
+That pane is full of the scrollback you are trying to read, so a pill over the
+middle of it would take away the thing it is talking about. `setBadge` decides,
+because the state is the only thing that knows which of the two it is.
+
+Gating it took two assertions and neither is enough alone: which state a pane is
+in during `page-check` depends on what its socket did a moment before, so the
+first can only ever prove one branch. It asserts the *contract* —
+centred exactly when the text is not "reconnecting", which fails if a change
+centres everything — and the second applies the class by hand and measures the
+box, which is what proves the rule does what it is named for. `tools/e2e/term.mjs`
+holds the reconnect side against a real dropped socket.
 
 ## `window.confirm`, `window.prompt` and `window.alert` do nothing in this app on macOS.
 WKWebView shows a script dialog only if the host implements the

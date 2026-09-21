@@ -374,3 +374,73 @@ inherit is a whole cut.
 `a_spare_cut_and_a_named_create_do_not_fight_over_the_config_lock` fails often
 rather than always, so what it pins is that both paths can be driven at once and
 both trees arrive; this entry is the rest of the evidence.
+
+## The search honours `.gitignore`, and a small ignored directory is searched anyway.
+**The default is right and it hides the one directory an agent writes into.**
+Measured on the monorepo this is developed against: 19,043 files with the ignore
+rules honoured, **3.2 million** without — and `MAX_PATHS` is 20,000, so an
+unfiltered walk would not merely be slow, it would push every real file out of a
+list that is capped. That is the whole argument for honouring it. What it costs is
+that a repo's own notes directory — `.plan` in the repo this was reported against,
+25 files, ignored on purpose — could not be found by either half of the overlay.
+
+**Size is the signal, and only after the ignore verdict.** `.plan` is 25 files and
+`.idea` is 16, while `node_modules` is 143,465, `vendor` 30,749 and `var` 22,656:
+there is no middle, which is what makes a cap the right instrument. A cap *on its
+own* is not — measured, it abandons `src`, `tests`, `libraries` and `projects`
+too, because real source directories are big as well. So the rule is: ask git
+which directories are ignored, then keep the ones under `IGNORED_CAP`.
+
+Three things this cost. **No path filter reaches past an ignore rule**, measured
+against every spelling (`.plan/**`, `**/.plan/**`, `.plan`), because an override
+whitelist does not un-ignore what a `.gitignore` excluded — the only lever is the
+walk's *roots*, and a root is walked whatever the ignore files say, which is the
+rule ripgrep follows for a path you name on the command line. **The `ignore` crate
+applies its matchers before `filter_entry`**, so a directory the walk is about to
+refuse never reaches a callback; finding the candidates needs a scan of its own,
+two levels deep, which is where ignored directories actually are. And **the
+verdict comes from one `git check-ignore --stdin -z`** rather than a matcher built
+here: a second implementation of `.gitignore` precedence is a bug farm, exit 1
+means "none of them" rather than a failure, and a tree git cannot answer for
+leaves the search behaving exactly as it did before.
+
+**Both constants are measured, and both were wrong first.** The scan looks two
+levels deep because `check-ignore` costs 0.02s over 30 directories, 0.10s over 268
+and **0.71s over 2,343** — and the third level adds only `libraries/*/dist` and
+`tests/e2e/blob-report`, which the cap drops anyway. The cap is 200 files because
+notes are tens (`.plan` 25, `.idea` 16) and output starts in the hundreds
+(`.playwright-mcp` 524); at 2,000 the list came back **truncated at `MAX_PATHS`**,
+which does not merely add noise, it loses real files.
+
+**A small directory inside a refused one is reachable, and that took two tries.**
+Reducing to outermost roots *before* the cap threw away the case this exists for,
+one level deeper: `build/` over the cap holding `build/notes/`, gone in silence.
+Applying the cap first fixed that and opened something worse — `node_modules` is
+refused whole, then a thousand of its packages each fit on their own, and the
+answer came back at `MAX_PATHS` with real files pushed out. Size cannot tell a
+notes folder from a package; **count can**. A refused directory with
+`IGNORED_SIBLINGS` (4) or fewer fitting children contributes them, more than that
+contributes none, and the count is over the candidates rather than over what has
+been accepted so far — counting as you go lets the first four of a thousand in.
+Measured after: 19,099 files, not truncated, no `node_modules`, `.plan` present.
+
+**The git call goes through `run_bounded_with_input`, and the first version
+deadlocked.** Writing the candidate list to a child's stdin and only then reading
+its stdout hangs as soon as both pipes fill: measured against a repo whose
+`.gitignore` is `*`, 3,000 paths went through and 3,500 never returned, with a
+leaked blocking thread and a zombie git per keystroke and no error anywhere. That
+runner writes stdin on a thread, drains both pipes while it does, and carries a
+deadline — its own doc names this exact failure. `IGNORED_CANDIDATES` bounds the
+question on top of that, because nothing in a repo's shape promises the 268
+directories this was measured on.
+
+**And the discovery is remembered for 30 seconds**, which is the one piece of
+state in a module that has none. It costs ~0.2s and the content search would pay
+it per keystroke: 0.25s per query became 0.09-0.15s, against 0.11s before any of
+this. The finder pays 0.28s behind a cache of its own in the page.
+
+**It was a per-checkout setting first, for about an hour.** That version worked and
+was rejected for the right reason: a person looking for a file should not have to
+find a configuration file first, and would have no way of knowing that was the
+answer.
+

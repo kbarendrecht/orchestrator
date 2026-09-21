@@ -117,6 +117,15 @@ async function main() {
       return b && !b.hidden && b.textContent.includes('reconnecting')
     }, null, { timeout: 5_000 })
       .catch(() => { throw new Error('a dropped pane showed no reconnecting marker') })
+    /* **And it stays in the corner.** The same badge is centred while a pane is
+       empty, which is where a person looks for "why is this blank" — but this
+       pane is full of the scrollback you are trying to read, and a pill over the
+       middle of it would take away the thing it is talking about. */
+    const centred = await page.$eval(
+      '#termwrap .termhost:not([hidden]) .term-badge',
+      (b) => b.classList.contains('mid'),
+    )
+    if (centred) throw new Error('the reconnecting marker covered the scrollback')
     await page.waitForFunction(
       (n) => window.__pty__.socks.length > n
         && window.__pty__.socks.at(-1).readyState === WebSocket.OPEN,

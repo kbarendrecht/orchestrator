@@ -148,7 +148,10 @@
          than the review's six screens; the two lists are rendered by find.js. -->
     <div class="overlay find" id="fnoverlay">
       <div class="ov-head">
-        <span class="fnmode" id="fnmode"></span>
+        <!-- The mode is a button, not a caption: the two modes are one habit, and
+             the chords for them are a tap and a three-key chord that nothing on
+             screen used to name. -->
+        <button class="fnmode" id="fnmode"></button>
         <input class="fnq" id="fnq" spellcheck="false" autocomplete="off" aria-label="search">
         <input class="fnglob" id="fnglob" spellcheck="false" autocomplete="off"
                placeholder="path filter" aria-label="path filter">
@@ -156,18 +159,48 @@
           <button class="fntg on" id="fncase" title="Smart case: an upper-case letter makes the search sensitive">Aa</button>
           <button class="fntg" id="fnre" title="The query is a regular expression">.*</button>
           <button class="fntg" id="fnword" title="Whole words only">W</button>
-          <button class="head-btn" id="fnedit">Edit</button>
-          <button class="head-btn" id="fnsave" hidden><span data-mod>Save MOD S</span></button>
           <button class="head-btn" id="fnclose">Close ESC</button>
         </div>
       </div>
       <div class="fnhits" id="fnhits"></div>
+      <!-- Edit and Save sit here rather than in the overlay's head, because what
+           they act on is the file in this pane and not the query above it. -->
       <div class="fnview-head">
+        <!-- The same handle the drawer has, on the same axis, so the split
+             between the index and the file is dragged the way everything else
+             in this window is. -->
+        <div class="rowsplit" id="fnsplit" role="separator" aria-orientation="horizontal"
+             title="Drag to resize · double-click to reset"></div>
         <span class="ov-path" id="fnpath"></span>
         <span class="ov-count" id="fnwhere"></span>
+        <!-- The same file, on its own, where it gets the whole window and the
+             markdown mode. The index above is for finding; this is for reading. -->
+        <button class="head-btn" id="fnopen">Open ⏎</button>
+        <button class="head-btn" id="fnedit">Edit</button>
+        <button class="head-btn" id="fnsave" hidden><span data-mod>Save MOD S</span></button>
       </div>
       <div class="fnsrc" id="fnsrc"></div>
       <div class="fnfoot" id="fnfoot"></div>
+    </div>
+
+    <!-- ============ FILE OVERLAY ============ -->
+    <!-- One file, opened from a path somebody clicked in a terminal. Its own
+         overlay rather than the search's: opening a single file used to throw
+         away whatever search you had, and answered a question about one file
+         with the machine built to list many. The pane below is `.fnsrc` on
+         purpose — one stylesheet, one renderer, two callers. -->
+    <div class="overlay fv" id="fvoverlay">
+      <div class="fnview-head">
+        <span class="ov-path" id="fvpath"></span>
+        <span class="ov-count" id="fvwhere"></span>
+        <!-- Only on a file this can render, and it names what you would get
+             rather than what you are looking at. -->
+        <button class="head-btn" id="fvmode" hidden>Source</button>
+        <button class="head-btn" id="fvedit">Edit</button>
+        <button class="head-btn" id="fvsave" hidden><span data-mod>Save MOD S</span></button>
+        <button class="head-btn" id="fvclose">Close ESC</button>
+      </div>
+      <div class="fnsrc" id="fvsrc"></div>
     </div>
 
     <!-- ============ REVIEW OVERLAY ============ -->
@@ -751,6 +784,7 @@
       <div class="settings-group">Overlays</div>
       <dt data-mod>MOD&nbsp;Shift&nbsp;F</dt><dd>find in this workspace's files</dd>
       <dt>Shift&nbsp;Shift</dt><dd>find a file by name</dd>
+      <dt>Enter</dt><dd>open the found file on its own, with the markdown view</dd>
       <dt data-mod>MOD&nbsp;Shift&nbsp;D</dt><dd>toggle the diff</dd>
       <dt data-mod>MOD&nbsp;Shift&nbsp;R</dt><dd>back to the review you left</dd>
       <dt>J&nbsp;/&nbsp;K</dt><dd>previous / next changed file or review card</dd>

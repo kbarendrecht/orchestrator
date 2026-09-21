@@ -36,6 +36,10 @@
 //     compose file.
 //   * a pane header clipping its own label. `Changes` read as `Chang…` at the
 //     default width, which is a layout fault that shows up as missing words.
+//   * a column of clipped paths in the search index. The line and the path were
+//     both shrinkable, so flex squeezed the path's *box* while the rigid text in
+//     it kept its size and ran off the pane. It needed a real monorepo to see —
+//     every path in this sandbox is short — so the sandbox grows two files for it.
 //   * a boot preflight finding that never leaves the log. `machine::check` knows
 //     at startup that `gh` is missing or that `reviews_command` is not there, and
 //     the window used to show only the symptom — `unavailable`, `off` — with the
@@ -551,6 +555,45 @@ try {
   await page.waitForTimeout(150)
   check(await findUp() === false, 'typing two capitals does not open it')
 
+  /* --- a pane with nothing on it says so in the middle ------------------------ */
+
+  /* **Where you look when a pane is blank is the middle of it**, not the top
+     right corner — which is where this sat, reading as a decoration rather than
+     as the answer. The stand-in agent prints nothing, so the centre pane is
+     exactly the case: attached, empty, and waiting. */
+  const badge = await page.$eval('#termwrap .termhost:not([hidden]) .term-badge', (b) => ({
+    shown: !b.hidden,
+    mid: b.classList.contains('mid'),
+    says: b.textContent,
+  })).catch(() => null)
+  /* The contract rather than one state of it: whatever the pane is saying, the
+     pill is centred unless it is a reconnect — which is the one case with text
+     underneath it. Asserted this way because which state a pane is in here
+     depends on what the socket did a moment ago, and the rule does not. */
+  check(
+    !!badge && badge.shown && badge.mid === !badge.says?.includes('reconnecting'),
+    `an empty pane says so in the middle, got ${JSON.stringify(badge)}`,
+  )
+
+  /* And the rule itself, applied by hand: which state a pane is in here depends on
+     what its socket did a moment ago, so the assertion above can only ever prove
+     one branch. This proves the other — that `mid` puts the pill in the middle of
+     the pane rather than merely naming the intention. */
+  check(
+    await page.$eval('#termwrap .termhost:not([hidden])', (host) => {
+      const b = host.querySelector('.term-badge')
+      if (!b) return false
+      const had = b.classList.contains('mid')
+      b.classList.add('mid')
+      const pill = b.getBoundingClientRect()
+      const pane = host.getBoundingClientRect()
+      const off = Math.abs((pill.left + pill.width / 2) - (pane.left + pane.width / 2))
+      if (!had) b.classList.remove('mid')
+      return off < 3
+    }),
+    'and the centred rule really centres it',
+  )
+
   /* --- the search answers, and the viewer shows the file it found ------------- */
 
   /* **The overlay is the viewer, so this is one assertion about both.** Opening it
@@ -570,8 +613,144 @@ try {
   await page.waitForFunction(
     () => !!document.querySelector('#fnhits .fnhit'), null, { timeout: 5000 })
 
-  const row = await page.$eval('#fnhits .fnhit', (r) => r.textContent)
-  check(row === 'haystack.txt:3', `the index is path:line, got ${row}`)
+  /* **The row says what was found, and where.** The line is the left half because
+     it is the answer; the path is the right half because a column of paths lines
+     up and a column of snippets does not. Asserted as two elements rather than as
+     the row's text, or a layout swap would read as a pass. */
+  const snip = await page.$eval('#fnhits .fnhit .fnsnip', (r) => r.textContent)
+  check(snip === 'the frobnicate word is here', `the index draws the line, got ${snip}`)
+  check(
+    await page.$eval('#fnhits .fnhit .fnsnip .tok-find', (m) => m.textContent)
+      .catch(() => null) === 'frobnicate',
+    'with the match marked in it, the same colour the viewer uses',
+  )
+  const at = await page.$eval('#fnhits .fnhit .fnat', (r) => r.textContent)
+  check(at === 'haystack.txt:3', `and the path on the right, got ${at}`)
+  check(
+    await page.$eval('#fnhits .fnhit', (r) => {
+      const s = r.querySelector('.fnsnip')?.getBoundingClientRect()
+      const a = r.querySelector('.fnat')?.getBoundingClientRect()
+      return !!s && !!a && s.left < a.left
+    }),
+    'and the path is to the right of the line, not merely after it in the markup',
+  )
+
+  /* **A long line must not push the path off the edge**, which is what the first
+     cut of this row did: the line and the path were both shrinkable, so flex took
+     the slack out of both, squeezing the path's *box* while the text inside it
+     kept its size and spilled past the pane. It read as a column of clipped
+     paths, and it needed a real monorepo to see — every path in this sandbox is
+     short. So the sandbox grows one file that is long in both ways. */
+  /* The match leads the line, because the snippet is a window around it: put the
+     word at the end and the window is 50 characters long and proves nothing. */
+  const wide = `frobnicate ${'padding words to make this line far too wide for any pane '.repeat(8)}\n`
+  const deep = path.join(tree, 'a/deep/nested/directory/that/keeps/going')
+  fs.mkdirSync(deep, { recursive: true })
+  fs.writeFileSync(path.join(deep, 'AFileWithARatherLongNameIndeed.txt'), wide)
+  /* **And one at the root, which is the case that actually spilled.** A deep path
+     has a directory to give way, so it absorbs the squeeze and looks fine; a file
+     with no directory at all leaves a name and a line number that cannot shrink,
+     and those are what ran off the edge. Both are here because each misses the
+     other's fault. */
+  fs.writeFileSync(path.join(tree, 'AFileWithAnEquallyLongNameAtTheRoot.txt'), wide)
+  await page.fill('#fnq', 'frobnicate')
+  await page.waitForFunction(
+    () => document.querySelectorAll('#fnhits .fnhit').length === 3, null, { timeout: 5000 })
+  const spill = await page.$eval('#fnhits', (box) => {
+    const right = box.getBoundingClientRect().right
+    const past = [...box.querySelectorAll('.fnline, .fnbase')]
+      .filter((e) => e.getBoundingClientRect().right > right + 0.5)
+    return { sideways: box.scrollWidth > box.clientWidth, past: past.length }
+  })
+  check(
+    !spill.sideways && spill.past === 0,
+    `nothing spills past the index, got ${JSON.stringify(spill)}`,
+  )
+  // And the half that says the shrink went where it was meant to: the directory
+  // is what gives way, never the name or the line number.
+  const kept = await page.$$eval('#fnhits .fnhit', (rows) => rows.map((r) => {
+    const cut = (sel) => {
+      const e = r.querySelector(sel)
+      return !!e && e.scrollWidth > e.getBoundingClientRect().width + 0.5
+    }
+    return { dir: cut('.fndir'), base: cut('.fnbase'), line: cut('.fnline') }
+  }))
+  check(
+    kept.some((r) => r.dir) && kept.every((r) => !r.base && !r.line),
+    `the directory truncates and the name does not, got ${JSON.stringify(kept)}`,
+  )
+  // Taken away again: everything below this is written about a search with one
+  // answer in it, and a second hit moves the cursor off the file they assert on.
+  fs.rmSync(path.join(tree, 'a'), { recursive: true, force: true })
+  fs.rmSync(path.join(tree, 'AFileWithAnEquallyLongNameAtTheRoot.txt'), { force: true })
+  await page.fill('#fnq', 'frobnicate')
+  await page.waitForFunction(
+    () => document.querySelectorAll('#fnhits .fnhit').length === 1, null, { timeout: 5000 })
+
+  /* --- and the split between the two panes is draggable ----------------------- */
+
+  /* A search that answers with forty rows and one that answers with two want
+     different splits, so the index takes a third by default and moves from there.
+     The reset is asserted beside the drag because it is the way back from a bad
+     one, and because it is what leaves this page as the assertions below expect. */
+  const indexHeight = () => page.$eval('#fnhits', (e) => e.getBoundingClientRect().height)
+  const wasTall = await indexHeight()
+  const grip = await page.$eval('#fnsplit', (e) => {
+    const b = e.getBoundingClientRect()
+    return { x: b.x + b.width / 2, y: b.y + b.height / 2 }
+  })
+  await page.mouse.move(grip.x, grip.y)
+  await page.mouse.down()
+  await page.mouse.move(grip.x, grip.y + 90)
+  await page.mouse.up()
+  const dragged = await indexHeight()
+  check(
+    dragged > wasTall + 60,
+    `dragging the split makes the index taller, ${Math.round(wasTall)} to ${Math.round(dragged)}`,
+  )
+  await page.dblclick('#fnsplit')
+  const reset = await indexHeight()
+  check(
+    Math.abs(reset - wasTall) < 2,
+    `and a double-click puts it back, got ${Math.round(reset)} against ${Math.round(wasTall)}`,
+  )
+
+  /* --- the mode is a switch, not a caption ----------------------------------- */
+
+  /* Both chords exist, and neither is on screen: `Shift Shift` and a three-key
+     chord are not things a person finds by looking. The label names the question
+     being asked now, and clicking it asks the other one. */
+  check(
+    await page.$eval('#fnmode', (m) => m.textContent) === 'find contents',
+    'the mode label names the search, not its object',
+  )
+  // Clicked through the element, like every other button in this overlay: the
+  // update pill floats over the middle of any overlay header.
+  await page.$eval('#fnmode', (b) => b.click())
+  await page.waitForFunction(
+    () => document.getElementById('fnmode')?.textContent === 'find files',
+    null, { timeout: 5000 })
+  /* `README.md` rather than the file written above, and the reason is worth
+     knowing: the path list is fetched once per workspace and kept, so a file
+     created after the overlay first opened is not in it until the page reloads.
+     That is `loadPaths`, not this test. */
+  await page.fill('#fnq', 'readme')
+  await page.waitForFunction(
+    () => !!document.querySelector('#fnhits .fnhit'), null, { timeout: 5000 })
+  const named = await page.$eval('#fnhits .fnhit', (r) => ({
+    text: r.textContent, snips: r.querySelectorAll('.fnsnip').length,
+  }))
+  check(
+    named.text === 'README.md' && named.snips === 0,
+    `names mode is the path alone, got ${JSON.stringify(named)}`,
+  )
+  await page.$eval('#fnmode', (b) => b.click())
+  await page.waitForFunction(
+    () => document.getElementById('fnmode')?.textContent === 'find contents',
+    null, { timeout: 5000 })
+  await page.fill('#fnq', 'frobnicate')
+  await page.waitForFunction(
+    () => !!document.querySelector('#fnhits .fnhit .fnsnip'), null, { timeout: 5000 })
 
   // The file under it, at the line the hit named — and the match marked through
   // the same range machinery the word-diff paints with.
@@ -654,7 +833,7 @@ try {
   await page.waitForSelector('#fnoverlay.on', { timeout: 5000 })
   await page.fill('#fnq', 'the_target')
   await page.waitForFunction(
-    () => document.querySelector('#fnhits .fnhit')?.textContent === 'lib.rs:2',
+    () => document.querySelector('#fnhits .fnhit .fnat')?.textContent === 'lib.rs:2',
     null, { timeout: 5000 })
   // The index answers before the viewer paints, and the click is at the pointer —
   // so wait for the line to actually be on screen.
@@ -704,12 +883,30 @@ try {
     () => document.getElementById('fnfoot')?.textContent?.startsWith('one definition') === true,
     null, { timeout: 5000 })
   check(
-    await page.$eval('#fnhits .fnhit', (r) => r.textContent) === 'lib.rs:4',
+    await page.$eval('#fnhits .fnhit .fnat', (r) => r.textContent) === 'lib.rs:4',
     'one definition is a jump, and it lands on the definition, not the call',
   )
   check(
     await page.$eval('#fnq', (q) => q.value) === 'the_target',
-    'and the query box carries the symbol, so re-typing is the way back',
+    'and the query box carries the symbol, so the search is reproducible by hand',
+  )
+
+  /* --- and the mouse's back button undoes the jump ---------------------------- */
+
+  /* **Dispatched, not pressed**: this playwright's mouse has left, right and
+     middle only. So what is asserted is the handler and the trail — the answers
+     that were on screen come back, rather than being searched for again. What it
+     leaves unproven is the delivery, whether a webview hands button 3 to the page
+     at all, and nothing available here can answer that. */
+  await page.$eval('#fnoverlay', (o) => o.dispatchEvent(
+    new MouseEvent('mousedown', { button: 3, bubbles: true, cancelable: true })))
+  await page.waitForFunction(
+    () => document.querySelectorAll('#fnhits .fnhit').length === 2,
+    null, { timeout: 5000 })
+  const returned = await page.$eval('#fnhits .fnhit .fnat', (r) => r.textContent)
+  check(
+    returned === 'lib.rs:2',
+    `the back button returns to the search the jump was made from, got ${returned}`,
   )
 
   // Two definitions of one name: a list, never a guess.
@@ -728,6 +925,7 @@ try {
     'two definitions stay a list — the jump is refused',
   )
   await page.keyboard.press('Escape')
+
 
   /* --- and the diff's editor is unchanged by the lift ------------------------- */
 
@@ -777,10 +975,345 @@ try {
   await page.waitForTimeout(150)
   check(await findUp() === true, 'Ctrl Shift F opens the search in contents mode')
   check(
-    await page.$eval('#fnmode', (m) => m.textContent) === 'contents',
+    await page.$eval('#fnmode', (m) => m.textContent) === 'find contents',
     'and it says which mode it is in',
   )
   await page.keyboard.press('Escape')
+
+  /* --- a path the agent printed opens the same viewer ------------------------- */
+
+  /* **Last, and after a reload, because this one needs the renderer the app
+     ships.** A browser tab gets xterm's WebGL renderer (`webglWanted` is
+     `CHROME === 'none'`), and a canvas has no text to measure or click — the
+     terminal is invisible to everything this file does. The app's window is not a
+     tab, so it draws into the DOM; telling the page it has the app's chrome is
+     what turns that on, and it is the same amend `--mac` already makes for the
+     same kind of reason. Everything above runs before it, unchanged.
+
+     A shell rather than the agent pane, for the one property a test needs: its
+     output is whatever this types into it. */
+  await page.addInitScript(() => {
+    let held
+    Object.defineProperty(window, '__ORCH__', {
+      configurable: true,
+      get: () => held,
+      set: (v) => { held = { ...v, chrome: 'custom' } },
+    })
+  })
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  await page.waitForFunction(() => document.body.classList.contains('ready'), null, { timeout: 15_000 })
+
+  /* Selected by hand after the reload: the drawer lists the processes of the
+     session you are looking at, and the page restores whichever selection it had
+     remembered rather than the one this test cares about. */
+  await page.click(`#rail .sess[data-id="${session}"]`)
+  fs.writeFileSync(path.join(tree, 'deep.txt'), 'one\ntwo is the line\nthree\n')
+  // The session's own workspace, not `main`: the drawer lists the processes of
+  // the workspace you are looking at, and this test has been in a worktree since
+  // its first line.
+  const ws = (await t.state()).sessions.find((/** @type {any} */ x) => x.id === session).workspace
+  const { process: shell } = await t.api('POST', `/api/workspace/${ws}/shell`)
+  await page.waitForFunction(
+    () => !!document.querySelector('#drawerbody .termhost:not([hidden]) .xterm-rows'),
+    null, { timeout: 15_000 })
+  /* **Focused through the textarea, not by clicking the pane.** A click is now how
+     a path is opened, and the shell's prompt is a path — so clicking the middle of
+     the terminal to give it the keyboard opens the prompt's directory and leaves a
+     refusal toast floating over the rows this then wants to click. */
+  const focusTerm = () => page.$eval(
+    '#drawerbody .termhost:not([hidden]) .xterm-helper-textarea',
+    (t) => /** @type {HTMLTextAreaElement} */ (t).focus())
+  await focusTerm()
+  /* The prompt, not a sleep: the pane exists as soon as the socket is up, and
+     typing into a shell that has not started reading yet loses the line. */
+  await page.waitForFunction(() => {
+    const rows = document.querySelector('#drawerbody .termhost:not([hidden]) .xterm-rows')
+    return !!rows && [...rows.children].some((r) => (r.textContent ?? '').trim().length > 0)
+  }, null, { timeout: 15_000 })
+  /* The printed path differs from the typed one (`de%s.txt` becomes `deep.txt`),
+     so the row this finds is the shell's output and never the command line echoed
+     above it. */
+  await page.keyboard.type("printf 'at de%s.txt:2 here\\n' ep")
+  await page.keyboard.press('Enter')
+  /** Where a substring of a terminal row is on screen, measured off the text node
+   *  rather than guessed from a column: the cell width moves with the font-size
+   *  setting, which is a slider in this app.
+   *
+   *  **It waits for the row to stop moving, which a fixed delay cannot do.** The
+   *  shell prints its next prompt a moment after the line, every row shifts up
+   *  one, and a click at coordinates taken before that lands on the prompt —
+   *  which is itself a path and opens the wrong file. Seen exactly that way, as a
+   *  refusal naming the prompt. So the row is measured twice and only trusted
+   *  when it has not moved between. */
+  const pointAt = async (needle, from, to) => {
+    const where = async () => page.evaluate((want) => {
+      const rows = document.querySelector('#drawerbody .termhost:not([hidden]) .xterm-rows')
+      const row = [...(rows?.children ?? [])].find((r) => (r.textContent ?? '').includes(want))
+      return row ? Math.round(row.getBoundingClientRect().y) : null
+    }, needle)
+    for (let tries = 0; tries < 40; tries++) {
+      const first = await where()
+      await page.waitForTimeout(250)
+      if (first !== null && first === await where()) break
+    }
+    return page.evaluate(([want, a, b]) => {
+      const rows = document.querySelector('#drawerbody .termhost:not([hidden]) .xterm-rows')
+      for (const row of rows?.children ?? []) {
+        const at = (row.textContent ?? '').indexOf(want)
+        if (at < 0) continue
+        const walk = document.createTreeWalker(row, NodeFilter.SHOW_TEXT)
+        let seen = 0
+        for (let t = walk.nextNode(); t; t = walk.nextNode()) {
+          const len = (t.textContent ?? '').length
+          if (seen + len > at + a) {
+            const r = document.createRange()
+            r.setStart(t, at + a - seen)
+            r.setEnd(t, Math.min(len, at + b - seen))
+            const box = r.getBoundingClientRect()
+            return { x: box.x + box.width / 2, y: box.y + box.height / 2 }
+          }
+          seen += len
+        }
+      }
+      return null
+    }, [needle, from, to])
+  }
+
+  /* Two points on the one line: the path, and a word beside it that is not one.
+     Measured off the text nodes rather than guessed from a column, because the
+     cell width moves with the font-size setting. */
+  const cells = {
+    path: await pointAt('at deep.txt:2 here', 3, 11),
+    word: await pointAt('at deep.txt:2 here', 14, 18),
+  }
+
+  /* **The refusal first, because it is the half with the power.** Everything on
+     this line is clickable text and only part of it is a path; a provider that
+     offered the lot would pass the assertion below while turning every word in
+     the scrollback into a link and stealing the click from the program. */
+  await page.mouse.click(cells.word.x, cells.word.y)
+  await page.waitForTimeout(400)
+  check(
+    await page.$$eval('#fvoverlay.on', (o) => o.length) === 0,
+    'a click on an ordinary word does nothing — it is not a path',
+  )
+  /* The pointer leaves and the wait is past the double-click interval, or the
+     click below lands as the second half of a double-click — which selects a word
+     in a terminal and never reaches a link. */
+  await page.mouse.move(cells.path.x, cells.path.y - 60)
+  await page.waitForTimeout(600)
+  await page.mouse.move(cells.path.x, cells.path.y)
+  await page.waitForTimeout(150)
+  await page.mouse.click(cells.path.x, cells.path.y)
+
+  const opened = await page.waitForFunction(
+    () => document.getElementById('fvpath')?.textContent === 'deep.txt',
+    null, { timeout: 5000 }).then(() => true).catch(() => false)
+  check(opened, 'a plain click on a printed path opens it in the viewer')
+  check(
+    await page.$eval('#fvsrc .fnrow.on', (r) => r.textContent) === 'two is the line',
+    'at the line the path named, not the top of the file',
+  )
+  /* **The file pane, not the search overlay.** Opening one file used to take the
+     finder over, which threw away whatever search was in it. */
+  check(
+    await page.$$eval('#fnoverlay.on', (o) => o.length) === 0,
+    'and the finder is left alone — this is a pane of its own',
+  )
+
+  /* --- a bare name, a range, and two files with one name ---------------------- */
+
+  /* **An agent prints a file name, not a path**, and joining that onto the pty's
+     own directory names a file that is not there — which is what the viewer said,
+     correctly and uselessly. The workspace's own file list is the answer, so this
+     writes the file where nothing would find it by guessing and prints only its
+     name. The range is the other half: `:2-4` is what Claude Code writes when it
+     means a block, and marking one line of it would answer a question nobody
+     asked. */
+  fs.mkdirSync(path.join(tree, 'far/down/below'), { recursive: true })
+  fs.writeFileSync(path.join(tree, 'far/down/below/Lonely.txt'), 'a\nb\nc\nd\ne\n')
+  await page.keyboard.press('Escape')
+  await focusTerm()
+  await page.keyboard.type("printf 'see Lonel%s.txt:2-4 now\\n' y")
+  await page.keyboard.press('Enter')
+  const lonely = await pointAt('see Lonely.txt:2-4 now', 4, 14)
+  await page.mouse.move(lonely.x, lonely.y)
+  await page.waitForTimeout(150)
+  await page.mouse.click(lonely.x, lonely.y)
+  const foundDeep = await page.waitForFunction(
+    () => document.getElementById('fvpath')?.textContent === 'far/down/below/Lonely.txt',
+    null, { timeout: 5000 }).then(() => true).catch(() => false)
+  check(foundDeep, 'a bare file name is looked up in the workspace, not joined to the cwd')
+  check(
+    await page.$$eval('#fvsrc .fnrow.on', (rs) => rs.length) === 3,
+    'and a line range lights every row in it',
+  )
+
+  /* Two files with one name is the normal shape of a large repo, so it is a list
+     to pick from rather than a guess or a refusal. */
+  fs.mkdirSync(path.join(tree, 'other/place'), { recursive: true })
+  fs.writeFileSync(path.join(tree, 'other/place/Lonely.txt'), 'x\ny\n')
+  await page.keyboard.press('Escape')
+  await focusTerm()
+  await page.keyboard.type("printf 'and Lonel%s.txt again\\n' y")
+  await page.keyboard.press('Enter')
+  const twice = await pointAt('and Lonely.txt again', 4, 14)
+  await page.mouse.move(twice.x, twice.y)
+  await page.waitForTimeout(150)
+  await page.mouse.click(twice.x, twice.y)
+  const picked = await page.waitForFunction(
+    () => [...document.querySelectorAll('#ctxmenu:not([hidden]) .ctxmenu-item')]
+      .filter((b) => (b.textContent ?? '').endsWith('Lonely.txt')).length === 2,
+    null, { timeout: 5000 }).then(() => true).catch(() => false)
+  check(picked, 'two files with one name are a choice, not a guess')
+  // And picking one opens it.
+  await page.$$eval('#ctxmenu .ctxmenu-item', (bs) => bs[0].click())
+  const chosen = await page.waitForFunction(
+    () => document.getElementById('fvpath')?.textContent?.endsWith('Lonely.txt') === true,
+    null, { timeout: 5000 }).then(() => true).catch(() => false)
+  check(chosen, 'and the one you pick is the one that opens')
+
+  /* --- and the right-click menu on the same path ------------------------------ */
+
+  /* **Asserted as far as the menu and no further.** The two new items hand a path
+     to `xdg-open`, and a gate that actually pressed them would open a file manager
+     on whatever machine is running the suite. What is worth holding is that the
+     menu appears for a path, carries the three answers, and does *not* appear for
+     ordinary text — which is the same refusal the click has, through a different
+     event. */
+  await page.keyboard.press('Escape')
+  const onPath = await pointAt('and Lonely.txt again', 4, 14)
+  await page.mouse.click(onPath.x, onPath.y, { button: 'right' })
+  await page.waitForSelector('#ctxmenu:not([hidden])', { timeout: 5000 })
+  const items = await page.$$eval('#ctxmenu .ctxmenu-item', (bs) => bs.map((b) => b.textContent))
+  check(
+    items.length === 3 && items[1] === 'Open the folder' && /Finder|file manager/.test(items[2] ?? ''),
+    `the menu offers the three answers, got ${JSON.stringify(items)}`,
+  )
+  await page.keyboard.press('Escape')
+  const onWord = await pointAt('and Lonely.txt again', 0, 3)
+  await page.mouse.click(onWord.x, onWord.y, { button: 'right' })
+  await page.waitForTimeout(400)
+  /* The pane has a menu of its own — "send the last lines to the session" — so
+     what is asserted is that ordinary output gets *that* one rather than these
+     items, not that a right-click does nothing. */
+  const plain = await page.$$eval('#ctxmenu .ctxmenu-item', (bs) => bs.map((b) => b.textContent))
+  check(
+    !plain.some((t) => t === 'Open the folder'),
+    `ordinary output gets the pane's own menu, got ${JSON.stringify(plain)}`,
+  )
+
+  /* --- and a markdown file opens rendered ------------------------------------ */
+
+  /* **The one thing the parser's own test cannot see**: that the tree reaches the
+     page as nodes. Asserted on the elements rather than on text, because the
+     whole point of the mode is the shape — a heading is an `h2`, a fence is a
+     `pre`, and a link is an anchor with a safe href on it. */
+  fs.writeFileSync(
+    path.join(tree, 'note.md'),
+    '# Title\n\nsome **bold** prose with `code` in it.\n\n'
+    + '- one\n- two\n\n```js\nconst x = 1\n```\n\n[home](https://example.com)\n\n'
+    /* **Long on purpose.** The band is only rebuilt once the viewport passes its
+       margins, so a short note scrolls without ever reaching the code that used
+       to replace the rendered page with rows. The file this was reported on is a
+       long one. */
+    /* A quote of two blocks and a nested list: both were painter bugs that the
+       parser's own test cannot see — the quote dropped every other child to a
+       live-collection walk, and every indented item rendered flat. */
+    + '> first quoted paragraph\n>\n> second quoted paragraph\n\n'
+    + '- top\n  - nested\n    - deeper\n\n'
+    + '## More\n\nprose that goes on.\n\n'.repeat(60),
+  )
+  await page.keyboard.press('Escape')
+  await focusTerm()
+  await page.keyboard.type("printf 'read not%s.md now\\n' e")
+  await page.keyboard.press('Enter')
+  const mdAt = await pointAt('read note.md now', 5, 12)
+  await page.mouse.move(mdAt.x, mdAt.y)
+  await page.waitForTimeout(150)
+  await page.mouse.click(mdAt.x, mdAt.y)
+  const rendered = await page.waitForFunction(
+    () => !!document.querySelector('#fvsrc .md .md-h1'), null, { timeout: 5000 })
+    .then(() => true).catch(() => false)
+  check(rendered, 'a markdown file opens rendered, not as lines')
+  const shape = await page.$eval('#fvsrc .md', (m) => ({
+    h1: m.querySelector('.md-h1')?.textContent,
+    bold: !!m.querySelector('strong'),
+    tick: m.querySelector('.md-tick')?.textContent,
+    items: m.querySelectorAll('.md-li').length,
+    code: m.querySelector('.md-code')?.textContent,
+    href: m.querySelector('.md-link')?.getAttribute('href'),
+    rows: m.querySelectorAll('.fnrow').length,
+  }))
+  check(
+    shape.h1 === 'Title' && shape.bold && shape.tick === 'code' && shape.items >= 2
+      && shape.code === 'const x = 1' && shape.href === 'https://example.com/' && shape.rows === 0,
+    `the blocks arrive as elements, got ${JSON.stringify(shape)}`,
+  )
+  /* The two the painter got wrong, asserted on the shape rather than the text:
+     a quote keeps both of its paragraphs, and an indented item is a list inside
+     a list rather than a sibling. */
+  const nesting = await page.$eval('#fvsrc .md', (m) => ({
+    quoted: m.querySelectorAll('.md-quote .md-p').length,
+    deep: m.querySelectorAll('.md-list .md-list .md-list .md-li').length,
+  }))
+  check(
+    nesting.quoted === 2 && nesting.deep === 1,
+    `a quote keeps every block and a list nests, got ${JSON.stringify(nesting)}`,
+  )
+  /* **Scrolling must not change the mode**, which is what it did: the band is
+     rebuilt as the pane scrolls, and a rebuild over the markdown page replaced it
+     with rows. Reported as "scrolling toggled it back to source", and it is the
+     one assertion here that fails on the code as it was. */
+  await page.$eval('#fvsrc', (m) => { m.scrollTop = m.scrollHeight })
+  await page.waitForTimeout(300)
+  check(
+    await page.$$eval('#fvsrc .md', (m) => m.length) === 1
+      && await page.$$eval('#fvsrc .fnrow', (r) => r.length) === 0,
+    'and scrolling it leaves it rendered',
+  )
+
+  // And the toggle puts the source back, at which point it is lines again.
+  await page.$eval('#fvmode', (b) => b.click())
+  check(
+    await page.$$eval('#fvsrc .fnrow', (rs) => rs.length) > 0
+      && await page.$$eval('#fvsrc .md', (m) => m.length) === 0,
+    'and the toggle puts the file back as it is written',
+  )
+  await page.keyboard.press('Escape')
+
+  /* --- and the finder hands a file to that pane ------------------------------ */
+
+  /* **The index is for finding and the file pane is for reading.** Below an index
+     the file gets two thirds of the height and no markdown mode, so the finder
+     needs a way out to the pane that has both — on `Enter`, which the overlay
+     contract gives to whatever is open, and on a button for the people who do not
+     know that. */
+  await page.keyboard.press('Control+Shift+KeyF')
+  await page.waitForSelector('#fnoverlay.on', { timeout: 5000 })
+  await page.fill('#fnq', 'frobnicate')
+  await page.waitForFunction(
+    () => !!document.querySelector('#fnhits .fnhit .fnsnip'), null, { timeout: 5000 })
+  await page.$eval('#fnopen', (b) => b.click())
+  const handed = await page.waitForFunction(
+    () => document.getElementById('fvpath')?.textContent === 'haystack.txt',
+    null, { timeout: 5000 }).then(() => true).catch(() => false)
+  check(handed, 'the finder hands its file to the file pane')
+  /* The line this file now holds: the editor section above wrote through it, and
+     asserting the original text here would be asserting a stale read. */
+  const onLine = await page.$eval('#fvsrc .fnrow.on', (r) => r.textContent)
+  check(onLine?.includes('frobnicate') === true, `at the line the index was on, got ${onLine}`)
+  /* And closing it leaves the search where it was, which is the whole reason
+     these are two overlays. */
+  await page.keyboard.press('Escape')
+  check(
+    await page.$$eval('#fnoverlay.on', (o) => o.length) === 1
+      && await page.$eval('#fnq', (q) => q.value) === 'frobnicate',
+    'and closing it puts you back in the search you had',
+  )
+  await page.keyboard.press('Escape')
+
+  await t.api('POST', `/api/process/${shell}/close`)
 
   console.log(`\npage-check: ${failed ? 'FAILED' : 'ok'}`)
 } finally {

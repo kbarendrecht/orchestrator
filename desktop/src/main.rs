@@ -25,6 +25,10 @@ use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 /// this way.
 #[cfg(target_os = "macos")]
 mod appkit_abort;
+/// Linux only: GLib is the logging the GTK stack does, and there is no GTK stack
+/// anywhere else.
+#[cfg(target_os = "linux")]
+mod glib_log;
 mod launcher;
 mod login_path;
 
@@ -166,6 +170,12 @@ fn main() {
     Rust installs ever runs and the log simply stops. See the module. */
     #[cfg(target_os = "macos")]
     appkit_abort::log_uncaught_exceptions();
+    /* The same gap on Linux, reached by a different mechanism: GDK calls `g_error`
+    when the Wayland connection turns invalid, which aborts without unwinding too.
+    Before the window, because the writer can only be set once and must be in place
+    before GTK says anything. See the module for the two this app has died on. */
+    #[cfg(target_os = "linux")]
+    glib_log::log_glib_messages();
 
     // Held from the first thing `main` does that can be slow, because the phases
     // before the daemon are the ones a person launching from Finder pays for and

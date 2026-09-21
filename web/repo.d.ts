@@ -45,9 +45,9 @@ path: string,
  */
 line: number, col: number, len: number, 
 /**
- * The matching line, trailing newline removed. The index does not draw it —
- * the viewer below shows the file — but a hit with no text is impossible to
- * assert about in a test, and the page needs the length to place the mark.
+ * The matching line, trailing newline removed. The index draws it, cut to a
+ * window around the match, which is what lets two hits in one file be told
+ * apart without moving the cursor onto each of them.
  */
 text: string, };
 

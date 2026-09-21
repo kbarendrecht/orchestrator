@@ -115,9 +115,165 @@ height of a real row, taken once per file: a height derived from the CSS goes
 wrong the moment the font-size setting moves, and that setting is a slider in this
 app.
 
+**The index row above it is a flex line with a priority, and getting that wrong
+clipped a column of paths.** The matched line takes the space and ellipsises; the
+path is capped at 45% of the row and does not shrink with it. The first cut made
+both shrinkable, and flex then took the slack out of *both* — squeezing the path's
+box while the basename and line number inside it kept their size and ran off the
+pane's edge. Inside the path the directory gives way first, and its shrink factor
+is 99999 rather than 2 for a reason: flex shares the deficit in proportion to the
+factor, so a merely larger number still left the basename a pixel short of its own
+text, which is a whole character of ellipsis on 43 of 400 rows. `page-check` holds
+both halves, and it took two fixture files to do it — a deep path has a directory
+to absorb the squeeze and looks fine, so the row that actually spilled is a file
+at the *root*, where nothing in the path can shrink.
+
 Two smaller rules travel with it. The gutter number is generated content
 (`i::before { content: attr(data-n) }`) for the reason the diff's is — WebKit
 takes an unselectable element's text when a selection *crosses* it, so a copied
 snippet would carry a column of digits. And a refusal — binary, too large, deleted
 underneath you — is a sentence in the pane (`.fnsay`), because an empty viewer is
 indistinguishable from a broken one.
+
+## The mouse's back button undoes a jump, and no gate here can prove the webview delivers it.
+A modifier-click replaces what the overlay was showing, so `find.js` keeps a
+`trail`: the mode, the query, the hits and the cursor as they were, pushed on
+every jump and popped by button 3 (4 is forward). **Only a jump pushes.** Typing a
+new query is a place you went rather than one you were sent to, and a back button
+that undid your own typing would be a different feature.
+
+Three rules hold it up. The answers are **restored, not asked for again**, so a
+step back is instant and cannot come back different because a file changed
+underneath; setting the query box's `value` raises no `input` event, which is what
+keeps it from re-running. A jump made while the overlay was **closed** pushes a
+closed snapshot, so the way out of the first jump is the same gesture as the way
+back through the rest. And the buffer answers first, exactly as closing does: a
+"keep editing" puts the step back on the trail rather than losing it.
+
+**What is not measured is the delivery.** `mise run page-check` dispatches the
+`mousedown` itself, because this playwright's mouse has left, right and middle
+only — so the handler and the trail are asserted and the question of whether
+WebKitGTK and WKWebView hand button 3 to the page at all is not. Nothing
+available here answers it; the app on a real machine is where it gets answered,
+and the binding degrades to nothing if the answer is no.
+
+## A path an agent printed is clickable, and three modules each own one third of that.
+Click a path in any terminal and the file pane opens on it, at that line. The work is split where the knowledge is: `web/js/term.js` finds the
+text in the buffer, `web/js/pathlink.js` decides what is a path, `web/app.js`
+turns it into a workspace and a relative path, and `find.js` shows it. None of
+them could hold another's half — a terminal does not know what a workspace is,
+and the matcher must be drivable without a browser, which is why it is a module
+of its own with `tools/check-pathlink.mjs` over it.
+
+**A plain click opens it, and the matcher is the only thing holding that up.**
+It was behind the app's modifier first, on the argument that xterm underlines
+whatever a provider returns and a terminal full of prose should not underline
+itself. The argument lost: the whole point is to click what an agent just
+printed, and a key you have to hold is the part you forget. So the refusals in
+`web/js/pathlink.js` are now load-bearing rather than tidy — a matcher that is merely
+generous turns every word in the scrollback into a link. The modifier still
+works, because it is the same link either way.
+
+**The click still reaches the agent, and that is xterm's rule.**
+`shouldForceSelection` withholds the mouse report for Shift only (Option on
+macOS), so a click on a path is reported to whatever asked for `?1003h` *and*
+opens the file. In an agent pane Claude Code sees it too. Read from the vendored
+source. Shift would avoid it and is not available: on macOS xterm spends it on
+extending a selection.
+
+**An agent names a file, not a path, and that is what the first cut got wrong.**
+A component's file name with no directory in front of it, joined onto the pty's
+own directory, named a file that was not there — and the viewer
+then said so, correctly and uselessly. The workspace's own file list is the
+answer: match on the tail, which handles a bare name and a partial path with one
+rule. Several matches are not an error either, because two components with one
+name in different folders is the normal shape of a large repo — they become the
+index and you pick, the branch a symbol defined twice already takes. **The list
+is walked fresh on every click**, not read from the cache: a stale list does not
+fail visibly, it returns *one* match where there are now two. Measured against the
+monorepo this is developed on, that walk is 19,029 files in 100-130ms, against a
+click somebody makes a few times a minute. The same measurement is what put a
+30-second life on the cached copy the `find files` mode reads, which until then
+could not see a file an agent had written since the overlay first opened.
+
+**A line range lights every row in it.** `overlay.service.ts:124-129` is what
+Claude Code writes when it means a block, and marking only the first line would
+answer a question nobody asked.
+
+**A relative path is relative to the pty, not to the workspace.** A shell started
+elsewhere prints paths from there, so the resolver uses the session's or the
+process's own `cwd` and only then makes the result workspace-relative. A path that
+resolves outside the workspace is refused with a sentence rather than opened and
+failed — `/etc/hosts` is a real file and not this workspace's, and a viewer saying
+"no such file" would name the wrong fault. The `..` segments are resolved *before*
+that comparison, because `src/../../../etc/passwd` starts with the root as a
+string and leaves it as a path.
+
+**The right-click menu is the app's, and it has to stop the event.** A path is the
+one thing in a terminal with more than one obvious answer, so "open the folder"
+and "hand it to the machine" live in a menu rather than being guessed at by a
+click. Two things it cost. The cell under the pointer is found by arithmetic over
+the **screen** box rather than the host's — a whole number of cells rarely fills
+the pane, and the leftover pixels drift every column past the first. And the
+handler must `stopPropagation` as well as `preventDefault`: the drawer hangs its
+own menu off the pane, it is an ancestor, and without that the pane's menu
+replaces this one a moment after it opens.
+
+**The finder hands a file to it, on `Enter` and on a button.** The index is for
+finding and the pane is for reading: under an index the file gets two thirds of
+the height and no markdown mode. `Enter` is the spelling because a bare key
+belongs to the open overlay and the search already runs as you type, so it had
+nothing else to mean — and the legend carries a line for it, being the one thing
+here that can silently drift.
+
+**The file it opens is its own pane, not the finder.** Clicking a path used to
+open the search overlay on a synthetic one-row result: it threw away whatever
+search was in it, and answered a question about one file with the machine built
+to list many. So the band renderer moved down into `web/js/viewer.js` and
+`web/js/fileview.js` is the second thing standing on it. Both mount `.fnsrc` with
+`.fnrow`s in it, so one stylesheet and one renderer serve both, and a fix to how
+a line is drawn is not a copy that drifts. A name that matches two files is a
+picker on the pointer — the same `openMenu` the right-click uses — rather than a
+third piece of UI.
+
+**A markdown file opens rendered, and the renderer is two modules for a reason.**
+`web/js/markdown.js` imports nothing at all, so `tools/check-markdown.mjs` can
+drive it in node where there is no `window` for `core.js` to read — the same
+split `web/js/pathlink.js` has. It answers with plain blocks and `web/js/viewer.js` paints
+them, which is also where the app's other text-into-nodes work lives. **Nodes,
+never markup**: ESLint refuses `innerHTML`, so a note an agent wrote cannot carry
+markup into the page, and every link goes through `safeHref`.
+
+**The band is rebuilt on scroll, and it does not know what is mounted.** That is
+what made a long note flip back to source as you read it: the scroll handler
+re-draws the rows whenever the viewport passes the band's margins, and it did so
+straight over the rendered page. The viewer carries the mode now and the handler
+answers to it. It took a *long* fixture to gate — a short note never reaches the
+margins, so the first version of the assertion passed against the bug.
+
+Two rules inside it worth knowing. A **line number turns the mode off** —
+`notes.md:42` means that line and a rendered page cannot point at it, so the
+source is what opens and the button is right there. And the six heading classes
+are **written out as literals** rather than built from the level, because a
+computed class is one `check-dead-css` cannot see and it refuses the rule for it
+as dead. The subset is listed at the top of the module: no reference links, no
+footnotes, no HTML blocks, no setext headings.
+
+**The two OS items are the daemon's to carry out**, through
+`POST /api/open/reveal`, and the containment check is `resolve_in_workspace`'s —
+the same one the editor writes through, symlinks included. That is the whole
+reason it is a route: the input is text an agent printed, and it must not become
+a way to hand `/etc/shadow` to the desktop's default handler. `page-check` stops
+at the menu on purpose. Pressing those items would open a file manager on
+whatever machine is running the suite.
+
+**Gating it took a reload, and the reason is the renderer.** A browser tab gets
+xterm's WebGL renderer (`webglWanted` is `CHROME === 'none'`), and a canvas has no
+text for a test to measure or click; the app's window draws into the DOM. So
+`page-check` ends by telling the page it has the app's chrome, reloading, opening
+a real shell and typing into it. Both halves are asserted and the refusal is the
+one with the power: making the matcher accept anything fails "a click on an
+ordinary word does nothing" — and fails the jump too, because the word it lands
+on is then a link of its own. **What it does not hold is the wrap join** — the
+fixture line is short, so a path broken across two rows is covered by reading the
+code and by nothing else.
