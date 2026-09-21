@@ -329,6 +329,14 @@ pub struct Inner {
     /// section, because the thing that used to refuse a second claimant was `git
     /// worktree add` failing on an existing path — and a claim does no git at all.
     pub spare: Durable<crate::store::SpareStore>,
+    /// Conversations in this checkout's directories that the daemon did not start.
+    /// See [`crate::store::ExternalConversation`].
+    ///
+    /// Polled rather than derived, because the answer is a `read_dir` per
+    /// workspace and a snapshot is built for every hook, every keystroke's worth of
+    /// state change and every notify. `store::find_transcript` records what one
+    /// such scan per session per snapshot would cost: a scan a second, forever.
+    pub external: Vec<crate::store::ExternalConversation>,
 }
 
 /// Releases a lock taken with [`AppState::try_claim`] when it goes out of scope.
@@ -605,6 +613,7 @@ impl AppState {
                 self_upgrade_run: None,
                 agent_update: None,
                 upgrade_run: None,
+                external: Vec::new(),
             }),
             swapping: tokio::sync::Mutex::new(()),
             sweeping: tokio::sync::Mutex::new(()),
@@ -616,6 +625,67 @@ impl AppState {
             review_refresh: Arc::new(Notify::new()),
             pr_refresh: Arc::new(Notify::new()),
         })
+    }
+
+    /// Re-read this checkout's transcript directories for conversations the daemon
+    /// did not start, and publish what changed.
+    ///
+    /// One body for the poller and for the button, deliberately: the fold rescans
+    /// when you open it, and two copies of "which directories, which filter, what
+    /// counts as changed" is how the list you are looking at comes to disagree with
+    /// the count on the caret you opened.
+    ///
+    /// Notifies only on a change. The common answer is the previous answer, and a
+    /// notify pushes a whole snapshot to every connected page.
+    pub async fn rescan_external(self: &Arc<Self>) -> usize {
+        let (workspaces, known, previous) = {
+            let inner = self.inner.read().await;
+            (
+                inner
+                    .workspaces
+                    .values()
+                    .map(|w| (w.id.clone(), w.path.clone()))
+                    .collect::<Vec<_>>(),
+                inner
+                    .sessions
+                    .keys()
+                    .copied()
+                    .collect::<std::collections::HashSet<_>>(),
+                inner.external.clone(),
+            )
+        };
+        // `std::fs` off the runtime, which is the rule every directory read here
+        // follows.
+        let scanned = crate::proc::run_blocking("scanning for outside conversations", move || {
+            crate::store::external_conversations(&workspaces, &known, &previous)
+        })
+        .await;
+        /* A scan that did not answer is not an empty archive. `unwrap_or_default`
+        here emptied the fold on a panicked or cancelled blocking task, and the
+        next poll a minute later put it back — a list that vanishes and returns
+        is worse than one that is a minute stale, and it is the daemon's own
+        fault either way. */
+        let found = match scanned {
+            Ok(found) => found,
+            Err(e) => {
+                tracing::warn!("could not scan for outside conversations: {e:#}");
+                return self.inner.read().await.external.len();
+            }
+        };
+        let n = found.len();
+        // Scoped, so the write guard is not held across the notify below.
+        let changed = {
+            let mut inner = self.inner.write().await;
+            let changed = inner.external != found;
+            if changed {
+                inner.external = found;
+            }
+            changed
+        };
+        if changed {
+            self.notify().await;
+        }
+        n
     }
 
     /// Push a fresh snapshot to every connected SPA. State is small enough that
@@ -1022,11 +1092,28 @@ impl AppState {
             .collect();
         prs.sort_by(|a, b| a.rank.cmp(&b.rank).then(b.pr.number.cmp(&a.pr.number)));
 
+        // Already newest-first and already capped, by the poller that filled it.
+        let external = inner
+            .external
+            .iter()
+            .map(|c| ExternalView {
+                id: c.id,
+                workspace: c.workspace.clone(),
+                title: c.title.clone(),
+                last_used_ms: now
+                    .duration_since(c.last_used)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0),
+                may_be_live: crate::store::recently_active(c.last_used),
+            })
+            .collect();
+
         Snapshot {
             tracker_server: self.cfg.tracker.as_ref().map(|t| t.mcp_server.clone()),
             spare: inner.spare.ids.clone(),
             workspaces,
             sessions,
+            external,
             prs,
             pr_error: inner.pr_error.clone(),
             agent_error: inner.agent_error.clone(),
@@ -1681,6 +1768,9 @@ pub struct Snapshot {
     pub spare: Vec<String>,
     pub workspaces: Vec<WorkspaceView>,
     pub sessions: Vec<SessionView>,
+    /// Past conversations in this checkout that orchd never started, newest first.
+    /// The rail lists them under the same fold as its own archive.
+    pub external: Vec<ExternalView>,
     pub prs: Vec<PrView>,
     /// Set when the last poll failed; the pane says so rather than showing an
     /// empty list.
@@ -1754,6 +1844,44 @@ pub struct Snapshot {
     /// build am I on" is a question worth answering when the answer is "the
     /// latest one".
     pub version: &'static str,
+}
+
+/// A past conversation orchd never started, as the archive draws it.
+///
+/// Deliberately not a [`SessionView`] with the fields blanked. There is no state
+/// machine behind one, no pty, no branch and no claim on a workspace, and a row
+/// that carries those as defaults is a row every reader has to remember is
+/// lying. `has_transcript: false` on a conversation that plainly has one is
+/// exactly the shape `isConversation` filters away.
+#[derive(Debug, Serialize)]
+#[cfg_attr(
+    any(test, feature = "test-util"),
+    derive(ts_rs::TS),
+    ts(export, export_to = "snapshot.d.ts")
+)]
+pub struct ExternalView {
+    pub id: Uuid,
+    /// The workspace whose directory holds the transcript, which is where a resume
+    /// would put it.
+    pub workspace: String,
+    /// Claude Code's own `ai-title`. `None` reads as untitled in the rail: there is
+    /// no name you could have given one of these, and no workspace name worth
+    /// borrowing, since the workspace is on the row already.
+    pub title: Option<String>,
+    /// Age of the last turn. Named `_ms` for the same reason every other age is:
+    /// `paintSig` drops those keys, so a clock ticking in the snapshot does not
+    /// rebuild the rail.
+    #[cfg_attr(any(test, feature = "test-util"), ts(type = "number"))]
+    pub last_used_ms: u64,
+    /// Something was writing to this conversation a moment ago, so it may still be
+    /// open in a terminal ([`crate::store::recently_active`]).
+    ///
+    /// Sent so the rail can ask before it resumes one rather than after: the daemon
+    /// refuses an unforced resume of a live conversation, and a refusal the page
+    /// could have predicted is a toast with nothing you can do about it. It is as
+    /// fresh as the last scan, so the two can disagree for up to a poll — the
+    /// daemon's own check at the moment of the call is the one that decides.
+    pub may_be_live: bool,
 }
 
 #[derive(Debug, Serialize)]

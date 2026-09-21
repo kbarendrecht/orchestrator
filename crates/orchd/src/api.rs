@@ -1695,6 +1695,131 @@ pub async fn resume_session(
     revive(&app, id).await
 }
 
+/// Look again for conversations this daemon did not start.
+///
+/// The archive fold asks for this when you open it, because the poller behind
+/// [`crate::state::AppState::rescan_external`] runs on a minute and a list that is
+/// a minute stale is a list missing the terminal you just closed. Cheap by
+/// construction: a `read_dir` per workspace and a `stat` per file, since an
+/// unchanged transcript keeps the title the last scan read.
+pub async fn refresh_external(State(app): State<Arc<AppState>>) -> ApiResult<serde_json::Value> {
+    // `found` rather than `external`: that name is an array of conversations
+    // everywhere else, and a count under it reads as an empty list to anything
+    // that looks.
+    let found = app.rescan_external().await;
+    Ok(Json(json!({ "found": found })))
+}
+
+/// Continue a conversation this daemon did not start.
+///
+/// The sibling of [`resume_session`] for the rows `store::external_conversations`
+/// finds: a `claude` somebody ran in a terminal in this checkout. There is no
+/// record to revive, so there is nothing to rebuild either: the tree it was in is
+/// a live workspace or it would not have been listed. The whole of it is a
+/// spawn with `--resume`, which resolves a conversation by id wherever the file
+/// sits. From the next snapshot on it is an ordinary session with an ordinary row.
+///
+/// **It cannot tell whether that conversation is still open somewhere.** A shell's
+/// `claude` reports nothing to the daemon, so the only evidence is an mtime, and
+/// two agents appending to one transcript is a real way to lose turns. The recency
+/// is handed back as a warning rather than a refusal: the daemon does not know, and
+/// the person who opened the terminal does.
+#[derive(Default, Deserialize)]
+pub struct AdoptOutside {
+    /// Take it over although the transcript was written to moments ago. The rail
+    /// asks before it sends this; see [`resume_external`].
+    #[serde(default)]
+    pub force: bool,
+}
+
+pub async fn resume_external(
+    State(app): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    // Optional, because the safe answer is the default one and a POST with no body
+    // at all is how this route is reached by hand. Required, it answered a bare
+    // `curl -X POST` with a content-type complaint rather than with the refusal
+    // that was the whole point of the call.
+    body: Option<Json<AdoptOutside>>,
+) -> ApiResult<serde_json::Value> {
+    let body = body.map(|Json(b)| b).unwrap_or_default();
+    /* Two clicks are two spawns of the same conversation id, and nothing further
+    down stops them: the record does not exist until the spawn inserts it, so the
+    "already one of ours" check above passes twice, and `refuse_if_occupied` finds
+    no live session either. The claim is held for the whole adoption and released
+    by the guard on every path out. */
+    let Some(_claim) = app.try_claim(format!("adopt:{id}")) else {
+        refuse_busy!(
+            "conversation {} is already being taken over",
+            crate::model::short_id(&id)
+        );
+    };
+    let (workspace, last_used, was_on) = {
+        let inner = app.inner.read().await;
+        // A record means the archive has a row of its own for it, and that row
+        // rebuilds the worktree where this one assumes it stands.
+        if inner.sessions.contains_key(&id) {
+            refuse!(
+                "session {} is one of this daemon's own; resume it from its row",
+                crate::model::short_id(&id)
+            );
+        }
+        let Some(found) = inner.external.iter().find(|c| c.id == id) else {
+            refuse!(
+                "no conversation {} in this checkout's transcripts",
+                crate::model::short_id(&id)
+            );
+        };
+        (
+            found.workspace.clone(),
+            found.last_used,
+            found.branch.clone(),
+        )
+    };
+    /* **Asked before anything is written, not warned about afterwards.** The spawn
+    itself appends to that transcript — `store::clear_worktree_pin`, whose own doc
+    says never to do that beside a live agent — so by the time a warning could be
+    composed the file has already been written to. The daemon cannot see a shell's
+    `claude` at all (no pty here, no hook, no pid it knows), so the mtime is the
+    whole of the evidence and the person who opened the terminal is the one who
+    knows. `ExternalView::may_be_live` is what lets the rail ask rather than
+    discover this as a refusal. */
+    if !body.force && crate::store::recently_active(last_used) {
+        refuse!(
+            "conversation {} was written to moments ago and may still be open in a terminal; \
+             close it first, or adopt it anyway",
+            crate::model::short_id(&id)
+        );
+    }
+    refuse_if_occupied(&app, &workspace).await?;
+    let new_id =
+        spawn::spawn_session(&app, &workspace, None, Some(spawn::Source::Resume(id))).await?;
+    let now_on = {
+        let mut inner = app.inner.write().await;
+        /* Out of the list the moment it has a record, or the rail draws it twice —
+        once as a live session and once as an outside conversation — until the next
+        scan. The scan itself filters on exactly this, so this is the same rule
+        applied a minute earlier rather than a second answer. */
+        inner.external.retain(|c| c.id != id);
+        inner
+            .workspaces
+            .get(&workspace)
+            .and_then(|w| w.tree.branch.clone())
+    };
+    /* The drift `revive` warns about, for a conversation with no recovery record to
+    compare against. A worktree path is reused — `ensure_pr_worktree` puts every run
+    of `pr-16` in one tree — so its transcript directory collects every conversation
+    that path ever held, and adopting one can drop an agent that remembers one
+    branch into a tree checked out for another. The transcript's own `gitBranch` is
+    what makes the comparison possible. */
+    let warning = match (was_on, now_on) {
+        (Some(was), Some(now)) if was != now => Some(format!(
+            "this conversation was working on {was}; {workspace} is on {now} now"
+        )),
+        _ => None,
+    };
+    Ok(Json(json!({ "session": new_id, "warning": warning })))
+}
+
 /// Branch off a conversation instead of continuing it.
 ///
 /// The new run starts with the whole conversation behind it and writes to an id
@@ -2387,6 +2512,56 @@ pub async fn open_urls(
 pub struct OpenFile {
     pub workspace: String,
     pub path: String,
+}
+
+#[derive(Deserialize)]
+pub struct RevealPath {
+    pub workspace: String,
+    pub path: String,
+    /// Hand the machine the *directory* the file is in rather than the file.
+    #[serde(default)]
+    pub folder: bool,
+}
+
+/// Hand a file, or the folder holding it, to whatever this machine opens things
+/// with.
+///
+/// **The containment check is `resolve_in_workspace`'s, not this route's**, and
+/// that is the whole reason this is a route rather than a page trick: the client
+/// asks about a workspace-relative path and the daemon decides what that means on
+/// disk, including the symlink that points out of the tree. A path the SPA read
+/// off a terminal is text an agent printed, so it is exactly the input that must
+/// not become a way to open `/etc/shadow` with the desktop's default handler.
+///
+/// `open_detached` is the same opener the browser routes use — `open` on macOS,
+/// `xdg-open` and its fallbacks elsewhere — so a folder opens in the machine's
+/// file manager and a file opens in whatever is registered for it.
+pub async fn reveal_path(
+    State(app): State<Arc<AppState>>,
+    Json(body): Json<RevealPath>,
+) -> ApiResult<serde_json::Value> {
+    let Some(root) = app.workspace_path(&body.workspace).await else {
+        refuse!("unknown workspace {}", body.workspace);
+    };
+    let (rel, folder) = (body.path.clone(), body.folder);
+    let shared = app.cfg.shared_worktree_paths.clone();
+    // Off the runtime: `resolve_in_workspace` canonicalises, which is disk.
+    let target = crate::proc::run_blocking("resolving a path to open", move || {
+        let file = orchd_base::edit::resolve_in_workspace(&root, &rel, &shared)?;
+        let at = if folder {
+            file.parent()
+                .map(std::path::Path::to_path_buf)
+                .unwrap_or(file)
+        } else {
+            file
+        };
+        anyhow::Ok(at)
+    })
+    .await??;
+    let shown = target.display().to_string();
+    open_detached(&shown).await?;
+    tracing::info!("handed {shown} to the machine");
+    Ok(Json(json!({ "opened": shown })))
 }
 
 /// Open one changed file on the forge, in the browser.

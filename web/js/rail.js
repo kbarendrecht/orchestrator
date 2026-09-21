@@ -1141,10 +1141,15 @@ function fillSessions(/** @type {HTMLElement} */ group, /** @type {import('./cor
      were. Read once here because the add row shows the count and the box below
      draws the rows, and two reads of it could disagree. */
   const archived = [...mainSessions, ...treeSessions].filter(isConversation);
+  /* Conversations orchd never started, which the daemon finds by reading Claude
+     Code's own transcript directory for each of this checkout's workspaces. In the
+     same fold as the archive because "the conversation I had in this checkout" is
+     one question, and which program started it is not part of it. */
+  const external = state.external || [];
   items.push({
     key: 'add',
     sig: chrome,
-    build: () => addRow(c, state, main, mainActive, archived),
+    build: () => addRow(c, state, main, mainActive, archived, external),
   });
   /* **The rows, in the box `archivedToggle` opens from the add row above.** The
      box is bounded in CSS at about ten rows rather than truncated, and it is also
@@ -1153,18 +1158,31 @@ function fillSessions(/** @type {HTMLElement} */ group, /** @type {import('./cor
 
      Keyed inside it, because an archived row is hovered and clicked like a live
      one and has the same claim on surviving a repaint. */
-  if (archived.length && archiveOpen(c, 'sessions', archived).open) {
+  if ((archived.length || external.length) && archiveOpen(c, 'sessions', archived).open) {
     items.push({
       key: 'arcbox',
       sig: 'arcbox',
       build: () => el('div', 'arcbox'),
-      fill: (/** @type {HTMLElement} */ box) => reconcile(box, [...archived]
-        .sort(byNewest)
-        .map((/** @type {import('../snapshot').SessionView} */ s) => ({
-          key: `arc:${s.id}`,
-          sig: paintSig([s, s.id === selected], NOT_DRAWN),
-          build: () => archivedRow(s),
-        }))),
+      /* The daemon's own first, then the outside ones. Two lists rather than one
+         merged by age, because the two rows do not offer the same thing: an
+         archived row knows its branch and rebuilds its worktree, an outside row
+         knows a file and a directory. Interleaving them would make which of those
+         you get depend on when you last spoke to it. */
+      fill: (/** @type {HTMLElement} */ box) => reconcile(box, [
+        ...[...archived]
+          .sort(byNewest)
+          .map((/** @type {import('../snapshot').SessionView} */ s) => ({
+            key: `arc:${s.id}`,
+            sig: paintSig([s, s.id === selected], NOT_DRAWN),
+            build: () => archivedRow(s),
+          })),
+        // Already newest-first, and capped, by the daemon that found them.
+        ...external.map((/** @type {import('../snapshot').ExternalView} */ x) => ({
+          key: `ext:${x.id}`,
+          sig: paintSig([x, c.path], NOT_DRAWN),
+          build: () => externalRow(c, x),
+        })),
+      ]),
     });
   }
   reconcile(group, items);
@@ -1218,7 +1236,7 @@ function startingRow() {
  *  headings and read as `+` twice, so which one you were pressing came from where
  *  it was rather than from what it said.
  */
-function addRow(/** @type {import('./core.js').Target} */ c, /** @type {import('../snapshot').Snapshot} */ state, /** @type {import('../snapshot').WorkspaceView | undefined} */ main, /** @type {import('../snapshot').SessionView[]} */ mainActive, /** @type {import('../snapshot').SessionView[]} */ archived) {
+function addRow(/** @type {import('./core.js').Target} */ c, /** @type {import('../snapshot').Snapshot} */ state, /** @type {import('../snapshot').WorkspaceView | undefined} */ main, /** @type {import('../snapshot').SessionView[]} */ mainActive, /** @type {import('../snapshot').SessionView[]} */ archived, /** @type {import('../snapshot').ExternalView[]} */ external) {
   const row = el('div', 'ws-add');
 
   /* Main is exclusive: one active session at a time, and no queue. While it is
@@ -1270,7 +1288,7 @@ function addRow(/** @type {import('./core.js').Target} */ c, /** @type {import('
      back on the right — where it used to be two rows, both starting with a verb,
      for two ideas that are not alike. Absent when there is no archive, which is
      the one case where the row has nothing to say on that side. */
-  const fold = archivedToggle(c, 'sessions', archived);
+  const fold = archivedToggle(c, 'sessions', archived, external);
   if (fold) row.appendChild(fold);
 
   return row;
@@ -1296,17 +1314,30 @@ function archiveOpen(/** @type {import('./core.js').Target} */ c, /** @type {str
  *  `null` when nothing is archived: a count of zero is not news, and the row is
  *  better off with the space.
  */
-function archivedToggle(/** @type {import('./core.js').Target} */ c, /** @type {string} */ key, /** @type {import('../snapshot').SessionView[]} */ sessions) {
-  if (!sessions.length) return null;
+function archivedToggle(/** @type {import('./core.js').Target} */ c, /** @type {string} */ key, /** @type {import('../snapshot').SessionView[]} */ sessions, /** @type {import('../snapshot').ExternalView[]} */ external) {
+  /* Both counted, because both are behind this caret. A checkout whose only past
+     conversations were started from a terminal has an archive worth opening, and
+     counting the daemon's alone would leave it with no caret at all. */
+  const total = sessions.length + external.length;
+  if (!total) return null;
   const { held, open } = archiveOpen(c, key, sessions);
   const btn = el('button', 'arctoggle');
   btn.type = 'button';
   btn.setAttribute('aria-expanded', String(open));
-  btn.title = `${sessions.length} past conversation${sessions.length === 1 ? '' : 's'} in this checkout`;
+  btn.title = `${total} past conversation${total === 1 ? '' : 's'} in this checkout`;
   btn.appendChild(caret());
   btn.appendChild(el('span', null, 'archived'));
-  btn.appendChild(el('span', 'arccount', String(sessions.length)));
-  btn.onclick = () => { showArchived[held] = !open; renderRail(); };
+  btn.appendChild(el('span', 'arccount', String(total)));
+  btn.onclick = () => {
+    /* Opening it asks the daemon to look again for conversations it did not start.
+       Its poller runs on a minute, and the terminal you are opening this to find is
+       usually the one you closed a moment ago. Fire-and-forget: the answer arrives
+       as a snapshot like everything else, and a refresh that fails leaves the list
+       exactly as it was, which is not news worth a toast. */
+    if (!open) void callOn(c, '/api/external/refresh').catch(() => undefined);
+    showArchived[held] = !open;
+    renderRail();
+  };
   return btn;
 }
 
@@ -1372,6 +1403,71 @@ async function openArchived(/** @type {import('../snapshot').SessionView} */ s) 
     setPendingSelect(r.session);
     // The branch moved since the conversation happened, so the files it talks
     // about are not the files on disk. Worth saying, not worth refusing over.
+    if (r.warning) toast(r.warning, true);
+  } catch (e) {
+    toast(reason(e), true);
+  }
+}
+
+/** A conversation this checkout has that orchd did not start.
+ *
+ *  **It carries no state word and no dot of its own.** The fold it sits in says
+ *  "archived" and the sub-line says where it came from; a second vocabulary for
+ *  what is, from the rail's point of view, the same thing, a conversation you can
+ *  come back to, is a distinction nobody asked for.
+ *
+ *  No context menu either. Rename, fork and delete are all verbs over a session
+ *  record, and there is none until this is resumed; delete in particular would have
+ *  to mean deleting Claude Code's own file, which `api::delete_session` is explicit
+ *  about never doing.
+ */
+function externalRow(/** @type {import('./core.js').Target} */ c, /** @type {import('../snapshot').ExternalView} */ x) {
+  const btn = el('button', 'sess arc');
+  btn.dataset.id = x.id;
+  const row = el('div', 'sess-row');
+  row.appendChild(el('span', 'dot archived'));
+  /* Claude Code's own `ai-title`, and nothing to fall back to: an outside
+     conversation has no name you could have typed, and the workspace it ran in is
+     on the line below. */
+  const name = x.title || 'untitled';
+  row.appendChild(el('span', 'sess-name', name, name));
+  row.appendChild(clock('sess-id', x.last_used_ms, ' ago'));
+  btn.appendChild(row);
+  // Where it ran, when that is not the obvious answer. `outside` is the word for
+  // what makes this row different: the daemon never started it.
+  btn.appendChild(el('div', 'sess-sub', x.workspace === 'main' ? 'outside' : `outside · ${x.workspace}`));
+  btn.onclick = () => openExternal(c, x);
+  return btn;
+}
+
+/** Take an outside conversation over: the daemon relaunches it under its own id.
+ *
+ *  Addressed to the checkout the row was drawn from rather than to
+ *  `activeCheckout`, for the reason `callFor` gives: the rail draws every
+ *  checkout, so "the one you are in" is the wrong target for anything on it.
+ */
+async function openExternal(/** @type {import('./core.js').Target} */ c, /** @type {import('../snapshot').ExternalView} */ x) {
+  /* **A destructive ask, which is the only kind there is** — `confirmBox` carries
+     that rule. Taking a conversation over appends to its transcript, the daemon
+     cannot see a `claude` running in a terminal at all, and turns lost to two
+     agents writing one file are not got back. The daemon refuses an unforced adopt
+     of a live-looking one; this asks first so that refusal arrives as a question
+     rather than as a toast you can do nothing about. */
+  if (x.may_be_live && !await confirmBox(
+    'This conversation was written to moments ago. If it is still open in a terminal, '
+    + 'both agents will be appending to one transcript, and that is how turns go missing.',
+    { ok: 'Take it over' },
+  )) return;
+  try {
+    const r = await callOn(c, `/api/external/${x.id}/resume`, { force: x.may_be_live });
+    /* The conversation keeps its id, so a terminal left over from an earlier life
+       of this id — adopted, then deleted from the rail, then found again — is still
+       in `terms` under the key the new pty wants, and `openTerm` would hand back
+       the corpse. `openArchived` closes it for the same reason. */
+    Term.close(c, `session:${r.session}`);
+    setPendingSelect(r.session);
+    // The tree has been checked out for something else since this conversation
+    // last spoke. Worth saying, not worth refusing over.
     if (r.warning) toast(r.warning, true);
   } catch (e) {
     toast(reason(e), true);

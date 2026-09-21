@@ -490,14 +490,41 @@ async fn spawn_session_with_id(
     // the insert below replaces it: a resume keeps the id, so the record of what
     // the conversation was doing is about to be overwritten. One read for the lot;
     // these used to be four separate lock acquisitions on the same record.
-    let carried = match resume {
+    let (mut carried, adopting) = match resume {
         Some(Source::Resume(prev)) | Some(Source::Fork(prev)) => {
             let fork = matches!(resume, Some(Source::Fork(_)));
             let inner = app.inner.read().await;
-            Carried::from(inner.sessions.get(&prev), fork)
+            let prev = inner.sessions.get(&prev);
+            // A resume of an id this daemon has no record of: an outside
+            // conversation being adopted (`api::resume_external`).
+            (Carried::from(prev, fork), !fork && prev.is_none())
         }
-        None => Carried::default(),
+        None => (Carried::default(), false),
     };
+    /* **The disk is the only thing that knows this one has turns in it**, and the
+    answer has to be on the record before the pty is watched. `watch_session_exit`
+    forgets a session that ends with `had_a_turn` false and *deletes its
+    transcript* — and an adopted conversation's transcript is Claude Code's own,
+    which `api::delete_session` is explicit about never touching. Setting the flag
+    after the spawn returned lost that race whenever the agent died on the way up:
+    a resume that cannot start took the file with it. */
+    if adopting {
+        let (at, id) = (
+            path.clone(),
+            match resume {
+                Some(Source::Resume(prev)) => prev,
+                _ => id,
+            },
+        );
+        carried.had_a_turn =
+            crate::proc::run_blocking("reading an adopted conversation", move || {
+                crate::store::has_conversation(id, &at, None)
+                    || crate::store::find_transcript(id)
+                        .is_some_and(|p| crate::store::has_conversation(id, &at, Some(&p)))
+            })
+            .await
+            .unwrap_or(false);
+    }
 
     // A conversation the daemon has moved still believes it is isolated in the tree
     // it started in: Claude Code pins that in the transcript and re-appends it every

@@ -507,6 +507,7 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
     start_workspace_watcher(app.clone());
     start_head_poller(app.clone());
     start_worktree_reaper(app.clone());
+    start_external_poller(app.clone());
     /* The spare pool, re-attached to the worktrees `adopt_existing_worktrees`
     just rediscovered. Spawned for the same reason the sweep above is: the
     reconcile is a map lookup, but the refill behind it is a `git worktree add`
@@ -644,6 +645,8 @@ fn daemon_router(app: Arc<AppState>) -> Router {
         )
         .route("/api/session/:id/rewind", post(api::rewind_session))
         .route("/api/session/:id/resume", post(api::resume_session))
+        .route("/api/external/refresh", post(api::refresh_external))
+        .route("/api/external/:id/resume", post(api::resume_external))
         .route("/api/sessions/nudge", post(api::nudge_sessions))
         .route("/api/session/:id/fork", post(api::fork_session))
         .route("/api/session/:id/spawn", post(api::spawn_from_session))
@@ -728,6 +731,7 @@ fn daemon_router(app: Arc<AppState>) -> Router {
         .route("/api/open", post(api::open_url))
         .route("/api/open-all", post(api::open_urls))
         .route("/api/open/file", post(api::open_file))
+        .route("/api/open/reveal", post(api::reveal_path))
         .route("/api/file/verb", post(api::file_verb))
         .route("/api/pr/:number/review", get(review_api::pr_review))
         // The overlay session's first call: everything only the daemon knows.
@@ -1572,6 +1576,28 @@ fn start_worktree_reaper(app: Arc<AppState>) {
                 app.notify().await;
             }
             tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+        }
+    });
+}
+
+/// The conversations in this checkout that orchd did not start, for the archive.
+///
+/// **Polled rather than read when the snapshot is built.** The answer is a
+/// `read_dir` per workspace, and a snapshot is built for every hook, every state
+/// change and every notify, and `store::find_transcript` records what that shape
+/// costs: a scan a second, forever. So it is a background read that the snapshot
+/// copies out of `Inner`, like the PR list and the stack probe beside it.
+///
+/// A minute, because what it watches is somebody closing a terminal, and the
+/// number that has to be right before you open the fold is the count on the
+/// caret. Opening it rescans (`api::refresh_external`), so this interval is not
+/// what decides whether the list you are reading is current.
+fn start_external_poller(app: Arc<AppState>) {
+    tokio::spawn(async move {
+        let interval = std::time::Duration::from_secs(60);
+        loop {
+            app.rescan_external().await;
+            tokio::time::sleep(interval).await;
         }
     });
 }

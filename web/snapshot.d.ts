@@ -72,6 +72,45 @@ lines: Array<string>,
 failed: string | null, };
 
 /**
+ * A past conversation orchd never started, as the archive draws it.
+ *
+ * Deliberately not a [`SessionView`] with the fields blanked. There is no state
+ * machine behind one, no pty, no branch and no claim on a workspace, and a row
+ * that carries those as defaults is a row every reader has to remember is
+ * lying. `has_transcript: false` on a conversation that plainly has one is
+ * exactly the shape `isConversation` filters away.
+ */
+export type ExternalView = { id: string, 
+/**
+ * The workspace whose directory holds the transcript, which is where a resume
+ * would put it.
+ */
+workspace: string, 
+/**
+ * Claude Code's own `ai-title`. `None` reads as untitled in the rail: there is
+ * no name you could have given one of these, and no workspace name worth
+ * borrowing, since the workspace is on the row already.
+ */
+title: string | null, 
+/**
+ * Age of the last turn. Named `_ms` for the same reason every other age is:
+ * `paintSig` drops those keys, so a clock ticking in the snapshot does not
+ * rebuild the rail.
+ */
+last_used_ms: number, 
+/**
+ * Something was writing to this conversation a moment ago, so it may still be
+ * open in a terminal ([`crate::store::recently_active`]).
+ *
+ * Sent so the rail can ask before it resumes one rather than after: the daemon
+ * refuses an unforced resume of a live conversation, and a refusal the page
+ * could have predicted is a toast with nothing you can do about it. It is as
+ * fresh as the last scan, so the two can disagree for up to a poll — the
+ * daemon's own check at the moment of the call is the one that decides.
+ */
+may_be_live: boolean, };
+
+/**
  * Why a triage run cannot start.
  *
  * These are the worktree-readiness gates: the review flow writes into this
@@ -357,7 +396,12 @@ tracker_server: string | null,
  * `docs/traps/e2e.md` warns against. The e2e flow reads this, and so can a
  * person wondering why the pool is empty.
  */
-spare: Array<string>, workspaces: Array<WorkspaceView>, sessions: Array<SessionView>, prs: Array<PrView>, 
+spare: Array<string>, workspaces: Array<WorkspaceView>, sessions: Array<SessionView>, 
+/**
+ * Past conversations in this checkout that orchd never started, newest first.
+ * The rail lists them under the same fold as its own archive.
+ */
+external: Array<ExternalView>, prs: Array<PrView>, 
 /**
  * Set when the last poll failed; the pane says so rather than showing an
  * empty list.

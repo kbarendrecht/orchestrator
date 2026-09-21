@@ -669,6 +669,192 @@ pub fn pin_transcript(id: uuid::Uuid, cwd: &Path, recorded: &mut Option<PathBuf>
     }
 }
 
+/// A conversation this daemon never started.
+///
+/// `claude` run from a terminal writes its transcript exactly where a hosted
+/// session's goes, `~/.claude/projects/<slug of cwd>`, and nothing else about
+/// it reaches the daemon: no `$ORCH_SESSION_ID`, no hooks, no record
+/// (`spawn::spawn_session` says why that is the design). So the file is the only
+/// evidence there is, and this is what can be read off it.
+///
+/// The archive lists these beside the daemon's own, because "the conversation I
+/// had in this checkout" is one question and which program started it is not part
+/// of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalConversation {
+    pub id: SessionId,
+    /// The workspace whose directory the transcript was filed under. Carried so a
+    /// resume lands in the tree the conversation is about, rather than in main.
+    pub workspace: WorkspaceId,
+    pub transcript: PathBuf,
+    pub title: Option<String>,
+    /// The transcript's mtime, which is this conversation's last turn, the same
+    /// evidence [`last_used`] dates a session by.
+    pub last_used: SystemTime,
+    /// The branch the tree was on when this conversation last spoke, out of the
+    /// transcript's own records. Kept so a resume can say that the tree has been
+    /// checked out for something else since, which is the one thing `revive` warns
+    /// about that an outside conversation would otherwise never hear.
+    pub branch: Option<String>,
+}
+
+/// How recently a transcript must have been appended to for the daemon to suspect
+/// the conversation is still open somewhere.
+///
+/// Generous on purpose: an agent working through a long tool call writes nothing
+/// for minutes, and the cost of being wrong in this direction is one sentence
+/// nobody needed.
+const STILL_OPEN: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
+/// Whether something was writing to this conversation a moment ago.
+///
+/// The only evidence there is that a shell-started `claude` is still running:
+/// it reports nothing to the daemon, holds no pty here and appears in no process
+/// list the daemon reads. A clock that went backwards reads as active, which is
+/// the side that warns rather than the side that stays quiet.
+pub fn recently_active(last_used: SystemTime) -> bool {
+    SystemTime::now()
+        .duration_since(last_used)
+        .map(|d| d < STILL_OPEN)
+        .unwrap_or(true)
+}
+
+/// How many to carry from each directory. Newest first, so what falls off the end
+/// is the oldest.
+///
+/// A cap rather than a window, because a directory that has been worked in for a
+/// year holds hundreds and the archive is already the list `TODO.md` calls
+/// unsearchable. Deliberately more than the fold shows at once: the box scrolls.
+///
+/// **Per workspace, and that is the whole of it.** Capping the merged list ranked
+/// the checkout's directories against each other by recency alone, so a week spent
+/// in worktrees pushed every conversation you ever had in main off the end,
+/// silently, with the count on the caret agreeing. One checkout here has 122
+/// workspaces.
+const EXTERNAL_MAX: usize = 50;
+
+/// Every conversation in this checkout's directories that the daemon has no
+/// record of.
+///
+/// `known` is the session ids it does have: a hosted session's transcript sits in
+/// the same directory, so without that filter every row in the rail would gain a
+/// twin. `previous` is the last answer, and it is what keeps this cheap. See
+/// [`external_in`].
+pub fn external_conversations(
+    workspaces: &[(WorkspaceId, PathBuf)],
+    known: &std::collections::HashSet<SessionId>,
+    previous: &[ExternalConversation],
+) -> Vec<ExternalConversation> {
+    let mut out = Vec::new();
+    for (workspace, path) in workspaces {
+        let Ok(dir) = crate::config::transcript_dir_for(path) else {
+            continue;
+        };
+        out.extend(external_in(&dir, workspace, path, known, previous));
+    }
+    // Newest first, and the id breaks the tie: the page decides whether to
+    // repaint by comparing snapshot text, so an order that depends on what
+    // `read_dir` happened to hand back is a rail rebuilt for no news.
+    out.sort_by(|a, b| b.last_used.cmp(&a.last_used).then(a.id.cmp(&b.id)));
+    out
+}
+
+/// The unknown conversations in one transcript directory.
+///
+/// Split from [`external_conversations`] so the rule can be tested without a test
+/// reaching into `HOME` and changing it under every other test, the same reason
+/// `config::transcript_slug` is split out.
+///
+/// **`previous` is the whole cost story.** A title is the last 128KB of the file
+/// and there can be fifty files, so re-reading them every poll would be megabytes
+/// a minute for an answer that changes when somebody takes a turn. A transcript is
+/// append-only, so an unchanged mtime means an unchanged answer, and the poll then
+/// costs one `stat` per file.
+fn external_in(
+    dir: &Path,
+    workspace: &WorkspaceId,
+    cwd: &Path,
+    known: &std::collections::HashSet<SessionId>,
+    previous: &[ExternalConversation],
+) -> Vec<ExternalConversation> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        // No directory means nobody has run `claude` in that tree, which is a
+        // normal answer and not a failure.
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+            continue;
+        }
+        // The file is named for the session id, which is a uuid, so anything else
+        // in there is not a transcript.
+        let Some(id) = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .and_then(|s| uuid::Uuid::parse_str(s).ok())
+        else {
+            continue;
+        };
+        if known.contains(&id) {
+            continue;
+        }
+        let Some(last_used) = entry.metadata().ok().and_then(|m| m.modified().ok()) else {
+            continue;
+        };
+        if let Some(prev) = previous
+            .iter()
+            .find(|c| c.id == id && c.transcript == path && c.last_used == last_used)
+        {
+            out.push(prev.clone());
+            continue;
+        }
+        // The same bar the archive holds its own rows to: a session that never had
+        // a turn resumes into "no conversation found" and an instant exit, so
+        // listing it offers something that cannot work.
+        if !has_conversation(id, cwd, Some(&path)) {
+            continue;
+        }
+        out.push(ExternalConversation {
+            id,
+            workspace: workspace.clone(),
+            title: ai_title(id, cwd, Some(&path)),
+            branch: last_git_branch(&path),
+            transcript: path,
+            last_used,
+        });
+    }
+    // Newest first, then capped, so what a busy directory drops is its oldest and
+    // never another directory's.
+    out.sort_by(|a, b| b.last_used.cmp(&a.last_used).then(a.id.cmp(&b.id)));
+    out.truncate(EXTERNAL_MAX);
+    out
+}
+
+/// The branch the tree was on when this conversation last spoke.
+///
+/// Claude Code stamps `gitBranch` on its entries, so the last one in the file is
+/// the answer, and the same tail [`ai_title`] reads holds it. Read by searching
+/// rather than parsing: that field rides nearly every line, so a JSON parse per
+/// line would be the whole tail parsed to learn one string.
+///
+/// The same bet as [`ai_title`] and it degrades the same way: `None` means the
+/// resume says nothing about drift, which is where it stood before this.
+fn last_git_branch(path: &Path) -> Option<String> {
+    const KEY: &str = r#""gitBranch":""#;
+    let tail = read_tail(path, TITLE_TAIL_BYTES).ok()?;
+    let text = String::from_utf8_lossy(&tail);
+    // A tail read lands mid-record, so the *last* hit can be a torn one with no
+    // closing quote — which `find` below answers with `None` rather than a
+    // half-branch.
+    let at = text.rfind(KEY)? + KEY.len();
+    let rest = text.get(at..)?;
+    let end = rest.find('"')?;
+    let branch = rest.get(..end)?;
+    (!branch.is_empty()).then(|| branch.chars().take(TITLE_MAX).collect())
+}
+
 /// Re-file a session's transcript under the slug of the directory it now runs in.
 ///
 /// For a relocated session — one killed in one tree and resumed in another under
@@ -1621,5 +1807,83 @@ mod tests {
                 command: "green".into()
             })
         );
+    }
+
+    /// What the archive may list from a directory the daemon does not own.
+    ///
+    /// Four files, one of which is a conversation. The other three are each a way
+    /// this can go wrong: a session the daemon already has a row for would appear
+    /// twice; a transcript with no turn in it resumes into "no conversation found"
+    /// and an instant exit; and a file that is not named for a uuid is not a
+    /// transcript at all.
+    ///
+    /// Against `external_in` rather than `external_conversations`, because the
+    /// latter resolves `$HOME`, which is process-wide, so a test that sets it
+    /// races every other test in this file.
+    #[test]
+    fn only_an_unknown_conversation_with_a_turn_in_it_is_listed() {
+        // Keyed on a fresh uuid rather than on the pid: the cleanup below only runs
+        // on the way out, so one failure used to leave four files behind that made
+        // the next run with the same pid fail on the count.
+        let dir = std::env::temp_dir().join(format!("orchd-external-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let turn = "{\"type\":\"user\",\"message\":\"hi\"}\n";
+
+        let found = uuid::Uuid::new_v4();
+        std::fs::write(
+            dir.join(format!("{found}.jsonl")),
+            format!(
+                "{turn}{}\n{}\n",
+                r#"{"type":"assistant","gitBranch":"feature/ring"}"#,
+                r#"{"type":"ai-title","aiTitle":"Rename the pty ring buffer"}"#
+            ),
+        )
+        .unwrap();
+
+        let known = uuid::Uuid::new_v4();
+        std::fs::write(dir.join(format!("{known}.jsonl")), turn).unwrap();
+
+        let empty = uuid::Uuid::new_v4();
+        std::fs::write(
+            dir.join(format!("{empty}.jsonl")),
+            format!(
+                "{}\n",
+                r#"{"type":"permission-mode","permissionMode":"default"}"#
+            ),
+        )
+        .unwrap();
+
+        std::fs::write(dir.join("notes.jsonl"), turn).unwrap();
+
+        let ws = "main".to_string();
+        let nowhere = Path::new("/nonexistent");
+        let seen = std::collections::HashSet::from([known]);
+        let got = external_in(&dir, &ws, nowhere, &seen, &[]);
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(got[0].id, found);
+        assert_eq!(got[0].workspace, ws);
+        assert_eq!(got[0].title.as_deref(), Some("Rename the pty ring buffer"));
+        // The branch the tree was on when it last spoke, which is what a resume
+        // compares against to say the tree has been checked out for something else
+        // since.
+        assert_eq!(got[0].branch.as_deref(), Some("feature/ring"));
+
+        /* The mtime cache, which is what keeps the poll off the disk: an entry whose
+        file has not been written since is reused whole, without the 128KB tail read
+        that produced its title. Proved by handing back a previous answer whose title
+        is one the file does not contain: if it were re-read, the real title would
+        win. */
+        let stale = ExternalConversation {
+            title: Some("what the last poll found".into()),
+            ..got[0].clone()
+        };
+        let again = external_in(&dir, &ws, nowhere, &seen, &[stale]);
+        assert_eq!(
+            again[0].title.as_deref(),
+            Some("what the last poll found"),
+            "an unchanged mtime must not be read again"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
