@@ -543,6 +543,26 @@ main() {
   [ "$assets" -gt 0 ] \\
     || die "$tag published no assets — fix it, then: mise run release --retry"
   printf '  %s published, %s assets\\n' "$tag" "$assets"
+
+  # **The two publishing repositories pull; this only tells them to pull now.**
+  # `kbarendrecht/homebrew-tap` and `kbarendrecht/apt` each hold a workflow that
+  # reads the public releases API and updates itself, on a daily schedule. So
+  # nothing in this repository holds a token for either, and the dispatch is
+  # `gh` with your own credential doing early what would happen anyway.
+  #
+  # Never fatal, and that is the point of it being last: the release has already
+  # published by here, so a dispatch that fails costs a day of lag rather than a
+  # version number. A tag cut by hand skips this and waits for the schedule.
+  step "telling the brew tap and the apt repository"
+  dispatch() {
+    if gh workflow run "$2" --repo "$1" >/dev/null 2>&1; then
+      printf '  %s: %s dispatched\\n' "$1" "$2"
+    else
+      printf '  %s: could not dispatch %s — it runs on its own schedule\\n' "$1" "$2"
+    fi
+  }
+  dispatch kbarendrecht/homebrew-tap bump
+  dispatch kbarendrecht/apt publish
 }
 
 main "$@"

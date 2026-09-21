@@ -493,6 +493,19 @@ v<version>`. The workflow refuses a tag that does not match the crate version,
 because a released build that disagrees with its own tag nags about an update it
 already is. Versions are CalVer: `<year>.<month>.<n>`.
 
+**Two other repositories publish this one, and neither is pushed to from here.**
+`kbarendrecht/homebrew-tap` holds the cask and `kbarendrecht/apt` holds the
+signed APT index. Each carries a workflow that reads the **public** releases API,
+updates itself, and then installs what it just published — the cask on a macOS
+runner, the package in an `ubuntu:22.04` container against a real `apt-get
+install`. That shape is the point: a job in `release.yml` would need a token that
+can write to those repositories, in the workflow that also runs `npx` and the
+bundler, and the signing key would have to live somewhere other than the only
+thing that signs. Both run on a daily schedule, and `mise run release`
+dispatches them at the end so the usual lag is a minute; a dispatch that fails is
+never fatal, because by then the release has already published. A tag cut by hand
+updates neither until the schedule catches it.
+
 **The release body is the tag's own message now**, written by
 `tools/release-notes.mjs` and read back by the workflow. A tag cut by hand is
 lightweight and carries none, and the workflow falls back to a compare link —

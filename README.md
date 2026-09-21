@@ -11,10 +11,12 @@ your PRs have review threads to answer.
 
 ![orchestrator](docs/demo.gif)
 
-**[Download](https://github.com/kbarendrecht/orchestrator/releases/latest)** — a
-`.dmg` for Apple Silicon, a `.deb` and an AppImage for x86-64 Linux, or
-`mise use -g github:kbarendrecht/orchestrator`. [Install](#install) has the rest,
-including the quarantine step macOS needs for an unsigned build.
+**Install it** with `brew install --cask kbarendrecht/tap/orchestrator` on
+Apple Silicon, from the [apt repository](#apt-debianubuntu) on Debian and Ubuntu,
+or `mise use -g github:kbarendrecht/orchestrator` anywhere. The
+[release](https://github.com/kbarendrecht/orchestrator/releases/latest) also
+attaches a `.dmg`, a `.deb`, an AppImage and a tarball. [Install](#install) has
+the rest.
 
 Each session lives in its own git worktree with its own terminal. The daemon owns
 every process, so closing the window kills nothing you did not mean to and losing
@@ -112,6 +114,34 @@ is what `mise` reads, and is still two binaries you place yourself.
 
 Apple Silicon and x86-64 Linux are built.
 
+### Homebrew (macOS)
+
+```
+brew install --cask kbarendrecht/tap/orchestrator
+brew upgrade --cask orchestrator   # later
+```
+
+Installs `Orchestrator.app` and symlinks `orch` onto your `PATH`. Apple Silicon
+only, which is what the release builds. Homebrew clears the download quarantine,
+so the app opens on a double-click — the one thing this route does that opening
+the `.dmg` by hand does not.
+
+`brew uninstall --cask orchestrator` removes it; add `--zap` to take
+`~/Library/Application Support/orchd` with it.
+
+### apt (Debian/Ubuntu)
+
+```
+curl -fsSL https://kbarendrecht.github.io/apt/orchestrator.asc \
+  | sudo tee /usr/share/keyrings/orchestrator.asc > /dev/null
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/orchestrator.asc] https://kbarendrecht.github.io/apt stable main" \
+  | sudo tee /etc/apt/sources.list.d/orchestrator.list > /dev/null
+sudo apt update && sudo apt install orchestrator
+```
+
+The same package as the `.deb` below, with `apt upgrade` carrying you to each new
+release. amd64 only.
+
 ### From an installer
 
 ```
@@ -126,8 +156,10 @@ and run it. It carries its own GTK/WebKit, so it is an order of magnitude
 larger than the deb, and `orch` rides inside it: the daemon puts its own directory
 on each session's `PATH`, so an agent can still reach it.
 
-On **macOS**, open the `.dmg` and drag the app to Applications. It is unsigned, so
-the first launch is right-click → Open rather than a double-click.
+On **macOS**, open the `.dmg` and drag the app to Applications. It carries an ad
+hoc signature rather than a Developer ID, so a downloaded copy is quarantined and
+the first launch is right-click → Open rather than a double-click. Homebrew
+clears that quarantine; opening the `.dmg` by hand does not.
 
 ### Through mise (with the `github` backend)
 
@@ -145,7 +177,8 @@ Installed this way, **the app upgrades itself**: the release nudge carries an
 Upgrade button that runs `mise upgrade` for you, then a Restart button, because the
 new build is installed beside the running one and a restart is what picks it up.
 Every other install keeps the link to the release instead — a `.deb` belongs to
-apt, and an AppImage or a `.dmg` is a file you downloaded.
+apt, a cask belongs to Homebrew, and an AppImage or a `.dmg` is a file you
+downloaded.
 
 ### From a release tarball
 
@@ -177,7 +210,7 @@ build tree, where the shared id would let `cargo run` shadow a real install.
 Because a mise install lives at a version-pinned path, the entry names the
 `latest` symlink beside it where there is one, and is rewritten at the next launch
 when the binary has moved. A bundle built this way is also unquarantined, so it
-opens on a plain double-click, unlike the unsigned `.dmg`.
+opens on a plain double-click, like a cask and unlike a downloaded `.dmg`.
 
 **Linux** needs **WebKitGTK 4.1** at runtime (Ubuntu 22.04 / Debian 12 or newer;
 20.04 ships only 4.0 and will not work). **macOS** uses the system WebView and
