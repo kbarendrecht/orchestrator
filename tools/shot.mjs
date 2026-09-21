@@ -19,7 +19,6 @@
 // Chrome is used via playwright-core's `channel`, so nothing is downloaded.
 import { chromium } from 'playwright-core';
 import { mkdirSync } from 'node:fs';
-import { execSync } from 'node:child_process';
 
 const args = process.argv.slice(2);
 const flag = (name, fallback) => {
@@ -46,8 +45,14 @@ const base = `http://127.0.0.1:${port}`;
 // caller paste it.
 let token;
 try {
-  const html = execSync(`curl -sS --max-time 5 ${base}/`, { encoding: 'utf8' });
-  token = html.match(/token:\s*"([^"]+)"/)?.[1];
+  /* `fetch` rather than `curl` through a shell. The value interpolated here is a
+     port this script was given, so nothing untrusted was ever near it — but a
+     command assembled as a string is a finding every scanner reports and a
+     sentence every reader has to check, and the subprocess bought nothing: node
+     has had `fetch` since 18, and this drops `curl` from what a fresh clone must
+     have installed. */
+  const answer = await fetch(`${base}/`, { signal: AbortSignal.timeout(5000) });
+  token = (await answer.text()).match(/token:\s*"([^"]+)"/)?.[1];
 } catch {
   console.error(`no daemon on ${base} — start the app first`);
   process.exit(1);

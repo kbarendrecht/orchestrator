@@ -392,6 +392,9 @@ async fn a_host_adds_closes_and_reopens_checkouts_and_refuses_the_three() {
             "-H",
             "Sec-WebSocket-Version: 13",
             "-H",
+            // RFC 6455 §1.3's own example nonce — base64 for "the sample nonce".
+            // It authenticates nothing; a scanner that reads it as a credential
+            // is answered by `.gitleaks.toml`.
             "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
             &format!("{base}/ws/host?token={token}"),
         ])

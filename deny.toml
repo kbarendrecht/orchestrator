@@ -21,6 +21,17 @@
 # which is to say the desktop shell's ~130 dependencies had never been checked at
 # all. Every one is "unmaintained", none is a vulnerability, and none has a fix
 # that is ours to apply: they arrive with the toolkit and leave when it bumps.
+#
+# **One advisory is recorded here that this tool cannot see.** A GitHub-database
+# scan reported `GHSA-wrw7-89jp-8q8g` against `glib 0.18.5` — unsoundness in the
+# `Iterator` impls for `glib::VariantStrIter` — and RustSec does not carry it, so
+# `cargo deny` is green on a real finding. Two facts make it a record rather than
+# a task. Nothing in this workspace constructs a `Variant` at all, let alone
+# iterates one; the only direct glib calls are the log writer in
+# `desktop/src/glib_log.rs`. And the advised 0.20.0 is not ours to take: `gtk` is
+# pinned to whatever the WebKitGTK stack resolves to so `gtk_window()`'s type
+# matches tauri's, and glib follows gtk. It leaves when the toolkit bumps, like
+# the rest of this list. Worth re-reading if this crate ever grows a `Variant`.
 ignore = [
     { id = "RUSTSEC-2017-0008", reason = "unmaintained `serial`, via portable-pty; no vulnerability and no upgrade path" },
     { id = "RUSTSEC-2024-0370", reason = "unmaintained `proc-macro-error`, via tauri's macros" },
