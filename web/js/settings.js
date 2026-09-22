@@ -392,6 +392,7 @@ function showTheme() {
   const pct = Math.round(theme.opacity * 100);
   ctl('thopacity').value = String(pct);
   $('thopacityval').textContent = `${pct}%`;
+  showTermScheme();
   for (const { role, size, step } of ROLES) {
     showFont(role);
     if (size && step) showSize(step, theme[size]);
@@ -441,6 +442,33 @@ function fillFonts(/** @type {import('./theme.js').Role} */ role) {
   other.value = 'other';
   sel.appendChild(other);
 }
+
+/** Show the terminal's palette, and preview it on the ground it will sit on.
+ *
+ *  **The eight normal hues, not the sixteen.** The bright half is the same eight
+ *  again in most schemes, and a strip of sixteen dots at 6px reads as a smear —
+ *  what the preview is for is telling Gruvbox from Nord at a glance, which the
+ *  normal eight already do.
+ *
+ *  Rebuilt rather than recoloured: eight children is cheaper to replace than to
+ *  diff, and this runs once per theme change.
+ */
+function showTermScheme() {
+  ctl('thterm').value = theme.term;
+  const colours = Palette.termColours(theme, theme.term);
+  const swatch = $('thtermsample');
+  swatch.style.background = String(colours.background);
+  swatch.replaceChildren(...HUES.map((hue) => {
+    const dot = el('i');
+    dot.style.background = String(colours[hue]);
+    return dot;
+  }));
+}
+
+/** The eight the swatch shows, in the order a terminal numbers them. */
+const HUES = /** @type {const} */ ([
+  'black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white',
+]);
 
 /** Show a role's current font, its preview, and its name box when it has one. */
 function showFont(/** @type {import('./theme.js').Role} */ role) {
@@ -503,6 +531,22 @@ function setupSettings() {
       ? { bg: p.bg, panel: p.panel, text: p.text, opacity: p.opacity, custom: false }
       : { custom: true });
     showTheme();
+  };
+
+  /* The board's own palette first and by name, then the schemes. `board` is not in
+     `TERM_SCHEMES` — it is the absence of one — so the option is written here the
+     way `custom` is written into the theme dropdown above it.
+
+     No refusal path: a scheme is a fixed table that cleared the contrast floor at
+     check time, where the three wells take whatever you drag them to. */
+  const schemes = ctl('thterm');
+  schemes.appendChild(el('option', null, 'Board')).value = Palette.TERM_BOARD;
+  for (const [key, s] of Object.entries(Palette.TERM_SCHEMES)) {
+    schemes.appendChild(el('option', null, s.label)).value = key;
+  }
+  schemes.onchange = (/** @type {Event} */ ev) => {
+    setTheme({ term: /** @type {HTMLSelectElement} */ (ev.target).value });
+    showTermScheme();
   };
 
   /* One handler for the three roles, each with a well and a hex box saying the

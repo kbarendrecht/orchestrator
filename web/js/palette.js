@@ -195,7 +195,112 @@ export function legible(/** @type {Palette} */ { bg, text }) {
   return contrast(bg, text) >= MIN_CONTRAST;
 }
 
-/** xterm's palette, from the same three colours.
+/** The named terminal palettes, on top of the one the board derives.
+ *
+ *  **Each carries its own ground, and that is the one place this app paints two.**
+ *  Everything else here is mixed from three colours precisely so a border cannot
+ *  land on the surface it separates — but a terminal scheme is not ours to mix.
+ *  Solarized without `#002B36` is not Solarized, and a scheme with its hues kept
+ *  and its ground replaced is a scheme nobody would recognise by name. So a picked
+ *  scheme is taken whole: ground, text, cursor, selection and the sixteen. The seam
+ *  at the pane edge is what that costs, and `--term-ground` is what keeps the seam
+ *  at the edge rather than 8px inside it.
+ *
+ *  **`readable` is not applied to these.** Lifting a hue toward the scheme's own
+ *  text would be correcting somebody else's palette against a floor they never
+ *  designed to — Solarized spends its bright half on greys *on purpose*, and 4.5:1
+ *  would turn that half into the foreground. What `check-palette.mjs` asserts
+ *  instead is the one pair that decides whether the pane can be read at all:
+ *  foreground against background, at `MIN_CONTRAST`, with no exception.
+ *
+ *  **That floor is why there is no Solarized Light here.** Its own body text is
+ *  `base00` on `base3`, which is 4.13:1 — a real scheme, under this app's own bar,
+ *  and an exception list is how a floor stops meaning anything. A light terminal is
+ *  the Paper preset with the board's derived palette, which clears it.
+ *
+ *  `label` is what the dropdown shows. Every other key is an xterm `ITheme` key,
+ *  and [`termColours`] fills the three a table may leave out.
+ */
+export const TERM_SCHEMES = {
+  'solarized-dark': {
+    label: 'Solarized Dark',
+    background: '#002B36', foreground: '#839496', selectionBackground: '#073642',
+    black: '#073642', red: '#DC322F', green: '#859900', yellow: '#B58900',
+    blue: '#268BD2', magenta: '#D33682', cyan: '#2AA198', white: '#EEE8D5',
+    brightBlack: '#002B36', brightRed: '#CB4B16', brightGreen: '#586E75',
+    brightYellow: '#657B83', brightBlue: '#839496', brightMagenta: '#6C71C4',
+    brightCyan: '#93A1A1', brightWhite: '#FDF6E3',
+  },
+  'gruvbox-dark': {
+    label: 'Gruvbox Dark',
+    background: '#282828', foreground: '#EBDBB2', selectionBackground: '#3C3836',
+    black: '#282828', red: '#CC241D', green: '#98971A', yellow: '#D79921',
+    blue: '#458588', magenta: '#B16286', cyan: '#689D6A', white: '#A89984',
+    brightBlack: '#928374', brightRed: '#FB4934', brightGreen: '#B8BB26',
+    brightYellow: '#FABD2F', brightBlue: '#83A598', brightMagenta: '#D3869B',
+    brightCyan: '#8EC07C', brightWhite: '#EBDBB2',
+  },
+  dracula: {
+    label: 'Dracula',
+    background: '#282A36', foreground: '#F8F8F2', selectionBackground: '#44475A',
+    black: '#21222C', red: '#FF5555', green: '#50FA7B', yellow: '#F1FA8C',
+    blue: '#BD93F9', magenta: '#FF79C6', cyan: '#8BE9FD', white: '#F8F8F2',
+    brightBlack: '#6272A4', brightRed: '#FF6E6E', brightGreen: '#69FF94',
+    brightYellow: '#FFFFA5', brightBlue: '#D6ACFF', brightMagenta: '#FF92DF',
+    brightCyan: '#A4FFFF', brightWhite: '#FFFFFF',
+  },
+  nord: {
+    label: 'Nord',
+    background: '#2E3440', foreground: '#D8DEE9', selectionBackground: '#434C5E',
+    black: '#3B4252', red: '#BF616A', green: '#A3BE8C', yellow: '#EBCB8B',
+    blue: '#81A1C1', magenta: '#B48EAD', cyan: '#88C0D0', white: '#E5E9F0',
+    brightBlack: '#4C566A', brightRed: '#BF616A', brightGreen: '#A3BE8C',
+    brightYellow: '#EBCB8B', brightBlue: '#81A1C1', brightMagenta: '#B48EAD',
+    brightCyan: '#8FBCBB', brightWhite: '#ECEFF4',
+  },
+  'one-dark': {
+    label: 'One Dark',
+    background: '#282C34', foreground: '#ABB2BF', selectionBackground: '#3E4451',
+    black: '#282C34', red: '#E06C75', green: '#98C379', yellow: '#E5C07B',
+    blue: '#61AFEF', magenta: '#C678DD', cyan: '#56B6C2', white: '#ABB2BF',
+    brightBlack: '#5C6370', brightRed: '#E06C75', brightGreen: '#98C379',
+    brightYellow: '#E5C07B', brightBlue: '#61AFEF', brightMagenta: '#C678DD',
+    brightCyan: '#56B6C2', brightWhite: '#FFFFFF',
+  },
+  'catppuccin-mocha': {
+    label: 'Catppuccin Mocha',
+    background: '#1E1E2E', foreground: '#CDD6F4', selectionBackground: '#585B70',
+    black: '#45475A', red: '#F38BA8', green: '#A6E3A1', yellow: '#F9E2AF',
+    blue: '#89B4FA', magenta: '#F5C2E7', cyan: '#94E2D5', white: '#BAC2DE',
+    brightBlack: '#585B70', brightRed: '#F38BA8', brightGreen: '#A6E3A1',
+    brightYellow: '#F9E2AF', brightBlue: '#89B4FA', brightMagenta: '#F5C2E7',
+    brightCyan: '#94E2D5', brightWhite: '#A6ADC8',
+  },
+};
+
+/** The scheme every board starts on: the one derived from its own three colours. */
+export const TERM_BOARD = 'board';
+
+/** Whether `key` names something [`termColours`] will paint a terminal in.
+ *
+ *  `Object.hasOwn`, not `TERM_SCHEMES[key]` — `"constructor"` passes the latter
+ *  and the terminal then takes a function as its theme. The same trap `loadTheme`
+ *  already guards the font keys against.
+ */
+export function validScheme(/** @type {unknown} */ key) {
+  return key === TERM_BOARD || (typeof key === 'string' && Object.hasOwn(TERM_SCHEMES, key));
+}
+
+/** xterm's palette: the board's own three colours, or a named scheme taken whole.
+ *
+ *  `scheme` is a key of [`TERM_SCHEMES`], or `TERM_BOARD` for the derived palette
+ *  every board starts on. An unrecognised key falls back to the board rather than
+ *  to a half-filled theme — xterm takes whatever object it is given and paints the
+ *  missing keys in its own defaults, so a typo would show as one white terminal
+ *  and no error anywhere.
+ *
+ *  Everything below is the board's answer. It is what the app ships with, and it
+ *  is the only one of the two this file *derives*.
  *
  *  **Derived rather than written out.** This was a literal table repeating `--bg`
  *  and `--text` in a second place, which is how a pane and the board come to
@@ -219,7 +324,20 @@ export function legible(/** @type {Palette} */ { bg, text }) {
  *  you type into. A see-through board with a solid terminal costs nothing; the
  *  reverse costs the typing.
  */
-export function termColours(/** @type {Palette} */ t) {
+export function termColours(/** @type {Palette} */ t, /** @type {unknown} */ scheme = TERM_BOARD) {
+  const named = scheme !== TERM_BOARD && validScheme(scheme)
+    ? TERM_SCHEMES[/** @type {keyof typeof TERM_SCHEMES} */ (scheme)]
+    : null;
+  if (named) {
+    const { label: _label, ...colours } = named;
+    /* The cursor is the only key no table below names, because every scheme that
+       ships one names a *pair* — a caret colour and what the glyph under it turns
+       — and nothing here has ever drawn them apart. The selection is a scheme's own
+       and is required of it: `check-palette.mjs` refuses a table missing any key
+       this function returns, so a scheme with no highlight fails the build rather
+       than quietly taking the board's. */
+    return { cursor: named.foreground, cursorAccent: named.background, ...colours };
+  }
   const on = (/** @type {string} */ c) => readable(c, t);
   return {
     background: t.bg,

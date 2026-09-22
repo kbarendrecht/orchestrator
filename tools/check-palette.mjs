@@ -17,7 +17,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  DEFAULT, contrast, tokens, readable, legible, termColours, MIN_CONTRAST,
+  DEFAULT, contrast, parseHex, tokens, readable, legible, termColours,
+  MIN_CONTRAST, TERM_BOARD, TERM_SCHEMES,
 } from '../web/js/palette.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -94,6 +95,36 @@ for (const [name, want] of Object.entries(SHIPPED_TERM)) {
   if (got !== want) problems.push(`terminal ${name}: shipped ${want}, derived ${got}`);
 }
 
+/* A named scheme is the one palette this app does not mix, so it is the one
+   palette nothing else can check.
+   Three things are asserted, and each is a defect that would otherwise ship in
+   silence. A **missing key** is invisible: xterm paints what it is not given in
+   its own defaults, so a scheme short of `brightCyan` is one wrong colour and no
+   error anywhere. A **misspelled hex** is the same — `#28A36` is not a colour and
+   the renderer falls back. And the **foreground against the background** is the
+   promise `MIN_CONTRAST` makes about every other board here; a scheme is not
+   exempt from it just because somebody else chose the two colours.
+   With no exception list, deliberately: Solarized Light's own body pair is
+   4.13:1, so it is not in the table, and a floor with one name written beside it
+   is a floor that grows a second. */
+const TERM_KEYS = Object.keys(termColours(DEFAULT, TERM_BOARD));
+for (const [key, scheme] of Object.entries(TERM_SCHEMES)) {
+  if (!scheme.label) problems.push(`terminal scheme ${key} has no label`);
+  const painted = termColours(DEFAULT, key);
+  for (const name of TERM_KEYS) {
+    if (!parseHex(painted[name])) {
+      problems.push(`terminal scheme ${key}: ${name} is ${painted[name] ?? 'missing'}, not a colour`);
+    }
+  }
+  const ratio = contrast(scheme.foreground, scheme.background);
+  if (ratio < MIN_CONTRAST) {
+    problems.push(
+      `terminal scheme ${key}: its text on its ground is ${ratio.toFixed(2)}:1, `
+      + `under the ${MIN_CONTRAST}:1 floor every other board here clears`,
+    );
+  }
+}
+
 /** Every `var(--x)` the stylesheet reads has to be a token somebody writes.
  *
  *  **`.addco:hover{color:var(--fg)}` shipped, and no token has ever been called
@@ -143,16 +174,18 @@ for (const name of undefinedTokens()) {
 }
 
 if (problems.length) {
-  console.error('the default theme and app.css disagree:\n');
+  console.error('the palettes do not hold:\n');
   for (const p of problems) console.error(`  ${p}`);
   console.error(
-    '\nboth describe one palette. Either the ratios in palette.js or the constants'
-    + '\nin app.css moved; make them agree rather than picking one.',
+    '\npalette.js and app.css describe one board, so make them agree rather than'
+    + '\npicking one. A terminal scheme answers only to itself: complete, spelled'
+    + '\nas colours, and readable on its own ground.',
   );
   process.exit(1);
 }
 
 console.log(
   `✔ the default theme reproduces :root (${Object.keys(derived).length - 1} tokens) `
-  + `and the shipped terminal (${Object.keys(SHIPPED_TERM).length})`,
+  + `and the shipped terminal (${Object.keys(SHIPPED_TERM).length}); `
+  + `${Object.keys(TERM_SCHEMES).length} terminal schemes hold`,
 );

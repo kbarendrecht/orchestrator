@@ -69,6 +69,10 @@ const THEME_DEF = {
   /** 1 is opaque. Floored well above zero: a board you cannot read is the problem
    *  transparency causes rather than the effect it is for. */
   opacity: 1,
+  /** Which palette the terminals paint in. `board` is the one derived from the
+   *  three colours above; every other value is a scheme taken whole, ground and
+   *  all — see [`Palette.TERM_SCHEMES`] for why that is not mixed like the rest. */
+  term: Palette.TERM_BOARD,
   /** Whether the colours are hand-tuned rather than a preset's.
    *
    *  **Stored, where the preset itself is derived.** [`currentPreset`] reads the
@@ -235,7 +239,7 @@ export function onThemeChange(/** @type {(theme: Theme) => void} */ fn) { themeL
  *  @typedef {{ bg: string, panel: string, text: string,
  *              ui: string, mono: string, code: string,
  *              termSize: number, diffSize: number, opacity: number,
- *              custom: boolean }} Theme
+ *              term: string, custom: boolean }} Theme
  */
 
 /** @returns {Theme} */
@@ -263,6 +267,7 @@ function loadTheme() {
     termSize: clampSize(got.termSize, THEME_DEF.termSize),
     diffSize: clampSize(got.diffSize, THEME_DEF.diffSize),
     opacity: clampOpacity(got.opacity),
+    term: Palette.validScheme(got.term) ? String(got.term) : THEME_DEF.term,
     /* `=== true` rather than a cast: this is the one field the store can hold a
        string or a number in and mean nothing by it, and a truthy `"false"` would
        unlock the colour wells on a board nobody hand-tuned. */
@@ -323,7 +328,8 @@ export function fontStack(/** @type {Role} */ role) {
  */
 function applyTheme() {
   const root = document.documentElement;
-  for (const [name, value] of Object.entries(Palette.tokens(theme, { opacity: theme.opacity }))) {
+  const board = Palette.tokens(theme, { opacity: theme.opacity });
+  for (const [name, value] of Object.entries(board)) {
     root.style.setProperty(name, value);
   }
   for (const [name, hue] of Object.entries(SIGNALS)) {
@@ -333,6 +339,14 @@ function applyTheme() {
   root.style.setProperty('--label', fontStack('ui'));
   root.style.setProperty('--mono', fontStack('mono'));
   root.style.setProperty('--code', fontStack('code'));
+  /* **What the box around a terminal is painted.** xterm paints its own ground and
+     nothing else, so the 8px inset `.termhost` holds would stay the *board's*
+     colour under a scheme that brought its own — a frame two shades off the pane
+     it surrounds, which reads as a bug rather than as a choice. A scheme's ground
+     is opaque, which is what the terminal already was: `allowTransparency` reaches
+     xterm's DOM renderer and not its WebGL one (see `Palette.termColours`). */
+  const scheme = Palette.TERM_SCHEMES[/** @type {keyof typeof Palette.TERM_SCHEMES} */ (theme.term)];
+  root.style.setProperty('--term-ground', scheme ? scheme.background : board['--ground']);
   /* The diff's own size, before `--fs` multiplies it — the stylesheet does that
      multiplication, so the three code blocks that share this size keep sharing it. */
   root.style.setProperty('--code-px', `${theme.diffSize}px`);
@@ -385,6 +399,7 @@ export function setTheme(/** @type {Partial<Theme>} */ patch) {
     termSize: clampSize(next.termSize, THEME_DEF.termSize),
     diffSize: clampSize(next.diffSize, THEME_DEF.diffSize),
     opacity: clampOpacity(next.opacity),
+    term: Palette.validScheme(next.term) ? next.term : THEME_DEF.term,
     custom: next.custom === true,
   };
   try {

@@ -237,7 +237,7 @@ function openTerm(checkout, target, parent) {
   const agentPane = target.startsWith('session:');
 
   const term = new Terminal({
-    theme: termColours(theme),
+    theme: termColours(theme, theme.term),
     // The theme's, not a literal: the terminal is the pane you read most, so a
     // font choice that skipped it would be a choice about labels.
     fontFamily: fontStack('mono'),
@@ -923,7 +923,7 @@ function applyScale() {
  */
 function applyTermTheme() {
   const px = termFontSize();
-  const colours = termColours(theme);
+  const colours = termColours(theme, theme.term);
   const family = fontStack('mono');
   for (const entry of terms.values()) {
     entry.term.options.theme = colours;

@@ -618,7 +618,7 @@ button.ctx-btn:hover{color:var(--text)}
    panel's own colour around a black terminal, which reads as grey padding. The
    other half of the seam is cleared in `term.js`, where xterm's hard-coded black
    is taken off the elements it owns. */
-.termhost{position:absolute;inset:8px 6px 8px 12px;transition:opacity .35s ease;background:var(--ground,var(--bg))}
+.termhost{position:absolute;inset:8px 6px 8px 12px;transition:opacity .35s ease;background:var(--term-ground,var(--bg))}
 .termhost[hidden]{display:none}
 /* A pane whose pty is not yet carrying live output: starting up before the first
    attach, or a dropped socket reconnecting. xterm keeps blinking its cursor from
@@ -1180,6 +1180,15 @@ body.row-resizing{cursor:row-resize;user-select:none}
   color:var(--faint-solid);font-size:calc(11.5px * var(--fs));
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:150px;
 }
+/* The eight normal hues on the scheme's own ground, beside the dropdown that
+   chooses it. A scheme's *name* is not a colour, and half of what this control
+   changes is the ground — so a row of dots on the wrong ground would preview the
+   smaller half. Sized to sit on one row with the select, like a `.thsample`. */
+.thswatch{
+  display:inline-flex;align-items:center;gap:3px;padding:4px 5px;
+  border:1px solid var(--line);border-radius:2px;
+}
+.thswatch i{width:6px;height:6px;border-radius:50%;display:block}
 .settings-select{
   padding:3px 6px;border:1px solid var(--line);border-radius:2px;
   background:var(--bg);color:var(--dim);
