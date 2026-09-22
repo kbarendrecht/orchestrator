@@ -2056,6 +2056,10 @@ pub struct SessionView {
     /// report up and then take it away again a second later, which is a worse thing
     /// to show than either state.
     pub handed_off: bool,
+    /// Waiting to be respawned on the `claude` installed now — see
+    /// [`Session::restart_queued`]. The row says so, because a session that
+    /// restarts itself the moment you finish a turn is a surprise otherwise.
+    pub restart_queued: bool,
 }
 
 impl SessionView {
@@ -2095,6 +2099,7 @@ impl SessionView {
             forked_from: s.forked_from,
             interrupted: s.interrupted,
             handed_off: s.fix_pr_on_exit,
+            restart_queued: s.restart_queued,
         }
     }
 }

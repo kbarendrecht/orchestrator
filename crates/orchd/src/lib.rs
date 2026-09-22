@@ -33,6 +33,7 @@ pub mod model;
 pub mod names;
 pub mod post;
 pub mod relocate;
+pub mod restart;
 pub mod review_api;
 pub mod spare;
 pub mod spawn;

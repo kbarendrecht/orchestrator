@@ -322,6 +322,26 @@ impl State {
         }
     }
 
+    /// Whether a respawn now costs nothing but the scrollback.
+    ///
+    /// **A question on screen is not idle, and that is the rule's one subtle
+    /// half.** `--resume` reopens the conversation at its prompt and does not
+    /// re-ask, so a restart under `AskedAQuestion` or `NeedsPermission` throws the
+    /// question away while the agent waits on the answer to it. `Working` and
+    /// `Starting` would lose the turn itself. Everything else has reached the
+    /// prompt: a finished turn, a pane nobody has typed into, a turn you cut
+    /// short, a red build, an error.
+    pub fn safe_to_restart(&self) -> bool {
+        match self {
+            State::YourTurn { reason, .. } => !matches!(
+                reason,
+                TurnReason::AskedAQuestion | TurnReason::NeedsPermission
+            ),
+            State::BuildFailing { .. } | State::Error { .. } => true,
+            State::Starting | State::Working | State::Exited | State::Archived { .. } => false,
+        }
+    }
+
     pub fn is_live(&self) -> bool {
         !matches!(self, State::Exited | State::Archived { .. })
     }
@@ -613,6 +633,17 @@ pub struct Session {
     /// `SessionView::handed_off`, because the overlay has to know a review ended
     /// this way before the run it handed to exists.
     pub fix_pr_on_exit: bool,
+    /// Respawn this session once it is safe to interrupt, so it picks up the
+    /// `claude` installed now rather than the one it started with.
+    ///
+    /// **On the record, and cleared by nothing.** The restart rebuilds the record
+    /// from [`Session::new`] under the same id, and that fresh record carries
+    /// `false` — so the flag is gone the moment the respawn lands, and a restart
+    /// that fails leaves it set for the watcher's next look.
+    ///
+    /// Not persisted, deliberately: a daemon that goes down respawns every
+    /// session at boot, which is the restart this was waiting to do.
+    pub restart_queued: bool,
 }
 
 impl Session {
@@ -648,6 +679,7 @@ impl Session {
             outside_ask: None,
             pending_prompt: None,
             fix_pr_on_exit: false,
+            restart_queued: false,
             // Always a real one, so an empty stored token can never match an
             // empty header.
             ask_token: crate::secret::random_token(),

@@ -389,6 +389,7 @@ crates/orchd/         the runtime core: the `orchd` library, what the daemon kno
   api.rs          HTTP surface and the origin/token guards
   model.rs        Workspace / Session / Process, State, ArchiveState
   relocate.rs     the swap, the move out of main, and the conversation that travels
+  restart.rs      respawn sessions in place on the installed claude, each when idle
   review_api.rs   the review overlay's routes: the threads, the proposals, one
                   thread's reply, the hand-off
   state.rs        the daemon's owned state, snapshots, reconcile, durable writes

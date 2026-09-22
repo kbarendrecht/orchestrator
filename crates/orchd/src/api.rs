@@ -1695,6 +1695,41 @@ pub async fn resume_session(
     revive(&app, id).await
 }
 
+/// What a restart route may be told. Optional, for the reason [`AdoptOutside`]
+/// gives: a bare `curl -X POST` should get the ordinary answer.
+#[derive(Default, Deserialize)]
+pub struct RestartAsk {
+    /// Take the session back out of the queue instead.
+    #[serde(default)]
+    pub cancel: bool,
+}
+
+/// Respawn one session on the `claude` installed now, once it is safe to.
+///
+/// Answers at once with what was queued; [`crate::restart::run_due`] does the
+/// respawn, now if the session is at its prompt and when its turn ends if not.
+pub async fn restart_session(
+    State(app): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    body: Option<Json<RestartAsk>>,
+) -> ApiResult<serde_json::Value> {
+    if body.is_some_and(|Json(b)| b.cancel) {
+        crate::restart::cancel(&app, id).await?;
+        return Ok(Json(json!({ "cancelled": true })));
+    }
+    Ok(Json(serde_json::to_value(
+        crate::restart::queue(&app, Some(id)).await?,
+    )?))
+}
+
+/// The same for every live session in this checkout — what a `mise up` of Claude
+/// Code wants, without quitting the app.
+pub async fn restart_sessions(State(app): State<Arc<AppState>>) -> ApiResult<serde_json::Value> {
+    Ok(Json(serde_json::to_value(
+        crate::restart::queue(&app, None).await?,
+    )?))
+}
+
 /// Look again for conversations this daemon did not start.
 ///
 /// The archive fold asks for this when you open it, because the poller behind

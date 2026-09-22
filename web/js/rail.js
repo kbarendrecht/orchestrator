@@ -1548,6 +1548,13 @@ function sessionRow(/** @type {import('../snapshot').SessionView} */ s, /** @typ
   // `handle-review` do very different things to it.
   if (s.pass) sub.appendChild(el('span', 'sess-cmd', s.pass.command));
   sub.appendChild(el('span', 'sess-state ' + stateClass(s), stateLabel(s)));
+  /* **Said on the row, because the restart is deferred.** A session queued
+     mid-turn respawns the moment its turn ends, and without this the pane you are
+     watching clears and reattaches for no reason you can see. */
+  if (s.restart_queued) {
+    const q = sub.appendChild(el('span', 'sess-restart', 'restarts when idle'));
+    q.title = 'Respawns on the installed Claude Code once this turn ends — cancel it from the menu';
+  }
   // The waiting duration is the number to optimise down (§2). A start has a
   // clock for a different reason: the daemon cuts the worktree and runs the
   // repo's create and link hooks before the agent says anything, which is ten
@@ -1639,6 +1646,12 @@ function sessionRow(/** @type {import('../snapshot').SessionView} */ s, /** @typ
     // where the daemon refuses it — mid-turn an escape interrupts the turn, and at
     // a question or a permission prompt it answers instead of rewinding.
     ['rewind', null, isRewindable(s) ? () => rewindSession(s) : null],
+    /* On the installed Claude Code, without quitting the app. One item that
+       reads as what it will do: queued, it takes the restart back. Greyed on a
+       closed row, where the thing you want is a resume. */
+    s.restart_queued
+      ? ['cancel the restart', null, () => restartSession(s, true)]
+      : ['restart', null, s.alive ? () => restartSession(s, false) : null],
     ['copy id', null, () => copyId(s)],
     // The worktree, not the session: the row is the only place a worktree is
     // visible, so its workspace-level action lives here too.
@@ -1679,6 +1692,20 @@ const isRewindable = (/** @type {import('../snapshot').SessionView} */ s) =>
  *
  *  Selects first, because the picker draws in the pane and pressing this on a row
  *  you cannot see would put a modal somewhere out of sight. */
+/** Respawn a session on the `claude` installed now, or take that back.
+ *
+ *  The daemon queues rather than restarts: a session mid-turn goes when its turn
+ *  ends, so the toast says which of the two happened rather than "restarted". */
+async function restartSession(/** @type {import('../snapshot').SessionView} */ s, /** @type {boolean} */ cancel) {
+  try {
+    const r = await callFor(s.id, `/api/session/${s.id}/restart`, cancel ? { cancel: true } : {});
+    if (cancel) toast('restart cancelled');
+    else toast(r.now ? 'restarting on the installed Claude Code' : 'restarts when this turn ends');
+  } catch (e) {
+    toast(reason(e), true);
+  }
+}
+
 async function rewindSession(/** @type {import('../snapshot').SessionView} */ s) {
   setSelected(s.id);
   try {

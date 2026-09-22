@@ -533,6 +533,9 @@ button.ctx-btn:hover{color:var(--text)}
 .sess-state{color:var(--dim)}
 .sess-state.blocked{color:var(--attn)}
 .sess-state.pr{color:var(--work)}
+/* A restart waiting on the turn: the work colour, because it is about to act on
+   this row, not asking you to. */
+.sess-restart{color:var(--work);margin-left:6px}
 .sess-state.build{color:var(--bad)}
 .sess-pad{height:11px}
 .sess-id{font-family:var(--mono);font-size:calc(9px * var(--fs));color:var(--faint-solid);flex:0 0 auto}

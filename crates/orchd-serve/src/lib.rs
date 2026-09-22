@@ -508,6 +508,7 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
     start_head_poller(app.clone());
     start_worktree_reaper(app.clone());
     start_external_poller(app.clone());
+    start_restart_watcher(app.clone());
     /* The spare pool, re-attached to the worktrees `adopt_existing_worktrees`
     just rediscovered. Spawned for the same reason the sweep above is: the
     reconcile is a map lookup, but the refill behind it is a `git worktree add`
@@ -645,6 +646,8 @@ fn daemon_router(app: Arc<AppState>) -> Router {
         )
         .route("/api/session/:id/rewind", post(api::rewind_session))
         .route("/api/session/:id/resume", post(api::resume_session))
+        .route("/api/session/:id/restart", post(api::restart_session))
+        .route("/api/sessions/restart", post(api::restart_sessions))
         .route("/api/external/refresh", post(api::refresh_external))
         .route("/api/external/:id/resume", post(api::resume_external))
         .route("/api/sessions/nudge", post(api::nudge_sessions))
@@ -1598,6 +1601,31 @@ fn start_external_poller(app: Arc<AppState>) {
         loop {
             app.rescan_external().await;
             tokio::time::sleep(interval).await;
+        }
+    });
+}
+
+/// Respawn the sessions queued for a restart, as each becomes safe to.
+///
+/// **Driven by the snapshot stream, not a clock.** A snapshot goes out on every
+/// hook and every state change, so the `Stop` that makes a queued session safe is
+/// also the event that wakes this — the restart follows the turn by milliseconds,
+/// and an idle daemon with nothing queued pays one read lock per snapshot.
+///
+/// Here rather than in `state`, because `state` may not import `spawn` and the
+/// respawn is a spawn.
+fn start_restart_watcher(app: Arc<AppState>) {
+    tokio::spawn(async move {
+        let mut events = app.events.subscribe();
+        loop {
+            match events.recv().await {
+                // A lagged receiver missed snapshots, not work: the queue is on the
+                // records, so any wake-up is as good as the one it missed.
+                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    orchd::restart::run_due(&app).await;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+            }
         }
     });
 }
