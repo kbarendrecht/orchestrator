@@ -205,19 +205,42 @@ fn small_ignored_dirs(root: &Path, exclude: Option<&str>) -> Vec<std::path::Path
     search. That is the leak `exclude` exists to prevent, and this file's own
     test asks both ways of one tempdir microseconds apart, well inside the
     window. */
-    type Key = (std::path::PathBuf, Option<String>);
-    type Remembered = std::collections::HashMap<Key, (std::time::Instant, Vec<std::path::PathBuf>)>;
     static SEEN: std::sync::OnceLock<Mutex<Remembered>> = std::sync::OnceLock::new();
-    let seen = SEEN.get_or_init(|| Mutex::new(Remembered::new()));
+    remembered(&SEEN, root, exclude, || {
+        discover_small_ignored_dirs(root, exclude)
+    })
+}
+
+/// One tree's answer to one question, for [`IGNORED_TTL`].
+type Key = (std::path::PathBuf, Option<String>);
+type Remembered = std::collections::HashMap<Key, (std::time::Instant, Vec<std::path::PathBuf>)>;
+
+/// The memo both ignore lists share: ask once per tree, trust it for a while.
+///
+/// Written once because it is asked twice — the small ignored directories and the
+/// loose ignored files are two git questions with the same cost, the same key and
+/// the same reason to be cached. Each caller brings its own `static`, so the two
+/// answers never share a slot.
+///
+/// The key carries `exclude` as well as the root for the reason
+/// [`small_ignored_dirs`] gives: main excludes its worktrees and a worktree
+/// excludes nothing, so one tree is asked two different questions.
+fn remembered(
+    store: &'static std::sync::OnceLock<Mutex<Remembered>>,
+    root: &Path,
+    exclude: Option<&str>,
+    fresh: impl FnOnce() -> Vec<std::path::PathBuf>,
+) -> Vec<std::path::PathBuf> {
+    let seen = store.get_or_init(|| Mutex::new(Remembered::new()));
     let key: Key = (root.to_path_buf(), exclude.map(str::to_string));
     if let Ok(map) = seen.lock() {
-        if let Some((at, dirs)) = map.get(&key) {
+        if let Some((at, found)) = map.get(&key) {
             if at.elapsed() < IGNORED_TTL {
-                return dirs.clone();
+                return found.clone();
             }
         }
     }
-    let found = discover_small_ignored_dirs(root, exclude);
+    let found = fresh();
     if let Ok(mut map) = seen.lock() {
         // Nothing else evicts a workspace that is gone, so the answers that have
         // expired are dropped on the way past rather than kept for the life of
@@ -227,6 +250,88 @@ fn small_ignored_dirs(root: &Path, exclude: Option<&str>) -> Vec<std::path::Path
     }
     found
 }
+
+/// The files git ignores that sit outside any ignored directory.
+///
+/// **A `.gitignore` names two different things and only one of them is volume.**
+/// An ignored *directory* can hold a million files, which is what
+/// [`small_ignored_dirs`] measures before letting one in. An ignored *file* costs
+/// one row — and it is often the file you edit most: `.env`, `mise.local.toml`,
+/// `compose.override.yaml`, `config/environments/local.yml`. Shift-Shift could
+/// not find any of them, which is how this arrived.
+///
+/// Measured before it was written, because the cost is the whole argument: on the
+/// 18,924-file monorepo this is developed against it is **15 files**, and in
+/// `orchd`'s own tree **one**. Directories are still refused, so `node_modules`
+/// and `target` are untouched by this.
+///
+/// **`--directory` is what makes it 15 rather than 3 million.** git collapses a
+/// wholly ignored directory to one entry ending in `/`, and lists a file
+/// individually only when its parent is *not* wholly ignored — which is exactly
+/// the set this wants. Everything ending in `/` is dropped here; the directories
+/// are [`small_ignored_dirs`]'s question, asked with its own cap.
+fn loose_ignored_files(root: &Path, exclude: Option<&str>) -> Vec<std::path::PathBuf> {
+    static SEEN: std::sync::OnceLock<Mutex<Remembered>> = std::sync::OnceLock::new();
+    remembered(&SEEN, root, exclude, || {
+        let argv: Vec<String> = [
+            "git",
+            "ls-files",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "--directory",
+            "-z",
+        ]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+        let out = match orchd_base::proc::run_bounded_with_input(
+            root,
+            IGNORED_GIT_TIMEOUT,
+            &argv,
+            "asking git which files are ignored",
+            None,
+            &[],
+            None,
+        ) {
+            Ok(out) => out,
+            Err(e) => {
+                // Not fatal, for the reason `ask_git_which_are_ignored` gives: the
+                // search still answers, it just cannot see these files.
+                tracing::debug!("could not list the ignored files: {e:#}");
+                return Vec::new();
+            }
+        };
+        let mut found: Vec<std::path::PathBuf> = String::from_utf8_lossy(&out.stdout)
+            .split('\0')
+            .filter(|l| !l.is_empty())
+            // A directory is the other question, and git marks one with a slash.
+            .filter(|l| !l.ends_with('/'))
+            .filter(|l| match exclude {
+                Some(prefix) => !l.starts_with(prefix),
+                None => true,
+            })
+            .map(|l| root.join(l))
+            .collect();
+        /* **A cap, because 15 is this monorepo's number and not a contract.** The
+        repo in front of you is the only live test there is, and a tree that
+        ignores generated sources file by file could name thousands — which would
+        push real files out of `MAX_PATHS` the same way an unfiltered walk does.
+        Well above both measurements, so it is a refusal nobody meets by accident. */
+        if found.len() > LOOSE_IGNORED_CAP {
+            tracing::debug!(
+                "{} loose ignored files; searching the first {LOOSE_IGNORED_CAP}",
+                found.len(),
+            );
+            found.sort();
+            found.truncate(LOOSE_IGNORED_CAP);
+        }
+        found
+    })
+}
+
+/// How many loose ignored files may be searched. See [`loose_ignored_files`].
+const LOOSE_IGNORED_CAP: usize = 500;
 
 /// How long the answer above is trusted. Long enough that a burst of searches
 /// pays for it once, short enough that a `.gitignore` edit is picked up while you
@@ -423,6 +528,34 @@ fn subtree_fits(at: &Path, cap: usize) -> bool {
 /// because a path filter is the caller's question rather than the repo's.
 fn ignored_walkers(root: &Path, exclude: Option<&str>, glob: Option<&str>) -> Vec<WalkBuilder> {
     let mut out = Vec::new();
+    /* **A file has to be matched against the glob here, where a directory does
+    not.** The doc above says a root the crate is given is not itself filtered —
+    for a directory that is harmless, because the files it yields are its
+    children and those are matched. A file root *is* the whole yield, so
+    handing it over unasked would return `.env` for a search filtered to
+    `src/`. */
+    let filter = glob.map(as_glob).filter(|g| !g.is_empty()).and_then(|g| {
+        let mut ov = OverrideBuilder::new(root);
+        ov.add(&g).ok()?;
+        ov.build().ok()
+    });
+    for at in loose_ignored_files(root, exclude) {
+        if filter
+            .as_ref()
+            .is_some_and(|ov| ov.matched(&at, false).is_ignore())
+        {
+            continue;
+        }
+        let mut w = WalkBuilder::new(&at);
+        w.hidden(false)
+            .threads(0)
+            .git_ignore(false)
+            .git_global(false)
+            .git_exclude(false)
+            .ignore(false)
+            .parents(false);
+        out.push(w);
+    }
     for at in small_ignored_dirs(root, exclude) {
         let mut w = WalkBuilder::new(&at);
         w.hidden(false)
@@ -922,6 +1055,66 @@ mod tests {
     /// threw away exactly the case the feature exists for, one level deeper: a
     /// notes folder under an ignored build root. Found by review, reproduced
     /// here, and it failed in silence — no truncation flag, the file simply gone.
+    /// The report this arrived as: Shift-Shift could not find `.env`.
+    ///
+    /// **The file is the case, not the directory.** `small_ignored_dirs` lets an
+    /// ignored *directory* in when it is small enough; an ignored *file* had no
+    /// route at all, so the one file a developer edits most was the one the
+    /// finder could not name. The heap is here to hold the other half: a
+    /// directory git ignores stays out however many loose files are let in.
+    #[test]
+    fn an_ignored_file_is_found_and_an_ignored_directory_is_still_not() {
+        let dir = orchd_base::testutil::scratch_repo("search-ignored-file");
+        fs::write(dir.join(".gitignore"), ".env\nheap/\n").unwrap();
+        fs::write(dir.join(".env"), "TOKEN=the needle is here\n").unwrap();
+        fs::create_dir_all(dir.join("heap")).unwrap();
+        for i in 0..(IGNORED_CAP + 5) {
+            fs::write(dir.join(format!("heap/f{i:05}.txt")), "the needle too\n").unwrap();
+        }
+
+        let listed = paths(&dir, None).unwrap().paths;
+        assert!(listed.contains(&".env".to_string()), "{listed:?}");
+        assert!(
+            !listed.iter().any(|p| p.starts_with("heap/")),
+            "an ignored directory over the cap is still refused",
+        );
+
+        // The content search answers about the same files, which is the whole
+        // reason this is one walk rather than a rule per mode.
+        let found = find(&dir, "needle");
+        let got: Vec<&str> = found.hits.iter().map(|h| h.path.as_str()).collect();
+        assert_eq!(got, vec![".env"], "the two modes agree");
+    }
+
+    /// A path filter is the caller's question, and it has to reach these too.
+    ///
+    /// **The one thing a file root does not get for free.** The `ignore` crate
+    /// never filters a root it is handed, and a file root *is* the whole yield —
+    /// so without the check in `ignored_walkers` a search narrowed to `src/`
+    /// answered with `.env` anyway.
+    #[test]
+    fn a_path_filter_still_refuses_an_ignored_file() {
+        let dir = orchd_base::testutil::scratch_repo("search-ignored-file-glob");
+        fs::write(dir.join(".gitignore"), ".env\n").unwrap();
+        fs::write(dir.join(".env"), "TOKEN=the needle is here\n").unwrap();
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(dir.join("src/a.rs"), "the needle is here\n").unwrap();
+
+        let q = Query {
+            pattern: "needle".into(),
+            // With the slash, which is what makes it a directory — see `as_glob`.
+            glob: Some("src/".into()),
+            ..Query::default()
+        };
+        let got: Vec<String> = search(&dir, None, &q)
+            .unwrap()
+            .hits
+            .iter()
+            .map(|h| h.path.clone())
+            .collect();
+        assert_eq!(got, vec!["src/a.rs".to_string()], "the filter holds");
+    }
+
     #[test]
     fn a_small_ignored_directory_inside_a_big_one_is_still_searched() {
         let dir = orchd_base::testutil::scratch_repo("search-nested-ignored");

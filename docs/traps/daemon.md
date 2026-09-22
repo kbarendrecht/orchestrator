@@ -375,7 +375,7 @@ inherit is a whole cut.
 rather than always, so what it pins is that both paths can be driven at once and
 both trees arrive; this entry is the rest of the evidence.
 
-## The search honours `.gitignore`, and a small ignored directory is searched anyway.
+## The search honours `.gitignore`, and two kinds of ignored path are searched anyway.
 **The default is right and it hides the one directory an agent writes into.**
 Measured on the monorepo this is developed against: 19,043 files with the ignore
 rules honoured, **3.2 million** without — and `MAX_PATHS` is 20,000, so an
@@ -383,6 +383,31 @@ unfiltered walk would not merely be slow, it would push every real file out of a
 list that is capped. That is the whole argument for honouring it. What it costs is
 that a repo's own notes directory — `.plan` in the repo this was reported against,
 25 files, ignored on purpose — could not be found by either half of the overlay.
+
+**A file is the second kind, and it had no route at all.** `small_ignored_dirs`
+weighs a *directory*; an ignored **file** costs one row and is often the file you
+edit most. In the monorepo this is developed against that is `.env`,
+`mise.local.toml`, `compose.override.yaml` and `config/environments/local.yml`,
+and Shift-Shift could not find one of them — which is how `loose_ignored_files`
+arrived. Measured before it was written, because the
+cost is the argument: **15 files** on the monorepo and **one** in `orchd`'s own
+tree. `git ls-files --others --ignored --exclude-standard --directory` is what
+makes it 15 rather than 3.2 million — git collapses a wholly ignored directory to
+one entry ending in `/`, and lists a file on its own only when its parent is not
+wholly ignored, which is exactly the set wanted. Directories are still refused, so
+`node_modules` and `target` are untouched by it.
+
+**A file root needs the path filter applied by hand, and a directory root does
+not.** The crate never filters a root it is handed. For a directory that is
+harmless — what it *yields* is children, and those are matched. A file root is the
+whole yield, so without the check in `ignored_walkers` a search narrowed to `src/`
+answered with `.env` anyway. That is the half a test drives, and dropping the
+guard fails exactly it.
+
+**The cap is 500 and nobody meets it by accident.** 15 is this monorepo's number,
+not a contract: a tree that ignores generated sources file by file could name
+thousands and push real files out of `MAX_PATHS`, which is the failure honouring
+`.gitignore` exists to prevent.
 
 **Size is the signal, and only after the ignore verdict.** `.plan` is 25 files and
 `.idea` is 16, while `node_modules` is 143,465, `vendor` 30,749 and `var` 22,656:

@@ -362,7 +362,7 @@ together: same entries, same order, same groups.
 - A resume rebuilds a session's environment, so anything the daemon put there has to be re-handed.
 - A spare worktree is a workspace with no session, and that is the shape the reaper hunts.
 - Two `git worktree add`s at once fail on the config lock, and the spare pool made that reachable.
-- The search honours `.gitignore`, and a small ignored directory is searched anyway.
+- The search honours `.gitignore`, and two kinds of ignored path are searched anyway.
 
 ### The e2e flows
 

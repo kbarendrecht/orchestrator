@@ -48,6 +48,10 @@ const ABSENT = new Map([
   ['prompt.rs', 'deleted with the prompt-to-skill conversion'],
   ['25-host.mjs', 'moved to tests/host_checkouts.rs'],
   ['rust-toolchain.toml', 'deliberately not here — mise overrides it'],
+  // The monorepo's files, named because the measurement was taken there.
+  ['mise.local.toml', "the monorepo's, in the loose-ignored-files measurement"],
+  ['compose.override.yaml', "the monorepo's, in the loose-ignored-files measurement"],
+  ['config/environments/local.yml', "the monorepo's, in the loose-ignored-files measurement"],
   // Not a file at all.
   ['/vendor/addon-webgl.js', 'a served route'],
   ['skills/<name>/SKILL.md', 'a shape, not a path'],
