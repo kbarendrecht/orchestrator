@@ -2,10 +2,10 @@
 // over a websocket. The DOM renderer is deliberate under WebKitGTK, and only
 // there — see the renderer comment below, and CLAUDE.md.
 
-import { $, CHECKOUTS, CHROME, IS_MAC, copyText, el, mark, note, reason, reportBoot, selected, terms, termKey, typingElsewhere, uiScale, wheelScale } from './core.js';
+import { $, CHECKOUTS, CHROME, IS_MAC, callOn, copyText, el, mark, note, reason, reportBoot, selected, terms, termKey, typingElsewhere, uiScale, wheelScale } from './core.js';
 import { fontStack, theme } from './theme.js';
 import { termColours } from './palette.js';
-import { pathsIn } from './pathlink.js';
+import { linksIn, pathsIn } from './pathlink.js';
 
 
 const THEME = {
@@ -107,12 +107,32 @@ function pathUnder(term, host, ev) {
      every line with a wide character in it. */
   const at = found.map.findIndex((c) => c.y === y && c.x === col + 1);
   if (at < 0) return null;
+  // Paths, not `linksIn`: this answers the right-click menu, whose verbs are all
+  // about a file. A URL under the pointer is not one of them.
   return pathsIn(found.text).find((p) => at >= p.start && at < p.end) ?? null;
 }
 
-/** Offer the paths in a row as links.
+/** Hand a URL to the daemon, which hands it to the platform browser.
  *
- *  **A plain click opens them, and the underline follows the pointer**, which is
+ *  **Not `window.open`, and not a `target="_blank"` anchor.** This page is a
+ *  webview with no IPC and no shell behind it, so both of those go nowhere — the
+ *  daemon is the local process that can spawn `open` or `xdg-open`, and
+ *  `POST /api/open` is the route the review queue already uses. It accepts
+ *  `http(s)` and nothing else, which is why `urlsIn` offers nothing else.
+ *
+ *  The refusal is said out loud rather than swallowed: a click that silently does
+ *  nothing is the defect the review queue's own logging line was added for.
+ */
+function openUrl(/** @type {import('./core.js').Target} */ checkout, /** @type {string} */ url) {
+  /* This pane's own checkout, not the selected one: a URL printed in a background
+     checkout's terminal is that checkout's, and `call` would send it to whichever
+     daemon the rail happens to be pointing at. */
+  callOn(checkout, '/api/open', { url }).catch((e) => note(reason(e)));
+}
+
+/** Offer the paths and URLs in a row as links.
+ *
+ *  **A plain click follows them, and the underline follows the pointer**, which is
  *  what a link is everywhere else. It was behind the app's modifier first, on the
  *  argument that a terminal full of prose should not underline itself; the
  *  argument lost, because the whole point is to click what an agent just printed
@@ -135,19 +155,23 @@ function pathUnder(term, host, ev) {
 function linkPaths(term, checkout, target) {
   term.registerLinkProvider({
     provideLinks(/** @type {number} */ y, /** @type {(l: any) => void} */ callback) {
-      if (!pathClick) return callback(undefined);
       const found = logicalLine(term, y);
       if (!found) return callback(undefined);
       const { text, from, map } = found;
-      const links = pathsIn(text).map((p) => ({
-        text: p.path,
+      /* A path needs somewhere to open, and that is wired at boot; a URL needs only
+         the daemon. So the gate is per hit rather than over the whole provider —
+         it used to return nothing at all, which would now cost the URLs too. */
+      const hits = linksIn(text).filter((h) => h.kind === 'url' || pathClick);
+      const links = hits.map((h) => ({
+        text: h.kind === 'url' ? h.url : h.path,
         // `end` is the last cell rather than one past it, which is xterm's own
         // convention — read from the OSC-8 provider in the vendored build.
-        range: { start: cell(p.start, map, from), end: cell(p.end - 1, map, from) },
+        range: { start: cell(h.start, map, from), end: cell(h.end - 1, map, from) },
         activate: (/** @type {MouseEvent} */ ev) => {
           ev.preventDefault();
+          if (h.kind === 'url') { openUrl(checkout, h.url); return; }
           pathClick?.({
-            checkout: checkout.path, target, path: p.path, line: p.line, last: p.last, col: p.col, ev,
+            checkout: checkout.path, target, path: h.path, line: h.line, last: h.last, col: h.col, ev,
           });
         },
       }));

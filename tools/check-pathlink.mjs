@@ -12,7 +12,7 @@
 // half of every sentence Claude Code writes, and an affordance that is wrong four
 // times out of five is one people learn to ignore.
 
-import { pathsIn } from '../web/js/pathlink.js'
+import { linksIn, pathsIn } from '../web/js/pathlink.js'
 
 let failed = false
 const check = (ok, what) => {
@@ -91,6 +91,53 @@ check(
   many.length === 2 && many[0].path === 'web/js/a.js' && many[1].line === 4,
   `two paths in one line, got ${JSON.stringify(many.map((m) => m.path))}`,
 )
+
+// --- and the URLs, which the daemon opens rather than the file pane -----------
+
+/* **The path scanner cannot do this job, and that is the whole reason `urlsIn`
+   exists.** A run stops at the first character a path cannot hold, so `?`, `=`
+   and `#` end it — and a URL truncated at its query string is a different page,
+   not a shorter one. These cases are the ones that would each have shipped a
+   link pointing somewhere nobody asked for. */
+
+/** The one link in `text`, as `kind:what`, or what went wrong. */
+const link = (text) => {
+  const found = linksIn(text)
+  if (found.length !== 1) return `${found.length} links`
+  const f = found[0]
+  return `${f.kind}:${f.kind === 'url' ? f.url : f.path}`
+}
+
+/** What a click would underline, which is what decides where the link ends. */
+const drawn = (text) => {
+  const [f] = linksIn(text)
+  return f ? text.slice(f.start, f.end) : null
+}
+
+check(link('see https://claude.ai/artifact/YMEg3A for it') === 'url:https://claude.ai/artifact/YMEg3A',
+  'a URL in a sentence is one link')
+check(link('http://127.0.0.1:7788/api/state') === 'url:http://127.0.0.1:7788/api/state',
+  'a port is not a line number')
+check(link('open https://github.com/a/b/pull/3?diff=split now')
+  === 'url:https://github.com/a/b/pull/3?diff=split', 'the query string is part of it')
+check(drawn('see https://example.com/a.') === 'https://example.com/a',
+  'a full stop ending the sentence is not part of the URL')
+check(drawn('(https://example.com/a).') === 'https://example.com/a',
+  'nor is the bracket the prose opened')
+check(drawn('https://en.wikipedia.org/wiki/Bar_(unit)') === 'https://en.wikipedia.org/wiki/Bar_(unit)',
+  'but a bracket the URL opened is')
+
+/* The overlap, which is the defect this merge exists for: the run scanner finds
+   `a.js` inside the query string, and it passes every path test there is. */
+const mixed = linksIn('https://x/y?file=a.js and web/js/find.js:12')
+check(
+  mixed.length === 2 && mixed[0].kind === 'url' && mixed[1].kind === 'path',
+  `a URL beats a path inside it, got ${JSON.stringify(mixed.map((m) => m.kind))}`,
+)
+
+check(linksIn('ftp://nope.example.com/a').length === 0,
+  'a scheme `/api/open` refuses is never offered')
+check(linksIn('https:// and nothing').length === 0, 'a scheme with no host is not a link')
 
 console.log(failed ? '\ncheck-pathlink: FAILED' : '\ncheck-pathlink: ok')
 process.exit(failed ? 1 : 0)

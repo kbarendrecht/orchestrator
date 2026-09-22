@@ -1,4 +1,4 @@
-// The paths inside a line of terminal output, as offsets.
+// The paths and URLs inside a line of terminal output, as offsets.
 //
 // **Its own module because it is the part with cases**, and a pure string
 // function is one a node script can drive without a browser: `tools/check-pathlink.mjs`
@@ -26,11 +26,15 @@ const AROUND = /^[`'"([{<]+|[`'"),.;:!?\]}>]+$/g;
  *  path *and* its suffix — the whole thing is what you click. `last` is the end of
  *  a `:124-129` range and 0 when there is not one.
  *
+ *  A URL is not a path and never comes back from here — [`urlsIn`] is the other
+ *  half, and [`linksIn`] is what a caller offering both wants.
+ *
  *  @param {string} text
- *  @returns {{ start: number, end: number, path: string, line: number, last: number,
- *              col: number }[]}
+ *  @returns {{ kind: 'path', start: number, end: number, path: string, line: number,
+ *              last: number, col: number }[]}
  */
 export function pathsIn(text) {
+  /** @type {{ kind: 'path', start: number, end: number, path: string, line: number, last: number, col: number }[]} */
   const out = [];
   let i = 0;
   while (i < text.length) {
@@ -38,7 +42,7 @@ export function pathsIn(text) {
     let j = i;
     while (j < text.length && isRun(text[j] ?? '')) j++;
     const found = read(text.slice(i, j));
-    if (found) out.push({ ...found, start: i + found.start, end: i + found.end });
+    if (found) out.push({ ...found, kind: 'path', start: i + found.start, end: i + found.end });
     i = j;
   }
   return out;
@@ -105,4 +109,77 @@ function looksLikeAPath(s) {
      of it — `main.c` keeps working, `a.c` is lost, and losing `a.c` is cheaper
      than underlining every "e.g." an agent writes. */
   return (named[1] ?? '').length > 1 || (named[2] ?? '').length > 1;
+}
+
+/** A URL the daemon will hand to the browser, and where it sits.
+ *
+ *  **`http` and `https` only, because `/api/open` accepts nothing else.** Offering
+ *  `ftp://` or `mailto:` would draw an underline the daemon then refuses, and a
+ *  link that does nothing is worse than text that never looked like one.
+ *
+ *  **Its own scan rather than the run scanner above**, and that is the whole
+ *  reason this is not three lines inside [`pathsIn`]. A run stops at the first
+ *  character `PATH_CHAR` does not hold, so `?`, `=`, `&`, `#` and `%` all end it —
+ *  and a URL truncated at its query string is not a shorter URL, it is a different
+ *  page. This takes everything up to whitespace and then gives the punctuation
+ *  back.
+ *
+ *  @param {string} text
+ *  @returns {{ kind: 'url', start: number, end: number, url: string }[]}
+ */
+export function urlsIn(text) {
+  /** @type {{ kind: 'url', start: number, end: number, url: string }[]} */
+  const out = [];
+  for (const m of text.matchAll(URL_RUN)) {
+    const url = trimTail(m[0]);
+    // A scheme and nothing after it is not somewhere to go.
+    if (!/^https?:\/\/[^\s/]/i.test(url)) continue;
+    out.push({ kind: 'url', url, start: m.index ?? 0, end: (m.index ?? 0) + url.length });
+  }
+  return out;
+}
+
+/** Whitespace and the few characters that can only be markup around a URL, never
+ *  in one. The brackets and quotes are left to [`trimTail`], which knows which end
+ *  they are on. */
+const URL_RUN = /https?:\/\/[^\s<>"'`]+/gi;
+/** Punctuation a sentence puts after a URL. Stripped repeatedly, from the end
+ *  only — a leading `(` is never in the match, because the scan starts at `http`. */
+const URL_TAIL = /[.,;:!?'"`>\]}]+$/;
+
+/** A matched run with the sentence's own punctuation given back.
+ *
+ *  **The closing parenthesis is the one that needs counting.** `(see https://x/a)`
+ *  ends in a `)` that belongs to the prose, and
+ *  `https://en.wikipedia.org/wiki/Bar_(unit)` ends in one that belongs to the URL.
+ *  The rule that tells them apart is whether the URL opened a parenthesis of its
+ *  own, which is what every linkifier worth copying does.
+ */
+function trimTail(/** @type {string} */ run) {
+  let url = run.replace(URL_TAIL, '');
+  const count = (/** @type {string} */ ch) => url.split(ch).length - 1;
+  while (url.endsWith(')') && count(')') > count('(')) {
+    // Again after the bracket, for `(https://x/a).` — the dot was behind the `)`.
+    url = url.slice(0, -1).replace(URL_TAIL, '');
+  }
+  return url;
+}
+
+/** Everything in `text` worth offering as a link, in the order it is written.
+ *
+ *  **A URL wins every overlap, and that is not a tie-breaker — it is the fix for a
+ *  real defect.** The run scanner sees `v` and `a.js` inside
+ *  `https://x/y?file=a.js`, and `a.js` passes every path test there is: without
+ *  this the middle of a URL underlines as a file that does not exist, while the
+ *  URL around it does not underline at all.
+ *
+ *  @param {string} text
+ *  @returns {({ kind: 'path', start: number, end: number, path: string, line: number,
+ *               last: number, col: number }
+ *           | { kind: 'url', start: number, end: number, url: string })[]}
+ */
+export function linksIn(text) {
+  const urls = urlsIn(text);
+  const paths = pathsIn(text).filter((p) => !urls.some((u) => p.start < u.end && u.start < p.end));
+  return [...urls, ...paths].sort((a, b) => a.start - b.start);
 }
