@@ -6,6 +6,7 @@
   "build": {},
   "app": {
     "macOSPrivateApi": true,
+    "enableGTKAppId": true,
     "windows": [],
     "security": {
       "csp": null
