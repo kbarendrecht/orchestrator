@@ -509,6 +509,7 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
     start_worktree_reaper(app.clone());
     start_external_poller(app.clone());
     start_restart_watcher(app.clone());
+    orchd::update::start_stale_poller(app.clone());
     /* The spare pool, re-attached to the worktrees `adopt_existing_worktrees`
     just rediscovered. Spawned for the same reason the sweep above is: the
     reconcile is a map lookup, but the refill behind it is a `git worktree add`

@@ -2060,6 +2060,10 @@ pub struct SessionView {
     /// [`Session::restart_queued`]. The row says so, because a session that
     /// restarts itself the moment you finish a turn is a surprise otherwise.
     pub restart_queued: bool,
+    /// Running an older Claude Code than a new session here would get — see
+    /// [`Session::agent_stale`]. What the agent bar counts when it offers to
+    /// restart the sessions an upgrade left behind.
+    pub agent_stale: bool,
 }
 
 impl SessionView {
@@ -2100,6 +2104,7 @@ impl SessionView {
             interrupted: s.interrupted,
             handed_off: s.fix_pr_on_exit,
             restart_queued: s.restart_queued,
+            agent_stale: s.agent_stale,
         }
     }
 }

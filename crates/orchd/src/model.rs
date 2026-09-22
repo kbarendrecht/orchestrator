@@ -644,6 +644,17 @@ pub struct Session {
     /// Not persisted, deliberately: a daemon that goes down respawns every
     /// session at boot, which is the restart this was waiting to do.
     pub restart_queued: bool,
+    /// The file this session's agent was executed from, symlinks resolved — see
+    /// [`orchd_base::pty::which`]. `None` until the pty exists.
+    ///
+    /// Not persisted: every spawn records its own, and a record restored from disk
+    /// is respawned before anything asks.
+    pub agent_exe: Option<std::path::PathBuf>,
+    /// Whether that file is no longer what a new spawn here would run — the agent
+    /// was upgraded underneath this session. Set by `update::mark_stale`, and
+    /// cleared the same way a restart clears [`Session::restart_queued`]: the
+    /// respawn's fresh record carries `false`.
+    pub agent_stale: bool,
 }
 
 impl Session {
@@ -680,6 +691,8 @@ impl Session {
             pending_prompt: None,
             fix_pr_on_exit: false,
             restart_queued: false,
+            agent_exe: None,
+            agent_stale: false,
             // Always a real one, so an empty stored token can never match an
             // empty header.
             ask_token: crate::secret::random_token(),

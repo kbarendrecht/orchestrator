@@ -1718,15 +1718,31 @@ pub async fn restart_session(
         return Ok(Json(json!({ "cancelled": true })));
     }
     Ok(Json(serde_json::to_value(
-        crate::restart::queue(&app, Some(id)).await?,
+        crate::restart::queue(&app, crate::restart::Which::One(id)).await?,
     )?))
+}
+
+/// What "restart all" may be told.
+#[derive(Default, Deserialize)]
+pub struct RestartAll {
+    /// Only the sessions an upgrade left behind — the agent bar's button.
+    #[serde(default)]
+    pub stale: bool,
 }
 
 /// The same for every live session in this checkout — what a `mise up` of Claude
 /// Code wants, without quitting the app.
-pub async fn restart_sessions(State(app): State<Arc<AppState>>) -> ApiResult<serde_json::Value> {
+pub async fn restart_sessions(
+    State(app): State<Arc<AppState>>,
+    body: Option<Json<RestartAll>>,
+) -> ApiResult<serde_json::Value> {
+    let which = if body.is_some_and(|Json(b)| b.stale) {
+        crate::restart::Which::Stale
+    } else {
+        crate::restart::Which::All
+    };
     Ok(Json(serde_json::to_value(
-        crate::restart::queue(&app, None).await?,
+        crate::restart::queue(&app, which).await?,
     )?))
 }
 

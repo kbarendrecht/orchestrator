@@ -519,7 +519,15 @@ function renderAgentUpdate() {
      would sit disabled forever. It also survives a reload and shows in every
      window, which a local flag cannot. */
   const run = snap.upgrade_run;
-  if (!u && !run) { bar.hidden = true; return; }
+  /* **The sessions an upgrade left behind, in every checkout.** A running agent
+     goes on being the build it started as, so after any upgrade — from this bar
+     or from `mise up` in a shell — the open sessions are the old Claude Code.
+     The daemon marks each (`update::mark_stale`); this counts the ones not already
+     queued, because a queued one is on its way and saying it again reads as a
+     button that did nothing. */
+  const stale = everySession()
+    .filter(({ session: x }) => x.agent_stale && x.alive && !x.restart_queued);
+  if (!u && !run && !stale.length) { bar.hidden = true; return; }
   // A finished run with nothing in its tail is the one that worked. Reported
   // rather than cleared, because the sessions you already have open go on printing
   // Claude Code's own upgrade notice — they really are still the old build — so a
@@ -534,43 +542,69 @@ function renderAgentUpdate() {
   // `u` is only read in the last arm, and that is the only arm reachable with no
   // update pending: the check is refreshed when a run ends, so a run in flight can
   // outlive the nudge that started it.
+  const n = stale.length;
+  const behind = `${n} session${n === 1 ? '' : 's'} still on the old one`;
   const msg = failed
     ? `Claude Code ${run.to} did not install: ${run.tail.split('\n')[0]}`
     : done
-      ? `Claude Code ${run.to} installed, restart a session to pick it up`
+      ? n ? `Claude Code ${run.to} installed \u2014 ${behind}` : `Claude Code ${run.to} installed`
       : run
         ? `installing Claude Code ${run.to}\u2026`
-        : `Claude Code ${u?.latest} available (you have ${u?.current})`;
+        : !u && n
+          ? `Claude Code was upgraded \u2014 ${behind}`
+          : `Claude Code ${u?.latest} available (you have ${u?.current})`;
   if (agentDismissed === msg) { bar.hidden = true; return; }
 
   $('agentmsg').textContent = msg;
 
   const succeeded = done && !failed;
+  /* Restarting is what the bar offers once there is nothing to install: after a
+     run that worked, and when an upgrade from outside the app is the only news. */
+  const restarting = succeeded || (!u && !run && n > 0);
   const go = /** @type {HTMLButtonElement} */ ($('agentgo'));
   go.disabled = !!run && run.running;
+  // Nothing to restart after an upgrade that left no session behind, so no button.
+  go.hidden = restarting && !n;
   go.textContent = run?.running ? 'Upgrading\u2026'
-    : failed ? 'Retry' : succeeded ? 'Restart' : 'Upgrade';
+    : failed ? 'Retry' : restarting ? 'Restart them' : 'Upgrade';
   // Says the safe thing out loud, because "upgrade the tool my agents are
   // running" reads risky and is not: mise repoints a versioned install, so a
   // session already going keeps the binary it loaded.
   const safety = 'Sessions already running are unaffected \u2014 they finish on the '
     + 'version they started with, and the next session you open gets the new one.';
   go.title = failed ? run.tail
-    : succeeded
-      ? 'Quits and comes back. Your sessions are resumed as they were, on the new '
-        + 'version, because a running agent goes on being the build it started as.'
+    : restarting
+      ? 'Respawns each of them on the new version, under its own id and with its '
+        + 'conversation. One at its prompt goes now; one mid-turn goes when the turn '
+        + 'ends. The app, the drawer and every other session stay as they are.'
       : run ? `Running \`mise upgrade\`. ${safety}`
         : `Runs \`mise upgrade ${u?.tool}\`. ${safety}`;
   go.onclick = async () => {
-    // A restart takes the window down, so there is nothing to report back into:
-    // the answer is the app coming back. Everything else reports through this bar
-    // on the next snapshot, which is why neither points at a result.
-    if (succeeded) {
-      try {
-        await callHost('/api/window/restart');
-      } catch (e) {
-        toast(reason(e), true);
+    /* **Sessions, not the app.** This button used to quit and relaunch the whole
+       app so `auto_resume` would respawn every agent — taking the drawer's
+       processes and every other checkout down with it, for an upgrade that
+       concerned none of them. Each checkout's own daemon restarts its own stale
+       sessions, so the ask goes to every checkout that has one. */
+    if (restarting) {
+      const at = [...new Set(stale.map(({ checkout }) => checkout))];
+      let now = 0;
+      let later = 0;
+      for (const c of at) {
+        try {
+          const r = await callOn(c, '/api/sessions/restart', { stale: true });
+          now += r.now;
+          later += r.queued - r.now;
+        } catch (e) {
+          toast(reason(e), true);
+        }
       }
+      if (now || later) {
+        toast(later
+          ? `restarting ${now}, and ${later} more when their turn ends`
+          : `restarting ${now} session${now === 1 ? '' : 's'} on the new Claude Code`);
+      }
+      // The run's report has said what it had to once the sessions are on their way.
+      if (done) call('/api/agent/upgrade/dismiss').catch((e) => toast(reason(e), true));
       return;
     }
     try {

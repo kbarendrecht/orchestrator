@@ -46,16 +46,33 @@ pub struct Queued {
     pub now: usize,
 }
 
+/// Which sessions a restart is for.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Which {
+    /// One session, asked for from its row.
+    One(SessionId),
+    /// Every live agent session in this checkout.
+    All,
+    /// The ones an upgrade left behind — see `Session::agent_stale`. What the
+    /// agent bar asks for: a session opened after the upgrade is on the new build
+    /// already, and respawning it would cost its scrollback for nothing.
+    Stale,
+}
+
 /// Flag sessions for a respawn, and wake the watcher.
 ///
-/// `None` is every live agent session in this checkout. Drawer shells and managed
-/// processes are not sessions, so they are never in this list — `mise up` does not
-/// change them and restarting them would cost a running stack for nothing.
+/// Drawer shells and managed processes are not sessions, so they are never in
+/// any of these — `mise up` does not change them and restarting them would cost a
+/// running stack for nothing.
 ///
 /// A session that is not live is refused by name rather than skipped when it was
 /// asked for by id: "restart" on an archived row is a resume, and saying so is
 /// more use than a count of zero.
-pub async fn queue(app: &Arc<AppState>, only: Option<SessionId>) -> Result<Queued> {
+pub async fn queue(app: &Arc<AppState>, which: Which) -> Result<Queued> {
+    let only = match which {
+        Which::One(id) => Some(id),
+        Which::All | Which::Stale => None,
+    };
     let out = {
         let mut inner = app.inner.write().await;
         if let Some(id) = only {
@@ -72,7 +89,10 @@ pub async fn queue(app: &Arc<AppState>, only: Option<SessionId>) -> Result<Queue
         }
         let mut out = Queued::default();
         for s in inner.sessions.values_mut() {
-            if only.is_some_and(|id| id != s.id) || !running(s) {
+            if only.is_some_and(|id| id != s.id)
+                || !running(s)
+                || (which == Which::Stale && !s.agent_stale)
+            {
                 continue;
             }
             s.restart_queued = true;
@@ -242,7 +262,7 @@ mod tests {
         let busy = live(&app, &dir, State::Working).await;
         let asking = live(&app, &dir, turn(TurnReason::AskedAQuestion)).await;
 
-        let got = queue(&app, None).await.unwrap();
+        let got = queue(&app, Which::All).await.unwrap();
         assert_eq!(got, Queued { queued: 3, now: 1 });
 
         let inner = app.inner.read().await;
@@ -258,12 +278,32 @@ mod tests {
         let (app, dir) = crate::testutil::app("restart-due");
         let _asking = live(&app, &dir, turn(TurnReason::AskedAQuestion)).await;
         let _busy = live(&app, &dir, State::Working).await;
-        queue(&app, None).await.unwrap();
+        queue(&app, Which::All).await.unwrap();
         assert!(next_due(&app).await.is_none(), "nothing is ready");
 
         let idle = live(&app, &dir, turn(TurnReason::TurnComplete)).await;
-        queue(&app, Some(idle)).await.unwrap();
+        queue(&app, Which::One(idle)).await.unwrap();
         assert_eq!(next_due(&app).await.map(|(id, _)| id), Some(idle));
+    }
+
+    /// The bar's restart takes only what the upgrade left behind.
+    #[tokio::test]
+    async fn stale_takes_only_the_sessions_on_an_old_build() {
+        let (app, dir) = crate::testutil::app("restart-stale");
+        let old = live(&app, &dir, turn(TurnReason::TurnComplete)).await;
+        let new = live(&app, &dir, turn(TurnReason::TurnComplete)).await;
+        app.with_session(old, |s| s.agent_stale = true).await;
+
+        assert_eq!(
+            queue(&app, Which::Stale).await.unwrap(),
+            Queued { queued: 1, now: 1 }
+        );
+        let inner = app.inner.read().await;
+        assert!(inner.sessions[&old].restart_queued);
+        assert!(
+            !inner.sessions[&new].restart_queued,
+            "a session already on the new build is left alone"
+        );
     }
 
     /// A session that is not running is refused by id, not silently counted.
@@ -275,7 +315,7 @@ mod tests {
         s.set_state(State::Archived { resumable: true });
         app.inner.write().await.sessions.insert(id, s);
 
-        let err = queue(&app, Some(id)).await.unwrap_err().to_string();
+        let err = queue(&app, Which::One(id)).await.unwrap_err().to_string();
         assert!(err.contains("not running"), "{err}");
         assert!(!app.inner.read().await.sessions[&id].restart_queued);
     }
@@ -284,7 +324,7 @@ mod tests {
     async fn cancel_takes_it_back_out() {
         let (app, dir) = crate::testutil::app("restart-cancel");
         let id = live(&app, &dir, State::Working).await;
-        queue(&app, Some(id)).await.unwrap();
+        queue(&app, Which::One(id)).await.unwrap();
         cancel(&app, id).await.unwrap();
         assert!(!app.inner.read().await.sessions[&id].restart_queued);
     }

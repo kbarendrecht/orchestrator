@@ -549,13 +549,136 @@ pub async fn refresh(app: &std::sync::Arc<crate::state::AppState>) -> Result<()>
     // Off-thread: `mise outdated` reaches the network to learn the latest
     // version, and the runtime must not wait on it.
     let next = tokio::task::spawn_blocking(move || check(&main)).await?;
-    let mut inner = app.inner.write().await;
-    if inner.agent_update != next {
-        inner.agent_update = next;
-        drop(inner);
+    /* **Scoped, and the scope is load-bearing.** This used to drop the guard only
+    on the branch that notifies, which was harmless while nothing followed it. The
+    look below takes the state lock itself, so a guard still held on the unchanged
+    path — the ordinary one — is a daemon waiting on its own write lock forever:
+    every request after the next spawn hung, and the e2e flows saw it as the
+    daemon going away. */
+    let changed = {
+        let mut inner = app.inner.write().await;
+        let changed = inner.agent_update != next;
+        if changed {
+            inner.agent_update = next;
+        }
+        changed
+    };
+    if changed {
         app.notify().await;
     }
+    // The same tick asks which sessions an upgrade left behind: a refresh runs
+    // when an upgrade ends, which is exactly when that answer changes.
+    mark_stale(app, Look::Resolve).await;
     Ok(())
+}
+
+/// How hard [`mark_stale`] looks.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Look {
+    /// Only whether each session's file still exists. A `stat` per session.
+    Exists,
+    /// Also what a new spawn in each session's tree would run now, which needs
+    /// that tree's environment and so a `mise env` per distinct tree.
+    Resolve,
+}
+
+/// Flag the sessions running an older Claude Code than a new one would get.
+///
+/// **Two signals, because upgrades happen two ways.** mise **deletes** the old
+/// versioned directory (the note at the top of this file), so a session whose
+/// recorded file is gone is on a build that no longer exists — a `stat`, cheap
+/// enough to run every minute, and it is what catches a `mise up` in a shell.
+/// An installer that repoints a symlink and keeps the old file (the native
+/// installer's `versions/`) leaves that file in place, and only resolving `claude`
+/// again the way a spawn would sees it: that is the `Resolve` look, run on the
+/// hourly poll, after every spawn and after an upgrade from the bar.
+///
+/// **Resolved in each session's own tree.** A spawn reads the environment of the
+/// directory it runs in (`launch::session_env`), and a worktree may pin a
+/// different tool than main — so asking main alone would call a session stale
+/// that a respawn would put straight back on the same build.
+///
+/// One-way within a session's life: a session never becomes current again
+/// without being respawned, so only `false → true` is written, and the respawn's
+/// fresh record is what clears it.
+pub async fn mark_stale(app: &Arc<AppState>, look: Look) {
+    let live: Vec<(
+        crate::model::SessionId,
+        std::path::PathBuf,
+        std::path::PathBuf,
+    )> = {
+        let inner = app.inner.read().await;
+        inner
+            .sessions
+            .values()
+            .filter(|s| s.state.is_live() && !s.agent_stale)
+            .filter_map(|s| Some((s.id, s.cwd.clone(), s.agent_exe.clone()?)))
+            .collect()
+    };
+    if live.is_empty() {
+        return;
+    }
+    let cfg = app.cfg.clone();
+    let stale = crate::proc::run_blocking("asking which sessions run an old claude", move || {
+        let mut now: std::collections::HashMap<std::path::PathBuf, Option<std::path::PathBuf>> =
+            std::collections::HashMap::new();
+        live.into_iter()
+            .filter(|(_, cwd, exe)| {
+                if !exe.exists() {
+                    return true;
+                }
+                if look == Look::Exists {
+                    return false;
+                }
+                let current = now.entry(cwd.clone()).or_insert_with(|| {
+                    /* **The checkout's own variables, not `launch::session_env`.**
+                    That is refused here by `clippy.toml`, and rightly: it builds a
+                    *spawn's* environment, and one built outside `spawn` is how a run
+                    lost its credential. This spawns nothing — it asks which file
+                    `claude` names, and that is decided by the PATH the checkout
+                    exports. The one other PATH change `session_env` makes is to put
+                    the app's own directory first, which holds `orch` and never
+                    `claude`, so the two cannot disagree about the agent. */
+                    let env = crate::env_source::read(cfg.env_source, cwd);
+                    orchd_base::pty::which("claude", cwd, &env, &[]).ok()
+                });
+                // A tree where `claude` cannot be found says nothing about this
+                // session, so it is not called stale on the strength of that.
+                current.as_ref().is_some_and(|c| c != exe)
+            })
+            .map(|(id, _, _)| id)
+            .collect::<Vec<_>>()
+    })
+    .await
+    .unwrap_or_default();
+    if stale.is_empty() {
+        return;
+    }
+    {
+        let mut inner = app.inner.write().await;
+        for id in &stale {
+            if let Some(s) = inner.sessions.get_mut(id) {
+                s.agent_stale = true;
+            }
+        }
+    }
+    tracing::info!(
+        sessions = stale.len(),
+        "sessions are running an older claude than is installed"
+    );
+    app.notify().await;
+}
+
+/// The cheap look, every minute. See [`mark_stale`] for why a minute and why only
+/// a `stat`.
+pub fn start_stale_poller(app: Arc<AppState>) {
+    tokio::spawn(async move {
+        let interval = std::time::Duration::from_secs(60);
+        loop {
+            tokio::time::sleep(interval).await;
+            mark_stale(&app, Look::Exists).await;
+        }
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -581,10 +704,12 @@ pub async fn refresh(app: &std::sync::Arc<crate::state::AppState>) -> Result<()>
 // The upgrade cannot take effect on its own whichever channel it came from: this
 // process *is* the old build. mise installs beside it, apt replaces the binary
 // while Linux keeps this process on its old inode, and Homebrew replaces the
-// bundle — so all three finish with "restart", and the restart is the same
-// [`crate::window::WindowCmd::Restart`] the agent bar offers, which is why
-// `relaunch` resolves the `latest` symlink instead of re-running the exact path it
-// started from.
+// bundle — so all three finish with "restart", and the restart is
+// [`crate::window::WindowCmd::Restart`], which is why `relaunch` resolves the
+// `latest` symlink instead of re-running the exact path it started from. The
+// agent bar used to offer that same restart and does not any more: an agent
+// upgrade needs its *sessions* respawned, not the app, and `restart.rs` does that
+// in place.
 //
 // **One thing only macOS does**: a cask upgrade swaps `Orchestrator.app`
 // underneath a process that is running out of it, where mise never touches the
@@ -809,6 +934,39 @@ fn parse_semver(s: &str) -> Option<(u64, u64, u64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// mise deletes the directory it upgraded away from, and a `stat` is enough to
+    /// see that. This is the look that runs every minute, so it is the one that
+    /// catches a `mise up` done in a shell.
+    #[tokio::test]
+    async fn a_session_whose_binary_is_gone_is_stale_and_one_whose_is_not_is_not() {
+        let (app, dir) = crate::testutil::app("stale-gone");
+        let gone = dir.join("claude-old");
+        let kept = dir.join("claude-kept");
+        std::fs::write(&gone, "").unwrap();
+        std::fs::write(&kept, "").unwrap();
+        let mut ids = Vec::new();
+        for exe in [&gone, &kept] {
+            let id = uuid::Uuid::new_v4();
+            let mut s = crate::model::Session::new(id, "main".into(), dir.clone(), None);
+            s.set_state(crate::model::State::Working);
+            s.agent_exe = Some(exe.clone());
+            app.inner.write().await.sessions.insert(id, s);
+            ids.push(id);
+        }
+        std::fs::remove_file(&gone).unwrap();
+
+        mark_stale(&app, Look::Exists).await;
+        let inner = app.inner.read().await;
+        assert!(
+            inner.sessions[&ids[0]].agent_stale,
+            "its build no longer exists"
+        );
+        assert!(
+            !inner.sessions[&ids[1]].agent_stale,
+            "its build is still there"
+        );
+    }
 
     /// Each channel runs its own installer, and the apt one carries the two things
     /// it is easiest to leave out: the refresh, and the program that asks for the

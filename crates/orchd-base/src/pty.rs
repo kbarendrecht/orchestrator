@@ -61,6 +61,8 @@ impl RingBuffer {
 pub struct Spawned {
     pub handle: Arc<PtyHandle>,
     pub pid: Option<u32>,
+    /// The file that was executed, with its symlinks resolved — see [`which`].
+    pub program: std::path::PathBuf,
 }
 
 /// Where a program name points, resolved the way a shell would.
@@ -106,6 +108,27 @@ fn resolve_program(
         }
     }
     anyhow::bail!("{prog} is not on PATH")
+}
+
+/// The file a spawn of `prog` would execute, symlinks and all resolved.
+///
+/// **Resolved, because the link is not the build.** A mise install is a
+/// versioned directory, and a native Claude Code install is a `claude` symlink
+/// into `versions/<n>` — so the name on PATH stays put across an upgrade while
+/// the file behind it changes. Two spawns ran the same build exactly when this
+/// answer is the same, which is what lets the daemon tell a session on an old
+/// Claude Code from one on the new, with no `--version` to run and parse.
+///
+/// Falls back to the unresolved path when resolving fails, which only a file
+/// removed between the lookup and here could cause.
+pub fn which(
+    prog: &str,
+    cwd: &Path,
+    env: &[(String, String)],
+    unset: &[&str],
+) -> Result<std::path::PathBuf> {
+    let found = resolve_program(prog, cwd, env, unset)?;
+    Ok(std::fs::canonicalize(&found).unwrap_or(found))
 }
 
 #[cfg(unix)]
@@ -226,6 +249,7 @@ impl PtyHandle {
         // output.write(&bytes).is_ok()` and never names the command. Resolving here
         // hands it an absolute path, which it only checks for X_OK.
         let resolved = resolve_program(prog, cwd, env, unset)?;
+        let program = std::fs::canonicalize(&resolved).unwrap_or_else(|_| resolved.clone());
         let mut cmd = CommandBuilder::new(&resolved);
         for arg in args {
             cmd.arg(arg);
@@ -341,7 +365,11 @@ impl PtyHandle {
             let _ = closer.send(Input::Close);
         });
 
-        Ok(Spawned { handle, pid })
+        Ok(Spawned {
+            handle,
+            pid,
+            program,
+        })
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<Bytes> {

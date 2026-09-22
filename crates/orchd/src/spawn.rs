@@ -282,6 +282,8 @@ pub(crate) async fn insert_and_spawn(
         if let Some(s) = inner.sessions.get_mut(&id) {
             s.pty = Some(spawned.handle.clone());
             s.pid = spawned.pid;
+            // What this process *is*, for the day the agent is upgraded under it.
+            s.agent_exe = Some(spawned.program.clone());
         }
     }
     Ok(spawned)

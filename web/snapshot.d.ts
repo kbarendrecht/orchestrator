@@ -379,7 +379,13 @@ handed_off: boolean,
  * [`Session::restart_queued`]. The row says so, because a session that
  * restarts itself the moment you finish a turn is a surprise otherwise.
  */
-restart_queued: boolean, };
+restart_queued: boolean, 
+/**
+ * Running an older Claude Code than a new session here would get — see
+ * [`Session::agent_stale`]. What the agent bar counts when it offers to
+ * restart the sessions an upgrade left behind.
+ */
+agent_stale: boolean, };
 
 /**
  * What the SPA receives on every tick.
