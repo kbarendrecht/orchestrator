@@ -1227,16 +1227,25 @@ window.addEventListener('keydown', (e) => {
  *
  * The failure it exists to refuse is typing two capitals. `Shift A Shift B` is
  * two Shift keydowns with a release between them, which is exactly the shape of a
- * deliberate double tap — so "within 300ms of the last one" on its own fires
- * while somebody is typing prose. `dirty` is the fix: any other key pressed while
- * Shift is held disqualifies that tap, so a Shift used *as a modifier* can never
- * arm the next one. What survives is a Shift pressed and released with nothing
- * between, twice — which is a thing people do on purpose and almost never by
- * accident.
+ * deliberate double tap — so an interval on its own fires while somebody is
+ * typing prose. `dirty` is the fix: any other key pressed while Shift is held
+ * disqualifies that tap, so a Shift used *as a modifier* can never arm the next
+ * one. What survives is a Shift pressed and released with nothing between, twice
+ * — which is a thing people do on purpose and almost never by accident.
  *
  * Both halves are asserted in `mise run page-check`, and the refusal is the half
  * that gives the assertion power. */
-const TAP = 300;
+
+/** How long a clean tap stays armed for the next one.
+ *
+ *  **220ms, down from 300, because the overlay was opening on people who had not
+ *  asked for it.** `dirty` refuses a Shift used as a modifier and cannot refuse
+ *  two bare ones, so the window is the only thing left guarding the taps nobody
+ *  meant — and 300ms is long enough to catch two unrelated Shifts a third of a
+ *  second apart. A deliberate double tap is quicker than that: this is the same
+ *  range a double click lives in, and a gesture people borrowed from JetBrains is
+ *  one they already perform at double-click speed. */
+const TAP = 220;
 let armedAt = 0;      // when a clean tap ended, 0 if there is none
 let holding = false;  // a Shift is down, and started clean
 let dirty = false;    // something else was pressed while it was down

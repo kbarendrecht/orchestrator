@@ -119,12 +119,18 @@ is neither a binding nor a character, so nothing had to move aside, and a bare
 Shift is never written to a pty — nothing is taken from an agent and nothing
 needs `preventDefault`.
 
-**The naive detector fires while you type.** "Two Shift keydowns within 300ms" is
-also the shape of `Shift A Shift B` — two taps with a release between them — so an
-interval check alone opens the overlay in the middle of a sentence. The fix is
-`dirty`: any other key pressed while Shift is held disqualifies that tap, so a
-Shift used *as a modifier* can never arm the next one. What survives is a Shift
-pressed and released with nothing between, twice.
+**The naive detector fires while you type.** "Two Shift keydowns inside the
+window" is also the shape of `Shift A Shift B` — two taps with a release between
+them — so an interval check alone opens the overlay in the middle of a sentence.
+The fix is `dirty`: any other key pressed while Shift is held disqualifies that
+tap, so a Shift used *as a modifier* can never arm the next one. What survives is
+a Shift pressed and released with nothing between, twice.
+
+**The window is 220ms, and it was 300.** `dirty` cannot refuse two bare Shifts, so
+the interval is the only thing left guarding the taps nobody meant — and at 300ms
+the overlay was opening on people who had not asked for it. A deliberate double
+tap is quicker: it is a borrowed gesture, performed at the speed of the double
+click it looks like.
 
 `mise run page-check` holds both halves, and **the refusal is the half with
 power**: `Shift Shift opens the file search` passes on a broken detector too, and

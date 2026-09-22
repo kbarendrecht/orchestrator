@@ -540,11 +540,16 @@ try {
 
   /* --- Shift-Shift opens the file search, and typing capitals does not --------- */
 
-  /* **The refusal is the assertion with power here.** "Two Shift keydowns within
-     300ms" also describes somebody typing `Shift A Shift B`, so a detector that
-     only measured the interval would open the overlay mid-sentence. The guard is
-     that any other key pressed while Shift is held disqualifies that tap, and this
-     pair is what holds it: the gesture works, and the prose does not trigger it.
+  /* **The refusal is the assertion with power here.** "Two Shift keydowns inside
+     the window" also describes somebody typing `Shift A Shift B`, so a detector
+     that only measured the interval would open the overlay mid-sentence. The guard
+     is that any other key pressed while Shift is held disqualifies that tap, and
+     this pair is what holds it: the gesture works, and the prose does not trigger
+     it.
+
+     Nothing here waits between the taps, deliberately: the window is `TAP` in
+     `app.js` and this test is about the guard, not the number. A test that slept
+     200ms would start failing the day somebody tightened it for a good reason.
 
      Driven with real `down`/`up` rather than synthetic events, because the guard
      turns on the keyup arriving between the two presses — a `dispatchEvent` of
