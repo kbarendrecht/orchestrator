@@ -12,7 +12,7 @@
 // is drawn is a fix in both places rather than a copy that drifts.
 
 import {
-  $, activeWorkspaceId, get, openMenu, reason, toast,
+  $, activeWorkspaceId, borrowFocus, get, openMenu, reason, returnFocus, toast,
 } from './core.js';
 import * as Editor from './editor.js';
 import * as Viewer from './viewer.js';
@@ -77,6 +77,7 @@ async function show(ws, path, line, last) {
   state.path = path;
   state.line = Math.max(1, line);
   state.last = Math.max(0, last ?? 0);
+  borrowFocus('fileview');
   $('fvoverlay').classList.add('on');
   const drawn = await viewer().show(ws, path, {
     line: state.line, last: state.last, col: 0, len: 0,
@@ -107,6 +108,7 @@ export async function close() {
   state.open = false;
   state.path = null;
   $('fvoverlay').classList.remove('on');
+  returnFocus('fileview', $('fvoverlay'));
   return true;
 }
 

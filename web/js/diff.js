@@ -6,7 +6,7 @@
 // knows about strings and nothing about changesets. Three other modules wanted
 // it and none of them wanted a diff.
 
-import { $, activeWorkspaceId, call, confirmBox, currentSession, el, get, openMenu, pending, prForWorkspace, snap, reason, toast, paintSig, reconcile, unchanged, workspaceById } from './core.js';
+import { $, activeWorkspaceId, borrowFocus, call, confirmBox, currentSession, el, get, openMenu, pending, prForWorkspace, returnFocus, snap, reason, toast, paintSig, reconcile, unchanged, workspaceById } from './core.js';
 import * as Editor from './editor.js';
 import { charRanges, langFor, lineSegments } from './source.js';
 
@@ -701,6 +701,7 @@ async function openDiff(/** @type {string} */ path) {
   diffState.open = true;
   diffState.ws = ws;
   diffState.context = 3;
+  borrowFocus('diff');
   $('overlay').classList.add('on');
   await loadSummary();
   const first = path || diffState.summary?.files?.[0]?.path;
@@ -719,6 +720,7 @@ async function closeDiff() {
   diffState.file = null;
   diffState.path = null;
   $('overlay').classList.remove('on');
+  returnFocus('diff', $('overlay'));
   renderFiles();
 }
 

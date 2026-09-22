@@ -18,7 +18,7 @@
 // keeps the right where a column of them still lines up.
 
 import {
-  $, activeWorkspaceId, el, get, MOD_LABEL, reason, toast,
+  $, activeWorkspaceId, borrowFocus, el, get, MOD_LABEL, reason, returnFocus, toast,
 } from './core.js';
 import * as Editor from './editor.js';
 import { charRanges, paintRanges } from './source.js';
@@ -126,6 +126,7 @@ export async function open(mode) {
     renderHits();
     void showCursor();
   }
+  borrowFocus('find');
   $('fnoverlay').classList.add('on');
   clampSplit();
   renderHead();
@@ -150,6 +151,7 @@ export async function close() {
   clearTimeout(state.timer ?? undefined);
   state.timer = null;
   $('fnoverlay').classList.remove('on');
+  returnFocus('find', $('fnoverlay'));
   return true;
 }
 

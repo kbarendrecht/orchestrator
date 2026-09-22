@@ -3,7 +3,7 @@
 // The SPA is a module now, so what it reaches for is written down. `core.js` holds
 // the primitives every part needs; `queue.js` is the first seam extracted whole.
 import {
-$, el, toast, reason, safeHref, call, callHost, get, activeCheckout, CHECKOUTS, setCheckouts, HOST, snapshotOf, repoSummary, everySession, enterCheckout, snap, receive, keyActivate, setZoom, setUiPx, uiPx, saveZoom, onScaleChange, ZOOM, selected, setSelected, onSelection, prForWorkspace, terms, CHROME, stateLabel, dotClass, isWaiting, isArchived, byNewest, currentSession, activeWorkspaceId, currentWorkspaceId, closeMenu, menuOpen, openMenu, callOn, newSession, newWorktree, newShell, mainWorkspace, workspaceById, prState, handedToPr, drawerCollapsed, setDrawerCollapsed, pendingSelect, setPendingSelect, onDrawerChange, onCreatingChange, creating, creatingIn, startingShown, appMod, IS_MAC, MOD_LABEL, closeLegend, typingElsewhere, mark, reportBoot, dialogOpen, dismissDialog, unchanged, tick,
+$, el, toast, reason, safeHref, call, callHost, get, activeCheckout, CHECKOUTS, setCheckouts, HOST, snapshotOf, repoSummary, everySession, enterCheckout, snap, receive, keyActivate, setZoom, setUiPx, uiPx, saveZoom, onScaleChange, ZOOM, selected, setSelected, onSelection, prForWorkspace, terms, CHROME, stateLabel, dotClass, isWaiting, isArchived, byNewest, currentSession, activeWorkspaceId, currentWorkspaceId, closeMenu, menuOpen, openMenu, callOn, newSession, newWorktree, newShell, mainWorkspace, workspaceById, prState, handedToPr, drawerCollapsed, setDrawerCollapsed, pendingSelect, setPendingSelect, onDrawerChange, onCreatingChange, creating, creatingIn, startingShown, appMod, IS_MAC, MOD_LABEL, closeLegend, toggleLegend, typingElsewhere, mark, reportBoot, dialogOpen, dismissDialog, unchanged, tick,
 } from './js/core.js';
 import { onThemeChange } from './js/theme.js';
 import { detailEl, symbolAt } from './js/source.js';
@@ -1039,14 +1039,14 @@ window.addEventListener('blur', () => document.body.classList.remove('modheld'))
 Find.init();
 FileView.init();
 $('addshell').onclick = newShell;
-$('keyhelpx').onclick = () => { $('keyhelp').hidden = true; };
+$('keyhelpx').onclick = () => closeLegend();
 // The visible way in, beside the gear. Its tooltip names the chord — the whole
 // point is that finding the button once is how you stop needing it.
 $('keysbtn').title = `Keyboard shortcuts · ${MOD_LABEL} Shift ?`;
 $('addshell').title = `New shell in this workspace · ${MOD_LABEL} \` or ${MOD_LABEL} Shift T`;
 $('keysbtn').onclick = (ev) => {
   ev.stopPropagation();
-  $('keyhelp').hidden = !$('keyhelp').hidden;
+  toggleLegend();
 };
 keyActivate($('keysbtn'));
 
@@ -1310,7 +1310,7 @@ function keymap(/** @type {KeyboardEvent} */ e) {
   if (dialogOpen()) return;
   if (e.key === 'Escape' && !$('keyhelp').hidden) {
     e.preventDefault();
-    $('keyhelp').hidden = true;
+    closeLegend();
     return;
   }
   // First, or Escape closes the overlay underneath and leaves the menu floating
@@ -1542,7 +1542,7 @@ function keymap(/** @type {KeyboardEvent} */ e) {
        Matched on `code` because the key's name depends on the layout. */
     if (e.shiftKey && (e.code === 'Slash' || e.key === '?')) {
       e.preventDefault();
-      $('keyhelp').hidden = !$('keyhelp').hidden;
+      toggleLegend();
       return;
     }
     return;

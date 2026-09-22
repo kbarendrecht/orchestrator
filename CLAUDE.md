@@ -386,6 +386,7 @@ together: same entries, same order, same groups.
 - The find viewer draws a band of the file, and the spacers are what make it scroll.
 - The mouse's back button undoes a jump, and no gate here can prove the webview delivers it.
 - A path an agent printed is clickable, and three modules each own one third of that.
+- A dialog borrows the keyboard, and every way out of it has to hand the keyboard back.
 
 ### Performance, measured
 

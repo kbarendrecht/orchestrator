@@ -716,6 +716,10 @@ let dlgPending = null;
 function dlgClose(/** @type {any} */ answer) {
   const host = $('dlg');
   host.hidden = true;
+  /* Before the children go: `returnFocus` asks whether the dialog still holds the
+     keyboard, and an emptied host holds nothing — the answer would be "somewhere
+     else has it" for a dialog that had it a line ago. */
+  returnFocus('dlg', host);
   host.replaceChildren();
   const settle = dlgSettle;
   dlgSettle = null;
@@ -790,6 +794,7 @@ function dlgOpen(message, {
       dlgClose(answer());
     }
   };
+  borrowFocus('dlg');
   (focus || go).focus();
   dlgAsking = message;
   dlgPending = new Promise((resolve) => { dlgSettle = resolve; });
@@ -1523,6 +1528,19 @@ export function openMenu(/** @type {MouseEvent} */ ev, /** @type {([string, stri
   menu.style.top = `${Math.min(y, window.innerHeight - box.height - 6)}px`;
 }
 
+/** Show the keyboard legend, or put it away if it is already up.
+ *
+ *  Here rather than in `app.js` for the reason [`closeLegend`] gives, and one
+ *  function rather than three `hidden = !hidden` lines, because the focus it
+ *  borrows has to be given back on every way out — and a toggle written in four
+ *  places is a toggle where one of them forgets. */
+export function toggleLegend() {
+  if ($('keyhelp').hidden) {
+    borrowFocus('legend');
+    $('keyhelp').hidden = false;
+  } else closeLegend();
+}
+
 /** Dismiss the keyboard legend.
  *
  *  Here rather than in `app.js`, which owns the overlay, because the settings
@@ -1530,6 +1548,64 @@ export function openMenu(/** @type {MouseEvent} */ ev, /** @type {([string, stri
  *  the same reason `closeMenu` lives down here. */
 export function closeLegend() {
   $('keyhelp').hidden = true;
+  returnFocus('legend', $('keyhelp'));
+}
+
+/* ---------------------------------------------------------------------------
+ * Who gets the keyboard back
+ * ------------------------------------------------------------------------- */
+
+/** What had the keyboard when each open dialog took it, by the dialog's name.
+ *
+ *  **A map rather than a stack**, because the dialogs nest in more than one
+ *  order: the finder opens the file viewer, the viewer opens the editor, and any
+ *  of them can raise a confirm on the way out. A stack would be right only while
+ *  they closed in the order they opened.
+ */
+/** @type {Map<string, HTMLElement>} */
+const focusReturn = new Map();
+
+/** Remember what has the keyboard, before a dialog takes it.
+ *
+ *  **Called on open, and ignored if that dialog already holds a record.** The
+ *  finder's `open` is also its mode switch — Shift-Shift while it is up — and a
+ *  second borrow there would record the finder's own input box as the thing to go
+ *  back to, which is a dialog that closes into itself.
+ *
+ *  `document.body` is not somewhere to return to: it is what the engine focuses
+ *  when nothing is focused, so recording it would let a later close steal the
+ *  keyboard from wherever it had legitimately gone.
+ */
+export function borrowFocus(/** @type {string} */ who) {
+  if (focusReturn.has(who)) return;
+  const on = document.activeElement;
+  if (on && on !== document.body) focusReturn.set(who, /** @type {HTMLElement} */ (on));
+}
+
+/** Give the keyboard back to whatever [`borrowFocus`] saw, and forget it.
+ *
+ *  `from` is the dialog's own element, and it is what makes this safe to call on
+ *  every close path. Focus is handed back only when the dialog still holds it, or
+ *  when nothing does — which is the state hiding the dialog leaves behind, and
+ *  the whole of the defect this exists for (#27): the keystrokes after `Escape`
+ *  went nowhere, and the pane had to be clicked.
+ *
+ *  What is refused is the other case: a close that has already put the keyboard
+ *  somewhere on purpose, which several of these do.
+ *
+ *  Call it **after** the dialog is hidden. The element is checked for still being
+ *  in the document because a pane can be torn down while a dialog sits over it,
+ *  and `focus()` is wrapped because a disposed terminal's textarea throws.
+ */
+export function returnFocus(/** @type {string} */ who, /** @type {HTMLElement | null} */ from = null) {
+  const back = focusReturn.get(who);
+  focusReturn.delete(who);
+  if (!back || !document.contains(back)) return;
+  const on = document.activeElement;
+  if (on && on !== document.body && !(from && from.contains(on))) return;
+  try {
+    back.focus();
+  } catch (e) { /* disposed while the dialog was up */ }
 }
 
 export function closeMenu() {

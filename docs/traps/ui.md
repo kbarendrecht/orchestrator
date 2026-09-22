@@ -313,3 +313,35 @@ ordinary word does nothing" — and fails the jump too, because the word it land
 on is then a link of its own. **What it does not hold is the wrap join** — the
 fixture line is short, so a path broken across two rows is covered by reading the
 code and by nothing else.
+
+## A dialog borrows the keyboard, and every way out of it has to hand the keyboard back.
+`borrowFocus` and `returnFocus` in `core.js`, called by the finder, the file
+viewer, the diff, the review overlay, the settings panel, the keyboard legend and
+the app's own `confirm`.
+
+**What it cost was every keystroke after `Escape`** (#27). The finder takes focus
+for its query box; hiding it leaves focus on `document.body`, which is not a pane,
+not a field and not anywhere — so typing went nowhere and the pane had to be
+clicked before work could go on. Reported against 2026.9.23 on macOS, and true of
+every dialog in the list, not only the one in the report.
+
+**A map keyed by the dialog, not a stack.** These nest in more than one order: the
+finder opens the file viewer, the viewer opens the editor, and any of them can
+raise a confirm on the way out. A stack is right only while they close in the
+order they opened.
+
+Two refusals carry it. A **second borrow is ignored** while a dialog already holds
+a record — the finder's `open` is also its mode switch, so Shift-Shift while it is
+up would otherwise record the finder's own input box and close the dialog into
+itself. And **focus is handed back only when the dialog still holds it, or when
+nothing does**, which is what hiding leaves behind: a close that has already put
+the keyboard somewhere on purpose keeps it.
+
+The legend was four `hidden = !hidden` lines in `app.js` and is one
+`toggleLegend` and one `closeLegend` now, because a toggle written in four places
+is a toggle where one of them forgets to give the keyboard back.
+
+`mise run page-check` drives the report's own steps: focus the pane, Shift-Shift,
+Escape, and the helper textarea has it again. **Checked against deliberate
+breakage** — dropping the `returnFocus` call from `find.js` fails exactly that
+line, with focus on the body.

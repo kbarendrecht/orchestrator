@@ -1,7 +1,7 @@
 // The review overlay: read a PR's threads, decide each one, then one batch of
 // outward writes. The largest single feature in the SPA.
 
-import { $, call, compactAge, el, get, MOD_LABEL, reason, selected, setPendingSelect, setSelected, snap, toast, unchanged } from './core.js';
+import { $, borrowFocus, call, compactAge, el, get, MOD_LABEL, reason, returnFocus, selected, setPendingSelect, setSelected, snap, toast, unchanged } from './core.js';
 import * as Diff from './diff.js';
 import { langFor, hlTokens, paintRanges } from './source.js';
 import { patchStats, hunkEl } from './review-diff.js';
@@ -1404,6 +1404,7 @@ async function openReview(/** @type {number | null} */ pr) {
       reviewState.screen = 'reading';
     }
   }
+  borrowFocus('review');
   reviewState.open = true;
   $('rvoverlay').classList.add('on');
   await loadReview(pr);
@@ -1415,6 +1416,7 @@ function closeReview() {
   reviewState.open = false;
   reviewState.busy = false;
   $('rvoverlay').classList.remove('on');
+  returnFocus('review', $('rvoverlay'));
   $('rvoverlay').replaceChildren();
 }
 

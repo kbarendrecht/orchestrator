@@ -579,6 +579,34 @@ try {
   await page.waitForTimeout(150)
   check(await findUp() === false, 'typing two capitals does not open it')
 
+  /* --- and a dialog hands the keyboard back when it closes -------------------- */
+
+  /* **The keystrokes after `Escape` went nowhere** (#27): the finder took focus
+     from the pane, hiding it left focus on `document.body`, and typing then did
+     nothing until the pane was clicked. `borrowFocus`/`returnFocus` in `core.js`
+     is the fix, and this is the report's own steps.
+
+     Focused through the textarea rather than by clicking the pane, for the reason
+     the drawer's own `focusTerm` gives below: a click in the rows is how a path is
+     opened now. */
+  const focusedNow = () => page.evaluate(() => {
+    const a = document.activeElement
+    return a ? (a.className || a.id || a.tagName) : null
+  })
+  await page.$eval('#termwrap .termhost:not([hidden]) .xterm-helper-textarea',
+    (t) => /** @type {HTMLTextAreaElement} */ (t).focus())
+  const hadIt = await focusedNow()
+  check(/xterm-helper-textarea/.test(hadIt ?? ''), `the pane has the keyboard, got ${hadIt}`)
+
+  await tapShift()
+  await tapShift()
+  await page.waitForTimeout(150)
+  check(await findUp() === true, 'Shift Shift opens the finder over the pane')
+  await page.keyboard.press('Escape')
+  await page.waitForTimeout(150)
+  const gotBack = await focusedNow()
+  check(gotBack === hadIt, `and closing it hands the keyboard back, got ${gotBack}`)
+
   /* --- a pane with nothing on it says so in the middle ------------------------ */
 
   /* **Where you look when a pane is blank is the middle of it**, not the top
