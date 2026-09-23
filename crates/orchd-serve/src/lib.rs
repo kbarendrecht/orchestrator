@@ -634,6 +634,7 @@ fn daemon_router(app: Arc<AppState>) -> Router {
         .route("/api/diff", get(api::diff_summary))
         .route("/api/diff/file", get(api::diff_file))
         .route("/api/search", get(api::search))
+        .route("/api/archive/search", get(api::search_archive))
         .route("/api/paths", get(api::paths))
         .route("/api/def", get(api::definitions))
         .route("/api/file", get(review_api::read_file))

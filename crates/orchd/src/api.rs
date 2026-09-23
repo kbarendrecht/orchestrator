@@ -2277,6 +2277,77 @@ pub async fn search(
     ))
 }
 
+/// What the archive filter asks for: the word, and nothing else.
+///
+/// No workspace, unlike [`SearchQuery`]: the archive is the checkout's, and a past
+/// conversation's worktree may not exist any more.
+#[derive(Deserialize)]
+pub struct ArchiveQuery {
+    pub find: String,
+}
+
+/// Which of this checkout's past conversations said this, and what they said.
+///
+/// **The slow half of the archive filter.** The rail filters the names itself, out
+/// of the snapshot it already holds, and asks this for the rest — so a keystroke
+/// costs nothing and this answers when it answers.
+///
+/// Only what people wrote counts, which is [`crate::store::first_spoken_match`]:
+/// searching the tool output as well matches nearly every conversation and tells
+/// you nothing about any of them.
+pub async fn search_archive(
+    State(app): State<Arc<AppState>>,
+    Query(q): Query<ArchiveQuery>,
+) -> ApiResult<serde_json::Value> {
+    let needle = q.find.trim().to_ascii_lowercase();
+    /* One character matches everything and costs a full read of every transcript in
+    the checkout. The page debounces, but the first keystroke of every search
+    would still land here, so the refusal is on this side as well. */
+    if needle.chars().count() < 2 {
+        return Ok(Json(json!({ "hits": [] })));
+    }
+
+    /* The archive's two halves, exactly as the rail lists them: the daemon's own
+    finished conversations, and the ones it never started. Collected under the
+    lock and scanned outside it — the read holds up every other request, and this
+    walks megabytes. */
+    let files: Vec<(Uuid, std::path::PathBuf)> = {
+        let inner = app.inner.read().await;
+        inner
+            .sessions
+            .values()
+            .filter(|s| {
+                matches!(
+                    s.state,
+                    crate::model::State::Archived { .. } | crate::model::State::Exited
+                )
+            })
+            .filter_map(|s| {
+                let recorded = s
+                    .archived_transcript
+                    .as_deref()
+                    .or(s.transcript_path.as_deref());
+                crate::store::transcript_file(s.id, &s.cwd, recorded).map(|p| (s.id, p))
+            })
+            .chain(inner.external.iter().map(|c| (c.id, c.transcript.clone())))
+            .collect()
+    };
+
+    // Off the runtime: this is `std::fs` over every file in the list.
+    let hits = crate::proc::run_blocking("the archive search", move || {
+        files
+            .into_iter()
+            .filter_map(|(id, path)| {
+                crate::store::first_spoken_match(&path, &needle)
+                    .map(|line| json!({ "id": id, "line": line }))
+            })
+            .collect::<Vec<_>>()
+    })
+    .await?;
+
+    Ok(Json(json!({ "hits": hits })))
+}
+
 /// A modifier-click: which file it happened in, and the word under the pointer.
 #[derive(Deserialize)]
 pub struct DefQuery {

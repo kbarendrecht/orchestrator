@@ -369,3 +369,30 @@ is a toggle where one of them forgets to give the keyboard back.
 Escape, and the helper textarea has it again. **Checked against deliberate
 breakage** — dropping the `returnFocus` call from `find.js` fails exactly that
 line, with focus on the body.
+
+## The add row holds three labels, and at 210px it wraps rather than clips.
+`+ worktree`, `+ main` and `archived` share one line under each checkout's list
+(`addRow`, `.ws-add`). The rail defaults to 320px and drags down to 210px —
+`COLS.rail.min` in `app.js` — and at that end the three labels are about 20px
+wider than the column. The overflow is silent: `.rail` is `overflow:hidden`, so
+the archive simply is not there.
+
+`flex-wrap` is the answer. The archive drops to a line of its own, still hard
+right, and the extra line is paid only at the width that needs it.
+`mise run page-check` measures both ends with a conversation archived first,
+because `archivedToggle` draws nothing when there is nothing behind it and a row
+measured without it is the easy case.
+
+**Two other answers were tried, in the product, and both were worse.** Moving the
+three controls onto the project header cost no row at all — and then the *header*
+was 52px short at 210px, with the project's own name as the only elastic thing on
+it, so the same clip arrived one element along. Replacing `archived` with a
+magnifying glass fits at any width and says "search", which is what the box does
+now; but the caret is what says the rows are *behind* it, and this control is a
+fold before it is a search.
+
+**The count did go, and it is not coming back.** `archived 24` was the widest
+label of the three, and the number is better said inside the box — as `3 of 24`,
+against the query it is answering. `co-count` on the project header is untouched:
+it turns amber for a session that needs you, and a folded checkout draws no rows
+to say that otherwise.

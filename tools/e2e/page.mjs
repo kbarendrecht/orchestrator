@@ -368,6 +368,69 @@ try {
   await page.waitForTimeout(2000)
   check((await railNames()).join('|') === after.join('|'), 'the order survives a reload and the snapshots after it')
 
+  /* --- the add row, at every rail width --------------------------------------- */
+
+  /* `+ worktree`, `+ main` and `archived` share one line under the list. They
+     spent a commit on the project header instead, which costs no row — and three
+     labels did not fit: at `COLS.rail.min`, 210px and one drag away, the last of
+     them ran off the right edge, where `.rail`'s `overflow:hidden` swallows it
+     silently. The row has the same arithmetic to answer, so it is measured here
+     rather than reasoned about. */
+  const { session: doomed } = await t.api('POST', '/api/worktree', { name: 'archive-me' })
+  await t.settled(doomed)
+  await t.api('POST', `/api/session/${doomed}/kill`)
+  await page.waitForFunction(() => !!document.querySelector('#rail .ws-add .arctoggle'),
+    null, { timeout: 15_000 })
+
+  const addText = await page.$$eval('#rail .ws-add .addbtn', (b) => b.map((x) => x.textContent))
+  check(addText.join('|') === '+ worktree|+ main',
+    `the add row carries both verbs, got ${JSON.stringify(addText)}`)
+  check(await page.locator('#rail .ws-title .addbtn').count() === 0,
+    'and the project header carries none of them')
+
+  const atWidth = (px) => page.evaluate((w) => {
+    const root = document.documentElement
+    const had = root.style.getPropertyValue('--rail')
+    root.style.setProperty('--rail', `${w}px`)
+    const rail = document.querySelector('#rail').getBoundingClientRect()
+    const arc = document.querySelector('#rail .ws-add .arctoggle').getBoundingClientRect()
+    const name = document.querySelector('#rail .ws-title .co-name').getBoundingClientRect()
+    root.style.setProperty('--rail', had)
+    return { spill: Math.round(arc.right - rail.right), arc: Math.round(arc.width), name: Math.round(name.width) }
+  }, px)
+
+  for (const w of [320, 210]) {
+    const { spill, arc, name } = await atWidth(w)
+    check(spill <= 0, `at ${w}px the archive stays inside the rail, overflowed by ${spill}px`)
+    // Clipped to nothing is the same fault as pushed off the edge, one rule along.
+    check(arc >= 40, `at ${w}px the archive keeps its word, got ${arc}px wide`)
+    check(name >= 24, `at ${w}px the project name is readable, got ${name}px`)
+  }
+
+  /* --- the archive filters what is in it -------------------------------------- */
+
+  /* The filter is inside the box the caret opens, and it answers in two waves:
+     the names out of the snapshot, then whatever the daemon finds in the
+     transcripts. Only the first is asserted here — the second is one `getOn` away
+     and needs a transcript with words in it — but the count is the contract both
+     waves write to, and a filter that matched nothing while claiming otherwise is
+     the failure worth catching. */
+  await page.click('#rail .ws-add .arctoggle')
+  await page.waitForSelector('#rail .arcbox .arcq', { timeout: 10_000 })
+  const arcRows = () => page.locator('#rail .arcbox .sess.arc').count()
+  check(await arcRows() >= 1, 'the archive opens on the conversation that was killed')
+  await page.fill('#rail .arcbox .arcq', 'zzzznothinglikethis')
+  await page.waitForFunction(() => document.querySelectorAll('#rail .arcbox .sess.arc').length === 0,
+    null, { timeout: 5000 })
+  const counted = await page.textContent('#rail .arcbox .arcn')
+  check(/^0 of [1-9]/.test(counted ?? ''),
+    `and a query nothing matches says so against the total, got "${counted}"`)
+  await page.fill('#rail .arcbox .arcq', '')
+  await page.waitForFunction(() => document.querySelectorAll('#rail .arcbox .sess.arc').length >= 1,
+    null, { timeout: 5000 })
+  check(await page.textContent('#rail .arcbox .arcn') === '',
+    'and clearing it puts the archive back with no count to explain')
+
   /* --- Backspace is not a way out of the board -------------------------------- */
 
   /* **The other half of #14, and the half that can be proven here.** A bare

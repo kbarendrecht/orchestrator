@@ -1062,6 +1062,122 @@ pub fn ai_title(id: uuid::Uuid, cwd: &Path, recorded: Option<&Path>) -> Option<S
     found
 }
 
+/// The longest record a search will look inside.
+///
+/// A turn somebody typed is a few hundred bytes; a record past this is a tool
+/// result, and those are what make a transcript search useless — `rebase` matches
+/// 215 of the 286 transcripts on this machine when the output counts, because an
+/// agent printed the word somewhere. Skipping them by size is the cheap half of
+/// the filter; [`spoken_text`] is the exact half.
+const SEARCH_RECORD_MAX: usize = 256 * 1024;
+
+/// How much of one matching turn to hand back for a rail row.
+const SNIPPET_MAX: usize = 160;
+
+/// ASCII-case-insensitive `contains`, without lowercasing the haystack.
+///
+/// A transcript is megabytes of lines and only a handful can match, so allocating
+/// a lowercase copy of each one is the whole cost of the scan. Needle comes in
+/// already lowercased by the caller, once.
+fn contains_ci(hay: &str, needle_lower: &str) -> bool {
+    let (h, n) = (hay.as_bytes(), needle_lower.as_bytes());
+    n.len() <= h.len() && h.windows(n.len()).any(|w| w.eq_ignore_ascii_case(n))
+}
+
+/// What a person or the agent actually said in one transcript record.
+///
+/// **Tool results are deliberately not in here.** A `user` record carries either a
+/// typed turn or the output of the tool the agent just ran, and the second kind is
+/// most of the file. Only `text` blocks count, so a hit means "this was discussed"
+/// rather than "this scrolled past once".
+fn spoken_text(v: &serde_json::Value) -> Vec<&str> {
+    let kind = v.get("type").and_then(|t| t.as_str()).unwrap_or_default();
+    if kind != "user" && kind != "assistant" {
+        return Vec::new();
+    }
+    let Some(content) = v.pointer("/message/content") else {
+        return Vec::new();
+    };
+    if let Some(s) = content.as_str() {
+        return vec![s];
+    }
+    content
+        .as_array()
+        .map(|blocks| {
+            blocks
+                .iter()
+                .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
+                .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The first thing said in this transcript that contains `needle_lower`.
+///
+/// `None` is the ordinary answer — most conversations are about something else —
+/// and so is a transcript that is not there: a session whose file has been removed
+/// still has a row, and a search is not where that should be reported.
+///
+/// Streamed rather than read whole, and one hit ends the file: the archive row
+/// wants a line to show, not every line that matched.
+pub fn first_spoken_match(path: &Path, needle_lower: &str) -> Option<String> {
+    use std::io::{BufRead, BufReader};
+    let mut r = BufReader::new(std::fs::File::open(path).ok()?);
+    let mut raw = Vec::new();
+    loop {
+        raw.clear();
+        match r.read_until(b'\n', &mut raw) {
+            Ok(0) | Err(_) => return None,
+            Ok(_) => {}
+        }
+        if raw.len() > SEARCH_RECORD_MAX {
+            continue;
+        }
+        let line = String::from_utf8_lossy(&raw);
+        // The cheap test first, on the raw record: a JSON parse per line is what
+        // `ai_title` found to be the cost of reading these files at all.
+        if !contains_ci(&line, needle_lower) {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
+            continue;
+        };
+        for said in spoken_text(&v) {
+            if contains_ci(said, needle_lower) {
+                return Some(snippet(said, needle_lower));
+            }
+        }
+    }
+}
+
+/// One line of what was said, centred on the match.
+///
+/// Whitespace is collapsed because a rail row is one line and a pasted stack trace
+/// is not: the row shows what was said, and the transcript is where the rest is.
+fn snippet(said: &str, needle_lower: &str) -> String {
+    let flat = said.split_whitespace().collect::<Vec<_>>().join(" ");
+    let at = flat
+        .char_indices()
+        .find(|(i, _)| contains_ci(flat.get(*i..).unwrap_or_default(), needle_lower))
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    // A little context ahead of the word, on a char boundary: `flat[at..]` alone
+    // starts mid-sentence and reads as clipped for no gain.
+    let start = flat[..at]
+        .char_indices()
+        .rev()
+        .nth(24)
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    let mut out = String::new();
+    if start > 0 {
+        out.push('\u{2026}');
+    }
+    out.extend(flat[start..].chars().take(SNIPPET_MAX));
+    out
+}
+
 /// The first `n` bytes of a file, or the whole thing if it is shorter.
 fn read_head(path: &Path, n: u64) -> std::io::Result<Vec<u8>> {
     use std::io::Read;
@@ -1313,6 +1429,86 @@ mod tests {
             got.as_deref(),
             Some("Fix Ctrl+P not showing all filled pages")
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **The whole reason the archive search is not a grep.** Measured on the
+    /// machine this was written on: `rebase` appears in 215 of 286 transcripts
+    /// when tool output counts, and in a handful when only the turns do.
+    #[test]
+    fn a_transcript_search_reads_what_was_said_and_not_what_a_tool_printed() {
+        let dir = std::env::temp_dir().join(format!("orchd-arcsearch-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let printed = dir.join("printed.jsonl");
+        std::fs::write(
+            &printed,
+            concat!(
+                r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"error: cannot rebase onto develop"}]}}"#,
+                "\n",
+                r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"git rebase"}}]}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        assert_eq!(super::first_spoken_match(&printed, "rebase"), None);
+
+        let said = dir.join("said.jsonl");
+        std::fs::write(
+            &said,
+            concat!(
+                r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"rebase rebase rebase"}]}}"#,
+                "\n",
+                r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"can you Rebase this onto develop first"}]}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        let hit = super::first_spoken_match(&said, "rebase").unwrap();
+        // Case-insensitive, and it hands back the turn rather than the word.
+        assert!(hit.contains("Rebase this onto develop"), "{hit}");
+
+        // A plain-string `content` is the other shape Claude Code writes.
+        let plain = dir.join("plain.jsonl");
+        std::fs::write(
+            &plain,
+            concat!(
+                r#"{"type":"user","message":{"role":"user","content":"the swap took the branch with it"}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        assert!(super::first_spoken_match(&plain, "swap")
+            .unwrap()
+            .contains("the swap took the branch"));
+
+        // A conversation about something else is the ordinary answer, and so is a
+        // transcript that is not there at all.
+        assert_eq!(super::first_spoken_match(&plain, "rebase"), None);
+        assert_eq!(
+            super::first_spoken_match(&dir.join("gone.jsonl"), "rebase"),
+            None
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A record past [`SEARCH_RECORD_MAX`] is a tool result, whatever it claims to
+    /// be, and reading it is what the size skip exists to avoid.
+    #[test]
+    fn a_record_too_big_to_be_a_turn_is_skipped() {
+        let dir = std::env::temp_dir().join(format!("orchd-arcbig-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("big.jsonl");
+        let padding = "x".repeat(super::SEARCH_RECORD_MAX);
+        std::fs::write(
+            &file,
+            format!(
+                r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"rebase {padding}"}}]}}}}"#
+            ) + "\n",
+        )
+        .unwrap();
+        assert_eq!(super::first_spoken_match(&file, "rebase"), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

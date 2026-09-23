@@ -1,7 +1,7 @@
 // The rail: what is running, what is waiting on you, and the PRs beside it.
 // Twenty-four names, three out; the rest is how a row decides what it says.
 
-import { $, activeCheckout, bandOf, byNewest, call, callFor, callHost, callOn, caret, checkoutOf, CHECKOUTS, chooseBox, clock, confirmBox, copyText, creating, creatingIn, dotClass, el, enterCheckout, everySession, getHost, inTrouble, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, QUEUE_MAX, reason, refreshButton, repoSummary, safeHref, selected, sessionsOf, sessionOrder, setPendingSelect, setSelected, setSessionOrder, snap, snapshotFor, snapshotOf, startingShown, stateClass, stateLabel, terms, toast, paintSig, reconcile, unchanged, watchStarting } from './core.js';
+import { $, activeCheckout, bandOf, byNewest, call, callFor, callHost, callOn, caret, checkoutOf, CHECKOUTS, chooseBox, clock, confirmBox, copyText, creating, creatingIn, dotClass, el, enterCheckout, everySession, getHost, getOn, inTrouble, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, QUEUE_MAX, reason, refreshButton, repoSummary, safeHref, selected, sessionsOf, sessionOrder, setPendingSelect, setSelected, setSessionOrder, snap, snapshotFor, snapshotOf, startingShown, stateClass, stateLabel, terms, toast, paintSig, reconcile, unchanged, watchStarting } from './core.js';
 import * as Open from './open.js';
 import * as Review from './review.js';
 import * as Term from './term.js';
@@ -11,6 +11,37 @@ import * as Term from './term.js';
 /** @type {Record<string, boolean>} */
 /** @type {Record<string, boolean>} */
 const showArchived = { main: false, worktrees: false };
+
+/* The archive filter, per checkout, and the two halves of its answer.
+ *
+ * **Names are free and transcripts are not**, which is the whole shape of this:
+ * `arcQuery` filters the rows the snapshot already carries, on every keystroke,
+ * with no request at all; `arcHits` is what `/api/archive/search` came back with
+ * for that same query, and it arrives when it arrives. Keyed by checkout path,
+ * because the archive is one checkout's and so is its filter.
+ *
+ * `busy` is what draws the spinner, and it is the *last* row: hits land above it,
+ * so nothing already on screen moves when the slow half lands. */
+/** @type {Record<string, string>} */
+const arcQuery = {};
+/** @type {Record<string, { q: string, busy: boolean, hits: Record<string, string> }>} */
+const arcHits = {};
+/** @type {Record<string, ReturnType<typeof setTimeout>>} */
+const arcTimer = {};
+
+/** How long to wait for the typing to stop before reading any transcripts.
+ *
+ *  The names have already answered by then. This is the half that opens files,
+ *  and a request per keystroke would have the daemon reading the same megabytes
+ *  five times to answer the query you were on the way to. */
+const ARC_DEBOUNCE = 250;
+
+/** The shortest query worth reading transcripts for.
+ *
+ *  Two characters match almost every conversation, so a scan for one of them is a
+ *  full read of the checkout's archive to tell you nothing. The daemon refuses the
+ *  same length — a page is not the only thing that can call it. */
+const ARC_MIN = 2;
 
 /* The session whose name is being edited in place, or null. A snapshot lands
  * every second and rebuilds the rail, which would blow the input away mid-type —
@@ -75,8 +106,12 @@ function renderRail() {
      nothing the signature could see — so the render returned early and neither
      appeared until the next snapshot happened along. Which is exactly the window
      both of them exist to cover. */
+  /* `arcQuery` and `arcHits` are view state the snapshot cannot see, like
+     `showArchived` above them: typing in the filter and the answer coming back are
+     both things that change the rail and nothing else. */
   if (unchanged(drawn, [states, CHECKOUTS, activeCheckout().path, [...folded], showArchived,
-    showPrs, picked, selected, swapInFlight, creating(), creatingIn(), sessionOrder], NOT_DRAWN)) {
+    arcQuery, arcHits, showPrs, picked, selected, swapInFlight, creating(), creatingIn(),
+    sessionOrder], NOT_DRAWN)) {
     return;
   }
 
@@ -452,6 +487,10 @@ function inCheckout(s) {
  *  untouched. `aria-current` rather than a class alone, because "the one you are
  *  in" is the fact a screen reader needs and the colour is what a sighted reader
  *  gets instead.
+ *
+ *  **The verbs are not here**, and `addRow` carries that argument: they were, for
+ *  one commit, and three labels do not fit a header that has to survive a 210px
+ *  rail.
  *
  *  @param {import('./core.js').Target} c
  */
@@ -1013,15 +1052,10 @@ function prRow(/** @type {any} */ p) {
  *  many of them, and a session's own slice of the snapshot is exactly what one
  *  draws from. */
 function fillSessions(/** @type {HTMLElement} */ group, /** @type {import('./core.js').Target} */ c, /** @type {import('../snapshot').Snapshot} */ state, /** @type {import('../snapshot').WorkspaceView | undefined} */ main, /** @type {string} */ chrome, /** @type {boolean} */ titled = false) {
-  const mainSessions = main ? sessionsOf(main.id, state) : [];
-  const mainActive = mainSessions.filter((/** @type {import('../snapshot').SessionView} */ s) => !isArchived(s));
-
-  /* Anything that is not main's belongs here — by session, not by workspace. A
-     worktree Claude Code has not named yet has no workspace record at all, only a
-     session pointing at the placeholder, so filtering on the known workspaces
-     dropped exactly the row that says something is happening. */
-  const treeSessions = state.sessions.filter((/** @type {import('../snapshot').SessionView} */ s) => s.workspace !== main?.id);
-  const treeActive = treeSessions.filter((/** @type {import('../snapshot').SessionView} */ s) => !isArchived(s));
+  /* One reader for both the header's verbs and this list — see `checkoutFacts`.
+     `main` is still a parameter because the caller has it, and the two must be the
+     same workspace. */
+  const { mainActive, treeActive, archived, external } = checkoutFacts(c, state);
 
   /** @type {any[]} */
   const items = [];
@@ -1136,25 +1170,11 @@ function fillSessions(/** @type {HTMLElement} */ group, /** @type {import('./cor
     });
   }
 
-  /* One archive per checkout rather than one per group, which follows from there
-     being one list: the two folds were only ever separate because their headings
-     were. Read once here because the add row shows the count and the box below
-     draws the rows, and two reads of it could disagree. */
-  const archived = [...mainSessions, ...treeSessions].filter(isConversation);
-  /* Conversations orchd never started, which the daemon finds by reading Claude
-     Code's own transcript directory for each of this checkout's workspaces. In the
-     same fold as the archive because "the conversation I had in this checkout" is
-     one question, and which program started it is not part of it. */
-  const external = state.external || [];
-  items.push({
-    key: 'add',
-    sig: chrome,
-    build: () => addRow(c, state, main, mainActive, archived, external),
-  });
-  /* **The rows, in the box `archivedToggle` opens from the add row above.** The
-     box is bounded in CSS at about ten rows rather than truncated, and it is also
-     what says "section" now the heading rides the add row — `archivedToggle` and
-     `archiveOpen` carry the rest of that reasoning.
+  items.push({ key: 'add', sig: chrome, build: () => addRow(c, state) });
+  /* **The rows, in the box `archivedToggle` opens from the add row above.** The box is
+     bounded in CSS at about ten rows rather than truncated, and it is also what
+     says "section" now that the control naming it rides the header —
+     `archivedToggle` and `archiveOpen` carry the rest of that reasoning.
 
      Keyed inside it, because an archived row is hovered and clicked like a live
      one and has the same claim on surviving a repaint. */
@@ -1163,29 +1183,149 @@ function fillSessions(/** @type {HTMLElement} */ group, /** @type {import('./cor
       key: 'arcbox',
       sig: 'arcbox',
       build: () => el('div', 'arcbox'),
-      /* The daemon's own first, then the outside ones. Two lists rather than one
-         merged by age, because the two rows do not offer the same thing: an
-         archived row knows its branch and rebuilds its worktree, an outside row
-         knows a file and a directory. Interleaving them would make which of those
-         you get depend on when you last spoke to it. */
-      fill: (/** @type {HTMLElement} */ box) => reconcile(box, [
-        ...[...archived]
-          .sort(byNewest)
-          .map((/** @type {import('../snapshot').SessionView} */ s) => ({
-            key: `arc:${s.id}`,
-            sig: paintSig([s, s.id === selected], NOT_DRAWN),
-            build: () => archivedRow(s),
-          })),
-        // Already newest-first, and capped, by the daemon that found them.
-        ...external.map((/** @type {import('../snapshot').ExternalView} */ x) => ({
-          key: `ext:${x.id}`,
-          sig: paintSig([x, c.path], NOT_DRAWN),
-          build: () => externalRow(c, x),
-        })),
-      ]),
+      fill: (/** @type {HTMLElement} */ box) => fillArchive(box, c, archived, external),
     });
   }
   reconcile(group, items);
+}
+
+/** The archive, filtered.
+ *
+ *  **One field, one list, two waves.** The names are in the snapshot this page
+ *  already holds, so they filter on the keystroke with no request at all; the
+ *  transcripts are megabytes on disk, so they are asked for on a debounce and
+ *  appended when they come back. Names first is not a preference: anything drawn
+ *  above the wait would be pushed down when the slow half lands, and the row you
+ *  were reaching for would move under the pointer.
+ *
+ *  No divider between the two. A transcript hit says what it is by carrying the
+ *  line it matched, where a name hit shows its state.
+ *
+ *  @param {HTMLElement} box
+ *  @param {import('./core.js').Target} c
+ *  @param {import('../snapshot').SessionView[]} archived
+ *  @param {import('../snapshot').ExternalView[]} external
+ */
+function fillArchive(box, c, archived, external) {
+  const q = (arcQuery[c.path] || '').trim().toLowerCase();
+  const answer = arcHits[c.path];
+  // Only the answer to the query in the box. An older one is about a word that is
+  // no longer in there, and showing it is worse than showing nothing.
+  const hits = answer && answer.q === q ? answer.hits : {};
+  const busy = !!answer && answer.q === q && answer.busy;
+
+  const named = (/** @type {string} */ text) => !q || text.toLowerCase().includes(q);
+  /* The daemon's own first, then the outside ones. Two lists rather than one
+     merged by age, because the two rows do not offer the same thing: an archived
+     row knows its branch and rebuilds its worktree, an outside row knows a file and
+     a directory. Interleaving them would make which of those you get depend on when
+     you last spoke to it. */
+  const byName = [
+    ...[...archived].sort(byNewest)
+      .filter((/** @type {import('../snapshot').SessionView} */ s) => named(railName(s, { id: s.workspace }))),
+    // Already newest-first, and capped, by the daemon that found them.
+    ...external.filter((/** @type {import('../snapshot').ExternalView} */ x) => named(x.title || '')),
+  ];
+  // A session the name already listed must not appear twice: the name hit wins,
+  // because it is the one that is certainly about this conversation.
+  const shownIds = new Set(byName.map((r) => r.id));
+  const byText = [
+    ...[...archived].sort(byNewest)
+      .filter((/** @type {import('../snapshot').SessionView} */ s) => !shownIds.has(s.id) && hits[s.id]),
+    ...external.filter((/** @type {import('../snapshot').ExternalView} */ x) => !shownIds.has(x.id) && hits[x.id]),
+  ];
+
+  const row = (/** @type {any} */ r, /** @type {string | undefined} */ said) => ('last_used_ms' in r
+    ? { key: `ext:${r.id}`, sig: paintSig([r, c.path, said ?? ''], NOT_DRAWN), build: () => externalRow(c, r, said) }
+    : { key: `arc:${r.id}`, sig: paintSig([r, r.id === selected, said ?? ''], NOT_DRAWN), build: () => archivedRow(r, said) });
+
+  reconcile(box, [
+    {
+      /* Built once and kept, whatever else moves: it holds the caret and the
+         focus, and a rebuilt input loses both. Its count is written in `fill`
+         instead, which is the one part of it that changes. */
+      key: 'filter',
+      sig: 'filter',
+      build: () => archiveFilter(c),
+      fill: (/** @type {HTMLElement} */ f) => {
+        const n = f.querySelector('.arcn');
+        if (n) n.textContent = q ? `${byName.length + byText.length} of ${archived.length + external.length}` : '';
+      },
+    },
+    ...byName.map((r) => row(r, undefined)),
+    ...byText.map((r) => row(r, hits[r.id])),
+    // Last, always: hits land above it as they arrive, so nothing already drawn
+    // moves when the slow half of the search finishes.
+    ...(busy ? [{ key: 'arcbusy', sig: 'arcbusy', build: () => searchingRow() }] : []),
+  ]);
+}
+
+/** The filter line, pinned at the top of the archive box.
+ *
+ *  Inside the box rather than above it, because the box is what the caret opens: a
+ *  field over a closed archive is a control for something that is not on screen.
+ *
+ *  @param {import('./core.js').Target} c
+ */
+function archiveFilter(c) {
+  const wrap = el('div', 'arcfilter');
+  const input = /** @type {HTMLInputElement} */ (el('input', 'arcq'));
+  input.type = 'search';
+  input.placeholder = 'filter past conversations';
+  input.value = arcQuery[c.path] || '';
+  input.oninput = () => {
+    arcQuery[c.path] = input.value;
+    askTranscripts(c);
+    renderRail();
+  };
+  wrap.appendChild(input);
+  // Written by `fillArchive`, because it counts what that pass drew.
+  wrap.appendChild(el('span', 'arcn'));
+  return wrap;
+}
+
+/** Ask the daemon what the transcripts say, once the typing stops.
+ *
+ *  Fire-and-forget, like everything else on this path: the answer lands in
+ *  `arcHits` and the rail redraws from it. A failure leaves the names showing,
+ *  which is the half that was always going to be there.
+ *
+ *  @param {import('./core.js').Target} c
+ */
+function askTranscripts(c) {
+  const q = (arcQuery[c.path] || '').trim().toLowerCase();
+  clearTimeout(arcTimer[c.path]);
+  if (q.length < ARC_MIN) {
+    delete arcHits[c.path];
+    return;
+  }
+  // `busy` from the keystroke, not from the request: the spinner is the answer to
+  // "is something still coming", and the debounce is part of the wait.
+  arcHits[c.path] = { q, busy: true, hits: {} };
+  arcTimer[c.path] = setTimeout(() => {
+    void getOn(c, `/api/archive/search?find=${encodeURIComponent(q)}`)
+      .then((/** @type {any} */ r) => {
+        // The query moved on while this was in flight. Its answer is about a word
+        // that is no longer in the box.
+        if ((arcQuery[c.path] || '').trim().toLowerCase() !== q) return;
+        /** @type {Record<string, string>} */
+        const hits = {};
+        for (const h of r.hits || []) hits[h.id] = h.line;
+        arcHits[c.path] = { q, busy: false, hits };
+      })
+      .catch(() => {
+        if ((arcQuery[c.path] || '').trim().toLowerCase() === q) arcHits[c.path] = { q, busy: false, hits: {} };
+      })
+      .finally(() => renderRail());
+  }, ARC_DEBOUNCE);
+}
+
+/** The last row of the archive while the transcripts are being read. */
+function searchingRow() {
+  const row = el('div', 'arcbusy');
+  row.appendChild(el('span', 'arcspin'));
+  row.appendChild(el('span', null, 'searching transcripts'));
+  return row;
 }
 
 /** A session that has been asked for and does not exist yet.
@@ -1229,15 +1369,50 @@ function startingRow() {
   return row;
 }
 
-/** The two ways to start a session, on one line at the foot of the list.
+/** The two ways to start a session and the archive, on one line under the list.
  *
- *  **Both say what they make, and a worktree session is a session too** — which is
- *  why the first of these is `+ main` and not `+ session`. The old pair sat in two
- *  headings and read as `+` twice, so which one you were pressing came from where
- *  it was rather than from what it said.
+ *  **Under the list, not on the header, and that was tried the other way.** The
+ *  verbs spent a commit on `checkoutHead`, which costs no row and puts them beside
+ *  the name they act on — and then three labels did not fit: the width check
+ *  failed by 52px at `COLS.rail.min`, and the fixes for that were clipping a word
+ *  or trading `archived` for an icon. Here they have the room, and the row reads as
+ *  one sentence about the list above it: what you can add on the left, what it is
+ *  holding back on the right.
+ *
+ *  **Both verbs say what they make, and a worktree session is a session too** —
+ *  which is why the second of these is `+ main` and not `+ session`. `+ worktree`
+ *  leads because it is nearly every session there is; main is the exception, and
+ *  often refused.
+ *
+ *  @param {import('./core.js').Target} c
+ *  @param {import('../snapshot').Snapshot} state
  */
-function addRow(/** @type {import('./core.js').Target} */ c, /** @type {import('../snapshot').Snapshot} */ state, /** @type {import('../snapshot').WorkspaceView | undefined} */ main, /** @type {import('../snapshot').SessionView[]} */ mainActive, /** @type {import('../snapshot').SessionView[]} */ archived, /** @type {import('../snapshot').ExternalView[]} */ external) {
+function addRow(c, state) {
   const row = el('div', 'ws-add');
+  const { main, mainActive, archived, external } = checkoutFacts(c, state);
+
+  /* Dead while one is being cut, and it says which one in the tooltip. Two things
+     make one press look like none: the POST is a worktree, the repo's hooks and a
+     `claude` boot, and the row that lands after it says `…creating` for as long as
+     it takes Claude Code to name the tree. Both are covered — the claim in `core`
+     for the first, `pending` for the second — because the second window is the
+     longer one and a `+` that came back to life halfway is the same invitation to
+     press again.
+
+     Live ones only. A placeholder session that died before `SessionStart` keeps
+     the placeholder workspace for good, and counting that would leave the button
+     dead until a restart. */
+  const cutting = creating()
+    || (state.sessions.some((/** @type {import('../snapshot').SessionView} */ s) => pending(s) && !isArchived(s)) ? 'creating a worktree' : null);
+  const tree = el('button', 'addbtn', '+ worktree');
+  tree.disabled = !!cutting;
+  /* Naming a worktree is not a control: it is shift-click and `Shift N`, and it
+     stays in this tooltip because that is the only place it is ever discovered. */
+  tree.title = cutting || `New worktree session · ${MOD_LABEL} N (shift-click to name it)`;
+  tree.onclick = (/** @type {MouseEvent} */ ev) => void newWorktree(ev.shiftKey, c);
+  row.appendChild(tree);
+
+  row.appendChild(el('span', 'addsep', '\u00b7'));
 
   /* Main is exclusive: one active session at a time, and no queue. While it is
      occupied the button is disabled and says who holds it — unless
@@ -1262,36 +1437,44 @@ function addRow(/** @type {import('./core.js').Target} */ c, /** @type {import('
   inMain.onclick = () => { if (main) void newSession(main.id, c); };
   row.appendChild(inMain);
 
-  row.appendChild(el('span', 'addsep', '\u00b7'));
-
-  /* Dead while one is being cut, and it says which one in the tooltip. Two things
-     make one press look like none: the POST is a worktree, the repo's hooks and a
-     `claude` boot, and the row that lands after it says `…creating` for as long as
-     it takes Claude Code to name the tree. Both are covered — the claim in `core`
-     for the first, `pending` for the second — because the second window is the
-     longer one and a `+` that came back to life halfway is the same invitation to
-     press again.
-
-     Live ones only. A placeholder session that died before `SessionStart` keeps
-     the placeholder workspace for good, and counting that would leave the button
-     dead until a restart. */
-  const cutting = creating()
-    || (state.sessions.some((/** @type {import('../snapshot').SessionView} */ s) => pending(s) && !isArchived(s)) ? 'creating a worktree' : null);
-  const tree = el('button', 'addbtn', '+ worktree');
-  tree.disabled = !!cutting;
-  tree.title = cutting || `New worktree session · ${MOD_LABEL} N (shift-click to name it)`;
-  tree.onclick = (/** @type {MouseEvent} */ ev) => newWorktree(ev.shiftKey, c);
-  row.appendChild(tree);
-
-  /* **On this row rather than under it**, hard right. The row then says one thing
-     about the list above it — what you can add on the left, what it is holding
-     back on the right — where it used to be two rows, both starting with a verb,
-     for two ideas that are not alike. Absent when there is no archive, which is
-     the one case where the row has nothing to say on that side. */
+  /* Hard right, so the row says one thing about the list above it rather than two:
+     what you can add, and what it is holding back. Absent when there is no archive,
+     which is the one case where the row has nothing to say on that side. */
   const fold = archivedToggle(c, 'sessions', archived, external);
   if (fold) row.appendChild(fold);
 
   return row;
+}
+
+/** The four things both the header and the list read off one snapshot.
+ *
+ *  One reader, because they used to be two: the add row counted the archive and
+ *  the box below it drew the rows, and two filters over one list are two things
+ *  that can disagree about what is in it.
+ *
+ *  @param {import('./core.js').Target} c
+ *  @param {import('../snapshot').Snapshot} state
+ */
+function checkoutFacts(c, state) {
+  const main = mainWorkspace(state);
+  const mainSessions = main ? sessionsOf(main.id, state) : [];
+  /* Anything that is not main's belongs to a worktree — by session, not by
+     workspace. A worktree Claude Code has not named yet has no workspace record at
+     all, only a session pointing at the placeholder. */
+  const treeSessions = state.sessions.filter((/** @type {import('../snapshot').SessionView} */ s) => s.workspace !== main?.id);
+  return {
+    main,
+    mainSessions,
+    treeSessions,
+    mainActive: mainSessions.filter((/** @type {import('../snapshot').SessionView} */ s) => !isArchived(s)),
+    treeActive: treeSessions.filter((/** @type {import('../snapshot').SessionView} */ s) => !isArchived(s)),
+    archived: [...mainSessions, ...treeSessions].filter(isConversation),
+    /* Conversations orchd never started, which the daemon finds by reading Claude
+       Code's own transcript directory for each of this checkout's workspaces. In
+       the same fold as the archive because "the conversation I had in this
+       checkout" is one question, and which program started it is not part of it. */
+    external: state.external || [],
+  };
 }
 
 /** Is this checkout's archive open?
@@ -1309,10 +1492,14 @@ function archiveOpen(/** @type {import('./core.js').Target} */ c, /** @type {str
   return { held, open: showArchived[held] || sessions.some((/** @type {import('../snapshot').SessionView} */ s) => s.id === selected) };
 }
 
-/** The archive's own control, which rides the add row.
+/** The archive's own control, which rides the header.
  *
- *  `null` when nothing is archived: a count of zero is not news, and the row is
+ *  `null` when nothing is archived: a count of zero is not news, and the header is
  *  better off with the space.
+ *
+ *  **No count on it.** The number said nothing you act on, and the box it opens
+ *  says it better — as `3 of 24`, against the query it is answering. What it cost
+ *  was the widest label on a header that has to hold three of them.
  */
 function archivedToggle(/** @type {import('./core.js').Target} */ c, /** @type {string} */ key, /** @type {import('../snapshot').SessionView[]} */ sessions, /** @type {import('../snapshot').ExternalView[]} */ external) {
   /* Both counted, because both are behind this caret. A checkout whose only past
@@ -1326,9 +1513,16 @@ function archivedToggle(/** @type {import('./core.js').Target} */ c, /** @type {
   btn.setAttribute('aria-expanded', String(open));
   btn.title = `${total} past conversation${total === 1 ? '' : 's'} in this checkout`;
   btn.appendChild(caret());
+  /* The word stays `archived`: `stateLabel` in `core.js` prints it on the rows
+     inside the box, so a control called anything else would be the one place in the
+     app using a second word for one state. **A glass was tried here and taken
+     back** — it fits anywhere and says "search", which is what the box does, but
+     the caret is the thing that says the rows are *behind* it, and this control is
+     a fold before it is a search. It has the room for the word where it sits. */
   btn.appendChild(el('span', null, 'archived'));
-  btn.appendChild(el('span', 'arccount', String(total)));
-  btn.onclick = () => {
+  btn.onclick = (/** @type {MouseEvent} */ ev) => {
+    // The header it rides is the drag handle and folds on a double-click.
+    ev.stopPropagation();
     /* Opening it asks the daemon to look again for conversations it did not start.
        Its poller runs on a minute, and the terminal you are opening this to find is
        usually the one you closed a moment ago. Fire-and-forget: the answer arrives
@@ -1345,7 +1539,7 @@ function archivedToggle(/** @type {import('./core.js').Target} */ c, /** @type {
  *
  *  No state word — `archived` is the state, and the section it sits in already
  *  says it. Clicking rebuilds what it needs and resumes it. */
-function archivedRow(/** @type {import('../snapshot').SessionView} */ s) {
+function archivedRow(/** @type {import('../snapshot').SessionView} */ s, /** @type {string | undefined} */ said) {
   const btn = el('button', 'sess arc');
   btn.setAttribute('aria-current', String(s.id === selected));
   // So a rename can find this row's name span again after any re-render.
@@ -1360,7 +1554,12 @@ function archivedRow(/** @type {import('../snapshot').SessionView} */ s) {
   row.appendChild(clock('sess-id', s.created_ms, ' ago'));
   btn.appendChild(row);
 
-  if (!s.resumable) {
+  if (said) {
+    /* This row is here because of what was said in it, not because of its name, so
+       the line it matched is what the row has to show — the state is the answer to
+       a question nobody asked of this row. */
+    btn.appendChild(el('div', 'sess-sub said', said, said));
+  } else if (!s.resumable) {
     // The transcript is readable, the conversation cannot be continued (§2).
     btn.appendChild(el('div', 'sess-sub', 'transcript only'));
   } else if (!snapshotFor(s.id).workspaces.some((w) => w.id === s.workspace)) {
@@ -1421,7 +1620,7 @@ async function openArchived(/** @type {import('../snapshot').SessionView} */ s) 
  *  to mean deleting Claude Code's own file, which `api::delete_session` is explicit
  *  about never doing.
  */
-function externalRow(/** @type {import('./core.js').Target} */ c, /** @type {import('../snapshot').ExternalView} */ x) {
+function externalRow(/** @type {import('./core.js').Target} */ c, /** @type {import('../snapshot').ExternalView} */ x, /** @type {string | undefined} */ said) {
   const btn = el('button', 'sess arc');
   btn.dataset.id = x.id;
   const row = el('div', 'sess-row');
@@ -1433,9 +1632,11 @@ function externalRow(/** @type {import('./core.js').Target} */ c, /** @type {imp
   row.appendChild(el('span', 'sess-name', name, name));
   row.appendChild(clock('sess-id', x.last_used_ms, ' ago'));
   btn.appendChild(row);
-  // Where it ran, when that is not the obvious answer. `outside` is the word for
-  // what makes this row different: the daemon never started it.
-  btn.appendChild(el('div', 'sess-sub', x.workspace === 'main' ? 'outside' : `outside · ${x.workspace}`));
+  /* Where it ran, when that is not the obvious answer. `outside` is the word for
+     what makes this row different: the daemon never started it — unless the row is
+     a transcript hit, and then the line it matched is why it is here at all. */
+  if (said) btn.appendChild(el('div', 'sess-sub said', said, said));
+  else btn.appendChild(el('div', 'sess-sub', x.workspace === 'main' ? 'outside' : `outside · ${x.workspace}`));
   btn.onclick = () => openExternal(c, x);
   return btn;
 }

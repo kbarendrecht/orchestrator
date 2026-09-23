@@ -120,7 +120,7 @@ mise run paint-check                # which panes rebuild while agents work
 mise run hover-check                # does a hovered row survive a rebuild
 mise run types                      # regenerate the four generated .d.ts, in the one safe order
 mise run notices                    # regenerate THIRD-PARTY-RUST.md
-mise run e2e                        # 32 flows against a real daemon
+mise run e2e                        # 33 flows against a real daemon
 mise run deflake                    # each flow 8x, to name the flaky ones
 cargo run -p orchestrator-desktop   # the app, daemon embedded in-process
 mise run shot                       # screenshot the running SPA (drives Chrome)
@@ -325,6 +325,7 @@ together: same entries, same order, same groups.
 - Stopping a session is `kill_gracefully`, on every path.
 - The open screen merges into `config.json`, never replaces it.
 - A session's environment is not the shell's, and the gap is invisible.
+- A transcript search that reads what a tool printed answers for every conversation.
 
 ### Portability, and the processes the daemon spawns
 
@@ -387,6 +388,7 @@ together: same entries, same order, same groups.
 - The mouse's back button undoes a jump, and no gate here can prove the webview delivers it.
 - A path an agent printed is clickable, and three modules each own one third of that.
 - A dialog borrows the keyboard, and every way out of it has to hand the keyboard back.
+- The add row holds three labels, and at 210px it wraps rather than clips.
 
 ### Performance, measured
 

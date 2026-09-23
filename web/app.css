@@ -356,10 +356,22 @@ button.ctx-btn:hover{color:var(--text)}
    claiming to be what the pane is showing. It is pressable, and that is what
    brings the report back. */
 .sess.starting{background:none}
-.ws-add{display:flex;align-items:center;gap:8px;padding:6px 15px 12px}
+/* One line under the list: the two verbs on the left, the archive hard right.
+   Eleven of the bottom padding, which is the gap between this row and whatever
+   follows it — the archive box, or the next project. */
+/* **It wraps, and that is the answer to a rail dragged narrow.** The three labels
+   are about 200px of text and the column goes down to 210px (`COLS.rail.min`), so
+   at the bottom of that range the archive ran 20px off the right edge — where
+   `.rail`'s `overflow:hidden` swallows it without a mark. Wrapping puts it on a
+   line of its own, still hard right, and costs the extra line only at the width
+   that needs it. Clipping the word was the other answer and it is worse: a control
+   reading `archiv` is one nobody can finish reading. `mise run page-check`
+   measures both ends. */
+.ws-add{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;padding:7px 15px 11px}
 .addbtn{
   font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid);
   background:none;border:0;padding:0;cursor:pointer;transition:color .12s;
+  flex:0 0 auto;white-space:nowrap;
 }
 .addbtn:hover:not([disabled]){color:var(--text)}
 /* Dimmed rather than hidden: main being occupied is the answer to "why can I not
@@ -569,9 +581,9 @@ button.ctx-btn:hover{color:var(--text)}
    it sits centred in every header that carries one. */
 .caretr svg{display:block}
 .arctoggle[aria-expanded="true"] .caretr{transform:rotate(90deg)}
-/* No `margin-left:auto` any more: on a row of its own the count sat at the far
-   edge, and in the chip it belongs beside the word it counts. */
-.arccount{font-size:calc(9px * var(--fs));color:var(--ghost)}
+/* No count beside the word any more — `archivedToggle` says why: the number is in
+   the box, against the query it answers. The `margin-left:auto` above is what
+   holds it to the right of the add row. */
 
 /* **The archive is a box, and the box is what scrolls.** About ten rows, because
    a month-old checkout has dozens and the open list took the whole column —
@@ -584,9 +596,54 @@ button.ctx-btn:hover{color:var(--text)}
    moved onto the add row. */
 .arcbox{
   max-height:calc(41px * 10);overflow-y:auto;
-  border-top:1px solid var(--line-soft);border-bottom:1px solid var(--line-soft);
+  border-top:1px solid var(--line-soft);
   background:var(--bg);
 }
+
+/* **The filter is inside the box, and it stays while the rows scroll.** Inside,
+   because the box is what the caret opens and a field over a closed archive is a
+   control for something that is not on screen; sticky, because the box scrolls
+   about ten rows and a filter that scrolls away is one you cannot correct.
+   No bottom rule under the box any more: it sat directly above the next project's
+   header and read as a line between two projects, which is not what it was for. */
+.arcfilter{
+  position:sticky;top:0;z-index:1;display:flex;align-items:center;gap:8px;
+  padding:10px 14px;background:var(--bg);border-bottom:1px solid var(--line-soft);
+}
+/* A field, not a row of text: it is the one thing in this rail you type into, so
+   it gets the height a text input needs rather than the height of the rows around
+   it. `line-height` rather than more padding, so the focus border the app draws on
+   every text input sits around the field instead of hugging the letters. */
+.arcq{
+  flex:1 1 auto;min-width:0;background:none;border:0;padding:0;color:var(--text);
+  font-family:var(--mono);font-size:calc(10.5px * var(--fs));line-height:1.8;
+}
+.arcq::placeholder{color:var(--ghost)}
+/* The webkit search decorations are a magnifier and a cancel button in Chrome's
+   own metrics; the rail draws neither, and the app's engine is WebKitGTK. */
+.arcq::-webkit-search-decoration,.arcq::-webkit-search-cancel-button{-webkit-appearance:none}
+/* What the header's control gave up, back where it means something: how many of
+   the archive this query is showing. Blank until something is typed. */
+.arcn{
+  font-family:var(--mono);font-size:calc(9px * var(--fs));color:var(--faint-solid);
+  white-space:nowrap;flex:0 0 auto;
+}
+/* The last row while the transcripts are being read. Last, always — hits land
+   above it, so nothing already drawn moves when the slow half arrives. */
+.arcbusy{
+  display:flex;align-items:center;gap:7px;padding:6px 14px 8px;
+  font-family:var(--mono);font-size:calc(9px * var(--fs));color:var(--ghost);
+}
+.arcspin{
+  width:9px;height:9px;border-radius:50%;flex:0 0 auto;
+  border:1.4px solid var(--line);border-top-color:var(--dim);
+  animation:arcspin .8s linear infinite;
+}
+@keyframes arcspin{to{transform:rotate(360deg)}}
+/* What a transcript hit matched, in place of the state a name hit shows. One line
+   like every other sub-line: the row says what was said, the transcript has the
+   rest. */
+.sess-sub.said{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
 /* The rail's own foot: `+ open project`, below every project and above the PR
    pane. Outside `.rail-scroll`, so an open archive cannot push it away. */
@@ -981,7 +1038,7 @@ body:not(.ready) #termempty .empty-k{display:none}
    the refresh spinner alike. */
 @media(prefers-reduced-motion:reduce){
   .conn-dot,.connbar .d,.rvbar.work .dot{animation:none;opacity:.7}
-  .rvrefresh.spin svg{animation:none}
+  .rvrefresh.spin svg,.arcspin{animation:none}
 }
 /* Visually hidden, still read aloud — the live region that announces "needs you". */
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;

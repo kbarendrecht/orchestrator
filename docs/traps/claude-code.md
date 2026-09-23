@@ -183,3 +183,25 @@ degraded, a refused spawn is lost), and it cannot trust a config for you — mis
 refuses an untrusted `mise.toml`, a fresh worktree is a fresh path, and the only
 sign is one warning in the log. Put `mise trust` in `worktree_setup` if that
 bites.
+
+
+## A transcript search that reads what a tool printed answers for every conversation.
+`store::first_spoken_match` is the archive filter's slow half, and what it leaves
+out is the whole design. A transcript is what was said plus every tool result, and
+the results are most of the file — the same fact `ai_title` reads a 128KB tail for
+rather than parsing the file. **Measured on the machine this was written on: 286
+transcripts, 363MB, and `rebase` matches 215 of them.** A filter that answers
+"almost all of them" is not a filter.
+
+So only `user` and `assistant` records count, and inside them only `text` blocks:
+a `tool_result` rides a `user` record and is skipped by shape, and a record past
+`SEARCH_RECORD_MAX` is skipped by size before it is even parsed. The cheap test
+runs first on the raw line, because a `serde_json` parse per record is what makes
+reading these files expensive at all.
+
+**The page asks for two characters and the daemon refuses one.** One character
+matches nearly everything and costs a full read of every transcript in the
+checkout; the page debounces 250ms on top, because the names have already
+answered by then and this is the half that opens files. `tools/e2e/flows/33-archive-search.mjs`
+holds both halves of the archive — a conversation the daemon finished and one it
+never started — and that a live session is not in either.
