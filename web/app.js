@@ -958,18 +958,33 @@ Term.onPathClick(({ checkout, target, path, line, last, ev }) => {
   const state = snapshotOf(checkout) ?? snap;
   const where = ptyRoot(state, target);
   if (!where) return;
-  const rel = insideWorkspace(where, path);
+  const at = locate(state, where, path);
   // Refused rather than opened and failed: `/etc/hosts` is a real file and not
   // this workspace's, and a viewer that answers "no such file" would be lying
   // about which of the two went wrong.
-  if (!rel) return toast(`${path} is outside this workspace`, true);
+  if (!at) return toast(`${path} is outside this workspace`, true);
   /* **The file viewer, not the finder.** Opening one file used to take over the
      search overlay, which threw away whatever search was in it and answered a
      question about a single file with the machine built to list many. */
-  void FileView.candidates(where.workspace, rel).then((found) => {
-    if (!found.length) return toast(`no ${rel} in this workspace`, true);
-    void FileView.open(where.workspace, found, line, last, ev);
+  void FileView.candidates(at.workspace, at.rel).then((found) => {
+    if (!found.length) return toast(`no ${at.rel} in this workspace`, true);
+    void FileView.open(at.workspace, found, line, last, ev);
   });
+});
+
+/* **And a path is underlined only where the click would find a file.** A slash
+   alone used to be enough, so a branch name and a slash command both drew a link
+   that answered "no such file". Resolved the way the click resolves it, through
+   `locate`, so the two cannot disagree about a `.plan` path either. */
+Term.onPathCheck(({ checkout, target, paths }) => {
+  const state = snapshotOf(checkout) ?? snap;
+  const where = ptyRoot(state, target);
+  if (!where) return Promise.resolve(paths.map(() => false));
+  const at = CHECKOUTS.find((c) => c.path === checkout) ?? activeCheckout();
+  return Promise.all(paths.map((path) => {
+    const hit = locate(state, where, path);
+    return hit ? FileView.known(at, hit.workspace, hit.rel) : Promise.resolve(false);
+  }));
 });
 
 /* **The same path, with the other two things you can do to it.** A click opens
@@ -983,8 +998,9 @@ Term.onPathMenu(({ checkout, target, path, line, last, ev }) => {
   const state = snapshotOf(checkout) ?? snap;
   const where = ptyRoot(state, target);
   if (!where) return;
-  const rel = insideWorkspace(where, path);
-  if (!rel) return toast(`${path} is outside this workspace`, true);
+  const hit = locate(state, where, path);
+  if (!hit) return toast(`${path} is outside this workspace`, true);
+  const { workspace, rel } = hit;
   /* `callOn` with the terminal's own checkout, not `call`: the pane you
      right-clicked is not always the one the selection is in. **Looked up by path
      at the moment of the click**, because `setCheckouts` replaces every `Target`
@@ -994,7 +1010,7 @@ Term.onPathMenu(({ checkout, target, path, line, last, ev }) => {
     const [first] = found;
     if (!first) return toast(`no ${rel} in this workspace`, true);
     const at = CHECKOUTS.find((c) => c.path === checkout) ?? activeCheckout();
-    void callOn(at, '/api/open/reveal', { workspace: where.workspace, path: first, folder })
+    void callOn(at, '/api/open/reveal', { workspace, path: first, folder })
       .catch((e) => toast(reason(e), true));
   };
   /* **All three items resolve the text the same way.** The two OS ones used to
@@ -1004,10 +1020,10 @@ Term.onPathMenu(({ checkout, target, path, line, last, ev }) => {
      needs the parent to exist, so the daemon then opened the wrong directory
      while "Open here" on the same menu found the real file. One answer per
      menu. */
-  const resolved = () => FileView.candidates(where.workspace, rel);
+  const resolved = () => FileView.candidates(workspace, rel);
   openMenu(ev, [
     ['Open here', null, () => void resolved()
-      .then((found) => FileView.open(where.workspace, found, line, last, ev))],
+      .then((found) => FileView.open(workspace, found, line, last, ev))],
     ['Open the folder', null, () => void resolved().then((found) => reveal(found, true))],
     [IS_MAC ? 'Open with Finder' : 'Open with the file manager', null,
       () => void resolved().then((found) => reveal(found, false))],
@@ -1034,19 +1050,37 @@ function ptyRoot(state, target) {
   return null;
 }
 
-/** `path` as `/api/file` wants it — relative to the workspace root — or `null`
- *  when it does not live there.
+/** The workspace `path` lives in and the path as `/api/file` wants it, relative
+ *  to that workspace's root, or `null` when no workspace in the checkout holds it.
+ *
+ *  The pty's own workspace answers first. **Then any other**, because a worktree
+ *  can link a directory back to main (scienta's `.plan`), and an agent writing
+ *  through that link prints main's absolute path. That is main's file, so it opens
+ *  in main rather than being refused. The deepest root wins, since worktrees can
+ *  sit inside main.
  *
  *  The `..` walk is not ceremony: `src/../../../etc/passwd` starts with the root
  *  as a string and leaves it as a path, and a check that compares before
  *  resolving is a check that reads the wrong file.
  *
- *  @param {{ root: string, cwd: string }} where
+ *  @param {any} state the snapshot of the checkout that terminal belongs to
+ *  @param {{ workspace: string, root: string, cwd: string }} where
  *  @param {string} path */
-function insideWorkspace(where, path) {
-  const root = resolvePath(where.root.startsWith('/') ? where.root : `/${where.root}`);
+function locate(state, where, path) {
   const abs = resolvePath(path.startsWith('/') ? path : `${where.cwd}/${path}`);
-  return abs.startsWith(`${root}/`) ? abs.slice(root.length + 1) : null;
+  const under = (/** @type {string} */ dir) => {
+    const root = resolvePath(dir.startsWith('/') ? dir : `/${dir}`);
+    return abs.startsWith(`${root}/`) ? abs.slice(root.length + 1) : null;
+  };
+  const own = under(where.root);
+  if (own) return { workspace: where.workspace, rel: own };
+  /** @type {{ workspace: string, rel: string } | null} */
+  let best = null;
+  for (const w of state.workspaces) {
+    const rel = under(w.path);
+    if (rel && (!best || rel.length < best.rel.length)) best = { workspace: w.id, rel };
+  }
+  return best;
 }
 
 /** An absolute path with its `.` and `..` segments taken out. */

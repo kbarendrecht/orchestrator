@@ -12,9 +12,10 @@
 // is drawn is a fix in both places rather than a copy that drifts.
 
 import {
-  $, activeWorkspaceId, borrowFocus, get, openMenu, reason, returnFocus, toast,
+  $, activeWorkspaceId, borrowFocus, get, getOn, openMenu, reason, returnFocus, toast,
 } from './core.js';
 import * as Editor from './editor.js';
+import { matching } from './pathlink.js';
 import * as Viewer from './viewer.js';
 
 /** The open overlay. `ws` is pinned at open for the reason the finder's is:
@@ -147,13 +148,64 @@ export async function candidates(ws, path) {
     toast(reason(e), true);
     return [];
   }
-  if (list.includes(path)) return [path];
-  const tail = `/${path}`;
-  return list
-    .filter((/** @type {string} */ p) => p.endsWith(tail))
-    // Shortest first: a path with less in it that the name did not ask for is the
-    // likelier answer, and it is the tie-break the name ranking already uses.
-    .sort((/** @type {string} */ a, /** @type {string} */ b) => a.length - b.length || a.localeCompare(b));
+  return matching(list, path);
+}
+
+/** How long the hover trusts a workspace's file list for a path it *has*.
+ *
+ *  Long enough to cover one sweep of the mouse down a pane: xterm asks once per
+ *  line it enters, and each ask would otherwise be a whole-tree walk. */
+const HOVER_TTL = 2_000;
+/** And for a path it has not. **Shorter, because the file an agent just wrote is
+ *  the one most likely to be clicked**, and a list from before the write is the
+ *  one place it is missing. `page-check` caught exactly that: a file written a
+ *  second after the last hover, with no underline. A sweep over lines with no file
+ *  in them costs two walks a second at this, not one per line. */
+const MISS_TTL = 500;
+/** `at` is when the answer landed, and `null` while it is still on its way, so a
+ *  slow walk is joined rather than started twice.
+ *
+ *  @type {Map<string, { at: number | null,
+ *                       list: Promise<{ paths: string[], truncated: boolean }> }>} */
+const hovered = new Map();
+
+/** Whether a click on `path` would find anything, which is what earns it an
+ *  underline. The click itself still walks fresh, in [`candidates`].
+ *
+ *  **A list that was cut short says yes to everything.** `/api/paths` stops at
+ *  20,000 and the monorepo is 19,043, so the day it crosses, a miss means "not in
+ *  the part that fit" rather than "not there", and a missing underline is worse
+ *  than one that answers "no such file".
+ *
+ *  @param {import('./core.js').Target} at the terminal's own checkout
+ *  @param {string} ws
+ *  @param {string} path workspace-relative */
+export async function known(at, ws, path) {
+  const has = (/** @type {{ paths: string[], truncated: boolean }} */ l) =>
+    l.truncated || matching(l.paths, path).length > 0;
+  if (has(await listed(at, ws, HOVER_TTL))) return true;
+  return has(await listed(at, ws, MISS_TTL));
+}
+
+/** The workspace's file list, if one landed within `ttl`, or the walk already
+ *  running, or a new one. **Shared as well as cached**, which is the part that
+ *  matters during a sweep: every line asks before the first answer is back.
+ *
+ *  @param {import('./core.js').Target} at
+ *  @param {string} ws
+ *  @param {number} ttl */
+function listed(at, ws, ttl) {
+  const key = `${at.path}\0${ws}`;
+  const entry = hovered.get(key);
+  if (entry && (entry.at === null || Date.now() - entry.at <= ttl)) return entry.list;
+  /** @type {{ at: number | null, list: Promise<{ paths: string[], truncated: boolean }> }} */
+  const made = { at: null, list: Promise.resolve({ paths: [], truncated: false }) };
+  made.list = getOn(at, `/api/paths?workspace=${encodeURIComponent(ws)}`)
+    .then((a) => { made.at = Date.now(); return { paths: a.paths ?? [], truncated: !!a.truncated }; });
+  hovered.set(key, made);
+  // A failure is not cached: the next hover asks again.
+  void made.list.catch(() => { if (hovered.get(key) === made) hovered.delete(key); });
+  return made.list;
 }
 
 /** Open what is on screen for editing.

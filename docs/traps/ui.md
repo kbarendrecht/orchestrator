@@ -210,12 +210,31 @@ printed, and a key you have to hold is the part you forget. So the refusals in
 generous turns every word in the scrollback into a link. The modifier still
 works, because it is the same link either way.
 
+**A slash is a question, and the file list answers it.** `chore/bump-deps` and
+`/implement` passed every rule in the matcher and answered "no such file" on a
+click, and no rule over the text tells them from `bin/orchd`. So `term.js` asks
+`onPathCheck` before it underlines, and `FileView.known` answers from a list kept
+**two seconds for a hit and half a second for a miss**, shared while a request is
+in progress. A miss is short because the file an agent just wrote is the one
+clicked, and `page-check` caught a single two-second list leaving exactly that
+file without an underline. Either way one sweep of the mouse is a walk or two,
+not one per line. **A superseded ask never calls back**: xterm
+makes a fresh reply map per line, and a late answer lands in the new one and
+replaces its links. **The right-click reads that answer rather than asking
+again**, because it has to decide in the event whether to take the menu from the
+drawer's: the path menu opens where an underline is, and nowhere else.
+
 **The click still reaches the agent, and that is xterm's rule.**
 `shouldForceSelection` withholds the mouse report for Shift only (Option on
 macOS), so a click on a path is reported to whatever asked for `?1003h` *and*
 opens the file. In an agent pane Claude Code sees it too. Read from the vendored
 source. Shift would avoid it and is not available: on macOS xterm spends it on
 extending a selection.
+**A drag is not a click, and xterm thinks it is**: it activates a link when the
+press and the release land on the same one, however far the pointer went. So
+`term.js` records the press and refuses a release more than `DRAG_PX` away, by
+distance rather than `hasSelection()`, because an agent pane's drag goes to Claude
+Code's mouse reporting and leaves no selection to ask about.
 
 **An agent names a file, not a path, and that is what the first cut got wrong.**
 A component's file name with no directory in front of it, joined onto the pty's
@@ -243,7 +262,11 @@ resolves outside the workspace is refused with a sentence rather than opened and
 failed — `/etc/hosts` is a real file and not this workspace's, and a viewer saying
 "no such file" would name the wrong fault. The `..` segments are resolved *before*
 that comparison, because `src/../../../etc/passwd` starts with the root as a
-string and leaves it as a path.
+string and leaves it as a path. **Outside the pty's workspace is not yet outside
+the checkout**, though: a worktree that links a directory back to main (scienta's
+`.plan`) gets main's absolute path printed by an agent writing through the link,
+so the other workspaces are tried next and the file opens in main. That was a
+colleague's refusal of a file the finder could see.
 
 **The right-click menu is the app's, and it has to stop the event.** A path is the
 one thing in a terminal with more than one obvious answer, so "open the folder"

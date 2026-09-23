@@ -12,7 +12,7 @@
 // half of every sentence Claude Code writes, and an affordance that is wrong four
 // times out of five is one people learn to ignore.
 
-import { linksIn, pathsIn } from '../web/js/pathlink.js'
+import { linksIn, matching, pathsIn } from '../web/js/pathlink.js'
 
 let failed = false
 const check = (ok, what) => {
@@ -83,6 +83,19 @@ check(pathsIn('i.e. that one').length === 0, 'and so is i.e.')
 check(pathsIn('open ~/.bashrc now').length === 0, 'a home path has no $HOME here to expand')
 check(one('edit main.c here') === 'main.c:0:0', 'but a one-letter extension on a real stem stays')
 check(one('see a/b/c.h line') === 'a/b/c.h:0:0', 'and a slash answers for itself')
+
+// --- and what the workspace says ----------------------------------------------
+
+/* **A slash is a question, and the file list is the answer.** A branch name and a
+   slash command have one too, and each used to underline and then answer "no
+   such file". Nothing in the text tells them from `bin/orchd`, so the list does. */
+const LIST = ['bin/orchd', 'web/js/find.js', 'tools/find.js', 'src/Makefile', '.plan/notes.md']
+check(matching(LIST, 'chore/bump-deps').length === 0, 'a branch name is not in the workspace')
+check(matching(LIST, 'implement').length === 0, 'nor is a slash command')
+check(matching(LIST, 'bin/orchd').join() === 'bin/orchd', 'a file with no extension is, when it is there')
+check(matching(LIST, 'Makefile').join() === 'src/Makefile', 'a name matches on the tail')
+check(matching(LIST, 'find.js').join() === 'tools/find.js,web/js/find.js', 'two matches, shortest first')
+check(matching(LIST, 'd.js').length === 0, 'the tail is a whole segment, not a suffix')
 
 // --- several in one line ----------------------------------------------------
 

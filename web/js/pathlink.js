@@ -97,6 +97,10 @@ function looksLikeAPath(s) {
      that does not exist. Only a leading one: a trailing `~` is an editor's backup
      and a real file. */
   if (s.startsWith('~')) return false;
+  /* A slash is enough to be *asked about*, not to be a link: a branch
+     (`chore/bump-deps`) and a slash command (`/implement`) have one too. The
+     workspace's file list decides those, in [`matching`], because no rule over the
+     text tells `chore/bump-deps` from `bin/orchd`. */
   if (s.includes('/')) return true;
   // No directory, so it has to name itself: a dot, then an extension of letters
   // and digits. `find.js` yes, `v1.2` no, `Makefile` no — a path with neither a
@@ -182,4 +186,28 @@ export function linksIn(text) {
   const urls = urlsIn(text);
   const paths = pathsIn(text).filter((p) => !urls.some((u) => p.start < u.end && u.start < p.end));
   return [...urls, ...paths].sort((a, b) => a.start - b.start);
+}
+
+/** The files in `list` that `path` names, best first. `list` is a workspace's
+ *  files, relative to its root, as `/api/paths` answers.
+ *
+ *  **An agent names a file, not a path**, so this matches on the tail: a bare name
+ *  and a partial path are one rule. Several matches are the normal shape of a
+ *  large repo rather than an error, and the caller asks which one was meant.
+ *
+ *  Here rather than in the viewer because the underline asks it too: a link is
+ *  drawn only where the click would find something, and one function for both is
+ *  what keeps the two from disagreeing.
+ *
+ *  @param {string[]} list
+ *  @param {string} path workspace-relative
+ *  @returns {string[]} */
+export function matching(list, path) {
+  if (list.includes(path)) return [path];
+  const tail = `/${path}`;
+  return list
+    .filter((p) => p.endsWith(tail))
+    // Shortest first: a path with less in it that the name did not ask for is the
+    // likelier answer, and it is the tie-break the name ranking already uses.
+    .sort((a, b) => a.length - b.length || a.localeCompare(b));
 }

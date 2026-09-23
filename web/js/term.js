@@ -5,7 +5,7 @@
 import { $, CHECKOUTS, CHROME, IS_MAC, callOn, copyText, el, mark, note, reason, reportBoot, selected, terms, termKey, typingElsewhere, uiScale, wheelScale } from './core.js';
 import { fontStack, theme } from './theme.js';
 import { termColours } from './palette.js';
-import { linksIn, pathsIn } from './pathlink.js';
+import { linksIn } from './pathlink.js';
 
 
 const THEME = {
@@ -75,6 +75,18 @@ export function onPathMenu(/** @type {NonNullable<typeof pathMenu>} */ fn) {
   pathMenu = fn;
 }
 
+/** Asked which of a line's paths are files, before any of them is underlined.
+ *  Set from `app.js`, for the reason `onPathClick` is: the answer is the
+ *  workspace's file list, and a terminal does not know which workspace it is in.
+ *  Unset, every path the matcher accepts is a link.
+ *
+ *  @type {((ask: { checkout: string, target: string, paths: string[] })
+ *            => Promise<boolean[]>) | null} */
+let pathCheck = null;
+export function onPathCheck(/** @type {NonNullable<typeof pathCheck>} */ fn) {
+  pathCheck = fn;
+}
+
 /** The path under a pointer, found by arithmetic rather than by the DOM.
  *
  *  **Cells, not text nodes.** The rows are text only under the DOM renderer; a
@@ -107,10 +119,30 @@ function pathUnder(term, host, ev) {
      every line with a wide character in it. */
   const at = found.map.findIndex((c) => c.y === y && c.x === col + 1);
   if (at < 0) return null;
-  // Paths, not `linksIn`: this answers the right-click menu, whose verbs are all
-  // about a file. A URL under the pointer is not one of them.
-  return pathsIn(found.text).find((p) => at >= p.start && at < p.end) ?? null;
+  /* **The underlined paths, not the matcher's.** The menu has to decide here, in
+     the event, whether to take it from the drawer's, and there is no time to ask
+     the file list. The provider already asked it when the pointer came onto this
+     line, so its answer is what the menu reads: the path menu opens exactly where
+     an underline is. Paths only, because the menu's verbs are all about a file. */
+  const shown = underlined.get(term);
+  if (!shown || shown.from !== found.from || shown.text !== found.text) return null;
+  for (const h of shown.hits) if (h.kind === 'path' && at >= h.start && at < h.end) return h;
+  return null;
 }
+
+/** How far the pointer may move between press and release and still be a click.
+ *  A hand on a trackpad wanders a pixel or two on a click, and selecting even one
+ *  character moves the pointer about a cell, which is wider than this at any
+ *  usable font size. */
+const DRAG_PX = 4;
+
+/** The last answer each terminal's link provider gave, for the right-click.
+ *  `from` and `text` say which logical line it was for; the text is compared too,
+ *  because a full scrollback shifts every line's number under it.
+ *
+ *  @type {WeakMap<object, { from: number, text: string,
+ *                           hits: ReturnType<typeof linksIn> }>} */
+const underlined = new WeakMap();
 
 /** Hand a URL to the daemon, which hands it to the platform browser.
  *
@@ -153,29 +185,61 @@ function openUrl(/** @type {import('./core.js').Target} */ checkout, /** @type {
  *  @param {import('./core.js').Target} checkout
  *  @param {string} target */
 function linkPaths(term, checkout, target) {
+  /* **Only the newest ask may answer.** xterm starts a fresh reply map when the
+     pointer changes line, and a late callback writes into *that* one: line A's
+     answer arriving after line B's replaced B's links, and B lost its underline.
+     Read from `_askForLink` in the vendored build. So a superseded ask never calls
+     back, and xterm has already stopped waiting for it. */
+  let newest = 0;
+  /* **A drag is a selection, not a click**, and xterm cannot tell them apart: it
+     activates a link whenever the press and the release land on the same one,
+     however far the pointer went in between (`_handleMouseUp` in the vendored
+     build). So selecting a path to copy it opened it. Distance rather than
+     `hasSelection()`, because in an agent pane the drag goes to Claude Code's
+     mouse reporting and xterm never makes a selection at all. Capture, so this
+     is recorded before xterm's own handler sees the press. */
+  let down = { x: 0, y: 0 };
+  term.element?.addEventListener('mousedown', (/** @type {MouseEvent} */ e) => {
+    down = { x: e.clientX, y: e.clientY };
+  }, true);
   term.registerLinkProvider({
     provideLinks(/** @type {number} */ y, /** @type {(l: any) => void} */ callback) {
+      const ask = ++newest;
       const found = logicalLine(term, y);
       if (!found) return callback(undefined);
       const { text, from, map } = found;
+      /** @param {ReturnType<typeof linksIn>} hits */
+      const answer = (hits) => {
+        const links = hits.map((h) => ({
+          text: h.kind === 'url' ? h.url : h.path,
+          // `end` is the last cell rather than one past it, which is xterm's own
+          // convention — read from the OSC-8 provider in the vendored build.
+          range: { start: cell(h.start, map, from), end: cell(h.end - 1, map, from) },
+          activate: (/** @type {MouseEvent} */ ev) => {
+            if (Math.hypot(ev.clientX - down.x, ev.clientY - down.y) > DRAG_PX) return;
+            ev.preventDefault();
+            if (h.kind === 'url') { openUrl(checkout, h.url); return; }
+            pathClick?.({
+              checkout: checkout.path, target, path: h.path, line: h.line, last: h.last, col: h.col, ev,
+            });
+          },
+        }));
+        underlined.set(term, { from, text, hits });
+        callback(links.length ? links : undefined);
+      };
       /* A path needs somewhere to open, and that is wired at boot; a URL needs only
          the daemon. So the gate is per hit rather than over the whole provider —
          it used to return nothing at all, which would now cost the URLs too. */
       const hits = linksIn(text).filter((h) => h.kind === 'url' || pathClick);
-      const links = hits.map((h) => ({
-        text: h.kind === 'url' ? h.url : h.path,
-        // `end` is the last cell rather than one past it, which is xterm's own
-        // convention — read from the OSC-8 provider in the vendored build.
-        range: { start: cell(h.start, map, from), end: cell(h.end - 1, map, from) },
-        activate: (/** @type {MouseEvent} */ ev) => {
-          ev.preventDefault();
-          if (h.kind === 'url') { openUrl(checkout, h.url); return; }
-          pathClick?.({
-            checkout: checkout.path, target, path: h.path, line: h.line, last: h.last, col: h.col, ev,
-          });
-        },
-      }));
-      callback(links.length ? links : undefined);
+      const paths = hits.filter((h) => h.kind === 'path');
+      if (!paths.length || !pathCheck) return answer(hits);
+      void pathCheck({ checkout: checkout.path, target, paths: paths.map((h) => h.path) })
+        .then((ok) => {
+          if (ask === newest) answer(hits.filter((h) => h.kind === 'url' || ok[paths.indexOf(h)]));
+        }, () => {
+          // No list to ask is no promise to make: the URLs still stand.
+          if (ask === newest) answer(hits.filter((h) => h.kind === 'url'));
+        });
     },
   });
 }
