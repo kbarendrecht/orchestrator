@@ -2024,10 +2024,10 @@ export function setProcOrder(/** @type {string | null} */ wsId, /** @type {strin
 
    **Keyed by the checkout path, not by workspace.** A session id is unique across
    every checkout, so the key is not there to stop a collision — it is there so
-   "put this list back to newest first" is one checkout's answer rather than every
-   checkout's. Closing a checkout does **not** take its order with it: the key
-   stays, and reopening applies it again. That is deliberate for a checkout you come
-   back to, and it does mean the map only ever grows.
+   each checkout's rail keeps an order of its own. Closing a checkout does **not**
+   take its order with it: the key stays, and reopening applies it again. That is
+   deliberate for a checkout you come back to, and it does mean the map only ever
+   grows.
 
    An id the list has never seen is a session created since you last dragged one,
    and `rail.js` puts those *above* the rows you placed — a worktree you have just

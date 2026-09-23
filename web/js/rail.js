@@ -1831,15 +1831,6 @@ function sessionRow(/** @type {import('../snapshot').SessionView} */ s, /** @typ
     : pending(s) ? null : () => swapWithMain(s.workspace, s);
   // The header's ✕ only ever closes the selected session, so closing any other
   // one meant switching to it first.
-  /* Undo the drag, for the checkout this row is in. In the row's menu because the
-     rail has no other per-checkout menu on a single-checkout install, and because
-     this is where you are when you notice the order is no longer the one you
-     want. Absent, not greyed, while the list is still sorting itself. */
-  const co = checkoutOf(s.id);
-  /** @type {[string, string | null, (() => void) | null][]} */
-  const unsort = co && sessionOrder[co.path]
-    ? [['sort by newest', null, () => { setSessionOrder(co.path, []); renderRail(); }]]
-    : [];
   btn.oncontextmenu = (ev) => openMenu(ev, [
     ['rename', null, () => renameSession(s)],
     // Nothing to branch off until the conversation has had a turn.
@@ -1859,7 +1850,6 @@ function sessionRow(/** @type {import('../snapshot').SessionView} */ s, /** @typ
     // The worktree, not the session: the row is the only place a worktree is
     // visible, so its workspace-level action lives here too.
     [moveLabel, null, moveDo],
-    ...unsort,
     ['close', 'bad', s.alive ? () => closeSession(s.id) : null],
     ['delete', 'bad', () => deleteSession(s)],
   ]);
