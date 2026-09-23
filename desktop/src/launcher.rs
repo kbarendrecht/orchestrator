@@ -10,8 +10,10 @@ use anyhow::{Context, Result};
 
 /// The reverse-DNS id the launcher entry and the `.app` bundle are keyed on.
 ///
-/// The same id the `.deb`, the AppImage and the `.dmg` carry, so an entry written
-/// here is *replaced* by a later package install rather than listed beside it.
+/// The same id the `.deb`, the AppImage and the `.dmg` carry, so the app is one
+/// application to the desktop rather than two. **A later package install does not
+/// replace an entry written here**, though: it installs to its own place and the
+/// old entry stays, which is what [`retire_own_entry`] is for.
 const APP_ID: &str = "dev.orchd.orchestrator";
 const APP_NAME: &str = "Orchestrator";
 
@@ -151,7 +153,24 @@ pub(crate) fn refresh_launcher_entry() {
     // on the same machine, which is a worse failure than having no entry at all.
     // `--install-desktop-entry` still obeys you here; only the automatic write
     // declines.
-    if cfg!(debug_assertions) || in_build_tree(&exe) || packaged() {
+    if cfg!(debug_assertions) || in_build_tree(&exe) {
+        return;
+    }
+    /* **An entry this app wrote outlives the install it was written for**, and it
+    carries the packages' id. Switch from mise to a package and the old entry
+    stays: on Linux the user's `.desktop` file outranks the `.deb`'s, and on macOS
+    LaunchServices may open either bundle. So people who had switched kept
+    launching the mise build, and it told them to upgrade it. Two halves, because
+    each reaches different people: the package clears the entry when it is
+    opened, and a mise build stops writing one once a package is there. */
+    if packaged() {
+        if orchd::install::Install::of_running().ships_its_own_entry() {
+            retire_own_entry(&exe);
+        }
+        return;
+    }
+    if !orchd::install::packages_present().is_empty() {
+        retire_own_entry(&exe);
         return;
     }
     match install_desktop_entry() {
@@ -159,6 +178,86 @@ pub(crate) fn refresh_launcher_entry() {
         Ok(None) => {}
         Err(e) => tracing::warn!("could not write the launcher entry: {e:#}"),
     }
+}
+
+/// The line every `.desktop` file this app writes carries, which is how one is
+/// told from a file somebody else put under the same name.
+const ENTRY_COMMENT: &str = "Comment=Session board for parallel Claude work";
+
+/// The line the `sh` stub carried, which was the bundle's executable until #24.
+/// A machine that last ran an older mise build still has one.
+const STUB_LINE: &str = "# Written by `orchestrator-desktop --install-desktop-entry`";
+
+/// Where this app writes its launcher entry for the running user.
+fn own_entry_path() -> Option<std::path::PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    if cfg!(target_os = "macos") {
+        return Some(std::path::PathBuf::from(home).join(format!("Applications/{APP_NAME}.app")));
+    }
+    Some(data_home(&home).join(format!("applications/{APP_ID}.desktop")))
+}
+
+/// `$XDG_DATA_HOME`, or its default under `home`.
+///
+/// An empty `XDG_DATA_HOME` means unset, per the spec, and `env::var` hands it
+/// back as `Ok("")`, which is how a test run wrote `applications/…` into the
+/// working directory instead of under HOME.
+fn data_home(home: &std::ffi::OsStr) -> std::path::PathBuf {
+    std::env::var_os("XDG_DATA_HOME")
+        .filter(|v| !v.is_empty())
+        .map_or_else(
+            || std::path::PathBuf::from(home).join(".local/share"),
+            std::path::PathBuf::from,
+        )
+}
+
+/// Is `entry` one this app wrote? Only then may it be removed.
+///
+/// A bundle with the [`source_marker`] or the pre-#24 stub, or a `.desktop` file
+/// with [`ENTRY_COMMENT`]. **A `.dmg` dragged to `~/Applications` has neither**,
+/// and removing one would be deleting somebody's install.
+fn written_here(entry: &std::path::Path) -> bool {
+    if entry.extension().is_some_and(|e| e == "app") {
+        return source_marker(entry).is_file()
+            || std::fs::read_to_string(entry.join("Contents/MacOS").join(APP_NAME))
+                .is_ok_and(|s| s.contains(STUB_LINE));
+    }
+    std::fs::read_to_string(entry).is_ok_and(|s| s.contains(ENTRY_COMMENT))
+}
+
+/// Remove the entry this app wrote for a mise or tarball install, because a
+/// package owns the id now.
+fn retire_own_entry(exe: &std::path::Path) {
+    let Some(entry) = own_entry_path() else {
+        return;
+    };
+    match retire(&entry, exe) {
+        Ok(true) => tracing::info!(
+            "removed the launcher entry an earlier install wrote at {}",
+            entry.display()
+        ),
+        Ok(false) => {}
+        Err(e) => tracing::warn!("could not remove {}: {e:#}", entry.display()),
+    }
+}
+
+/// The removal, with the paths handed in so a test can drive it.
+///
+/// **Never the bundle this process runs from.** A mise build launched from its own
+/// bundle is that bundle, and taking it away under a running app is taking away
+/// what a restart opens. It is left alone and not refreshed, and the warning bar
+/// says there are two installs.
+fn retire(entry: &std::path::Path, exe: &std::path::Path) -> Result<bool> {
+    if !written_here(entry) || exe.starts_with(entry) {
+        return Ok(false);
+    }
+    if entry.is_dir() {
+        std::fs::remove_dir_all(entry)
+    } else {
+        std::fs::remove_file(entry)
+    }
+    .with_context(|| format!("removing {}", entry.display()))?;
+    Ok(true)
 }
 
 /// Write a launcher entry for the binary that is running.
@@ -171,14 +270,8 @@ pub(crate) fn refresh_launcher_entry() {
 #[cfg(target_os = "linux")]
 pub(crate) fn install_desktop_entry() -> Result<Option<std::path::PathBuf>> {
     let exe = launcher_target()?;
-    let home = std::env::var("HOME").context("HOME is not set")?;
-    // An empty `XDG_DATA_HOME` means unset, per the spec — and `env::var` hands it
-    // back as `Ok("")`, which is how a test run wrote `applications/…` into the
-    // working directory instead of under HOME.
-    let data = std::env::var("XDG_DATA_HOME")
-        .ok()
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| format!("{home}/.local/share"));
+    let home = std::env::var_os("HOME").context("HOME is not set")?;
+    let data = data_home(&home);
 
     for (px, bytes) in [
         (32u32, &include_bytes!("../icons/32x32.png")[..]),
@@ -189,20 +282,20 @@ pub(crate) fn install_desktop_entry() -> Result<Option<std::path::PathBuf>> {
         // reaches three directories and shows in none.
         (512, &include_bytes!("../icons/icon.png")[..]),
     ] {
-        let dir = std::path::PathBuf::from(&data)
+        let dir = data
             .join("icons/hicolor")
             .join(format!("{px}x{px}"))
             .join("apps");
         write_if_changed(&dir.join(format!("{APP_ID}.png")), bytes)?;
     }
 
-    let apps = std::path::PathBuf::from(&data).join("applications");
+    let apps = data.join("applications");
     let file = apps.join(format!("{APP_ID}.desktop"));
     let entry = format!(
         "[Desktop Entry]\n\
          Type=Application\n\
          Name={APP_NAME}\n\
-         Comment=Session board for parallel Claude work\n\
+         {ENTRY_COMMENT}\n\
          Exec={exe}\n\
          Icon={APP_ID}\n\
          Terminal=false\n\
@@ -810,5 +903,58 @@ mod tests {
         );
         assert!(info_plist().contains(APP_ID));
         assert!(info_plist().contains(env!("CARGO_PKG_VERSION")));
+    }
+
+    /// **Only what this app wrote may go**, because the rest is somebody's
+    /// install: a `.dmg` dragged to `~/Applications` looks exactly like the
+    /// bundle, down to the name, and has no marker.
+    #[test]
+    fn only_an_entry_this_app_wrote_is_removed() {
+        let d = scratch("retire");
+        let running = d.join("elsewhere/orchestrator-desktop");
+
+        // The bundle a mise install writes since #24, marker and all.
+        let exe = install(&d.join("mise/installs/orchestrator/latest"), "v1");
+        let (ours, _) = write_app_bundle(&d.join("Applications"), &exe).unwrap();
+        assert!(retire(&ours, &running).unwrap());
+        assert!(!ours.exists());
+
+        // The `sh` stub from before it, which an older mise build left behind.
+        let stub = d.join("old/Orchestrator.app");
+        std::fs::create_dir_all(stub.join("Contents/MacOS")).unwrap();
+        std::fs::write(
+            stub.join("Contents/MacOS/Orchestrator"),
+            format!("#!/bin/sh\n{STUB_LINE}, and rewritten\nexec /x \"$@\"\n"),
+        )
+        .unwrap();
+        assert!(retire(&stub, &running).unwrap());
+
+        // A dragged `.dmg`: the same shape, nothing of ours in it.
+        let dmg = d.join("dmg/Orchestrator.app");
+        std::fs::create_dir_all(dmg.join("Contents/MacOS")).unwrap();
+        std::fs::write(dmg.join("Contents/MacOS/orchestrator-desktop"), "binary").unwrap();
+        assert!(!retire(&dmg, &running).unwrap());
+        assert!(dmg.exists());
+
+        // A `.desktop` file is ours by its comment line, and nothing else is.
+        let entry = d.join("dev.orchd.orchestrator.desktop");
+        std::fs::write(&entry, format!("[Desktop Entry]\n{ENTRY_COMMENT}\n")).unwrap();
+        assert!(retire(&entry, &running).unwrap());
+        std::fs::write(&entry, "[Desktop Entry]\nComment=mine\n").unwrap();
+        assert!(!retire(&entry, &running).unwrap());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A mise build started from its own bundle is running out of the entry, so
+    /// removing it would take away what a restart opens.
+    #[test]
+    fn the_bundle_this_process_runs_from_is_left_alone() {
+        let d = scratch("retire-self");
+        let exe = install(&d.join("mise/installs/orchestrator/latest"), "v1");
+        let (bundle, _) = write_app_bundle(&d.join("Applications"), &exe).unwrap();
+        let inside = bundle.join("Contents/MacOS/orchestrator-desktop");
+        assert!(!retire(&bundle, &inside).unwrap());
+        assert!(bundle.exists());
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

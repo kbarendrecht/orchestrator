@@ -91,6 +91,71 @@ impl Install {
     }
 }
 
+impl Install {
+    /// Whether this install puts a launcher entry of its own on the machine: the
+    /// cask's and the `.dmg`'s bundle in `/Applications`, the `.deb`'s file in
+    /// `/usr/share/applications`.
+    ///
+    /// **An AppImage is not one**, although it is a package. It is a file somebody
+    /// runs from wherever they put it, so the entry a mise install wrote may be the
+    /// only way anybody starts it from a menu.
+    pub fn ships_its_own_entry(self) -> bool {
+        matches!(self, Install::Homebrew | Install::MacBundle | Install::Apt)
+    }
+
+    /// How a sentence names this install.
+    pub fn name(self) -> &'static str {
+        match self {
+            Install::Homebrew => "Homebrew",
+            Install::Apt => "the apt package",
+            Install::MacBundle => "the .dmg in /Applications",
+            Install::AppImage => "an AppImage",
+            Install::Tarball => "a mise or tarball install",
+            Install::Checkout => "a build in a checkout",
+        }
+    }
+}
+
+/// Where a cask or a dragged `.dmg` puts the app. A cask can be told another
+/// `appdir`; the Caskroom still answers for it, so this is only the `.dmg` probe.
+const SYSTEM_BUNDLE: &str = "/Applications/Orchestrator.app";
+/// Where the `.deb` puts the app, per its `files` map in `desktop/tauri.conf.json`.
+const DEB_EXE: &str = "/usr/bin/orchestrator-desktop";
+
+/// The packaged installs on this machine, whichever one is running.
+///
+/// **Why this is asked at all:** a mise install writes a launcher entry with the
+/// packages' id, and switching to a package leaves it behind. On Linux the user's
+/// `.desktop` file outranks the `.deb`'s, and on macOS LaunchServices may open
+/// either bundle, so somebody who switched kept launching the old build and was
+/// told to upgrade it. An AppImage cannot be found this way: it is a file
+/// anywhere.
+pub fn packages_present() -> Vec<Install> {
+    let caskroom = caskroom_candidates().iter().any(|p| p.is_dir());
+    let bundle = Path::new(SYSTEM_BUNDLE);
+    let dragged = bundle.join("Contents/MacOS/orchestrator-desktop").is_file()
+        && !bundle.join(SOURCE_MARKER).is_file();
+    let deb = Path::new(DEB_EXE).is_file();
+    packages(caskroom, dragged, deb)
+}
+
+/// The decision behind [`packages_present`], with the facts handed in.
+///
+/// A bundle in `/Applications` is the cask's when a Caskroom entry exists, the
+/// rule [`classify`] uses too, so one install is never counted as two.
+fn packages(caskroom: bool, dragged: bool, deb: bool) -> Vec<Install> {
+    let mut out = Vec::new();
+    if caskroom {
+        out.push(Install::Homebrew);
+    } else if dragged {
+        out.push(Install::MacBundle);
+    }
+    if deb {
+        out.push(Install::Apt);
+    }
+    out
+}
+
 /// The install a bundle records as its source, when this app wrote that bundle.
 fn bundle_source(exe: &Path) -> Option<PathBuf> {
     let bundle = exe.parent()?.parent()?.parent()?;
@@ -215,6 +280,28 @@ mod tests {
                 Install::Checkout
             );
         }
+    }
+
+    /// A cask and the bundle it moved into `/Applications` are one install, not
+    /// a cask and a `.dmg` beside it.
+    #[test]
+    fn a_cask_is_counted_once() {
+        assert_eq!(packages(true, true, false), vec![Install::Homebrew]);
+        assert_eq!(packages(false, true, false), vec![Install::MacBundle]);
+        assert_eq!(packages(false, false, true), vec![Install::Apt]);
+        assert_eq!(packages(false, false, false), vec![]);
+    }
+
+    /// Only the three with an entry of their own may make a mise install give
+    /// its entry up, and an AppImage is not one of them.
+    #[test]
+    fn an_appimage_ships_no_entry_of_its_own() {
+        assert!(Install::Homebrew.ships_its_own_entry());
+        assert!(Install::MacBundle.ships_its_own_entry());
+        assert!(Install::Apt.ships_its_own_entry());
+        assert!(!Install::AppImage.ships_its_own_entry());
+        assert!(!Install::Tarball.ships_its_own_entry());
+        assert!(!Install::Checkout.ships_its_own_entry());
     }
 
     /// Everything unrecognised lands here, and that is the point of it: `Tarball`

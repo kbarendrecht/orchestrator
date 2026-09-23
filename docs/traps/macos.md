@@ -323,3 +323,19 @@ answers the Accessibility API, and `mise run app-check` drives the bare binary
 rather than a bundle. The unit tests cover the file writing — the copies, the
 marker, the rename, the stub's removal — and the thing they cannot reach is the
 one the reporter measured by hand.
+
+**The bundle outlives the install it was written for, and so does the Linux
+entry.** Both carry the packages' id, and a later package install goes to its own
+place rather than replacing them. A colleague who switched from mise to the cask
+still had `~/Applications/Orchestrator.app` beside `/Applications`, with mise's
+three versions under it. On Linux it is worse and deterministic: the user's
+`.desktop` file outranks the `.deb`'s in `/usr/share/applications`. So
+`refresh_launcher_entry` has two more answers. A cask, a `.dmg` or a `.deb` removes
+the entry this app wrote when it is opened; an AppImage does not, because it has no
+entry of its own and the old one may be the only way to start it. A mise or
+tarball build stops writing its entry once `packages_present` finds a package, and
+`machine::check` tells it there are two installs. **Only what `written_here` can
+prove is ours goes**: the `source` marker, the pre-#24 stub's comment, or the
+`.desktop` comment line. A `.dmg` dragged to `~/Applications` has the same name and
+none of them. And never the bundle the process runs from, because that is what a
+restart opens.

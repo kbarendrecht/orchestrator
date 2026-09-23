@@ -391,6 +391,13 @@ pub fn check(cfg: &Config, tracker_server: Option<&str>) -> Vec<Warning> {
         }
     }
 
+    if let Some(w) = two_installs_warning(
+        orchd_base::install::Install::of_running(),
+        &orchd_base::install::packages_present(),
+    ) {
+        out.push(w);
+    }
+
     if let Some(server) = tracker_server {
         match declares_mcp_server(&cfg.main_checkout, server) {
             Some(true) => {}
@@ -408,9 +415,53 @@ pub fn check(cfg: &Config, tracker_server: Option<&str>) -> Vec<Warning> {
     out
 }
 
+/// Said when this build is not a package and a package is installed too.
+///
+/// **The launcher can open either, and that is invisible from inside.** A mise
+/// install's entry carries the packages' id, so somebody who switched to the cask
+/// kept opening the old mise build, and its bar told them to upgrade it. The
+/// launcher now stops writing that entry, which cannot help somebody who starts
+/// this build some other way, so this says it where they will see it.
+///
+/// Only for `Tarball`, which is what a mise install and the bundle it wrote both
+/// classify as. A package with a second package beside it is somebody's own
+/// arrangement, and a build in a checkout is a developer who knows.
+fn two_installs_warning(
+    running: orchd_base::install::Install,
+    others: &[orchd_base::install::Install],
+) -> Option<Warning> {
+    if running != orchd_base::install::Install::Tarball || others.is_empty() {
+        return None;
+    }
+    let names: Vec<&str> = others.iter().map(|i| i.name()).collect();
+    Some(Warning {
+        what: format!(
+            "Orchestrator is installed twice: this is a mise or tarball copy, and {} \
+             installed it too",
+            names.join(" and ")
+        ),
+        cost: "the launcher can open either one, so an upgrade can seem to do nothing; \
+               remove the one you do not use, with `mise uninstall` if it is mise's"
+            .into(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A mise build with the cask beside it is told, and nothing else is.
+    #[test]
+    fn two_installs_are_named_only_from_the_one_that_is_not_a_package() {
+        use orchd_base::install::Install;
+        let w = two_installs_warning(Install::Tarball, &[Install::Homebrew])
+            .expect("mise beside a cask");
+        assert!(w.what.contains("Homebrew"), "{}", w.what);
+        assert!(two_installs_warning(Install::Tarball, &[]).is_none());
+        // The cask itself is the answer, not the problem.
+        assert!(two_installs_warning(Install::Homebrew, &[Install::Homebrew]).is_none());
+        assert!(two_installs_warning(Install::Checkout, &[Install::Apt]).is_none());
+    }
 
     fn tmp(name: &str) -> std::path::PathBuf {
         crate::testutil::scratch(&format!("pre-{name}"))
