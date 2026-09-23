@@ -2438,10 +2438,11 @@ select.opfield,input.opfield{appearance:none}
 .fnline{flex:0 0 auto;color:var(--attn);font-variant-numeric:tabular-nums}
 
 /* The rendered markdown page. Prose measure rather than full width: a note is
-   read, and a 1,400px line is not. Every colour is a token, so it follows the
-   theme the way the rest of the app does. */
+   read, and a 1,400px line is not. 92ch, widened from 78 on request: a plan note
+   is tables and code blocks as much as prose, and those use the room. Every
+   colour is a token, so it follows the theme the way the rest of the app does. */
 .md{
-  max-width:78ch;margin:0 auto;padding:22px 20px 60px;
+  max-width:92ch;margin:0 auto;padding:22px 20px 60px;
   font-family:var(--sans);font-size:calc(13px * var(--fs));line-height:1.65;color:var(--text);
 }
 .md-h{font-family:var(--sans);font-weight:650;line-height:1.3;margin:1.6em 0 .6em}
