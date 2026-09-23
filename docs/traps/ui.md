@@ -126,9 +126,10 @@ The fix is `dirty`: any other key pressed while Shift is held disqualifies that
 tap, so a Shift used *as a modifier* can never arm the next one. What survives is
 a Shift pressed and released with nothing between, twice.
 
-**The window is 220ms, and it was 300.** `dirty` cannot refuse two bare Shifts, so
-the interval is the only thing left guarding the taps nobody meant — and at 300ms
-the overlay was opening on people who had not asked for it. A deliberate double
+**The window is 170ms, and it was 300, then 220.** `dirty` cannot refuse two bare
+Shifts, so the interval is the only thing left guarding the taps nobody meant —
+and at 300ms, and still at 220, the overlay was opening on people who had not
+asked for it. A deliberate double
 tap is quicker: it is a borrowed gesture, performed at the speed of the double
 click it looks like.
 

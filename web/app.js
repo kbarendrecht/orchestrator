@@ -1306,14 +1306,14 @@ window.addEventListener('keydown', (e) => {
 
 /** How long a clean tap stays armed for the next one.
  *
- *  **220ms, down from 300, because the overlay was opening on people who had not
- *  asked for it.** `dirty` refuses a Shift used as a modifier and cannot refuse
- *  two bare ones, so the window is the only thing left guarding the taps nobody
- *  meant — and 300ms is long enough to catch two unrelated Shifts a third of a
- *  second apart. A deliberate double tap is quicker than that: this is the same
+ *  **170ms, down from 220 and 300 before that, because the overlay was opening on
+ *  people who had not asked for it**, and at 220 it still did. `dirty` refuses a
+ *  Shift used as a modifier and cannot refuse two bare ones, so the window is the
+ *  only thing left guarding the taps nobody meant — and 300ms is long enough to
+ *  catch two unrelated Shifts a third of a second apart. A deliberate double tap is quicker than that: this is the same
  *  range a double click lives in, and a gesture people borrowed from JetBrains is
  *  one they already perform at double-click speed. */
-const TAP = 220;
+const TAP = 170;
 let armedAt = 0;      // when a clean tap ended, 0 if there is none
 let holding = false;  // a Shift is down, and started clean
 let dirty = false;    // something else was pressed while it was down
