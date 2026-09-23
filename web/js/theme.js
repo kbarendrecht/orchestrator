@@ -44,6 +44,7 @@ export const FONTS = {
   martian: { label: 'Martian Mono', stack: "'Martian Mono',ui-monospace,monospace", mono: true },
   system: { label: 'System monospace', stack: 'ui-monospace,monospace', mono: true },
   plexsans: { label: 'IBM Plex Sans', stack: "'IBM Plex Sans',system-ui,sans-serif", mono: false },
+  inter: { label: 'Inter', stack: "'Inter',system-ui,sans-serif", mono: false },
   sans: { label: 'System sans', stack: 'system-ui,sans-serif', mono: false },
 };
 

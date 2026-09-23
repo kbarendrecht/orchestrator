@@ -1584,7 +1584,7 @@ async fn font(UrlPath(file): UrlPath<String>) -> Response {
     if file.contains('/') || file.contains("..") {
         return (StatusCode::BAD_REQUEST, "bad asset").into_response();
     }
-    // Plex Sans and Martian Mono ship as variable fonts, so one file covers every
+    // Plex Sans, Inter and Martian Mono ship as variable fonts, so one file covers every
     // weight the UI asks for. Plex Mono is still static per weight.
     let body: &'static [u8] = match file.as_str() {
         "plex-sans.woff2" => include_bytes!("../../../web/vendor/fonts/plex-sans.woff2"),
@@ -1592,6 +1592,7 @@ async fn font(UrlPath(file): UrlPath<String>) -> Response {
         "plex-mono-500.woff2" => include_bytes!("../../../web/vendor/fonts/plex-mono-500.woff2"),
         "plex-mono-600.woff2" => include_bytes!("../../../web/vendor/fonts/plex-mono-600.woff2"),
         "martian-mono.woff2" => include_bytes!("../../../web/vendor/fonts/martian-mono.woff2"),
+        "inter.woff2" => include_bytes!("../../../web/vendor/fonts/inter.woff2"),
         // Diffs only, and only the one weight they use.
         "jetbrains-mono-400.woff2" => {
             include_bytes!("../../../web/vendor/fonts/jetbrains-mono-400.woff2")

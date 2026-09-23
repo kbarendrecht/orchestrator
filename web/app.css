@@ -11,6 +11,9 @@
    root lists the versions. */
 @font-face{font-family:'IBM Plex Sans';src:url('/vendor/fonts/plex-sans.woff2') format('woff2');
   font-weight:100 700;font-style:normal;font-display:swap}
+/* Inter, the other UI face. Variable in weight and optical size, so one file. */
+@font-face{font-family:'Inter';src:url('/vendor/fonts/inter.woff2') format('woff2');
+  font-weight:100 900;font-style:normal;font-display:swap}
 @font-face{font-family:'IBM Plex Mono';src:url('/vendor/fonts/plex-mono-400.woff2') format('woff2');
   font-weight:400;font-style:normal;font-display:swap}
 @font-face{font-family:'IBM Plex Mono';src:url('/vendor/fonts/plex-mono-500.woff2') format('woff2');

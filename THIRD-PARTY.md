@@ -64,7 +64,7 @@ THE SOFTWARE.
 
 ## Fonts
 
-All four families are under the SIL Open Font License 1.1. The full text sits
+All five families are under the SIL Open Font License 1.1. The full text sits
 beside each one in `web/vendor/fonts/`, carrying that family's own copyright and
 Reserved Font Name, which is what the OFL asks for. Versions here are read from
 each file's own `name` table.
@@ -77,8 +77,9 @@ each file's own `name` table.
 | `plex-mono-600.woff2` | IBM Plex Mono SemiBold | 2.3 | OFL-1.1 — `ibm-plex-OFL.txt` |
 | `martian-mono.woff2` | [Martian Mono SemiExpanded](https://github.com/evilmartians/mono) | 1.000 | OFL-1.1 — `martian-mono-OFL.txt` |
 | `jetbrains-mono-400.woff2` | [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono) | 2.304 | OFL-1.1 — `jetbrains-mono-OFL.txt` |
+| `inter.woff2` | [Inter](https://github.com/rsms/inter) | 4.001 | OFL-1.1 — `inter-OFL.txt` |
 
-All six are Latin-subset builds, so they are modified copies in the OFL's sense:
+All seven are Latin-subset builds, so they are modified copies in the OFL's sense:
 the outlines are upstream's, with the rest of the Unicode range dropped. The OFL
 permits that and the family names are unchanged, which it also permits — the
 Reserved Font Name clause bites on *renaming*, not on subsetting.
