@@ -1245,6 +1245,8 @@ export function refreshButton(/** @type {'pr' | 'review'} */ kind, /** @type {nu
   if (spinFloor[kind] != null || polling) btn.classList.add('spin');
   btn.onclick = (e) => {
     e.stopPropagation();               // the header's own click toggles the pane
+    // Inert while it spins: the fetch it would ask for is already running.
+    if (btn.classList.contains('spin')) return;
     spinFloor[kind] = pollCount;
     btn.classList.add('spin');
     call(endpoint).catch((err) => { spinFloor[kind] = null; toast(err.message, true); });

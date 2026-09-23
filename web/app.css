@@ -981,7 +981,7 @@ body:not(.ready) #termempty .empty-k{display:none}
    the refresh spinner alike. */
 @media(prefers-reduced-motion:reduce){
   .conn-dot,.connbar .d,.rvbar.work .dot{animation:none;opacity:.7}
-  .rvrefresh.spin{animation:none}
+  .rvrefresh.spin svg{animation:none}
 }
 /* Visually hidden, still read aloud — the live region that announces "needs you". */
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
@@ -1703,7 +1703,12 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
    unrelated controls. Cancelling just this gap leaves each press target the 24px
    box it had. */
 .openall + .rvrefresh{margin-left:-8px}   /* = `.rvhead`'s gap, above */
-.rvrefresh.spin{animation:rvspin .8s linear infinite;color:var(--dim)}
+/* **The glyph turns, not the button.** The span carries the padding, the hover
+   ground and the focus ring, so spinning it swept a rectangle round the icon. And
+   a refresh that is already running has nothing to offer a hover. */
+.rvrefresh.spin{color:var(--dim);cursor:default}
+.rvrefresh.spin:hover{color:var(--dim);background:none}
+.rvrefresh.spin svg{animation:rvspin .8s linear infinite}
 @keyframes rvspin{to{transform:rotate(360deg)}}
 .rvrow{display:flex;text-decoration:none;color:inherit;cursor:pointer;align-items:center;
   gap:8px;padding:4px 16px;width:100%;position:relative}
