@@ -569,7 +569,7 @@ pub async fn teardown(app: &Arc<AppState>, workspace: &str) -> Result<Preflight>
 /// hour would be a log that teaches you to stop reading it. Removals are logged
 /// individually, because that is the thing that happened.
 pub async fn reap_old(app: &Arc<AppState>) -> usize {
-    let days = app.cfg.worktree_retention_days;
+    let days = app.settings().worktree_retention_days;
     if days == 0 {
         return 0;
     }
@@ -899,8 +899,10 @@ fn resolve_setup_exe(main: &std::path::Path, exe: &str) -> String {
 /// spare pool's. See [`Board`] for why the reporting has to be refused at the
 /// call rather than filtered later.
 pub(crate) async fn run_worktree_hooks(app: &Arc<AppState>, path: &std::path::Path, board: Board) {
-    run_worktree_hook(app, path, &app.cfg.worktree_init, "worktree init", board).await;
-    run_worktree_hook(app, path, &app.cfg.worktree_setup, "worktree setup", board).await;
+    // Read once for both, so a save between the two cannot run half of each.
+    let settings = app.settings();
+    run_worktree_hook(app, path, &settings.worktree_init, "worktree init", board).await;
+    run_worktree_hook(app, path, &settings.worktree_setup, "worktree setup", board).await;
     // The end of the scripts, not the end of the create: the session's own boot
     // follows and the board keeps saying so. See `AppState::create_end`.
     if board.is_loud() {
@@ -923,7 +925,7 @@ pub(crate) async fn relink(app: &Arc<AppState>, path: &std::path::Path) {
     run_worktree_hook(
         app,
         path,
-        &app.cfg.worktree_setup,
+        &app.settings().worktree_setup,
         "worktree setup",
         Board::Quiet,
     )

@@ -677,7 +677,7 @@ fn arrival_notice(
          git in this directory works now. Treat remembered absolute paths as stale and \
          re-read anything you are about to change.",
     );
-    if let Some(extra) = app.cfg.workspace_notes.for_main(into_main) {
+    if let Some(extra) = app.settings().workspace_notes.for_main(into_main) {
         note.push(' ');
         note.push_str(extra);
     }

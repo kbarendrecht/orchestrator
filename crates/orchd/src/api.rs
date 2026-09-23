@@ -398,24 +398,38 @@ pub async fn get_state(State(app): State<Arc<AppState>>) -> impl IntoResponse {
 // ---------------------------------------------------------------------------
 
 /// The six settings the panel edits, as the running daemon has them.
+/// The settings as last saved, so the panel shows what a save just applied
+/// rather than what the daemon started with.
 pub async fn get_config(State(app): State<Arc<AppState>>) -> ApiResult<crate::config::Settings> {
-    Ok(Json(crate::config::Settings::of(&app.cfg)))
+    Ok(Json(app.settings()))
 }
 
-/// Persist edited settings to `config.json`. Validation is serde's — a bad
-/// tracker or a malformed process rejects the whole POST.
+/// Persist edited settings to `config.json`, and apply what can be applied.
+/// Validation is serde's — a bad tracker or a malformed process rejects the whole
+/// POST.
 ///
-/// **Nothing here reaches the running daemon.** The config is read once at start:
-/// `upstream_ref` is baked into the push guard's hook there, and `main_processes`
-/// describes processes already spawned. So the panel's button is "Save & restart"
-/// and it asks for the restart itself once this returns — `restart_required` is
-/// still in the answer for anything driving the API by hand.
+/// **Most of it applies at once.** Every setting but three is read when it is
+/// used, from [`AppState::settings`], so replacing that copy is the whole of
+/// applying it. The three that are fixed at start are what
+/// [`Settings::needs_restart`] names, and `restart_required` is true only when one
+/// of them changed — the panel restarts on that answer and on nothing else.
+///
+/// [`Settings::needs_restart`]: crate::config::Settings::needs_restart
 pub async fn set_config(
-    State(_app): State<Arc<AppState>>,
+    State(app): State<Arc<AppState>>,
     Json(body): Json<crate::config::Settings>,
 ) -> ApiResult<serde_json::Value> {
     body.write()?;
-    Ok(Json(json!({ "ok": true, "restart_required": true })))
+    let reviews_moved = app.settings().reviews_command != body.reviews_command;
+    let restart = app.replace_settings(body);
+    // A new review command is a new queue, and waiting out the poll period to
+    // show it is the restart this replaced, only slower.
+    if reviews_moved {
+        app.review_refresh.notify_one();
+    }
+    // The snapshot carries `several_in_main`, so the rail learns it now too.
+    app.notify().await;
+    Ok(Json(json!({ "ok": true, "restart_required": restart })))
 }
 
 // ---------------------------------------------------------------------------
@@ -449,7 +463,7 @@ pub(crate) async fn refuse_if_occupied(
     // The one relaxation, and it is main's alone: a worktree exists so that two
     // pieces of work do not share an index, so lifting it there would undo the
     // thing the worktree is for.
-    if workspace == MAIN && app.cfg.allow_several_in_main {
+    if workspace == MAIN && app.settings().allow_several_in_main {
         return Ok(());
     }
     let Some(held) = app.live_sessions_in(workspace).await.into_iter().next() else {

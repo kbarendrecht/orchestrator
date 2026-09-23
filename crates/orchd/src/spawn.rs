@@ -1946,7 +1946,7 @@ pub(crate) fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<
             has it false, which is exactly the population this is for. The
             preflight is the authorisation instead. Same switch as the timer:
             `0` means the daemon never removes a worktree by itself. */
-            if app.cfg.worktree_retention_days > 0 {
+            if app.settings().worktree_retention_days > 0 {
                 if let Some(ws) = workspace.as_deref() {
                     if ws != MAIN && ws != PENDING_WORKTREE {
                         match crate::worktree::teardown(&app, ws).await {

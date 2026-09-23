@@ -306,7 +306,7 @@ async fn start_with_prompt(
             // it. Config, so the skill cannot carry it.
             (
                 crate::skills::VAR_LANGUAGE.to_string(),
-                app.cfg.default_language.clone(),
+                app.settings().default_language,
             ),
         ],
     };

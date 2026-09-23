@@ -69,9 +69,12 @@ function closeSettings() {
 /** One row of the processes editor: the strings the fields are bound to.
  *  Every field is the string the input holds, not the shape the daemon takes —
  *  `save` splits them back. `open` is the row's fold state and never travels.
+ *  `was` is the spec as read, `null` for a row added here.
  *  @type {{ name: string, command: string, ok_patterns: string,
  *           failure_patterns: string, restart: string, autostart: boolean,
- *           stop_command: string, open?: boolean }[]} */
+ *           stop_command: string, open?: boolean,
+ *           was: { name?: string, command?: string[], ok_patterns?: string[],
+ *                  failure_patterns?: string[], stop_command?: string[] } | null }[]} */
 let procDraft = [];
 
 function openSettings() {
@@ -144,6 +147,9 @@ async function loadConfigInto(force = false) {
     restart: p.restart || 'never',
     autostart: !!p.autostart,
     stop_command: (p.stop_command || []).join(' '),
+    // The spec as read, for the reason `loadedArgv` keeps the argv fields: see
+    // `saveSettings`.
+    was: p,
   }));
   renderProcs();
 }
@@ -258,28 +264,47 @@ async function saveSettings() {
     // not a shorter retention.
     worktree_retention_days: Math.max(0, Math.trunc(Number(ctl('setretain').value) || 0)),
     allow_several_in_main: !!ctl('setseveral').checked,
-    main_processes: procDraft.map((p) => ({
-      name: p.name.trim(),
-      command: argv(p.command),
-      failure_patterns: list(p.failure_patterns),
-      ok_patterns: list(p.ok_patterns),
-      restart: p.restart,
-      autostart: p.autostart,
-      stop_command: argv(p.stop_command),
-    })),
+    /* **A field nobody edited goes back as it was read**, the rule `argvOf` keeps
+       for the other argv fields. Joining is lossy here too, since `sh -c "a && b"`
+       splits into words and a pattern holding a comma splits in two, and it
+       costs more now: the daemon restarts when `main_processes` differs from
+       what it runs, so a save that only changed the retention days restarted the
+       daemon, every time, and rewrote the command on the way. */
+    main_processes: procDraft.map((p) => {
+      const was = p.was;
+      const kept = (/** @type {string} */ text, /** @type {string[] | undefined} */ from, /** @type {string} */ sep) =>
+        (from && text === from.join(sep) ? from : null);
+      return {
+        name: was && p.name === was.name ? was.name : p.name.trim(),
+        command: kept(p.command, was?.command, ' ') ?? argv(p.command),
+        failure_patterns: kept(p.failure_patterns, was?.failure_patterns, ', ') ?? list(p.failure_patterns),
+        ok_patterns: kept(p.ok_patterns, was?.ok_patterns, ', ') ?? list(p.ok_patterns),
+        restart: p.restart,
+        autostart: p.autostart,
+        stop_command: kept(p.stop_command, was?.stop_command, ' ') ?? argv(p.stop_command),
+      };
+    }),
   };
+  let answer;
   try {
-    await call('/api/config', body);
+    answer = await call('/api/config', body);
   } catch (e) {
     $('setnote').textContent = reason(e);
     return;
   }
-  /* Saved is only half of it: nothing here reaches the running daemon. The config
-     is read once at start — `upstream_ref` is baked into the push guard's hook
-     there, `main_processes` describes things already spawned — so the panel used
-     to say "restart orchd to apply" and leave you to it, which made trying a
-     review command a restart each time you changed your mind.
-     The restart is the same one the agent-upgrade bar offers: the window goes
+  /* **Most of it is already applied.** The daemon reads every setting when it
+     uses it, except the three it builds on at start — the upstream ref and remote,
+     and the main processes — and `restart_required` says whether one of those
+     moved. Restarting for the rest used to make trying a review command a restart
+     each time you changed your mind. */
+  if (!answer?.restart_required) {
+    // Read back, not just marked clean: `loadedArgv` has to hold what was saved,
+    // or the next save re-splits a quoted argument it no longer recognises.
+    await loadConfigInto(true);
+    $('setnote').textContent = 'saved and applied';
+    return;
+  }
+  /* The restart is the same one the agent-upgrade bar offers: the window goes
      down, the daemon takes its sessions with it, and `auto_resume` brings the
      live ones back with `--resume`. */
   $('setnote').textContent = 'saved, restarting\u2026';
@@ -669,14 +694,15 @@ function setupSettings() {
   $('setprocadd').onclick = () => {
     procDraft.push({
       name: '', command: '', ok_patterns: '', failure_patterns: '',
-      restart: 'never', autostart: false, stop_command: '', open: true,
+      restart: 'never', autostart: false, stop_command: '', open: true, was: null,
     });
     markDirty();
     renderProcs();
   };
   $('setsave').onclick = saveSettings;
-  $('setsave').title = 'Saves, then quits and comes back, because the config is '
-    + 'read at start. Live sessions are resumed as they were when `auto_resume` is on.';
+  $('setsave').title = 'Saves and applies. A change to the upstream ref, the remote or '
+    + 'the main processes also restarts, because those are read at start; live sessions '
+    + 'are resumed as they were when `auto_resume` is on.';
 
   /* **Nothing closes this pane by accident.** The gear, the X and Esc are the
      three ways out, and that is deliberate: what used to sit here was a captured

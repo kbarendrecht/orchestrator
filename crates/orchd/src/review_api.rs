@@ -63,7 +63,7 @@ pub async fn pr_triage_context(
         // answered. `None` when the poll has not seen this PR, and the skill then
         // asks GitHub itself rather than guessing.
         "login": login,
-        "language": app.cfg.default_language,
+        "language": app.settings().default_language,
         // Whether `story+reply` may be offered at all: an option the daemon would
         // refuse should never reach a card.
         "tracker": app.cfg.tracker.is_some(),

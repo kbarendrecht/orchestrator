@@ -1275,7 +1275,7 @@ fn auto_resume(app: Arc<AppState>, records: Vec<store::SessionRecord>) {
         // (`refuse_if_occupied`). A cold start has spawned nothing yet, so the restore
         // path is where it holds — and it also defends a `sessions.json` written
         // before that invariant existed, where two records shared one worktree.
-        let to_resume = first_per_workspace(resumable, app.cfg.allow_several_in_main);
+        let to_resume = first_per_workspace(resumable, app.settings().allow_several_in_main);
         /* **Declared before the first spawn, because the window is the bug** (#33).
         These sessions are coming back and none of them is live yet; a shutdown
         between two spawns reads live state and would write `was_live: false` for
@@ -1340,7 +1340,7 @@ fn start_review_poller(app: Arc<AppState>) {
             // GitHub repo → `Off`, and no command at all → the built-in queue.
             let main = app.cfg.main_checkout.clone();
             let timeout = app.cfg.review_timeout_seconds;
-            let command = app.cfg.reviews_command.clone();
+            let command = app.settings().reviews_command;
             // Two jobs now: the URL fallback for a configured command that omits
             // one, and the repository the built-in asks GitHub about. `None` means
             // no queue rather than an unlinked row.
@@ -1583,13 +1583,11 @@ fn start_head_poller(app: Arc<AppState>) {
 /// waits a minute: startup is already spending its time on auto-resume, the PR poll
 /// and the boot checks, and nothing about this is worth being third in that queue.
 ///
-/// `worktree::reap_old` decides and refuses; this only decides when to ask. Off
-/// entirely when `worktree_retention_days` is `0`, and the task is not even spawned
-/// then, so the setting costs nothing when it is unused.
+/// `worktree::reap_old` decides and refuses; this only decides when to ask. A
+/// `worktree_retention_days` of `0` makes each pass a no-op rather than keeping the
+/// task from starting, because the setting applies on save now: a timer that was
+/// never spawned could not notice it being turned on. An hourly wakeup is the cost.
 fn start_worktree_reaper(app: Arc<AppState>) {
-    if app.cfg.worktree_retention_days == 0 {
-        return;
-    }
     tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
         loop {

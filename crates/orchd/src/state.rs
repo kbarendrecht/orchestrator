@@ -82,7 +82,17 @@ pub type RunObserver =
 const PERSIST_COALESCE: std::time::Duration = std::time::Duration::from_secs(1);
 
 pub struct AppState {
+    /// The config as it was read at start. The fields [`Settings::needs_restart`]
+    /// names are read from here, because the running daemon is built on them.
+    ///
+    /// [`Settings::needs_restart`]: crate::config::Settings::needs_restart
     pub cfg: Config,
+    /// The settings as last saved, which the rest are read from through
+    /// [`AppState::settings`] so a save applies them without a restart.
+    ///
+    /// A `std` lock, because every reader clones and lets go: nothing holds it
+    /// across an await.
+    settings: std::sync::RwLock<crate::config::Settings>,
     pub repos: Repos,
     /// Random per-start token embedded in the served SPA and required on the
     /// WebSocket and every mutating endpoint (§12).
@@ -522,6 +532,26 @@ impl<T> std::ops::Deref for Durable<T> {
 }
 
 impl AppState {
+    /// The settings as last saved. A copy, so the lock is never held past the
+    /// line that reads it.
+    pub fn settings(&self) -> crate::config::Settings {
+        self.settings
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Take a saved `next` in place of the current settings, and say whether
+    /// the daemon has to restart for all of it to apply.
+    pub fn replace_settings(&self, next: crate::config::Settings) -> bool {
+        let restart = crate::config::Settings::of(&self.cfg).needs_restart(&next);
+        *self
+            .settings
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = next;
+        restart
+    }
+
     /// Hand the boot preflight's findings to the state, once.
     ///
     /// Separate from the constructor because the check runs *before* the state
@@ -595,6 +625,7 @@ impl AppState {
                 .map(|(o, n)| format!("{o}/{n}")),
         };
         Arc::new(AppState {
+            settings: std::sync::RwLock::new(crate::config::Settings::of(&cfg)),
             cfg,
             repos,
             token,
@@ -1179,7 +1210,7 @@ impl AppState {
                 .map(|(k, v)| (*k, v.clone()))
                 .collect(),
             repos: self.repos.clone(),
-            several_in_main: self.cfg.allow_several_in_main,
+            several_in_main: self.settings().allow_several_in_main,
             upstream_ref: self.cfg.upstream_ref.clone(),
             stack_up: inner.stack_up,
             create_run: inner.create_run.clone(),
@@ -1327,8 +1358,15 @@ impl AppState {
     /// hand-back, `reclaim_main`, the rail's label — is about the tree rather than
     /// about exclusivity.
     pub async fn claim_main(&self, session: SessionId) -> Result<()> {
-        let several = self.cfg.allow_several_in_main;
+        let several = self.settings().allow_several_in_main;
         let mut inner = self.inner.write().await;
+        /* **The recorded claim, and then anybody live in main**, the fallback
+        `main_occupant` has too. The setting applies on save now, so it can be
+        turned off while two sessions share main, and then the claim names only
+        the last one to take it. When that one exits the slot reads empty while
+        the other is still working, and a third came in with the setting off. The
+        swap is not refused by this: it moves the outgoing session out before the
+        incoming one claims, and a resume claims under its own id. */
         let held = inner
             .workspaces
             .get(MAIN)
@@ -1339,6 +1377,14 @@ impl AppState {
                     .get(id)
                     .map(|s| s.state.is_live())
                     .unwrap_or(false)
+            })
+            .or_else(|| {
+                inner
+                    .sessions
+                    .values()
+                    .filter(|s| s.workspace == MAIN && s.state.is_live() && s.id != session)
+                    .min_by_key(|s| s.created_at)
+                    .map(|s| s.id)
             });
         if let Some(holder) = held {
             if holder != session && !several {
@@ -2401,6 +2447,38 @@ mod tests {
             Some(second),
             "the claim is still recorded; only the refusal is off"
         );
+    }
+
+    /// Turning the setting off with two sessions in main must not let a third in
+    /// once the one the claim names has gone.
+    #[tokio::test]
+    async fn turning_sharing_off_keeps_a_third_session_out() {
+        let shared = app_sharing_main().await;
+        let one = live_in_main(&shared).await;
+        let two = live_in_main(&shared).await;
+        shared.claim_main(one).await.unwrap();
+        shared.claim_main(two).await.unwrap();
+
+        let mut off = shared.settings();
+        off.allow_several_in_main = false;
+        assert!(
+            !shared.replace_settings(off),
+            "this setting needs no restart"
+        );
+
+        {
+            let mut inner = shared.inner.write().await;
+            if let Some(s) = inner.sessions.get_mut(&two) {
+                s.set_state(State::Exited);
+            }
+        }
+        shared.release_main(two).await;
+        assert!(
+            shared.claim_main(Uuid::new_v4()).await.is_err(),
+            "`one` is still working in main, and sharing is off"
+        );
+        // And the session still in there may take the claim back.
+        assert!(shared.claim_main(one).await.is_ok());
     }
 
     /// What must *not* be relaxed. `switch_main_to_pr` and the swap ask

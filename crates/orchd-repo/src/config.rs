@@ -467,10 +467,25 @@ impl Settings {
         }
     }
 
+    /// Whether moving from `self` to `next` needs the daemon restarted.
+    ///
+    /// **Three fields, because only three are fixed at start.** `upstream_ref` is
+    /// baked into the push guard's hook, `upstream_remote` decides which repository
+    /// every poller talks to, and `main_processes` describes processes already
+    /// running. Everything else is read when it is used, from
+    /// `AppState::settings`, so a save applies it at once. Compared through JSON so
+    /// a process spec needs no `PartialEq` of its own.
+    pub fn needs_restart(&self, next: &Settings) -> bool {
+        self.upstream_ref != next.upstream_ref
+            || self.upstream_remote != next.upstream_remote
+            || serde_json::to_value(&self.main_processes).ok()
+                != serde_json::to_value(&next.main_processes).ok()
+    }
+
     /// Persist these into `config.json`, touching only their own keys — the same
     /// reparse-the-raw-file reason as [`rewrite_main_checkout`], so a slim
-    /// `{ main_checkout }` config stays slim. Takes effect on the next start;
-    /// nothing here mutates the running `cfg`.
+    /// `{ main_checkout }` config stays slim. This writes the file only; the
+    /// running daemon takes the new values in `api::set_config`.
     pub fn write(&self) -> Result<()> {
         let path = Config::path()?;
         let raw = std::fs::read_to_string(&path).unwrap_or_else(|_| "{}".to_string());

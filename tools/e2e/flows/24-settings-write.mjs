@@ -6,9 +6,10 @@
 // result as a first run and offers a folder picker for a project configured months
 // ago. So the assertion that matters is about the keys nobody touched.
 //
-// The other half is that a save changes nothing about the daemon in front of you.
-// It takes effect on the next start, and the snapshot has to keep saying what is
-// actually true until then.
+// The other half is what a save does to the daemon in front of you. Everything but
+// three fields applies at once, and the answer asks for a restart only when one of
+// those three moved: the panel restarts on that answer and on nothing else, so a
+// wrong `restart_required` either restarts for nothing or leaves a change unapplied.
 
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -22,7 +23,7 @@ export async function run(t) {
   const before = config(t)
   assert.equal((await t.state()).several_in_main, false)
 
-  const saved = await t.api('POST', '/api/config', {
+  const settings = {
     default_language: 'English',
     upstream_ref: before.upstream_ref,
     upstream_remote: before.upstream_remote,
@@ -36,8 +37,10 @@ export async function run(t) {
     workspace_notes: { main: 'The dev stack runs here.', worktree: null },
     worktree_retention_days: 21,
     allow_several_in_main: true,
-  })
-  assert.deepEqual(saved, { ok: true, restart_required: true })
+  }
+  const saved = await t.api('POST', '/api/config', settings)
+  assert.deepEqual(saved, { ok: true, restart_required: false },
+    'none of these is fixed at start, so none of them needs a restart')
 
   const after = config(t)
   assert.equal(after.worktree_retention_days, 21)
@@ -52,9 +55,19 @@ export async function run(t) {
     assert.deepEqual(after[key], before[key], `the save dropped ${key}`)
   }
 
-  // Written, not applied: the daemon is still the one that started, and saying
-  // otherwise in the snapshot would be the pane arguing with the rail.
-  assert.equal((await t.state()).several_in_main, false, 'a save must not change the daemon')
+  // Applied, not only written: the snapshot says so now, and the pane reads back
+  // what was saved rather than what the daemon started with.
+  assert.equal((await t.state()).several_in_main, true, 'a save applies at once')
+  assert.equal((await t.api('GET', '/api/config')).worktree_retention_days, 21)
+
+  /* The upstream ref is one of the three, because the push guard's hook is built
+     on it at start. Asked against what the daemon is *running*, so putting it back
+     stops asking — a restart for a value that is already live would be a restart
+     for nothing. */
+  const moved = await t.api('POST', '/api/config', { ...settings, upstream_ref: 'upstream/elsewhere' })
+  assert.equal(moved.restart_required, true, 'a new upstream ref needs a restart')
+  const back = await t.api('POST', '/api/config', settings)
+  assert.equal(back.restart_required, false, 'and putting it back does not')
 
   // And it is the file the next start reads.
   await t.restart()
