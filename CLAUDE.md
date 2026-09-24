@@ -369,6 +369,7 @@ together: same entries, same order, same groups.
 - The search honours `.gitignore`, and two kinds of ignored path are searched anyway.
 - A session auto-resume has not reached yet is not live, and that is what `was_live` reads.
 - A move of main is all or nothing, and the undo is the transaction.
+- The editor's bound is the checkout, not the worktree, and `.git` is the one hole it must not leave.
 
 ### The e2e flows
 

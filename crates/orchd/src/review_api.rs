@@ -332,10 +332,10 @@ pub async fn read_file(
         }));
     }
     // Off the runtime: a file read, which is disk and can be a large file.
-    let (file, shared) = (q.path.clone(), app.cfg.shared_worktree_paths.clone());
+    let (file, checkout) = (q.path.clone(), app.cfg.main_checkout.clone());
     Ok(Json(
         crate::proc::run_blocking("reading a file", move || {
-            crate::edit::read(&root, &file, &shared)
+            crate::edit::read(&root, &file, &checkout)
         })
         .await??,
     ))
@@ -364,14 +364,14 @@ pub async fn write_file(
         &body.path,
         &body.content,
         &body.version,
-        &app.cfg.shared_worktree_paths,
+        &app.cfg.main_checkout,
     )?;
     if matches!(out, crate::edit::WriteOutcome::Written { .. }) {
         // Agents working in this workspace hold a stale copy now, and will
         // overwrite it unless they are told (§5's invalidation, in the
         // direction that actually loses work).
         let resolved =
-            crate::edit::resolve_in_workspace(&root, &body.path, &app.cfg.shared_worktree_paths)?;
+            crate::edit::resolve_in_workspace(&root, &body.path, &app.cfg.main_checkout)?;
         app.record_human_edit(resolved).await;
         // The changed-file pane and the diff must both reflect the write.
         let _ = app.reconcile(&body.workspace).await;

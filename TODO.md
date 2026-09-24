@@ -449,9 +449,9 @@ this file, which churned it from every build; that feature is gone.
   is the whole version: name the floor, and do not exceed it.
 
 - **Deferred: a worktree could be given files by copy, not only by symlink.** orchd
-  puts a worktree's untracked files there by symlinking back to main, with
-  `shared_worktree_paths` for links pointing out. `get-bb/bb` does the same job
-  declaratively and with the other semantics (`docs/worktrees.md`): a
+  puts a worktree's untracked files there by symlinking back to main, and the
+  editor follows such a link because the checkout is its bound. `get-bb/bb` does
+  the same job declaratively and with the other semantics (`docs/worktrees.md`): a
   `.worktreeinclude` file in gitignore syntax names untracked files to **copy** in,
   after the tree is cut and before setup runs, and an edit in the worktree then does
   not touch main. The two are not the same feature — a per-worktree `.env` cannot be

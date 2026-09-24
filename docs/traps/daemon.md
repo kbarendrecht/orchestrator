@@ -538,3 +538,41 @@ resume fail on cue; no real agent can be asked to.
 Parking and the PR routes carry sessions too, through `carry.rs`, which sits below
 `spawn` so the exit watcher can call it without a module cycle. They only ever
 carry stopped sessions, so they need no undo of their own.
+## The editor's bound is the checkout, not the worktree, and `.git` is the one hole it must not leave.
+
+`resolve_in_workspace` is the containment check behind reading a file, writing a
+file, and handing a path to the machine's opener. It exists for a **crafted
+branch**, not for the agent: Claude Code in that worktree writes whatever it likes
+with no check at all, while a PR that commits `notes.md -> ~/.ssh/id_rsa` needs
+only a reviewer who clicks the file link.
+
+**It used to bound at the worktree, and that made an ordinary layout unopenable**
+(#34). A repo whose worktrees link a directory back to main — scienta's
+`.plan -> ../../../.plan`, and the daemon itself gives a worktree its untracked
+files that way — got `<path> resolves outside the workspace` on every file under
+it. The escape hatch was `shared_worktree_paths`, a list of directory *names*
+allowed out, which is the wrong noun twice over: the reporter found it only by
+reading the source, and a branch that commits `.plan -> /` reopens the hole the
+leaf check had closed, because the name is trusted and the target is never looked
+at.
+
+**The worktree was never the boundary anyway, and `guard.rs` had already said
+so.** `guard::check`'s isolation rule holds an agent's *git* commands to its own tree and
+deliberately lets its writes through — main's branch is daemon state, main's files
+are the repo's own business — and the comment there names this same `.plan`
+symlink as what the wider refusal broke. Every worktree lives under
+`main_checkout` (`normalize_worktrees_subdir` refuses anything else), so the
+checkout is the bound and the setting is gone.
+
+`.git` is the exception, in every workspace including main. `hooks/pre-commit` and
+`config` each run a command on the next git invocation, so the one thing `guard`
+protects must not be reachable through the editor instead — and main's own `.git`
+was already reachable that way before the bound moved, so the refusal closes a
+hole rather than paying for one.
+
+**The refusal names the symlink now**, which is the rest of #34. The parent check
+has canonicalised the whole directory by the time it fails, so it knew only that
+something escaped; `first_symlink` walks the requested components and stats each
+prefix to find which one is the link, and reports where it points. **Checked
+against deliberate breakage**: bounding at the workspace again, dropping the
+`.git` refusal, and returning `None` from the walk each fail their own test.

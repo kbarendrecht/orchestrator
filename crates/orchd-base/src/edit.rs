@@ -16,20 +16,32 @@ pub struct FileContents {
     pub bytes: u64,
 }
 
-/// Resolve a workspace-relative path, refusing anything that escapes.
+/// Resolve a workspace-relative path, refusing anything that escapes the checkout.
 ///
 /// This is the one endpoint that writes arbitrary bytes to disk, so containment
 /// is checked against the canonical path rather than the requested string: a
 /// symlink inside the workspace pointing out of it must not become a write
-/// primitive. A repo that shares a directory across worktrees on purpose names it
-/// in `shared_worktree_paths`, and only those are allowed through — an exception
-/// that is configured rather than accidentally permitted. `shared` empty is the
-/// tight case and the default.
-pub fn resolve_in_workspace(
-    workspace_root: &Path,
-    rel: &str,
-    shared: &[String],
-) -> Result<PathBuf> {
+/// primitive. The threat is not the agent, which writes what it likes with no
+/// check at all — it is a **crafted branch**, `notes.md -> ~/.ssh/id_rsa`
+/// committed on a PR, and a reviewer who clicks the file link.
+///
+/// **The bound is the checkout, not the worktree** (#34). Every worktree lives
+/// under `main_checkout` — `normalize_worktrees_subdir` refuses any other
+/// arrangement — and a directory symlinked back to main is how a worktree gets
+/// its untracked files here at all. Holding the editor to one worktree made that
+/// ordinary layout unopenable, and it contradicted a decision already paid for:
+/// [`crate::guard::check`]'s isolation rule holds an agent's *git* commands to its own
+/// tree and deliberately lets its writes through, because main's branch is daemon
+/// state while main's files are the repo's own business. This used to need
+/// `shared_worktree_paths`, a list of directory names allowed out — which trusted
+/// a *name* a branch can redefine, so `.plan -> /` reopened the hole the leaf
+/// check had closed.
+///
+/// `.git` is the one exception, and it applies to every workspace, main included.
+/// `hooks/pre-commit` and `config` each run a command on the next git invocation,
+/// so the state `guard` exists to protect must not be reachable through the editor
+/// instead.
+pub fn resolve_in_workspace(workspace_root: &Path, rel: &str, checkout: &Path) -> Result<PathBuf> {
     if rel.is_empty() {
         bail!("no path given");
     }
@@ -46,6 +58,7 @@ pub fn resolve_in_workspace(
 
     let root = std::fs::canonicalize(workspace_root)
         .with_context(|| format!("resolving {}", workspace_root.display()))?;
+    let bound = Bound::new(&root, checkout);
     let joined = root.join(candidate);
 
     // The file itself may not exist yet, so canonicalize its parent.
@@ -53,10 +66,11 @@ pub fn resolve_in_workspace(
     let real_parent = std::fs::canonicalize(&parent)
         .with_context(|| format!("resolving {}", parent.display()))?;
 
-    if !inside(&real_parent, &root, shared) {
-        bail!("{rel} resolves outside the workspace");
+    if !bound.holds(&real_parent) {
+        bail!("{}", bound.escaped(rel, &root, &real_parent));
     }
     let resolved = real_parent.join(joined.file_name().context("path has no file name")?);
+    refuse_git_dir(rel, &resolved)?;
 
     /* **The leaf may be a symlink too, and canonicalising the parent says nothing
     about it.** `read` follows it, so a link committed on a PR branch —
@@ -69,39 +83,121 @@ pub fn resolve_in_workspace(
     belongs here, where both callers meet, so the next caller inherits it.
 
     A symlink is not refused outright — a repo that shares a directory between
-    worktrees does it with links, which is what `shared_worktree_paths` is for.
-    Where it *points* is what decides. */
+    worktrees does it with links. Where it *points* is what decides. */
     let is_link = std::fs::symlink_metadata(&resolved)
         .map(|md| md.file_type().is_symlink())
         .unwrap_or(false);
     if is_link {
         let target = std::fs::canonicalize(&resolved)
             .with_context(|| format!("resolving the symlink {rel}"))?;
-        if !inside(&target, &root, shared) {
-            bail!(
-                "{rel} is a symlink to {}, which is outside the workspace",
-                target.display()
-            );
-        }
+        bound.admit(rel, &target)?;
     }
     Ok(resolved)
 }
 
-/// Is this resolved path within the workspace, or within a directory the repo
-/// declared shared on purpose?
+/// Where a resolved path is allowed to land: this checkout, and nothing else.
 ///
-/// A declared shared directory resolves outside the worktree by design, because it
-/// is a symlink back to main. Nothing else that leaves the workspace is allowed,
-/// and with none declared that is every case.
-fn inside(path: &Path, root: &Path, shared: &[String]) -> bool {
-    if path.starts_with(root) {
-        return true;
+/// Carried as a value because three places ask the same question — the parent, the
+/// leaf link, and `read`'s second look after `ELOOP` — and a fourth caller
+/// answering it differently is the shape of the bug this replaced.
+struct Bound {
+    /// Canonical, because the answer is `starts_with` against a real path.
+    ///
+    /// The workspace stands in when the checkout cannot be canonicalised, which is
+    /// a daemon whose `main_checkout` has been moved out from under it. That is
+    /// tighter than intended and still opens the tree you are sitting in, where an
+    /// empty bound would refuse every file in the product.
+    at: PathBuf,
+}
+
+impl Bound {
+    fn new(root: &Path, checkout: &Path) -> Self {
+        Self {
+            at: std::fs::canonicalize(checkout).unwrap_or_else(|_| root.to_path_buf()),
+        }
     }
-    shared.iter().any(|entry| {
-        std::fs::canonicalize(root.join(entry))
-            .map(|real| path.starts_with(&real))
-            .unwrap_or(false)
-    })
+
+    fn holds(&self, path: &Path) -> bool {
+        path.starts_with(&self.at)
+    }
+
+    /// The refusal, or `Ok` — the leaf-link form, which has a target to name.
+    fn admit(&self, rel: &str, target: &Path) -> Result<()> {
+        if self.holds(target) {
+            return Ok(());
+        }
+        bail!(
+            "{rel} is a symlink to {}, outside the checkout at {}",
+            target.display(),
+            self.at.display()
+        );
+    }
+
+    /// **Name the symlink, because the user cannot see one** (#34).
+    ///
+    /// The parent check has canonicalised the whole directory by the time it
+    /// fails, so it knows only that *something* escaped — and it used to say
+    /// exactly that: `<path> resolves outside the workspace`, with no way to tell
+    /// a shared `.plan` from a typo. Walking the requested components back and
+    /// stat-ing each prefix finds which one is the link, which is the only fact
+    /// that makes the refusal actionable.
+    fn escaped(&self, rel: &str, root: &Path, real_parent: &Path) -> String {
+        let at = self.at.display();
+        match first_symlink(root, Path::new(rel)) {
+            Some((name, target)) => format!(
+                "{rel}: {name} is a symlink to {}, outside the checkout at {at}",
+                target.display()
+            ),
+            None => format!(
+                "{rel} resolves to {}, outside the checkout at {at}",
+                real_parent.display()
+            ),
+        }
+    }
+}
+
+/// The first component of `rel` that is a symlink, with where it points.
+///
+/// Stops at the first one: that is the component that moved the path out, and
+/// anything under it is a consequence rather than a cause.
+fn first_symlink(root: &Path, rel: &Path) -> Option<(String, PathBuf)> {
+    let mut at = root.to_path_buf();
+    // The leaf is excluded: a leaf link is the other refusal, which names its own
+    // target and says so in those words.
+    let mut components: Vec<_> = rel.components().collect();
+    components.pop();
+    let mut shown = PathBuf::new();
+    for c in components {
+        at.push(c);
+        shown.push(c);
+        let is_link = std::fs::symlink_metadata(&at)
+            .map(|md| md.file_type().is_symlink())
+            .unwrap_or(false);
+        if is_link {
+            // Canonical rather than the literal target: `../../../.plan` says
+            // nothing to somebody who cannot see the worktree's depth.
+            let target = std::fs::canonicalize(&at)
+                .unwrap_or_else(|_| std::fs::read_link(&at).unwrap_or_else(|_| at.clone()));
+            return Some((shown.display().to_string(), target));
+        }
+    }
+    None
+}
+
+/// `.git` is off limits, in every workspace including main.
+///
+/// A write to `hooks/pre-commit` or `config` runs on the next git command, so it
+/// is an execution primitive rather than an edit — and the daemon runs git
+/// constantly. Main's own `.git` was already reachable this way before the bound
+/// moved, so this closes a hole rather than paying for one.
+fn refuse_git_dir(rel: &str, resolved: &Path) -> Result<()> {
+    if resolved
+        .components()
+        .any(|c| c.as_os_str() == std::ffi::OsStr::new(".git"))
+    {
+        bail!("{rel} is inside a .git directory, which this editor will not touch");
+    }
+    Ok(())
 }
 
 fn version_of(bytes: &[u8]) -> String {
@@ -123,9 +219,9 @@ fn open_no_follow(path: &Path) -> std::io::Result<std::fs::File> {
         .open(path)
 }
 
-pub fn read(workspace_root: &Path, rel: &str, shared: &[String]) -> Result<FileContents> {
+pub fn read(workspace_root: &Path, rel: &str, checkout: &Path) -> Result<FileContents> {
     use std::io::Read as _;
-    let path = resolve_in_workspace(workspace_root, rel, shared)?;
+    let path = resolve_in_workspace(workspace_root, rel, checkout)?;
     // `resolve_in_workspace` checked where a link points, but a stat followed by
     // an open is two steps, and a path can be made a link between them. So the
     // open itself refuses to follow: a plain file opens; a link comes back `ELOOP`,
@@ -138,12 +234,8 @@ pub fn read(workspace_root: &Path, rel: &str, shared: &[String]) -> Result<FileC
                 .with_context(|| format!("resolving {}", workspace_root.display()))?;
             let target = std::fs::canonicalize(&path)
                 .with_context(|| format!("resolving the symlink {rel}"))?;
-            if !inside(&target, &root, shared) {
-                bail!(
-                    "{rel} is a symlink to {}, which is outside the workspace",
-                    target.display()
-                );
-            }
+            Bound::new(&root, checkout).admit(rel, &target)?;
+            refuse_git_dir(rel, &target)?;
             open_no_follow(&target).with_context(|| format!("opening {}", target.display()))?
         }
         Err(e) => return Err(e).with_context(|| format!("opening {}", path.display())),
@@ -190,9 +282,9 @@ pub fn write(
     rel: &str,
     content: &str,
     expected: &str,
-    shared: &[String],
+    checkout: &Path,
 ) -> Result<WriteOutcome> {
-    let path = resolve_in_workspace(workspace_root, rel, shared)?;
+    let path = resolve_in_workspace(workspace_root, rel, checkout)?;
     // Never through a link. The rename below replaces whatever is at `path`, so a
     // write onto an in-tree symlink turned the link into a regular file: a
     // `typechange` in git, and the file it pointed at untouched. Links are readable
@@ -232,9 +324,6 @@ pub fn write(
 
 #[cfg(test)]
 mod tests {
-    /// No shared directories declared — the default, and the tight case.
-    const NONE: &[String] = &[];
-
     use super::*;
 
     /// A workspace root with a `src/` in it, which is what every case below edits
@@ -265,50 +354,31 @@ mod tests {
         std::fs::write(&outside, "PRIVATE KEY\n").unwrap();
         std::os::unix::fs::symlink(&outside, d.join("src/leak.txt")).unwrap();
 
-        let err = read(&d, "src/leak.txt", NONE)
+        let err = read(&d, "src/leak.txt", &d)
             .expect_err("a symlink out of the workspace must not be readable")
             .to_string();
-        assert!(err.contains("outside the workspace"), "unhelpful: {err}");
+        assert!(err.contains("outside the checkout"), "unhelpful: {err}");
         // And the same gate refuses the write, so neither is a way in.
-        assert!(write(&d, "src/leak.txt", "x", "", NONE).is_err());
+        assert!(write(&d, "src/leak.txt", "x", "", &d).is_err());
 
         // A link that stays inside is still fine — repos do use them, and the
         // check is about where it points, not that it is a link.
         std::fs::write(d.join("src/real.txt"), "in tree\n").unwrap();
         std::os::unix::fs::symlink(d.join("src/real.txt"), d.join("src/alias.txt")).unwrap();
-        assert_eq!(
-            read(&d, "src/alias.txt", NONE).unwrap().content,
-            "in tree\n"
-        );
-
-        // A declared shared directory is the configured exception, and a link into
-        // it resolves.
-        let shared_dir = d
-            .parent()
-            .unwrap()
-            .join(format!("orchd-edit-shared-{}", std::process::id()));
-        std::fs::create_dir_all(&shared_dir).unwrap();
-        std::fs::write(shared_dir.join("vendored.txt"), "shared\n").unwrap();
-        std::os::unix::fs::symlink(&shared_dir, d.join("vendor")).unwrap();
-        let shared = vec!["vendor".to_string()];
-        assert_eq!(
-            read(&d, "vendor/vendored.txt", &shared).unwrap().content,
-            "shared\n"
-        );
+        assert_eq!(read(&d, "src/alias.txt", &d).unwrap().content, "in tree\n");
 
         let _ = std::fs::remove_dir_all(&d);
         let _ = std::fs::remove_file(&outside);
-        let _ = std::fs::remove_dir_all(&shared_dir);
     }
 
     #[test]
     fn writes_and_bumps_the_version() {
         let d = scratch("write");
         std::fs::write(d.join("src/a.txt"), "one\n").unwrap();
-        let f = read(&d, "src/a.txt", NONE).unwrap();
+        let f = read(&d, "src/a.txt", &d).unwrap();
         assert_eq!(f.content, "one\n");
 
-        let out = write(&d, "src/a.txt", "two\n", &f.version, NONE).unwrap();
+        let out = write(&d, "src/a.txt", "two\n", &f.version, &d).unwrap();
         match out {
             WriteOutcome::Written { version } => assert_ne!(version, f.version),
             other => panic!("expected Written, got {other:?}"),
@@ -324,12 +394,12 @@ mod tests {
     fn refuses_to_clobber_a_file_that_moved_underneath() {
         let d = scratch("conflict");
         std::fs::write(d.join("src/a.txt"), "one\n").unwrap();
-        let f = read(&d, "src/a.txt", NONE).unwrap();
+        let f = read(&d, "src/a.txt", &d).unwrap();
 
         // An agent edits the same file while the buffer is open.
         std::fs::write(d.join("src/a.txt"), "agent wrote this\n").unwrap();
 
-        let out = write(&d, "src/a.txt", "mine\n", &f.version, NONE).unwrap();
+        let out = write(&d, "src/a.txt", "mine\n", &f.version, &d).unwrap();
         assert!(matches!(out, WriteOutcome::Conflict { .. }));
         // The agent's work survives.
         assert_eq!(
@@ -345,10 +415,10 @@ mod tests {
         // bytes must not read as someone else's edit.
         let d = scratch("same");
         std::fs::write(d.join("src/a.txt"), "one\n").unwrap();
-        let f = read(&d, "src/a.txt", NONE).unwrap();
+        let f = read(&d, "src/a.txt", &d).unwrap();
         std::fs::write(d.join("src/a.txt"), "one\n").unwrap();
         assert!(matches!(
-            write(&d, "src/a.txt", "two\n", &f.version, NONE).unwrap(),
+            write(&d, "src/a.txt", "two\n", &f.version, &d).unwrap(),
             WriteOutcome::Written { .. }
         ));
         let _ = std::fs::remove_dir_all(&d);
@@ -357,11 +427,11 @@ mod tests {
     #[test]
     fn refuses_paths_that_escape_the_workspace() {
         let d = scratch("escape");
-        assert!(resolve_in_workspace(&d, "../outside.txt", NONE).is_err());
-        assert!(resolve_in_workspace(&d, "/etc/passwd", NONE).is_err());
-        assert!(resolve_in_workspace(&d, "src/../../x", NONE).is_err());
-        assert!(resolve_in_workspace(&d, "", NONE).is_err());
-        assert!(resolve_in_workspace(&d, "src/a.txt", NONE).is_ok());
+        assert!(resolve_in_workspace(&d, "../outside.txt", &d).is_err());
+        assert!(resolve_in_workspace(&d, "/etc/passwd", &d).is_err());
+        assert!(resolve_in_workspace(&d, "src/../../x", &d).is_err());
+        assert!(resolve_in_workspace(&d, "", &d).is_err());
+        assert!(resolve_in_workspace(&d, "src/a.txt", &d).is_ok());
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -373,9 +443,9 @@ mod tests {
         let d = scratch("write-link");
         std::fs::write(d.join("src/real.txt"), "real\n").unwrap();
         std::os::unix::fs::symlink(d.join("src/real.txt"), d.join("src/alias.txt")).unwrap();
-        let seen = read(&d, "src/alias.txt", NONE).expect("an in-tree link reads");
+        let seen = read(&d, "src/alias.txt", &d).expect("an in-tree link reads");
         assert_eq!(seen.content, "real\n");
-        let err = write(&d, "src/alias.txt", "other\n", &seen.version, NONE)
+        let err = write(&d, "src/alias.txt", "other\n", &seen.version, &d)
             .expect_err("a write through a link must be refused")
             .to_string();
         assert!(err.contains("symlink"), "{err}");
@@ -399,46 +469,102 @@ mod tests {
         let outside = std::env::temp_dir().join(format!("orchd-outside-{}", std::process::id()));
         std::fs::create_dir_all(&outside).unwrap();
         std::os::unix::fs::symlink(&outside, d.join("escape")).unwrap();
-        assert!(resolve_in_workspace(&d, "escape/evil.txt", NONE).is_err());
+        assert!(resolve_in_workspace(&d, "escape/evil.txt", &d).is_err());
         let _ = std::fs::remove_dir_all(&d);
         let _ = std::fs::remove_dir_all(&outside);
     }
 
+    /// **A worktree sharing a directory back to main is the ordinary layout** (#34).
+    ///
+    /// The bound used to be the worktree, so `.plan -> ../../../.plan` — which is
+    /// how a worktree is given its untracked files here — made every file under it
+    /// unopenable, and the refusal named neither the link nor the setting that
+    /// allowed it. The checkout is the bound now, and that link needs no setting at
+    /// all. A link leaving the checkout is still refused, which is the case the
+    /// check exists for.
+    #[cfg(unix)]
     #[test]
-    fn a_declared_shared_directory_is_allowed_out_and_only_when_declared() {
-        // The case this exists for: a directory symlinked back to main on purpose,
-        // shared across every worktree. It used to be hardcoded as `.plan/`, which
-        // gave every other repo a carve-out for a convention it does not have.
-        let d = scratch("plan");
-        let shared_real = std::env::temp_dir().join(format!("orchd-plan-{}", std::process::id()));
-        std::fs::create_dir_all(&shared_real).unwrap();
-        std::os::unix::fs::symlink(&shared_real, d.join(".plan")).unwrap();
+    fn a_directory_shared_back_to_main_resolves_and_one_leaving_the_checkout_does_not() {
+        // A checkout shaped like the real one: main, and a worktree under it.
+        let checkout = crate::testutil::scratch("edit-checkout");
+        let wt = checkout.join(".claude/worktrees/feature");
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::create_dir_all(checkout.join(".plan")).unwrap();
+        std::fs::write(checkout.join(".plan/notes.md"), "shared\n").unwrap();
+        std::os::unix::fs::symlink("../../../.plan", wt.join(".plan")).unwrap();
 
-        // A second escape hatch that is *not* declared, so the last assertion
-        // fails on the rule rather than on the path not existing.
-        let other_real = std::env::temp_dir().join(format!("orchd-other-{}", std::process::id()));
-        std::fs::create_dir_all(&other_real).unwrap();
-        std::os::unix::fs::symlink(&other_real, d.join("escape")).unwrap();
+        assert_eq!(
+            read(&wt, ".plan/notes.md", &checkout).unwrap().content,
+            "shared\n",
+            "a directory shared back to main is inside the checkout"
+        );
 
-        let declared = [".plan".to_string()];
-        assert!(resolve_in_workspace(&d, ".plan/notes.md", &declared).is_ok());
-        // And undeclared it is just another symlink out of the workspace, which is
-        // the whole point of the containment rule.
-        assert!(resolve_in_workspace(&d, ".plan/notes.md", NONE).is_err());
-        // Declaring one does not open the others — this one resolves fine and is
-        // still refused.
-        assert!(resolve_in_workspace(&d, "escape/evil.txt", &declared).is_err());
-        let _ = std::fs::remove_dir_all(&other_real);
+        // And out of the checkout is out. Its own name: another test in this file
+        // uses `orchd-outside-<pid>` and deletes it, so sharing the name makes both
+        // flaky under a parallel run.
+        let outside =
+            std::env::temp_dir().join(format!("orchd-off-checkout-{}", std::process::id()));
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, wt.join("escape")).unwrap();
+        let err = resolve_in_workspace(&wt, "escape/evil.txt", &checkout)
+            .map(|_| ())
+            .expect_err("a link out of the checkout must be refused")
+            .to_string();
+        // **The refusal names the link** — the whole of #34. Before this it said
+        // only "resolves outside the workspace", so a shared directory and a typo
+        // produced the same sentence.
+        assert!(
+            err.contains("escape is a symlink to"),
+            "the refusal must name the symlink: {err}"
+        );
+        assert!(
+            err.contains(
+                &std::fs::canonicalize(&outside)
+                    .unwrap()
+                    .display()
+                    .to_string()
+            ),
+            "and where it points: {err}"
+        );
 
+        let _ = std::fs::remove_dir_all(&checkout);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    /// **`.git` is an execution primitive, not a file** (#34).
+    ///
+    /// A write to `hooks/pre-commit` or to `config` runs on the next git command,
+    /// and the daemon runs git constantly. Main's own `.git` was reachable through
+    /// the editor before the bound moved to the checkout, so this closes a hole
+    /// rather than paying for one.
+    #[cfg(unix)]
+    #[test]
+    fn nothing_inside_a_git_directory_is_editable() {
+        let d = scratch("gitdir");
+        std::fs::create_dir_all(d.join(".git/hooks")).unwrap();
+        std::fs::write(d.join(".git/hooks/pre-commit"), "#!/bin/sh\n").unwrap();
+
+        let err = resolve_in_workspace(&d, ".git/hooks/pre-commit", &d)
+            .map(|_| ())
+            .expect_err("a hook is not an editable file")
+            .to_string();
+        assert!(err.contains(".git"), "{err}");
+        assert!(read(&d, ".git/config", &d).is_err());
+
+        // And not through a link either: the leaf check asks the same question.
+        std::os::unix::fs::symlink(d.join(".git/hooks/pre-commit"), d.join("src/hook")).unwrap();
+        assert!(
+            read(&d, "src/hook", &d).is_err(),
+            "a link into .git is still .git"
+        );
         let _ = std::fs::remove_dir_all(&d);
-        let _ = std::fs::remove_dir_all(&shared_real);
     }
 
     #[test]
     fn binary_files_are_refused_rather_than_mangled() {
         let d = scratch("binary");
         std::fs::write(d.join("src/x.bin"), [0xff, 0xfe, 0x00, 0x01]).unwrap();
-        assert!(read(&d, "src/x.bin", NONE).is_err());
+        assert!(read(&d, "src/x.bin", &d).is_err());
         let _ = std::fs::remove_dir_all(&d);
     }
 }

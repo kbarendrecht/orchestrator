@@ -31,20 +31,6 @@ pub struct Config {
     pub worktrees_subdir: PathBuf,
     #[serde(default = "default_port")]
     pub port: u16,
-    /// Directories inside a worktree that are allowed to be symlinks *out* of it.
-    ///
-    /// The editable diff pane is the one endpoint that writes arbitrary bytes to
-    /// disk, so it refuses any path that resolves outside the workspace — a
-    /// symlink pointing out must not become a write primitive. A repo that
-    /// deliberately shares a directory across worktrees (a plan or notes dir
-    /// symlinked back to main, say) names it here and writes through it stay
-    /// allowed.
-    ///
-    /// Empty by default, which is the tight answer: a repo that shares nothing
-    /// gets no exception at all. Each entry is a path relative to the worktree
-    /// root, matched after canonicalisation, so `..` in the *value* buys nothing.
-    #[serde(default)]
-    pub shared_worktree_paths: Vec<String>,
     /// Managed processes declared for the main workspace. Worktrees declare none
     /// by default; a shell is opened on demand instead. Empty by default — see the
     /// README for the shape and a worked example — and edited in the settings panel.

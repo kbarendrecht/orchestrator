@@ -1092,8 +1092,11 @@ pub async fn file_verb(
         refuse!("no such workspace: {}", body.workspace);
     };
     // Relative, no `..`, under the root — and the same call every other
-    // client-named path in this daemon goes through.
-    let path = crate::edit::resolve_in_workspace(&root, body.path.trim(), &[])?;
+    // client-named path in this daemon goes through. The bound here is the
+    // *workspace*, not the checkout: `git stage` and `git discard` act on this
+    // tree's index, so a path shared in from main is not a thing this verb can
+    // mean — and the `strip_prefix` below already assumed as much.
+    let path = crate::edit::resolve_in_workspace(&root, body.path.trim(), &root)?;
     let rel = path
         .strip_prefix(&root)
         .unwrap_or(&path)
@@ -2714,10 +2717,10 @@ pub async fn reveal_path(
         refuse!("unknown workspace {}", body.workspace);
     };
     let (rel, folder) = (body.path.clone(), body.folder);
-    let shared = app.cfg.shared_worktree_paths.clone();
+    let checkout = app.cfg.main_checkout.clone();
     // Off the runtime: `resolve_in_workspace` canonicalises, which is disk.
     let target = crate::proc::run_blocking("resolving a path to open", move || {
-        let file = orchd_base::edit::resolve_in_workspace(&root, &rel, &shared)?;
+        let file = orchd_base::edit::resolve_in_workspace(&root, &rel, &checkout)?;
         let at = if folder {
             file.parent()
                 .map(std::path::Path::to_path_buf)
