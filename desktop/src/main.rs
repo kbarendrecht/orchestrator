@@ -500,6 +500,12 @@ fn build_window(
     }
     #[cfg(target_os = "linux")]
     wire_session_switch_keys(&_window);
+    /* A probe for #29, and the reason it is here rather than later: the buttons are
+    laid out when the window is created, so this is the earliest point the numbers
+    exist. If AppKit moves them again before the first paint, the line will say so
+    by disagreeing with the screenshot beside it. */
+    #[cfg(target_os = "macos")]
+    log_titlebar_metrics();
     // The window exists here; it is not painted yet. Everything after this is
     // the webview fetching the page and the SPA waiting for its first snapshot,
     // which is the client's own half of the wait and is timed in the page.
@@ -1323,6 +1329,79 @@ fn on_a_mouse_event() -> bool {
         || kind == NSEventType::OtherMouseUp
         || kind == NSEventType::OtherMouseDragged
         || kind == NSEventType::MouseMoved
+}
+
+/// Where AppKit actually put the traffic lights, against the bar the page draws.
+///
+/// **A measurement, not a fix.** #29 reports the lights sitting above the centre
+/// line of the 46px top row (`.app` in `app.css`). Everything that decides this is
+/// AppKit's: `TitleBarStyle::Overlay` insets the buttons for a *standard* titlebar
+/// height, and that inset is an Apple constant which differs by OS version and
+/// again in full screen. None of it can be seen from Linux, and no gate in this
+/// repo reads macOS pixels — so the numbers are logged rather than guessed at, and
+/// `node tools/app-check.mjs` on macos-14 is what prints them.
+///
+/// Window coordinates for both, because that is the one frame they can be compared
+/// in: a traffic light's `frame` is in the titlebar view's coordinates and the
+/// page's rows are in the content view's. AppKit's y grows upward, so the gap from
+/// the top of the content view down to the centre of the button is
+/// `content.top - button.centre`, and the bar centres its own content at 23.
+///
+/// No `unsafe`: `windows`, `standardWindowButton`, `convertRect:toView:` and the
+/// frame getters are all safe in `objc2-app-kit`, so this crate keeps the
+/// workspace's `unsafe_code = deny`.
+#[cfg(target_os = "macos")]
+fn log_titlebar_metrics() {
+    use objc2_app_kit::{NSApplication, NSWindowButton};
+
+    let Some(mtm) = objc2::MainThreadMarker::new() else {
+        return;
+    };
+    /* Every window, not `firstObject`: the order AppKit hands them back in is its
+    own, and a panel it opened for itself would answer for the board. Each one says
+    its title, so the line names what it measured. */
+    let windows = NSApplication::sharedApplication(mtm).windows();
+    if windows.is_empty() {
+        tracing::info!("titlebar: no window to measure");
+        return;
+    }
+    for window in windows.iter() {
+        let Some(close) = window.standardWindowButton(NSWindowButton::CloseButton) else {
+            continue;
+        };
+        // `None` as the destination view is AppKit's spelling of "the window itself".
+        let button = close.convertRect_toView(close.bounds(), None);
+        let content = window.contentView().map(|v| v.frame());
+        let frame = window.frame();
+        let layout = window.contentLayoutRect();
+
+        let gap = content.map(|c| {
+            let top = c.origin.y + c.size.height;
+            top - (button.origin.y + button.size.height / 2.0)
+        });
+        tracing::info!(
+            title = %window.title(),
+            button = format!(
+                "{:.1},{:.1} {:.1}x{:.1}",
+                button.origin.x, button.origin.y, button.size.width, button.size.height
+            ),
+            content = content
+                .map(|c| format!(
+                    "{:.1},{:.1} {:.1}x{:.1}",
+                    c.origin.x, c.origin.y, c.size.width, c.size.height
+                ))
+                .unwrap_or_else(|| "none".into()),
+            window = format!("{:.1}x{:.1}", frame.size.width, frame.size.height),
+            content_layout = format!("{:.1}x{:.1}", layout.size.width, layout.size.height),
+            backing = window.backingScaleFactor(),
+            full_screen = window
+                .styleMask()
+                .contains(objc2_app_kit::NSWindowStyleMask::FullScreen),
+            // What the fix has to close: the page centres the bar's content at 23.
+            top_gap = gap.map(|g| format!("{g:.2}")).unwrap_or_else(|| "?".into()),
+            "titlebar: where AppKit put the traffic lights (#29)",
+        );
+    }
 }
 
 /// Raise the native folder dialog and wait for the answer.

@@ -52,7 +52,18 @@ tracing = { workspace = true }
 # for this crate.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSResponder", "NSEvent"] }
+# `NSWindow`, `NSView`, `NSControl` and `NSButton` are the titlebar measurement
+# (`log_titlebar_metrics`): the traffic lights are `NSButton`s AppKit hangs off the
+# window, and where it puts them is the question #29 asks. All getters, all safe.
+objc2-app-kit = { version = "0.3", features = [
+  "NSApplication",
+  "NSResponder",
+  "NSEvent",
+  "NSWindow",
+  "NSView",
+  "NSControl",
+  "NSButton",
+] }
 # The uncaught-exception handler (`appkit_abort`). `NSException` for the type,
 # `NSString` for `reason`, `NSObjCRuntime` for `NSExceptionName`, and `NSArray`
 # for `callStackSymbols` — which is the field that names our frame rather than

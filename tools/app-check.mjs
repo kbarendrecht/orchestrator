@@ -324,6 +324,14 @@ try {
   }
 } finally {
   await stop()
+  /* The titlebar probe for #29: a measurement is only useful if somebody reads it,
+     and the app's own output is printed only when a run goes red. Temporary — it
+     goes when the issue is fixed or the number becomes an assertion. */
+  if (outFile && fs.existsSync(outFile)) {
+    for (const line of fs.readFileSync(outFile, 'utf8').split('\n')) {
+      if (line.includes('titlebar:')) console.log(`  probe ${line.trim()}`)
+    }
+  }
   console.log(`\napp-check: ${failed ? 'FAILED' : 'ok'}`)
   if (failed) console.log(`  sandbox kept: ${root}`)
   else discard(root)
