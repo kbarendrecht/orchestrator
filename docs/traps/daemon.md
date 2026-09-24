@@ -469,3 +469,39 @@ was rejected for the right reason: a person looking for a file should not have t
 find a configuration file first, and would have no way of knowing that was the
 answer.
 
+
+
+## A session auto-resume has not reached yet is not live, and that is what `was_live` reads.
+`auto_resume` spawns one session at a time with a 1200ms stagger, after an
+upstream fetch that takes a second or three. For the first ten seconds of a start
+most of the resume set therefore has no process — and `SessionRecord::of` sets
+`was_live` from `Session::state.is_live()`, which is the flag the *next* start
+filters on. A shutdown inside that window wrote `was_live: false` for everything
+the loop had not reached, and those sessions never came back (#33).
+
+Quit once in the window and the rail opens with fewer sessions. An **in-app
+update** restarts the daemon several times in a row, so it enters the window
+three times in thirty seconds — the reporter's last run stopped 26ms after its
+start — and the rail opens with none. Nothing else is lost: the records and the
+transcripts are intact, and only the one bit that says "bring this back" is gone,
+which is why it reads as sessions disappearing with no error anywhere.
+
+`AppState::pending_resume` holds the intent instead. Auto-resume puts every id it
+means to resume in before the first spawn and takes each one out when its spawn
+succeeds; `records_of` writes `was_live: true` for anything still in it. A failed
+spawn stays in, so the next start tries again rather than forgetting the session —
+the candidates whose `cwd` is gone or which never had a turn are already filtered
+out before the set is built.
+
+**Both writers go through `records_of`, and that is the half worth keeping.**
+Overriding in `shutdown` alone fixes a graceful quit and leaves the same loss
+behind a crash or a hard kill: the ordinary `persist` runs on a timer *during* the
+window, so the file on disk would already say `false` for everything not yet
+reached.
+
+`tools/e2e/flows/34-quit-during-auto-resume.mjs` is the gate — three worktree
+sessions, a restart, a quit once some but not all are back, and then every one of
+them has to return. **Checked against deliberate breakage**: dropping the override
+fails it with "timed out waiting for every session to be live again". It watches
+the API rather than the log, because the sandbox runs the daemon at `warn` and
+`auto-resumed` is an INFO line that is never written there.

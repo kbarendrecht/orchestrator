@@ -1276,6 +1276,17 @@ fn auto_resume(app: Arc<AppState>, records: Vec<store::SessionRecord>) {
         // path is where it holds — and it also defends a `sessions.json` written
         // before that invariant existed, where two records shared one worktree.
         let to_resume = first_per_workspace(resumable, app.cfg.allow_several_in_main);
+        /* **Declared before the first spawn, because the window is the bug** (#33).
+        These sessions are coming back and none of them is live yet; a shutdown
+        between two spawns reads live state and would write `was_live: false` for
+        everything this loop has not reached — the flag the *next* start filters on.
+        An in-app update restarts the daemon several times in a row, so that window
+        is entered three times in thirty seconds and the rail comes back empty.
+        `AppState::session_records` writes `true` for anything still in here. */
+        app.pending_resume
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .extend(to_resume.iter().map(|r| r.id));
         let mut resumed = 0usize;
         for r in to_resume {
             // Its recorded pass, not `None`: a resumed fix run is still the run
@@ -1290,6 +1301,14 @@ fn auto_resume(app: Arc<AppState>, records: Vec<store::SessionRecord>) {
             .await
             {
                 Ok(id) => {
+                    /* Live now, so its own state says what the set was standing in
+                    for. Removed on success only: a spawn that failed should be
+                    tried again by the next start rather than dropped, and the
+                    filters above have already taken out the ones no start can fix. */
+                    app.pending_resume
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .remove(&id);
                     tracing::info!(session = %id, workspace = %r.workspace, "auto-resumed");
                     resumed += 1;
                     // Staggered: half a dozen Claude processes starting at once

@@ -120,7 +120,7 @@ mise run paint-check                # which panes rebuild while agents work
 mise run hover-check                # does a hovered row survive a rebuild
 mise run types                      # regenerate the four generated .d.ts, in the one safe order
 mise run notices                    # regenerate THIRD-PARTY-RUST.md
-mise run e2e                        # 33 flows against a real daemon
+mise run e2e                        # 34 flows against a real daemon
 mise run deflake                    # each flow 8x, to name the flaky ones
 cargo run -p orchestrator-desktop   # the app, daemon embedded in-process
 mise run shot                       # screenshot the running SPA (drives Chrome)
@@ -365,6 +365,7 @@ together: same entries, same order, same groups.
 - A spare worktree is a workspace with no session, and that is the shape the reaper hunts.
 - Two `git worktree add`s at once fail on the config lock, and the spare pool made that reachable.
 - The search honours `.gitignore`, and two kinds of ignored path are searched anyway.
+- A session auto-resume has not reached yet is not live, and that is what `was_live` reads.
 
 ### The e2e flows
 

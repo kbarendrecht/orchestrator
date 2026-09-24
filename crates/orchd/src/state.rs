@@ -168,6 +168,24 @@ pub struct AppState {
     /// session in main parks the checkout back on its base branch, while a restart
     /// must leave it exactly where auto-resume will expect to find it.
     pub shutting_down: std::sync::atomic::AtomicBool,
+    /// Sessions auto-resume is going to bring back and has not reached yet (#33).
+    ///
+    /// **A session waiting its turn is not live, and `was_live` is read off live
+    /// state.** Auto-resume spawns one at a time with a stagger, so for the first
+    /// ten seconds of a start most of the set has no process — and a shutdown in
+    /// that window wrote `was_live: false` for every one of them, which is the flag
+    /// the *next* start filters on. One quit during the window, and the rail opened
+    /// with fewer sessions; three restarts in thirty seconds, which is what an
+    /// in-app update does, and it opened with none. The records and the transcripts
+    /// were never touched — only the one bit that says "bring this back".
+    ///
+    /// So the intent outlives the state: an id is in here from the moment
+    /// auto-resume decides to resume it until its spawn has answered, and
+    /// [`AppState::session_records`] writes `was_live: true` for anything still in
+    /// it. A failed spawn stays in — the next start should try again rather than
+    /// forget the session, and the pre-filters have already dropped the ones no
+    /// start can fix (a `cwd` that is gone, a conversation with no turn).
+    pub pending_resume: std::sync::Mutex<std::collections::HashSet<SessionId>>,
     /// Fan-out of state snapshots to connected SPAs.
     pub events: broadcast::Sender<String>,
     /// How the SPA should draw its top bar.
@@ -619,6 +637,7 @@ impl AppState {
             sweeping: tokio::sync::Mutex::new(()),
             cutting: tokio::sync::Mutex::new(()),
             shutting_down: std::sync::atomic::AtomicBool::new(false),
+            pending_resume: std::sync::Mutex::new(std::collections::HashSet::new()),
             events,
             chrome,
             answered: Arc::new(Notify::new()),
@@ -845,11 +864,37 @@ impl AppState {
     /// verbatim afterwards is what lets the kills be awaited at all — see
     /// `orchd_serve::Server::shutdown`, which is the only caller.
     pub async fn session_records(&self) -> Vec<crate::store::SessionRecord> {
-        let inner = self.inner.read().await;
+        self.records_of(&*self.inner.read().await)
+    }
+
+    /// Every session as a record, with auto-resume's intent folded in.
+    ///
+    /// **Both writers go through here, and that is the point** (#33). Shutdown is
+    /// one of them; the ordinary `persist` is the other, and it runs on a timer
+    /// while auto-resume is still staggering its spawns. Overriding in shutdown
+    /// alone would have fixed the graceful quit and left the same loss behind a
+    /// crash or a hard kill — the file on disk would already say `was_live: false`
+    /// for everything not yet reached.
+    fn records_of(&self, inner: &Inner) -> Vec<crate::store::SessionRecord> {
+        /* Poisoned only if a holder panicked while editing the set, and the set is
+        two operations long — but a lost resume is the whole of #33, so read through
+        the poison rather than lose it here. */
+        let pending = self
+            .pending_resume
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         inner
             .sessions
             .values()
-            .map(crate::store::SessionRecord::of)
+            .map(|s| {
+                let mut r = crate::store::SessionRecord::of(s);
+                // Auto-resume means to bring this one back and has not got to it
+                // yet, so the record has to say so — see `pending_resume`.
+                if pending.contains(&s.id) {
+                    r.was_live = true;
+                }
+                r
+            })
             .collect()
     }
 
@@ -935,12 +980,9 @@ impl AppState {
         (the e2e agent waits to see itself in `sessions.json` before speaking). */
         let (records, ids) = {
             let inner = self.inner.read().await;
-            let records: Vec<crate::store::SessionRecord> = inner
-                .sessions
-                .values()
-                .map(crate::store::SessionRecord::of)
-                .collect();
-            (records, mixed_session_ids(&inner))
+            // `records_of`, not `SessionRecord::of`: a session auto-resume has not
+            // reached yet is not live and still has to be written as one (#33).
+            (self.records_of(&inner), mixed_session_ids(&inner))
         };
         // Recorded before the write, and unconditionally: a failed write is not a
         // reason to keep answering "the set changed" and writing on every notify.
@@ -2130,6 +2172,51 @@ mod tests {
         s.set_state(State::Working);
         inner.sessions.insert(id, s);
         id
+    }
+
+    /// **The record a shutdown writes has to carry auto-resume's intent** (#33).
+    ///
+    /// A session waiting its turn in the resume list has no process, so its state
+    /// is not live — and `was_live` is what the *next* start filters on. Shutdown
+    /// used to write `false` for every one of them, which is how a quit inside the
+    /// resume window emptied the rail with no error anywhere.
+    #[tokio::test]
+    async fn a_session_waiting_to_be_resumed_is_recorded_as_live() {
+        let app = app().await;
+        let id = Uuid::new_v4();
+        {
+            let mut inner = app.inner.write().await;
+            let mut s = Session::new(id, MAIN.to_string(), std::path::PathBuf::from("/tmp"), None);
+            // Exactly what a restored record looks like before its spawn: known,
+            // and not running.
+            s.set_state(State::Exited);
+            inner.sessions.insert(id, s);
+        }
+
+        let before = app.session_records().await;
+        assert_eq!(before.len(), 1);
+        assert!(
+            !before[0].was_live,
+            "a session nothing intends to resume is not live"
+        );
+
+        app.pending_resume
+            .lock()
+            .expect("the pending set")
+            .insert(id);
+        let during = app.session_records().await;
+        assert!(
+            during[0].was_live,
+            "a session auto-resume has not reached yet must still be written as live"
+        );
+
+        // And the intent ends with the spawn, or a session you closed by hand
+        // during the window would come back on the next start.
+        app.pending_resume
+            .lock()
+            .expect("the pending set")
+            .remove(&id);
+        assert!(!app.session_records().await[0].was_live);
     }
 
     /// Two snapshots of an unchanged daemon have to be the same bytes.
