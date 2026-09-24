@@ -269,3 +269,39 @@ promise `HTMLElement`, so reading `.value` through `$` is a type error even when
 the id certainly names an `<input>`. `ctl` is the named escape hatch for form
 controls; `$` stays typed so everything else fetched through it keeps being
 checked. Do not widen `$`.
+
+
+## `dpkg-deb -c` lists a package; only a container installs one.
+The Linux half of `bundle.yml` read the `.deb` with `dpkg-deb -c` and asserted the
+three binaries were in it. That cannot see a dependency the bundler failed to
+declare, a maintainer script that exits non-zero, or a binary that will not start
+on a clean machine — and all three reach a user as "it does not open", which is
+what #16 and #26 both were.
+
+`tools/apt-check.sh` installs it in `ubuntu:22.04` instead: `apt-get install
+./file.deb` rather than `dpkg -i`, because only the first resolves the
+dependencies the package declares. Then the three binaries, `orchd --version`
+against the version the tree was built from, a daemon started against a throwaway
+repository, and one request answered on its own port.
+
+**And the line no sandbox can reach.** `install::classify` keys on the executable
+living under `/usr/bin`, so an apt install cannot be simulated on a developer's
+machine — a real install in a real container can. The daemon says what installed
+it at start (`installed by install="the apt package"`), which is both what this
+asserts and the first fact any report about the update bar needs: two reports in
+one week were about an upgrade that changed nothing and an app that came back on
+the version it started on, and neither said which installer it was.
+
+**The apt repository already installs the package, and that is not the same
+check.** `kbarendrecht/apt` installs what has **already been published** — the
+right check for the index, the wrong moment for the package. This one runs before
+the tag exists, which is the whole reason it is here as well.
+
+`mise run release` now waits for `bundle` as well as `check`, and dispatches one
+when the commit has none: `bundle` is path-filtered on `desktop/`, so an ordinary
+release never built a package at all until the tag did.
+
+The install is retried once. The image ships an index, a mirror rotates a point
+release out from under it, and the fetch 404s — seen on the second run of this
+script. A gate that goes red on somebody else's mirror is one people learn to
+re-run without reading.

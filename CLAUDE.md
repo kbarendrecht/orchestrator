@@ -281,6 +281,7 @@ together: same entries, same order, same groups.
 - `health.yml` runs `cargo deny`, `cargo about`, `cargo machete`, `typos` and `zizmor` — on every push and weekly, in its own workflow.
 - The doc comments are checked now, and they were not.
 - `ctl(id)` is the one deliberate `any` in the SPA.
+- `dpkg-deb -c` lists a package; only a container installs one.
 
 ### The SPA, the webview, and the two module graphs
 

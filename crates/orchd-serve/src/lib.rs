@@ -521,6 +521,17 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
         let app = app.clone();
         async move { orchd::spare::adopt_at_boot(&app).await }
     });
+    /* **What installed this build, said once at start.** Everything the update bar
+    offers turns on it — which installer runs, whether the button is a button at
+    all — and it was knowable only by reading a path off a running process. Two
+    reports in one week needed exactly this line and neither had it: an upgrade
+    that reported success and changed nothing, and an app that came back on the
+    version it started as. It is one line per start, and it is the first question
+    to ask of either. */
+    tracing::info!(
+        install = orchd::install::Install::of_running().name(),
+        "installed by"
+    );
     // A debug build is `cargo run` from a checkout; its version is whatever the
     // working tree is, so comparing it against a release only ever nags. Only a
     // release build — which is what a downloaded/`mise`-installed one is — checks.

@@ -379,31 +379,52 @@ main() {
   # run started, which is the wrong question the moment two pushes land close
   # together.
   head=$(git rev-parse HEAD)
-  step "waiting for check on $(echo "$head" | cut -c1-8)"
-  deadline=$(( $(date +%s) + 1800 ))
-  while :; do
-    # `|| true` because this is under `set -e`: one rate limit or dropped
-    # connection would otherwise abort the wait rather than retrying on the next
-    # tick, and the empty answer already has an arm below.
-    run=$(gh run list --workflow=check.yml --commit "$head" --limit 1 \\
-            --json status,conclusion,url --jq '.[] | .status + " " + (.conclusion // "") + " " + .url' || true)
-    status=$(echo "$run" | cut -d' ' -f1)
-    case $status in
-      completed)
-        [ "$(echo "$run" | cut -d' ' -f2)" = success ] \\
-          || die "check is $(echo "$run" | cut -d' ' -f2) for this commit — fix it before tagging
+  branch=$(git rev-parse --abbrev-ref HEAD)
+
+  # One wait, two workflows: `$1` is the file and `$2` is what the sentences call
+  # it. Written as a function when the second caller arrived, rather than a second
+  # copy of a loop whose every arm is a message somebody reads.
+  wait_for() {
+    step "waiting for $2 on $(echo "$head" | cut -c1-8)"
+    deadline=$(( $(date +%s) + 1800 ))
+    while :; do
+      # `|| true` because this is under `set -e`: one rate limit or dropped
+      # connection would otherwise abort the wait rather than retrying on the next
+      # tick, and the empty answer already has an arm below.
+      run=$(gh run list --workflow="$1" --commit "$head" --limit 1 \\
+              --json status,conclusion,url --jq '.[] | .status + " " + (.conclusion // "") + " " + .url' || true)
+      status=$(echo "$run" | cut -d' ' -f1)
+      case $status in
+        completed)
+          [ "$(echo "$run" | cut -d' ' -f2)" = success ] \\
+            || die "$2 is $(echo "$run" | cut -d' ' -f2) for this commit — fix it before tagging
   $(echo "$run" | cut -d' ' -f3)"
-        printf '  check succeeded — %s\\n' "$(echo "$run" | cut -d' ' -f3)"
-        break
-        ;;
-      # No run yet is the normal answer for a push made seconds ago, which is also
-      # why this polls rather than `gh run watch`: that needs an id to watch.
-      "") printf '  no check run for this commit yet…\\n' ;;
-      *) printf '  check is %s…\\n' "$status" ;;
-    esac
-    [ "$(date +%s)" -lt "$deadline" ] || die "check has not finished in 30 minutes; look at it rather than tagging blind"
-    sleep 15
-  done
+          printf '  %s succeeded — %s\\n' "$2" "$(echo "$run" | cut -d' ' -f3)"
+          return 0
+          ;;
+        # No run yet is the normal answer for a push made seconds ago, which is also
+        # why this polls rather than `gh run watch`: that needs an id to watch.
+        "") printf '  no %s run for this commit yet…\\n' "$2" ;;
+        *) printf '  %s is %s…\\n' "$2" "$status" ;;
+      esac
+      [ "$(date +%s)" -lt "$deadline" ] || die "$2 has not finished in 30 minutes; look at it rather than tagging blind"
+      sleep 15
+    done
+  }
+
+  wait_for check.yml check
+
+  # **And the packages, which `check` never builds.** `bundle` is what opens a
+  # `.deb` in a container, installs it and starts what came out, and what drives the
+  # `.app` the `.dmg` will carry — the half of a release no test suite can see, and
+  # the half whose failures have reached users twice (#16, #26). It is path-filtered
+  # on `desktop/`, so an ordinary release has no run of its own; asking for one
+  # costs a build and answers before the tag exists rather than after.
+  if [ -z "$(gh run list --workflow=bundle.yml --commit "$head" --limit 1 --json url --jq '.[].url' || true)" ]; then
+    step "asking for a bundle run on this commit"
+    gh workflow run bundle.yml --ref "$branch" >/dev/null || die "could not dispatch bundle.yml"
+  fi
+  wait_for bundle.yml bundle
 
   if [ "$RETRY" = 1 ]; then
     # Nothing to bump: the failed attempt committed these four files already,

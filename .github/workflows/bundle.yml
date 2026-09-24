@@ -101,6 +101,25 @@ jobs:
           done
           echo "the .deb carries all three"
 
+      # **And then it installs it**, which the listing above cannot stand in for: a
+      # dependency the package forgot to declare, a maintainer script that exits
+      # non-zero, or a binary that will not start on a clean machine all pass a
+      # `dpkg-deb -c` and reach the user as "it does not open". `ubuntu:22.04`
+      # because that is what the `.deb` targets and what `kbarendrecht/apt` installs
+      # into — the difference being that this runs *before the tag exists*, which is
+      # the whole point of having it here as well.
+      - name: Install the package a user would install
+        if: runner.os == 'Linux'
+        run: |
+          set -e
+          deb=$(find target/release/bundle -name '*.deb' | head -1)
+          cp "$deb" /tmp/o.deb
+          docker run --rm \
+            -v /tmp/o.deb:/tmp/o.deb:ro \
+            -v "$PWD/tools/apt-check.sh:/check.sh:ro" \
+            -e WANT="$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"(.*)".*/\1/')" \
+            ubuntu:22.04 bash /check.sh
+
       # The macOS half goes further, because it can: the bundle holds a runnable app,
       # so this starts it, opens a checkout, makes a session and restarts it. The
       # same check `release.yml` runs against the same artifact, moved earlier.
