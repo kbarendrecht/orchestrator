@@ -363,8 +363,17 @@ main() {
     # carrying assets is one people may have installed, and moving the tag under it
     # would change what a version means. `gh` exits non-zero when no release exists
     # at all, which is the ordinary case for a retry.
-    published=$(gh release view "$tag" --json assets --jq '.assets | length' 2>/dev/null || echo 0)
-    [ "$published" = 0 ] \\
+    #
+    # **A drafted release is not one anybody received.** `verify` drafts a release
+    # whose assets do not install, which takes it out of the API `mise` and `ubi`
+    # resolve from — so the version is spent in name only and re-cutting it repairs
+    # exactly what this refusal protects. Asked in one query, because "has assets"
+    # and "is published" are two halves of one question.
+    state=$(gh release view "$tag" --json assets,isDraft \\
+              --jq '(.assets | length | tostring) + " " + (.isDraft | tostring)' 2>/dev/null || echo "0 false")
+    published=$(echo "$state" | cut -d' ' -f1)
+    drafted=$(echo "$state" | cut -d' ' -f2)
+    [ "$published" = 0 ] || [ "$drafted" = true ] \\
       || die "$tag already published $published asset(s) — bump instead; a version people can install is not one to overwrite"
   else
     [ -z "$(git tag --list "$tag")" ] || die "$tag already exists locally (--retry re-cuts one whose release never published)"

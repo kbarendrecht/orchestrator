@@ -320,3 +320,94 @@ jobs:
         with:
           files: dist/*
           body_path: notes.md
+
+  # **What a user would install, installed** — from the release rather than from
+  # the build tree. `bundle` asks whether the package this repository *makes*
+  # works; this asks whether the release it *published* does, which is a different
+  # question the moment an asset is renamed, a job uploads the wrong directory, or
+  # a dependency is declared for a machine the builder happened to have.
+  #
+  # **And it is what gates the two publishing repositories**, without moving a
+  # token into CI to do it. `mise run release` waits for this whole workflow run to
+  # go green before it dispatches the tap and the apt index, so a release that
+  # fails here never reaches a cask or a package list at all — which is worth more
+  # than any retraction, because nothing has to be taken back.
+  verify:
+    needs: release
+    strategy:
+      # Both, always: a broken `.deb` says nothing about the `.dmg`.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-14]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    # To draft the release when it does not work. The repository's own token, for
+    # its own release — no cross-repository credential is involved.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+
+      # The package, in a container that has never seen this project: dependencies
+      # resolved the way `apt-get install` resolves them, the three binaries where
+      # they were declared, and a daemon that starts and knows it is an apt install.
+      - name: The published package installs
+        if: runner.os == 'Linux'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          tag="${GITHUB_REF_NAME}"
+          gh release download "$tag" --pattern '*.deb' --dir /tmp/rel
+          deb=$(find /tmp/rel -name '*.deb' | head -1)
+          [ -n "$deb" ] || { echo "the release carries no .deb"; exit 1; }
+          docker run --rm \
+            -v "$deb:/tmp/o.deb:ro" \
+            -v "$PWD/tools/apt-check.sh:/check.sh:ro" \
+            -e WANT="${tag#v}" \
+            ubuntu:22.04 bash /check.sh
+
+      # The `.dmg` is what a Mac user opens, so this opens it: mount, copy the app
+      # out the way a person drags it, and drive that copy.
+      #
+      # **Quarantine is still not covered here and cannot be.** `gh` writes no
+      # `com.apple.quarantine` attribute, so the approval a downloaded build asks
+      # for is a thing only a real download shows — `docs/traps/macos.md` carries
+      # that, and it is the reason the cask is the channel that hurts.
+      - name: The published app runs
+        if: runner.os == 'macOS'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          tag="${GITHUB_REF_NAME}"
+          gh release download "$tag" --pattern '*.dmg' --dir /tmp/rel
+          dmg=$(ls /tmp/rel/*.dmg | head -1)
+          hdiutil attach "$dmg" -nobrowse -quiet -mountpoint /tmp/mnt
+          cp -R /tmp/mnt/Orchestrator.app /tmp/Orchestrator.app
+          hdiutil detach -quiet /tmp/mnt
+          node tools/app-check.mjs /tmp/Orchestrator.app/Contents/MacOS/orchestrator-desktop
+
+      # **Drafted, never deleted.** A draft leaves the releases API, so `mise` and
+      # `ubi` stop resolving the version, while the tag stays exactly where it is —
+      # deleting one leaves a stale ref in every clone that fetched it, and
+      # `git fetch --tags` then reports a conflict rather than moving it. The assets
+      # stay attached for reading afterwards, and `--draft=false` puts it back.
+      - name: Take it out of the API if it does not work
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          gh release edit "$tag" --draft
+          echo "::error::$tag is drafted: it published assets that do not install. \
+            Nothing was dispatched to the tap or the apt index. Fix it, then \
+            \`mise run release --retry\`."
+

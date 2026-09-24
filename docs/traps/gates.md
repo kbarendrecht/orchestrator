@@ -301,6 +301,32 @@ the tag exists, which is the whole reason it is here as well.
 when the commit has none: `bundle` is path-filtered on `desktop/`, so an ordinary
 release never built a package at all until the tag did.
 
+**And the same script runs again after the tag, against what was published.**
+`release.yml`'s `verify` job downloads the release's own `.deb` and runs this in
+the container, and on macOS mounts the `.dmg`, copies the app out the way a person
+drags it and drives that copy. The two questions are not the same one: `bundle`
+asks whether the package this repository *makes* works, and `verify` asks whether
+the release it *published* does — which differs the moment an asset is renamed, a
+job uploads the wrong directory, or a dependency is declared for a machine the
+builder happened to have.
+
+**A release that fails there is drafted, never deleted.** A draft leaves the
+releases API, so `mise` and `ubi` stop resolving the version, while the tag stays
+where it is — deleting one leaves a stale ref in every clone that fetched it. The
+assets stay attached to read afterwards, and `--draft=false` puts it back.
+
+**What that gates is the two publishing repositories, without moving a token into
+CI.** `mise run release` already waits for the whole release run before it
+dispatches the tap and the apt index, so adding `verify` to that run means a
+release which fails it never reaches a cask or a package list — nothing has to be
+taken back, which is worth more than any retraction. `--retry` accepts a drafted
+release for the same reason its refusal exists: a version people can install must
+not change meaning, and a drafted one is not installable.
+
+**Quarantine is still not covered and cannot be here.** `gh` writes no
+`com.apple.quarantine` attribute, so the approval a downloaded build asks for is
+something only a real download shows.
+
 The install is retried once. The image ships an index, a mirror rotates a point
 release out from under it, and the fetch 404s — seen on the second run of this
 script. A gate that goes red on somebody else's mirror is one people learn to
