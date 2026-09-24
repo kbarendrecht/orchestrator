@@ -327,8 +327,20 @@ Three tests now cover it, and each one is where the thing it covers is reachable
   the refusal of a second press mid-run, and the reason surviving a failure.
   **Checked against deliberate breakage**: ignoring the installer's exit status
   fails it with an empty tail where the reason should be.
-- **The installed build** — `upgrade_landed`, because an installer exiting 0 is not
-  an upgrade. See the macOS group.
+- **The installed build** — `landed` and `upgrade_landed`, because an installer
+  exiting 0 is not an upgrade. See the macOS group. Three properties, and each was
+  a gap found by asking what the tests above could *not* see: that the app asks at
+  all and the agent does not (`only_the_app_asks_what_a_restart_would_start` — the
+  agent's is applied when installed, so asking spawns a process about the wrong
+  thing); that the answer comes off the layout a restart resolves
+  (`the_installed_version_is_read_from_the_build_a_restart_would_start`, over a
+  tarball, a mise `latest` and a bundle); and that "newer" is decided by number
+  rather than text (`a_newer_release_is_decided_by_number_and_not_by_text` — a
+  month rolling over makes `2026.10.1` sort below `2026.9.27`).
+
+  Both reads are handed in rather than taken: `installed_version` gets the running
+  path and `landed` gets a closure, because a test binary can only ever ask about
+  itself — and it answers `--version` with libtest's usage.
 
 **It drives the agent's button, and that is not a shortcut.** The app's nudge comes
 from the release poller, which a debug build does not start, so no sandbox can ever

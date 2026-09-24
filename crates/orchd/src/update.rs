@@ -278,8 +278,13 @@ fn on_path(exe: &str) -> bool {
 /// `None` when it cannot be read — a layout with no sibling, a binary macOS is
 /// holding in quarantine — and the caller then says so rather than claiming either
 /// outcome.
-fn installed_version() -> Option<String> {
-    let exe = stable_exe(&std::env::current_exe().ok()?);
+///
+/// **`running` is handed in**, like the install in [`Subject::offer`] and for the
+/// same reason: read inside, the one thing this function does could only ever be
+/// asked about the test binary, which answers `--version` with libtest's usage.
+/// Handed in, a test stages a layout and asks about that.
+pub(crate) fn installed_version(running: &std::path::Path) -> Option<String> {
+    let exe = stable_exe(running);
     let dir = exe.parent()?.to_path_buf();
     let beside = dir.join("orchd");
     let bin = if beside.is_file() { beside } else { exe };
@@ -298,6 +303,30 @@ fn installed_version() -> Option<String> {
         .split_whitespace()
         .next_back()
         .map(str::to_string)
+}
+
+/// What a finished run reports, per subject.
+///
+/// **The agent's upgrade is applied when it is installed; the app's is not.** A
+/// new `claude` is what the next spawn runs, so an exit code is the whole answer
+/// there. This process, on the other hand, is still the old build whatever the
+/// installer did — so the only honest question is what a *restart* would start,
+/// and a packager that exited 0 having done nothing is the ordinary way that is
+/// not what was asked for (see `plan`).
+///
+/// `have` is a closure rather than a value because the agent's arm must not pay
+/// for it: reading it spawns a process, and asking what the app is installed as
+/// tells you nothing about the agent.
+fn landed(
+    subject: Subject,
+    shown: &str,
+    to: &str,
+    have: impl FnOnce() -> Option<String>,
+) -> Option<String> {
+    match subject {
+        Subject::Agent => None,
+        Subject::App => upgrade_landed(shown, to, have()),
+    }
 }
 
 /// Did the upgrade change what a restart would start?
@@ -544,19 +573,19 @@ fn run_upgrade(
             }
         }
 
-        /* **And for the app, ask what a restart would start.** This process's own
-        version cannot change, which is what used to be said here — but the
-        *installed* one can, and that is what the restart brings back. A packager
-        that exited 0 having done nothing is the ordinary failure (see `plan`), and
-        without this the bar reported success and offered a restart that changed
-        nothing at all. Only when the run itself succeeded: a failure already has a
-        better sentence than this one. */
+        // See `landed`: the app's outcome is decided by the build a restart would
+        // start, and the read is off the runtime because it spawns a process.
         let failure = match (subject, &failure) {
             (Subject::App, None) => {
-                let have = tokio::task::spawn_blocking(installed_version)
-                    .await
-                    .unwrap_or(None);
-                upgrade_landed(&plan.shown, &to, have)
+                let have = tokio::task::spawn_blocking(|| {
+                    // The one environment read, at the edge.
+                    std::env::current_exe()
+                        .ok()
+                        .and_then(|exe| installed_version(&exe))
+                })
+                .await
+                .unwrap_or(None);
+                landed(subject, &plan.shown, &to, || have)
             }
             _ => failure,
         };
@@ -1188,6 +1217,162 @@ mod tests {
                 "{install:?} should point at the release: {why}"
             );
         }
+    }
+
+    /// **The app verifies and the agent does not**, which is the arm itself rather
+    /// than the sentence it produces. A new `claude` is applied the moment it is
+    /// installed; this process is still the old build whatever the installer did.
+    ///
+    /// Asserted through the closure: the agent's arm must never call it, because
+    /// reading it spawns a process to ask a question about the wrong thing.
+    #[test]
+    fn only_the_app_asks_what_a_restart_would_start() {
+        let asked = std::cell::Cell::new(false);
+        let reader = || {
+            asked.set(true);
+            Some("2026.9.1".to_string())
+        };
+
+        assert_eq!(
+            landed(Subject::Agent, "mise upgrade claude-code", "2.2.0", reader),
+            None
+        );
+        assert!(
+            !asked.get(),
+            "the agent's upgrade is applied already; asking is work for nothing"
+        );
+
+        let stale = landed(
+            Subject::App,
+            "brew upgrade --cask orchestrator",
+            "2026.9.2",
+            reader,
+        )
+        .expect("a build that did not move has to be reported");
+        assert!(asked.get(), "the app has to ask what a restart would start");
+        assert!(
+            stale.contains("2026.9.1") && stale.contains("2026.9.2"),
+            "{stale}"
+        );
+
+        assert_eq!(
+            landed(Subject::App, "x", "2026.9.1", || Some("2026.9.1".into())),
+            None,
+            "the version moved, so there is nothing to report"
+        );
+    }
+
+    /// **What a restart would actually start, read off the layout rather than
+    /// guessed.** This is the half of the app upgrade nothing exercised: the agent's
+    /// button never asks it, so a wrong binary here would report "the installed
+    /// build would not say its version" on every upgrade and no test would move.
+    ///
+    /// Three shapes, and each one is a real install: a bare directory (a tarball),
+    /// mise's versioned one where `latest` is what a restart resolves, and a
+    /// `Contents/MacOS` bundle where the daemon sits beside the app's own binary.
+    #[test]
+    fn the_installed_version_is_read_from_the_build_a_restart_would_start() {
+        let dir = crate::testutil::scratch("installed-version");
+        let orchd_saying = |at: &std::path::Path, version: &str| {
+            std::fs::create_dir_all(at).expect("the layout");
+            let bin = at.join("orchd");
+            std::fs::write(&bin, format!("#!/bin/sh\necho 'orchd {version}'\n")).expect("the shim");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))
+                    .expect("executable");
+            }
+            bin
+        };
+
+        // A tarball: everything in one directory, and the daemon is the sibling.
+        let plain = dir.join("opt/orchestrator");
+        let desktop = plain.join("orchestrator-desktop");
+        orchd_saying(&plain, "2026.9.30");
+        std::fs::write(&desktop, "#!/bin/sh\nexit 7\n").expect("the app binary");
+        assert_eq!(
+            installed_version(&desktop).as_deref(),
+            Some("2026.9.30"),
+            "the sibling `orchd` is what answers, not the app binary"
+        );
+
+        /* mise: the process was started from a version-pinned path, and by the time
+        this runs that directory may be the one the upgrade just replaced — so the
+        answer has to come from `latest`, which is what `relaunch` spawns.
+
+        **Both binaries in both directories**, because `stable_exe` only takes the
+        swap when the swapped path exists: a `latest` carrying `orchd` alone is
+        not a layout mise produces, and the first version of this test built one
+        and read the *old* version back. */
+        let installs = dir.join("installs/orchestrator");
+        for (at, version) in [("2026.9.1", "2026.9.1"), ("latest", "2026.9.31")] {
+            let bin = orchd_saying(&installs.join(at), version);
+            std::fs::copy(&bin, installs.join(at).join("orchestrator-desktop"))
+                .expect("the app binary beside it");
+        }
+        assert_eq!(
+            installed_version(&installs.join("2026.9.1/orchestrator-desktop")).as_deref(),
+            Some("2026.9.31"),
+            "a mise layout answers with what `latest` points at"
+        );
+
+        // A bundle, where the two binaries live together in `Contents/MacOS`.
+        let macos = dir.join("Orchestrator.app/Contents/MacOS");
+        orchd_saying(&macos, "2026.9.32");
+        assert_eq!(
+            installed_version(&macos.join("orchestrator-desktop")).as_deref(),
+            Some("2026.9.32")
+        );
+
+        // And a layout with nothing to ask is `None` rather than a guess — the
+        // caller says "check it by hand" instead of claiming it worked.
+        assert_eq!(
+            installed_version(&dir.join("nowhere/orchestrator-desktop")),
+            None
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **The comparison that decides whether there is anything to offer at all.**
+    /// Untested until now, and the shape that breaks it is a month rolling over:
+    /// `2026.10.1` is newer than `2026.9.27` and string order says otherwise.
+    #[test]
+    fn a_newer_release_is_decided_by_number_and_not_by_text() {
+        let newer = |a: &str, b: &str| match (parse_semver(a), parse_semver(b)) {
+            (Some(l), Some(r)) => Some(l > r),
+            _ => None,
+        };
+        assert_eq!(
+            newer("v2026.10.1", "2026.9.27"),
+            Some(true),
+            "a month rolled over"
+        );
+        assert_eq!(newer("2026.9.28", "2026.9.27"), Some(true));
+        assert_eq!(
+            newer("2026.9.27", "2026.9.27"),
+            Some(false),
+            "the one you are on"
+        );
+        assert_eq!(
+            newer("2026.9.2", "2026.9.10"),
+            Some(false),
+            "10 is not 2 with a zero"
+        );
+        assert_eq!(
+            newer("2027.1.1", "2026.12.9"),
+            Some(true),
+            "a year rolled over"
+        );
+        // A tag nobody here writes, and the poller says nothing rather than nagging
+        // about a release it cannot compare.
+        assert_eq!(newer("nightly", "2026.9.27"), None);
+        assert_eq!(
+            parse_semver("v2026.9.27"),
+            Some((2026, 9, 27)),
+            "the `v` is ours"
+        );
     }
 
     /// **An installer that exits 0 having done nothing is not an upgrade.**
