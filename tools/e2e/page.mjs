@@ -615,11 +615,12 @@ try {
   // The app's own answer, not a guess at its markup.
   const asking = () => page.evaluate(async () => (await import('/js/core.js')).dialogOpen())
 
-  /* #31: the branch this conversation is about, for pasting into a terminal. It is
-     `SessionView.branch` — the session's branch, not what its tree has checked out,
-     and a swap is exactly when the two differ. The item is drawn disabled when
-     there is none, so `isEnabled` is the half that says the value arrived: a row
-     whose branch never reached the page would still offer the item. */
+  /* #31: what the session's directory has checked out, for pasting into a
+     terminal. The *workspace's* branch rather than the session's own field, which
+     is what the conversation was about and stops being re-stamped once the session
+     is archived. The item is drawn disabled when there is none, so `isEnabled` is
+     the half that says the value arrived: a row whose workspace never reached the
+     page would still offer the item. */
   const branch = await rowMenu('copy branch')
   check(!!branch, 'the row offers to copy its branch')
   check(await branch?.isEnabled() === true, 'and a worktree session has one to copy')

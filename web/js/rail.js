@@ -1581,7 +1581,7 @@ function archivedRow(/** @type {import('../snapshot').SessionView} */ s, /** @ty
     // worktree, so a conversation whose branch is gone can still be branched off.
     ['fork', null, s.has_transcript ? () => forkSession(s) : null],
     ['copy id', null, () => copyId(s)],
-    ['copy branch', null, s.branch ? () => copyBranch(s) : null],
+    ['copy branch', null, sessionBranch(s) ? () => copyBranch(s) : null],
     ['delete', 'bad', () => deleteSession(s)],
   ]);
   return btn;
@@ -1855,7 +1855,7 @@ function sessionRow(/** @type {import('../snapshot').SessionView} */ s, /** @typ
       ? ['cancel the restart', null, () => restartSession(s, true)]
       : ['restart', null, s.alive ? () => restartSession(s, false) : null],
     ['copy id', null, () => copyId(s)],
-    ['copy branch', null, s.branch ? () => copyBranch(s) : null],
+    ['copy branch', null, sessionBranch(s) ? () => copyBranch(s) : null],
     // The worktree, not the session: the row is the only place a worktree is
     // visible, so its workspace-level action lives here too.
     [moveLabel, null, moveDo],
@@ -1876,19 +1876,36 @@ async function copyId(/** @type {import('../snapshot').SessionView} */ s) {
   if (await copyText(s.id)) toast('id copied');
 }
 
-/** The branch this conversation is about, for pasting into a terminal (#31).
+/** What the session's directory has checked out (#31).
  *
- *  **The session's branch, not the tree's**, and the two are different questions:
- *  `SessionView.branch` is what this conversation is working on, while the
- *  workspace's is what its directory has checked out. A swap exchanges the second
- *  and leaves the first alone, which is exactly when somebody wants to copy it.
+ *  **The workspace's branch, not the session's**, and they answer different
+ *  questions: `SessionView.branch` is what the conversation is *about*, and this is
+ *  what `git` in that directory would say now.
  *
- *  Offered only when there is one. A session mid-create has no branch yet, and a
- *  record written before the field existed never will — an item that copies an
- *  empty string is worse than no item, which is why `fork` is gated the same way.
+ *  For a live session the two agree — `AppState::reconcile` re-stamps the session's
+ *  field from its tree on every sweep, because an agent that checks out another
+ *  branch really has changed what it is working on. It stops doing that once the
+ *  session is archived, deliberately: the swap needs the difference between "this
+ *  conversation was about that branch" and "that branch happens to be here now" to
+ *  know which conversation travels. So an old row's field can name a branch its
+ *  directory has not held for weeks, and what you paste into a terminal has to be
+ *  the directory's.
+ *
+ *  `null` when the tree is gone, which is an archived session whose worktree was
+ *  torn down: there is no directory to be on a branch.
+ */
+function sessionBranch(/** @type {import('../snapshot').SessionView} */ s) {
+  return snapshotFor(s.id).workspaces.find((w) => w.id === s.workspace)?.branch || null;
+}
+
+/** Copy it, when there is one.
+ *
+ *  Offered only when there is: an item that copies an empty string is worse than no
+ *  item, which is why `fork` is gated the same way.
  */
 async function copyBranch(/** @type {import('../snapshot').SessionView} */ s) {
-  if (s.branch && await copyText(s.branch)) toast('branch copied');
+  const branch = sessionBranch(s);
+  if (branch && await copyText(branch)) toast('branch copied');
 }
 
 /** Sessions whose prompt would take a double-escape as "rewind".
