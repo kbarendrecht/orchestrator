@@ -427,6 +427,7 @@ together: same entries, same order, same groups.
 - A bundle the linker signed is not a signed bundle, and macOS refuses it as damaged.
 - A process outside a bundle is a window macOS will not manage.
 - An installer that exits 0 is not an upgrade, and for the app that was the only question asked.
+- A restart the app does to itself is a different path from one a person does.
 
 ### The crates, and what a move breaks
 

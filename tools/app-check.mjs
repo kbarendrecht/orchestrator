@@ -135,6 +135,10 @@ const shot = async (name) => {
  *  in a file that has just moved. */
 let child = null
 let outFile = null
+/* The process the app started for *itself* (`5. the restart`). `child` is the one
+   this script spawned, and after a restart that one is dead — so without this the
+   successor outlives the run and holds the sandbox's port and lock. */
+let relaunched = null
 
 /** A stand-in `claude`, written here rather than asked of the caller.
  *
@@ -374,6 +378,78 @@ try {
     else bad('the link was held and no page ever connected to take it')
   }
   await shot('4-linked')
+
+  // --- 6. the restart the app does to itself --------------------------------
+  //
+  /* **Stage 4 is a person quitting; this is the button.** The update bar's
+     `Restart` posts `/api/window/restart`, and what answers it is not this script:
+     the shell sets its flag, takes the window down, and `relaunch` spawns the
+     binary `stable_exe` resolves — with a handoff pair so the successor waits for
+     this process to release the instance lock before it takes it.
+     Nothing else here runs that path. `mise run e2e` has no window and no shell,
+     and a restart that spawns the *wrong* binary, or one that starts before the
+     lock is free, fails as an app that does not come back — which is exactly how
+     it would reach a user, and how it did reach one this week. */
+  console.log('\n6. restart from inside, the way the update bar does')
+  /* **The token is the proof.** A restart that answered from the same process
+     would pass a "does it still serve" check having done nothing, and the port does
+     not move — the successor takes the same one. Every start mints its own token,
+     so a page carrying a different one was served by a different process.
+
+     The checkout's daemon pid is the second signal, and it is the only pid file
+     there is: the host keeps none, and `<cfg>/checkouts/<leaf>-<hash>/instance.pid`
+     is the child's lock — which is exactly what a restart must hand over cleanly
+     (`instance::PATIENCE` is there because a `fork` in flight can hold that lock
+     for milliseconds after the process is reaped). */
+  const childPid = () => {
+    const dir = path.join(cfg, 'checkouts')
+    if (!fs.existsSync(dir)) return ''
+    for (const name of fs.readdirSync(dir)) {
+      const f = path.join(dir, name, 'instance.pid')
+      if (fs.existsSync(f)) return fs.readFileSync(f, 'utf8').trim()
+    }
+    return ''
+  }
+  const tokenBefore = host.token
+  const daemonBefore = childPid()
+  const asked = await api(host.base, host.base, host.token, 'POST', '/api/window/restart')
+  if (asked.status !== 200) bad(`the restart was refused: ${JSON.stringify(asked.json)}`)
+  else ok('asked the window to restart')
+
+  /* The pid is the proof and the token is the handle. A restart that answered from
+     the *same* process would pass a "does it serve" check while having done
+     nothing, and the instance lock is what makes the pid trustworthy: two of them
+     cannot hold it at once, so a changed pid is a process that really replaced the
+     one this script started. */
+  const back = await until('the app to come back on its own', async () => {
+    let token = null
+    try {
+      const page = await (await fetch(`${host.base}/`)).text()
+      token = page.match(/token:\s*"([^"]+)"/)?.[1]
+    } catch { return null }
+    if (!token || token === tokenBefore) return null
+    const daemon = childPid()
+    return daemon && daemon !== daemonBefore ? { token, daemon } : null
+  }, 90)
+  ok(`it came back by itself, and its checkout's daemon is pid ${back.daemon}, was ${daemonBefore}`)
+  host = { base: host.base, token: back.token }
+  relaunched = host
+
+  kid = await until('its checkout to come back too', async () => {
+    try { return await childOf(host) } catch { return null }
+  })
+  /* **And the history, which is the half a restart can lose quietly.** #17 came
+     back with an empty rail and the records on disk; #33 came back with the records
+     and the one flag that says to resume them. So this asks for the conversation
+     rather than the row: `has_transcript` is the daemon's own answer to "there is
+     something to come back to". */
+  const kept = await until('the session and its conversation to be back', async () => {
+    const s = await api(kid.base, host.base, kid.token, 'GET', '/api/state')
+    return (s.json.sessions ?? []).find((x) => x.id === session) ?? null
+  }, 30)
+  if (kept.has_transcript) ok(`and its conversation is still there in ${kept.workspace}`)
+  else bad(`the session came back with no transcript: ${JSON.stringify(kept)}`)
+  await shot('5-restarted')
 } catch (e) {
   bad(String(e?.message ?? e))
   if (outFile && fs.existsSync(outFile)) {
@@ -382,6 +458,17 @@ try {
   }
 } finally {
   await stop()
+  /* The successor is nobody's child but the app's, so `stop` cannot see it — and
+     nothing writes its pid down. Asking it to close is the one handle there is, and
+     it is the same route the window's own ✕ posts. */
+  if (relaunched) {
+    try {
+      await fetch(`${relaunched.base}/api/window/close`, {
+        method: 'POST',
+        headers: { 'x-orch-token': relaunched.token, origin: relaunched.base },
+      })
+    } catch { /* it has already gone */ }
+  }
   /* **#29, and the one thing here that reads the window rather than the API.**
      AppKit centres the traffic lights in a band it sizes itself — 28pt — while the
      page's top row is 46, so they sat 9pt high. `align_traffic_lights` moves them

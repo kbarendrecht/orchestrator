@@ -366,3 +366,39 @@ its own case rather than as success.
 
 The decision is pure so the three answers have a test: the version moved, it did
 not, and it could not be read.
+
+
+## A restart the app does to itself is a different path from one a person does.
+`app-check` closed the app and started it again, which is a person quitting. The
+update bar's **Restart** is not that: it posts `/api/window/restart`, the shell
+sets its flag and takes the window down, and `relaunch` spawns the binary
+`stable_exe` resolves — with a handoff pair, so the successor waits for the process
+being replaced to release the instance lock before taking it.
+
+Nothing ran that path. `mise run e2e` has no window and no shell; the flows drive
+the daemon's HTTP API, and this route is the *host's*. So a restart that spawned
+the wrong binary, or one that started before the lock was free, would reach a user
+as an app that does not come back — which is how it did reach one this week.
+
+Stage 5 drives it, and the proof is the token rather than "does it serve": the
+successor takes the same port, so a restart that answered from the same process
+would pass a liveness check having done nothing. Every start mints its own token,
+so a page carrying a different one was served by a different process. The
+checkout's daemon pid is the second signal and the only pid file there is — the
+host keeps none, which is worth knowing before writing a check that reads one.
+
+Then the history, which is the half a restart loses quietly: `has_transcript`
+rather than the row, because #17 came back with an empty rail and the records on
+disk, and #33 came back with the records and not the flag that resumes them.
+
+**Checked against deliberate breakage**: pointing `relaunch` at a path that does
+not exist fails stage 5 with "timed out waiting for the app to come back on its
+own", which is exactly the sentence the report used.
+
+Two mechanics worth keeping. The successor is nobody's child but the app's, so
+`stop()` cannot see it and nothing writes its pid down — it is closed through the
+same `/api/window/close` the window's own ✕ posts, or it holds the sandbox's port
+after the run. And locally the daemon resolves its agent through mise, which finds
+a *real* `claude` rather than the stand-in: run it with mise off the PATH
+(`PATH=~/.local/share/mise/shims:/usr/bin:/bin`) or stage 3 waits for a turn that
+never comes. CI has no mise at all, which is why it never sees this.
