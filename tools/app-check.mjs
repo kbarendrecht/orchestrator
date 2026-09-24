@@ -324,13 +324,23 @@ try {
   }
 } finally {
   await stop()
-  /* The titlebar probe for #29: a measurement is only useful if somebody reads it,
-     and the app's own output is printed only when a run goes red. Temporary — it
-     goes when the issue is fixed or the number becomes an assertion. */
-  if (outFile && fs.existsSync(outFile)) {
-    for (const line of fs.readFileSync(outFile, 'utf8').split('\n')) {
-      if (line.includes('titlebar:')) console.log(`  probe ${line.trim()}`)
-    }
+  /* **#29, and the one thing here that reads the window rather than the API.**
+     AppKit centres the traffic lights in a band it sizes itself — 28pt — while the
+     page's top row is 46, so they sat 9pt high. `align_traffic_lights` moves them
+     and the app logs where they ended up; this is what says they are still there.
+
+     It is also the only gate in this repo that can see it at all: `page-check`
+     drives Chrome, which has no window chrome, and every other macOS assertion
+     here goes through HTTP. Off macOS there is no line and nothing to check. */
+  if (process.platform === 'darwin' && outFile && fs.existsSync(outFile)) {
+    const said = fs.readFileSync(outFile, 'utf8')
+    const line = said.split('\n').find((l) => l.includes('titlebar:'))
+    const gap = line?.match(/top_gap="([\d.]+)"/)?.[1]
+    if (!gap) bad('the titlebar measurement never ran')
+    // Half of `TOP_ROW` in `desktop/src/main.rs`, which is `.app`'s 46px row.
+    else if (Math.abs(Number(gap) - 23) > 0.5) bad(`the traffic lights sit at ${gap}pt, not 23 (#29)`)
+    else ok(`the traffic lights are on the top row's centre line (${gap}pt)`)
+    if (line) console.log(`  probe ${line.trim()}`)
   }
   console.log(`\napp-check: ${failed ? 'FAILED' : 'ok'}`)
   if (failed) console.log(`  sandbox kept: ${root}`)

@@ -256,6 +256,12 @@ fn main() {
         } = &event
         {
             remember_window(app_handle);
+            /* AppKit lays the titlebar out again on every resize, which puts the
+            lights back where it wants them — so #29's fix is re-applied here rather
+            than only at startup. Leaving full screen is a resize too, which is the
+            transition that would otherwise strand them. */
+            #[cfg(target_os = "macos")]
+            align_traffic_lights();
         }
         if let tauri::RunEvent::ExitRequested { api, code, .. } = event {
             // Hold the loop open just long enough to take the children with us.
@@ -500,12 +506,14 @@ fn build_window(
     }
     #[cfg(target_os = "linux")]
     wire_session_switch_keys(&_window);
-    /* A probe for #29, and the reason it is here rather than later: the buttons are
-    laid out when the window is created, so this is the earliest point the numbers
-    exist. If AppKit moves them again before the first paint, the line will say so
-    by disagreeing with the screenshot beside it. */
+    /* #29. The buttons are laid out when the window is created, so this is the
+    earliest point they can be moved — and the measurement after it is what says
+    they landed, both in the log and in `app-check`'s assertion. */
     #[cfg(target_os = "macos")]
-    log_titlebar_metrics();
+    {
+        align_traffic_lights();
+        log_titlebar_metrics();
+    }
     // The window exists here; it is not painted yet. Everything after this is
     // the webview fetching the page and the SPA waiting for its first snapshot,
     // which is the client's own half of the wait and is timed in the page.
@@ -1329,6 +1337,75 @@ fn on_a_mouse_event() -> bool {
         || kind == NSEventType::OtherMouseUp
         || kind == NSEventType::OtherMouseDragged
         || kind == NSEventType::MouseMoved
+}
+
+/// The height of the page's top row, in points.
+///
+/// **Two copies of one number, and the other is `.app` in `web/app.css`.** It is
+/// here because AppKit centres the traffic lights in a band it sizes itself, and
+/// moving them onto this row's centre line needs the row's height in Rust.
+/// `mise run page-check` asserts the stylesheet still says 46, and `app-check`
+/// asserts the lights ended up at half of it — so the pair cannot drift quietly.
+#[cfg(target_os = "macos")]
+const TOP_ROW: f64 = 46.0;
+
+/// Put the traffic lights on the centre line of the page's top row (#29).
+///
+/// **AppKit centres them in its own band, which is 28pt** — measured on macos-14
+/// by [`log_titlebar_metrics`], and on the reporter's machine by two screenshots
+/// that agree with it. Our row is 46, so they sit 9pt high, and the fix is to move
+/// them rather than to shrink the row: the row carries the checkout name, the PR
+/// counts and three controls, and 28pt is not enough for them.
+///
+/// **Re-applied on every resize**, because AppKit lays the titlebar out again
+/// whenever the window changes size — including on the way out of full screen,
+/// which is a resize like any other.
+///
+/// **Full screen is left alone.** The lights are AppKit's there, in a band the page
+/// draws nothing over, so moving them would put them in the middle of the board.
+///
+/// The frame is in the superview's coordinates and AppKit's frame views are not
+/// flipped, so down is a smaller `y`. That assumption is not load-bearing: the
+/// measurement below reads the result back, and `app-check` fails on macos-14 if it
+/// is wrong in either direction.
+#[cfg(target_os = "macos")]
+fn align_traffic_lights() {
+    use objc2_app_kit::{NSApplication, NSWindowButton, NSWindowStyleMask};
+
+    let Some(mtm) = objc2::MainThreadMarker::new() else {
+        return;
+    };
+    for window in NSApplication::sharedApplication(mtm).windows().iter() {
+        if window.styleMask().contains(NSWindowStyleMask::FullScreen) {
+            continue;
+        }
+        let Some(content) = window.contentView() else {
+            continue;
+        };
+        // `fullSizeContentView`, so the content view is the window and the page's
+        // first row starts at its top edge.
+        let top = content.frame().size.height;
+        for kind in [
+            NSWindowButton::CloseButton,
+            NSWindowButton::MiniaturizeButton,
+            NSWindowButton::ZoomButton,
+        ] {
+            let Some(button) = window.standardWindowButton(kind) else {
+                continue;
+            };
+            let in_window = button.convertRect_toView(button.bounds(), None);
+            let from_top = top - (in_window.origin.y + in_window.size.height / 2.0);
+            let delta = TOP_ROW / 2.0 - from_top;
+            // Idempotent: a resize fires this again, and a button already on the
+            // line must not drift by a rounding error each time.
+            if delta.abs() < 0.5 {
+                continue;
+            }
+            let mut origin = button.frame().origin;
+            origin.y -= delta;
+            button.setFrameOrigin(origin);
+        }
+    }
 }
 
 /// Where AppKit actually put the traffic lights, against the bar the page draws.

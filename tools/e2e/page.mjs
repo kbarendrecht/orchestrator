@@ -368,6 +368,18 @@ try {
   await page.waitForTimeout(2000)
   check((await railNames()).join('|') === after.join('|'), 'the order survives a reload and the snapshots after it')
 
+  /* --- the number the window chrome depends on --------------------------------- */
+
+  /* **The top row's height is two copies of one number**, and the other is
+     `TOP_ROW` in `desktop/src/main.rs`: macOS centres the traffic lights in a 28pt
+     band of its own, so putting them on this row's centre line needs the row's
+     height in Rust (#29). Nothing in a browser can see the lights — that half is
+     `app-check` on macos-14 — so what is asserted here is the half a browser *can*
+     see, which is the number the other half is derived from. */
+  const topRow = await page.evaluate(
+    () => getComputedStyle(document.querySelector('.app')).gridTemplateRows.split(' ')[0])
+  check(topRow === '46px', `the top row is 46px, or TOP_ROW in main.rs is now wrong — got ${topRow}`)
+
   /* --- the add row, at every rail width --------------------------------------- */
 
   /* `+ worktree`, `+ main` and `archived` share one line under the list. They

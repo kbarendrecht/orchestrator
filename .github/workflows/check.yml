@@ -372,12 +372,10 @@ jobs:
               --shots "${{ runner.temp }}/app-shots"
           fi
 
-      # Normally only on a failure: a screenshot is evidence for somebody reading a
-      # red run, never something to compare against a baseline — `page-check` says
-      # why. `always()` here is the #29 probe, on this branch only: the window chrome
-      # is the thing under investigation and a green run is where it is visible.
+      # Only on a failure: a screenshot is evidence for somebody reading a red run,
+      # never something to compare against a baseline — `page-check` says why.
       - name: What it looked like
-        if: always() && runner.os == 'macOS'
+        if: failure() && runner.os == 'macOS'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: app-check-shots
