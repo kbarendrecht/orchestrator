@@ -339,3 +339,30 @@ prove is ours goes**: the `source` marker, the pre-#24 stub's comment, or the
 `.desktop` comment line. A `.dmg` dragged to `~/Applications` has the same name and
 none of them. And never the bundle the process runs from, because that is what a
 restart opens.
+
+
+## An installer that exits 0 is not an upgrade, and for the app that was the only question asked.
+`brew upgrade --cask` exits 0 when the tap is stale and it had nothing to do, and
+`apt-get install --only-upgrade` does the same against stale package lists. The
+apt plan already carried its `apt-get update` for exactly that reason; the brew
+one did not, and Homebrew's auto-update is time-throttled — so the cask, which a
+workflow publishes a minute or two after the release, was usually not there yet.
+
+`run_upgrade` judged the app's outcome by the exit code alone. The comment saying
+why was true and beside the point: this process's own version cannot change until
+the restart, but the *installed* one can, and that is what a restart brings back.
+So the bar reported success and offered a restart that came back on the same
+build — reported twice, and read both times as "restart does not work" rather
+than "the upgrade did nothing". The second report came with the answer in it:
+*only a manual `brew upgrade --cask orchestrator` installed 2026.9.27.*
+
+Two halves. `plan` refreshes first (`brew update && brew upgrade --cask …`), and
+`run_upgrade` asks what a restart would actually start — `installed_version` runs
+the installed `orchd --version`, which is the one thing every build answers and
+touches no state. Running the binary rather than reading a package database is
+deliberate: the question is what comes back when this process ends, and a build
+macOS is holding in quarantine answers nothing, which `upgrade_landed` reports as
+its own case rather than as success.
+
+The decision is pure so the three answers have a test: the version moved, it did
+not, and it could not be read.

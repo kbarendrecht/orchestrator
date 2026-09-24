@@ -189,14 +189,21 @@ fn plan(install: Install, tool: Option<&str>) -> Option<Plan> {
         });
     }
     match install {
+        /* **`brew update` is not optional either**, for the reason spelled out for
+        apt below: Homebrew's auto-update is time-throttled, so a tap that has not
+        been refreshed still holds the old cask and `brew upgrade` succeeds at doing
+        nothing — exit 0, no output, and the bar then offers a restart that brings
+        back the same build. Reported twice against v2026.9.27, where only a manual
+        `brew update` installed it (#33's closing note). The cask is published by a
+        workflow a minute or two after the release, so this window is the ordinary
+        case rather than a rare one. */
         Install::Homebrew => Some(Plan {
             argv: vec![
-                "brew".into(),
-                "upgrade".into(),
-                "--cask".into(),
-                PACKAGE.into(),
+                "sh".into(),
+                "-c".into(),
+                format!("brew update && brew upgrade --cask {PACKAGE}"),
             ],
-            shown: format!("brew upgrade --cask {PACKAGE}"),
+            shown: format!("brew update && brew upgrade --cask {PACKAGE}"),
         }),
         // **`apt-get update` is not optional.** `--only-upgrade` can only install
         // what the package lists already carry, and the release this bar is
@@ -250,6 +257,80 @@ fn on_path(exe: &str) -> bool {
     };
     std::env::split_paths(&path).any(|dir| dir.join(exe).is_file())
 }
+
+/// What a restart would actually start, as that build reports itself.
+///
+/// **The exit code is not the answer, and for the app it was the only one asked.**
+/// `brew upgrade --cask` exits 0 when it had nothing to do, `apt-get install
+/// --only-upgrade` exits 0 when the package lists are stale, and both then leave
+/// the bar offering a restart that brings back the same version — which reads as
+/// "restart is broken" rather than "the upgrade did nothing". Reported twice.
+///
+/// Read by *running* the installed binary rather than asking a package database:
+/// the question is not what a packager thinks it installed, it is what comes back
+/// when this process ends. `--version` is the one thing every build answers and it
+/// touches no state (`crates/orchd-serve/tests/cli_version.rs` holds that).
+///
+/// `orchd` beside the executable rather than the executable itself: the app embeds
+/// the daemon, and the desktop binary answers nothing. They ship together, so the
+/// sibling's version is this install's.
+///
+/// `None` when it cannot be read — a layout with no sibling, a binary macOS is
+/// holding in quarantine — and the caller then says so rather than claiming either
+/// outcome.
+fn installed_version() -> Option<String> {
+    let exe = stable_exe(&std::env::current_exe().ok()?);
+    let dir = exe.parent()?.to_path_buf();
+    let beside = dir.join("orchd");
+    let bin = if beside.is_file() { beside } else { exe };
+    let out = crate::proc::run_bounded(
+        &dir,
+        VERSION_TIMEOUT_SECS,
+        &[bin.to_string_lossy().into_owned(), "--version".into()],
+        "reading the installed version",
+    )
+    .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    // `orchd <version>`, which is `main.rs`'s one line.
+    String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .next_back()
+        .map(str::to_string)
+}
+
+/// Did the upgrade change what a restart would start?
+///
+/// Pure, so the three answers can be tested: the version moved, it did not, and it
+/// could not be read. The middle one is the whole reason this exists — a packager
+/// that exits 0 having done nothing leaves the bar offering a restart that brings
+/// back the same build, which reads as the restart being broken.
+///
+/// `None` is success, matching the slot it is written into: an empty tail on a
+/// finished run is what the bar draws as done.
+fn upgrade_landed(shown: &str, want: &str, have: Option<String>) -> Option<String> {
+    match have {
+        Some(have) if have == want => None,
+        Some(have) => Some(format!(
+            "`{shown}` finished, but the installed build is still {have}. A restart \
+             would bring back the same version — the package index may not carry \
+             {want} yet, so try again in a minute."
+        )),
+        // Unreadable is not "it worked": say what was asked and leave the version
+        // out of it.
+        None => Some(format!(
+            "`{shown}` finished, but the installed build would not say its version — \
+             check it by hand before restarting."
+        )),
+    }
+}
+
+/// How long the installed binary has to answer `--version`.
+///
+/// Short: it prints one line and exits. A build macOS is holding in quarantine
+/// does not get that far, and a hang here would sit in front of the bar's answer.
+const VERSION_TIMEOUT_SECS: u64 = 10;
 
 /// How long an upgrade may take before it is killed and reported as failed.
 ///
@@ -452,6 +533,23 @@ fn run_upgrade(
                 tracing::warn!("re-checking the agent version after an upgrade failed: {e:#}");
             }
         }
+
+        /* **And for the app, ask what a restart would start.** This process's own
+        version cannot change, which is what used to be said here — but the
+        *installed* one can, and that is what the restart brings back. A packager
+        that exited 0 having done nothing is the ordinary failure (see `plan`), and
+        without this the bar reported success and offered a restart that changed
+        nothing at all. Only when the run itself succeeded: a failure already has a
+        better sentence than this one. */
+        let failure = match (subject, &failure) {
+            (Subject::App, None) => {
+                let have = tokio::task::spawn_blocking(installed_version)
+                    .await
+                    .unwrap_or(None);
+                upgrade_landed(&plan.shown, &to, have)
+            }
+            _ => failure,
+        };
 
         {
             let mut inner = app.inner.write().await;
@@ -968,9 +1066,39 @@ mod tests {
         );
     }
 
-    /// Each channel runs its own installer, and the apt one carries the two things
-    /// it is easiest to leave out: the refresh, and the program that asks for the
-    /// password.
+    /// **An installer that exits 0 having done nothing is not an upgrade.**
+    /// `brew upgrade --cask` does exactly that against a stale tap, and the bar
+    /// then offered a restart that brought back the same build — reported twice,
+    /// and read both times as the restart being broken rather than the upgrade.
+    #[test]
+    fn an_upgrade_that_did_not_change_the_installed_build_is_reported() {
+        let shown = "brew update && brew upgrade --cask orchestrator";
+        assert_eq!(
+            upgrade_landed(shown, "2026.9.27", Some("2026.9.27".into())),
+            None,
+            "the version moved, so there is nothing to report"
+        );
+
+        let stale = upgrade_landed(shown, "2026.9.27", Some("2026.9.25".into()))
+            .expect("a build that did not move has to be reported");
+        assert!(
+            stale.contains("2026.9.25") && stale.contains("2026.9.27"),
+            "say both what is installed and what was wanted: {stale}"
+        );
+        assert!(
+            stale.contains("restart"),
+            "the restart is what it would otherwise have offered: {stale}"
+        );
+
+        // A binary that will not answer — quarantined, or a layout with no
+        // sibling — is not evidence either way, and must not read as success.
+        assert!(upgrade_landed(shown, "2026.9.27", None).is_some());
+    }
+
+    /// Each channel runs its own installer, and **both package channels carry the
+    /// refresh** — the thing it is easiest to leave out and the one that makes the
+    /// upgrade a no-op when it is missing. apt carries the program that asks for
+    /// the password as well.
     #[test]
     fn every_channel_that_can_be_upgraded_runs_its_own_installer() {
         let mise = plan(Install::Tarball, Some("github:kbarendrecht/orchestrator")).expect("mise");
@@ -979,9 +1107,20 @@ mod tests {
             vec!["mise", "upgrade", "github:kbarendrecht/orchestrator"]
         );
 
+        /* The tap has to be refreshed first or `brew upgrade` exits 0 having done
+        nothing: Homebrew's auto-update is time-throttled, and the cask is
+        published a minute or two after the release. Two reports of "the update
+        says it worked and the version does not change" came from exactly that. */
         let brew = plan(Install::Homebrew, None).expect("brew");
-        assert_eq!(brew.argv, vec!["brew", "upgrade", "--cask", "orchestrator"]);
-        assert_eq!(brew.shown, "brew upgrade --cask orchestrator");
+        let script = brew.argv.last().expect("the script");
+        assert!(
+            script.contains("brew update") && script.contains("upgrade --cask orchestrator"),
+            "the tap has to be refreshed before the upgrade can see the release: {script}"
+        );
+        assert_eq!(
+            brew.shown,
+            "brew update && brew upgrade --cask orchestrator"
+        );
 
         let apt = plan(Install::Apt, None).expect("apt");
         assert_eq!(apt.argv.first().map(String::as_str), Some(PKEXEC));

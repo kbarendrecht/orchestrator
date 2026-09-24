@@ -423,6 +423,7 @@ together: same entries, same order, same groups.
 - A shell-script `CFBundleExecutable` has no architecture, so the plist must declare one.
 - A bundle the linker signed is not a signed bundle, and macOS refuses it as damaged.
 - A process outside a bundle is a window macOS will not manage.
+- An installer that exits 0 is not an upgrade, and for the app that was the only question asked.
 
 ### The crates, and what a move breaks
 
