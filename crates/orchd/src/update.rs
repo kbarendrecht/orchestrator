@@ -372,7 +372,17 @@ impl Subject {
     ///
     /// `Err` is the refusal the route reports verbatim: no update found, or an
     /// install with no installer to ask.
-    fn offer(self, inner: &crate::state::Inner) -> std::result::Result<(Plan, Version), String> {
+    /// **`install` is handed in rather than read here**, which is what makes every
+    /// channel testable: the decision — which installer, or a refusal naming why
+    /// there is none — is the thing that has gone wrong twice, and reading the
+    /// running process's own install inside it left five of the six kinds
+    /// unreachable from a test. The caller asks the environment once
+    /// ([`Install::of_running`]); everything below is a function of its answer.
+    fn offer(
+        self,
+        inner: &crate::state::Inner,
+        install: Install,
+    ) -> std::result::Result<(Plan, Version), String> {
         match self {
             Subject::Agent => {
                 let u = inner
@@ -400,7 +410,6 @@ impl Subject {
                 argv. Both come from the same [`plan`], so a button the page
                 offered is a plan this can build — and a press cannot outlive
                 the fact that made it, because the fact is re-read. */
-                let install = Install::of_running();
                 let p = plan(install, u.tool.as_deref()).ok_or(
                     "this install has no installer to ask — \
                      download the release, or install through mise, Homebrew or apt",
@@ -451,7 +460,8 @@ pub async fn start_upgrade(
         {
             return Err("that upgrade is already running".to_string());
         }
-        let (plan, version) = subject.offer(&inner)?;
+        // The one environment read, at the edge: see `Subject::offer`.
+        let (plan, version) = subject.offer(&inner, Install::of_running())?;
         *subject.run_slot(&mut inner) = Some(UpgradeRun {
             to: version.to.clone(),
             running: true,
@@ -1089,6 +1099,95 @@ mod tests {
             !inner.sessions[&ids[1]].agent_stale,
             "its build is still there"
         );
+    }
+
+    /// **What the button does, for every way this app is installed.**
+    ///
+    /// The decision has been wrong twice in the field and both were silent: a cask
+    /// told to run `mise up`, and an upgrade that ran the right command against a
+    /// stale index. Six install kinds, three of which can only be a link, and the
+    /// press has to end in either an exact argv or a sentence saying why not.
+    ///
+    /// `offer` takes the install rather than reading the running process's own,
+    /// which is what makes five of these six reachable from a test at all.
+    #[tokio::test]
+    async fn every_install_kind_either_names_its_installer_or_says_why_it_cannot() {
+        let (app, _dir) = crate::testutil::app("offer-table");
+        let nudge = |tool: Option<&str>| crate::model::UpdateInfo {
+            current: "2026.9.1".into(),
+            latest: "2026.9.2".into(),
+            url: "https://example.invalid/releases".into(),
+            tool: tool.map(str::to_string),
+            // Not read by `offer` — the page branches on it, and `offer_for` is
+            // what fills it. Pinned to the honest value for the row anyway.
+            offer: crate::model::Offer::LinkOnly,
+        };
+
+        // A mise install is the one kind no path can identify, so the tool rides on
+        // the nudge — and when it is there it wins, whatever the install looks like.
+        for install in [
+            Install::Tarball,
+            Install::Homebrew,
+            Install::Apt,
+            Install::MacBundle,
+            Install::AppImage,
+            Install::Checkout,
+        ] {
+            app.inner.write().await.update = Some(nudge(Some("github:kbarendrecht/orchestrator")));
+            let (plan, version) = Subject::App
+                .offer(&*app.inner.read().await, install)
+                .unwrap_or_else(|e| panic!("mise should answer for {install:?}: {e}"));
+            assert_eq!(
+                plan.argv,
+                vec!["mise", "upgrade", "github:kbarendrecht/orchestrator"],
+                "{install:?} with a mise tool"
+            );
+            assert_eq!(
+                (version.from.as_str(), version.to.as_str()),
+                ("2026.9.1", "2026.9.2")
+            );
+        }
+
+        // And without one, each kind answers for itself.
+        app.inner.write().await.update = Some(nudge(None));
+        let inner = app.inner.read().await;
+
+        let brew = Subject::App
+            .offer(&inner, Install::Homebrew)
+            .expect("a cask can be upgraded")
+            .0;
+        assert!(
+            brew.shown.starts_with("brew update &&"),
+            "the tap is refreshed first, or the upgrade does nothing: {}",
+            brew.shown
+        );
+
+        /* apt is the one that depends on the machine as well as the install: with no
+        `pkexec` there is nothing to ask for the password with, and the refusal has
+        to name the command rather than fail later as "No such file". */
+        let apt = Subject::App.offer(&inner, Install::Apt);
+        match (apt, on_path(PKEXEC)) {
+            (Ok((p, _)), true) => {
+                assert_eq!(p.shown, "sudo apt install --only-upgrade orchestrator")
+            }
+            (Err(why), false) => assert!(why.contains("pkexec"), "{why}"),
+            (Ok(_), false) => panic!("apt offered a run with no pkexec to run it"),
+            (Err(why), true) => panic!("apt refused on a machine with pkexec: {why}"),
+        }
+
+        // Three installs have no installer to ask, and the refusal is what the bar
+        // turns into a link. A `.dmg` and an AppImage are files somebody downloaded;
+        // a checkout is a build.
+        for install in [Install::MacBundle, Install::AppImage, Install::Checkout] {
+            let why = Subject::App
+                .offer(&inner, install)
+                .err()
+                .unwrap_or_else(|| panic!("{install:?} has no installer and must refuse"));
+            assert!(
+                why.contains("download the release"),
+                "{install:?} should point at the release: {why}"
+            );
+        }
     }
 
     /// **An installer that exits 0 having done nothing is not an upgrade.**

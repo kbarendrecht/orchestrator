@@ -305,3 +305,34 @@ The install is retried once. The image ships an index, a mirror rotates a point
 release out from under it, and the fetch 404s — seen on the second run of this
 script. A gate that goes red on somebody else's mirror is one people learn to
 re-run without reading.
+
+
+## The update button is one chain, and every link had a test but the chain had none.
+A press resolves the install, builds an argv, runs it bounded and reports either
+nothing or a tail. `plan`, `offer_for` and `explain` were each unit-tested, and
+two failures still shipped in a week: a cask told to run `mise up`, and an
+installer that exited 0 having done nothing while the bar offered a restart that
+changed nothing.
+
+Three tests now cover it, and each one is where the thing it covers is reachable:
+
+- **The decision, per install kind** — `every_install_kind_either_names_its_installer_or_says_why_it_cannot`
+  in `update.rs`. `Subject::offer` takes the `Install` rather than reading the
+  running process's own, which is the whole reason five of the six kinds can be
+  tested at all: a test binary lives under `target/`, so it *is* a checkout, and
+  nothing else could ever be asserted from one.
+- **The chain** — `tools/e2e/flows/35-upgrade-button.mjs`, through the HTTP route,
+  with a `mise` on PATH that records what it was asked to do. It asserts the nudge,
+  the pair the route answers with, the argv that ran, the empty tail of a success,
+  the refusal of a second press mid-run, and the reason surviving a failure.
+  **Checked against deliberate breakage**: ignoring the installer's exit status
+  fails it with an empty tail where the reason should be.
+- **The installed build** — `upgrade_landed`, because an installer exiting 0 is not
+  an upgrade. See the macOS group.
+
+**It drives the agent's button, and that is not a shortcut.** The app's nudge comes
+from the release poller, which a debug build does not start, so no sandbox can ever
+have one; the agent's comes from `mise`, which is a PATH lookup. `start_upgrade` is
+one implementation for both subjects, and the implementation is what this asserts.
+The part that stays untested is the app subject's own wiring — one line in
+`upgrade_app` — and the container job is what covers the install it produces.
