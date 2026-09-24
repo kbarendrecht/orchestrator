@@ -380,6 +380,30 @@ try {
     () => getComputedStyle(document.querySelector('.app')).gridTemplateRows.split(' ')[0])
   check(topRow === '46px', `the top row is 46px, or TOP_ROW in main.rs is now wrong — got ${topRow}`)
 
+  /* --- the close code the page stops retrying on (#32) -------------------------- */
+
+  /* **Two copies of one number**, and the other is `PTY_EXITED` in
+     `crates/orchd-serve/src/ws.rs`. The page reconnects with backoff when a pty
+     socket drops, because a dropped one used to eat every keystroke under a
+     blinking cursor (#7) — so a shell somebody typed `exit` into retried forever,
+     against a pty the daemon had already reaped. The daemon says which of the two
+     happened with a close code now, and the page stops only on that one.
+
+     The behaviour is driven on the wire by
+     `tools/e2e/flows/22-drawer-processes.mjs`, which ends a real shell and asserts
+     the code it receives. What that flow cannot see is the page agreeing about the
+     number, and a mismatch is silent: every close would read as a blip again. Read
+     out of the served source, because the constant is module-private and exporting
+     it for a test would be the wrong trade.
+
+     What neither holds is the pane's own badge. Driving it needs a pane that is
+     attached at the moment its pty dies, and by the end of a run the board has
+     moved on — every attempt read whichever pane the drawer or the centre had
+     fallen back to. Left to the two halves above, deliberately. */
+  const termSrc = await page.evaluate(() => fetch('/js/term.js').then((r) => r.text()))
+  check(/const PTY_EXITED = 4000\b/.test(termSrc),
+    'term.js still stops its backoff on close code 4000')
+
   /* --- the add row, at every rail width --------------------------------------- */
 
   /* `+ worktree`, `+ main` and `archived` share one line under the list. They
@@ -591,6 +615,16 @@ try {
   // The app's own answer, not a guess at its markup.
   const asking = () => page.evaluate(async () => (await import('/js/core.js')).dialogOpen())
 
+  /* #31: the branch this conversation is about, for pasting into a terminal. It is
+     `SessionView.branch` — the session's branch, not what its tree has checked out,
+     and a swap is exactly when the two differ. The item is drawn disabled when
+     there is none, so `isEnabled` is the half that says the value arrived: a row
+     whose branch never reached the page would still offer the item. */
+  const branch = await rowMenu('copy branch')
+  check(!!branch, 'the row offers to copy its branch')
+  check(await branch?.isEnabled() === true, 'and a worktree session has one to copy')
+  await page.keyboard.press('Escape')
+
   const move = await rowMenu('move to main')
   check(!!move, 'the row offers a move')
   await move?.click()
@@ -694,11 +728,15 @@ try {
     says: b.textContent,
   })).catch(() => null)
   /* The contract rather than one state of it: whatever the pane is saying, the
-     pill is centred unless it is a reconnect — which is the one case with text
-     underneath it. Asserted this way because which state a pane is in here
-     depends on what the socket did a moment ago, and the rule does not. */
+     pill is centred unless there is text underneath it to cover. Two states have
+     that text — `reconnecting…`, and `exited` since #32, which is what a pane says
+     once its pty is gone for good. Asserted this way because which state a pane is
+     in here depends on what the socket did a moment ago, and the rule does not.
+
+     **That second state is also the proof the fix landed.** This line read
+     `reconnecting…` before #32, forever, on a pane whose agent had finished. */
   check(
-    !!badge && badge.shown && badge.mid === !badge.says?.includes('reconnecting'),
+    !!badge && badge.shown && badge.mid === !/reconnecting|exited/.test(badge.says ?? ''),
     `an empty pane says so in the middle, got ${JSON.stringify(badge)}`,
   )
 

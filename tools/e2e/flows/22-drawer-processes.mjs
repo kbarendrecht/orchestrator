@@ -55,6 +55,36 @@ export async function run(t) {
     (await t.workspace('main')).processes.some((p) => p.id === shell))
   assert.deepEqual(await names(t), ['shell', 'watch'])
 
+  /* --- `exit` is not a dropped connection (#32) ----------------------------------
+
+     The pane reconnects with backoff when its socket drops, because a dropped one
+     used to eat every keystroke under a blinking cursor (#7). A shell somebody
+     typed `exit` into closes that same socket — so without a reason on the wire the
+     pane retried for the life of the page, against a pty the daemon had already
+     reaped. `ws.rs` sends `PTY_EXITED` (4000) for the process ending and nothing
+     for a blip, and `term.js` stops only on that code.
+
+     Driven through a real socket rather than asserted in the page, because the
+     close code is the contract between the two and neither side can prove it
+     alone. */
+  const token = t.log().match(/token=([a-z0-9]+)/)?.[1]
+  assert.ok(token, 'the daemon never printed its token')
+  const closed = await new Promise((resolve, reject) => {
+    const sock = new WebSocket(
+      `ws://127.0.0.1:${t.port}/ws/pty?token=${token}&target=proc:${shell}`)
+    const fail = setTimeout(() => reject(new Error('the shell never closed its socket')), 15_000)
+    sock.onopen = () => sock.send('exit\n')
+    sock.onclose = (ev) => { clearTimeout(fail); resolve({ code: ev.code, reason: ev.reason }) }
+    sock.onerror = () => { clearTimeout(fail); reject(new Error('the pty socket errored')) }
+  })
+  assert.equal(closed.code, 4000, `a shell that exited must say so, got ${JSON.stringify(closed)}`)
+  assert.equal(closed.reason, 'process exited')
+
+  await until('the shell to be reaped', async () => {
+    const p = (await t.workspace('main')).processes.find((x) => x.id === shell)
+    return !p || !p.alive
+  })
+
   // Closing a tab is a stop, not a hide: the × has to reach the process, or the
   // next one starts beside it.
   await t.api('POST', `/api/process/${shell}/close`)

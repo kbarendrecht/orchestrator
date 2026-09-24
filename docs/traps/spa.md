@@ -481,3 +481,35 @@ DOM cost the viewer's banding exists to avoid.
 JSON-RPC client, minutes of indexing and rust-analyzer's memory on every worktree,
 against the rule that a default may only depend on what the daemon already needs.
 Revisit if the guessing proves annoying.
+
+
+## A closed pty socket says nothing, so the daemon now says why it closed.
+`term.js` reconnects a dropped pty socket with backoff, and that is not optional:
+a socket that closed and stayed closed sent every keystroke into a false branch
+while the cursor kept blinking on xterm's own buffer (#7). But a socket the
+*process* closed looks exactly the same from a browser — so typing `exit` in a
+drawer shell left the pane retrying for the life of the page, every attempt
+against a pty the daemon had already reaped (#32).
+
+The daemon is the only side that can tell them apart, and it already did: `ws.rs`
+computes `reason` for its detach line, and now sends `PTY_EXITED` — a close code
+in the 4000-4999 application range — before it breaks. Every standard code
+describes the *connection*; the page's question is whether there is still a
+process to reattach to, which is not a connection fact. `term.js` stops its
+backoff on that one code and keeps retrying on all the others, so a blip, a sleep
+and a daemon restart still heal themselves.
+
+**The scrollback stays and the pane says `exited`.** A dead pane is not an empty
+one: the last thing a process printed is usually why you are looking at it, and
+the drawer keeps the tab with its exit code beside it. That put a second state
+into the badge rule — the pill is centred only when there is nothing underneath
+it, and `exited` is the other case with text under it.
+
+Two gates, because the number lives on both sides.
+`tools/e2e/flows/22-drawer-processes.mjs` drives a real shell to `exit` over a
+real socket and asserts the code, and it fails when the close frame is taken out.
+`mise run page-check` asserts the page still carries the same constant, which the
+flow cannot see. **What neither holds is the badge itself**: driving it needs a
+pane attached at the moment its pty dies, and by the end of a run the board has
+moved on — every attempt read whichever pane the drawer or the centre pane had
+fallen back to. That is left to the two halves above, deliberately.

@@ -333,9 +333,13 @@ try {
      drives Chrome, which has no window chrome, and every other macOS assertion
      here goes through HTTP. Off macOS there is no line and nothing to check. */
   if (process.platform === 'darwin' && outFile && fs.existsSync(outFile)) {
-    const said = fs.readFileSync(outFile, 'utf8')
+    /* Stripped of colour first: the app logs through `tracing`, which wraps every
+       field name in escape codes — so `top_gap` and its `=` are not adjacent in the
+       bytes, and a regex over the raw line silently matches nothing. That is how
+       this assertion first failed on a run where the number was already right. */
+    const said = fs.readFileSync(outFile, 'utf8').replace(/\u001b\[[0-9;]*m/g, '')
     const line = said.split('\n').find((l) => l.includes('titlebar:'))
-    const gap = line?.match(/top_gap="([\d.]+)"/)?.[1]
+    const gap = line?.match(/top_gap="?([\d.]+)"?/)?.[1]
     if (!gap) bad('the titlebar measurement never ran')
     // Half of `TOP_ROW` in `desktop/src/main.rs`, which is `.app`'s 46px row.
     else if (Math.abs(Number(gap) - 23) > 0.5) bad(`the traffic lights sit at ${gap}pt, not 23 (#29)`)

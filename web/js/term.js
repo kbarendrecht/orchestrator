@@ -727,11 +727,24 @@ function connect(/** @type {import('./core.js').TermEntry} */ entry, /** @type {
     mark('paint');
     reportBoot();
   };
-  sock.onclose = () => {
+  sock.onclose = (/** @type {CloseEvent} */ ev) => {
     // A deliberate teardown, or a session that has left the snapshot: `closeTerm`
     // disposes the entry, so reconnecting here would race it into reattaching a pty
     // that is gone — `resolve` would 404 and this would just flap.
     if (entry.closed || terms.get(entry.key) !== entry) return;
+    /* **The process ended, so there is nothing to reattach to** (#32). Typing
+       `exit` in a shell closed the socket like any other drop, and the pane then
+       retried for the life of the page — every attempt against a pty the daemon had
+       already reaped. `ws.rs` says which of the two happened, with a close code in
+       the application range, and only that code stops the backoff: a blip, a sleep
+       and a daemon restart all still heal themselves, which is what #7 needs.
+
+       The scrollback stays. The shell's last words are usually why you are looking
+       at it, and the drawer keeps the tab with its exit code beside them. */
+    if (ev.code === PTY_EXITED) {
+      setBadge(entry, 'exited');
+      return;
+    }
     // Mark the pane so a deaf terminal is not silent, then reconnect with backoff
     // the way the events socket does. The replay makes a reattach indistinguishable
     // from a first attach, so the pane heals itself on wake from sleep or a blip.
@@ -743,6 +756,14 @@ function connect(/** @type {import('./core.js').TermEntry} */ entry, /** @type {
     }, wait);
   };
 }
+
+/** The close code `ws.rs` sends when the pty's process ended, not the connection.
+ *
+ *  Kept in step with `PTY_EXITED` in `crates/orchd-serve/src/ws.rs`. Two copies of
+ *  one number, and the e2e flow drives a real shell to `exit` and asserts the code
+ *  it receives — so the pair cannot drift without a red run.
+ */
+const PTY_EXITED = 4000;
 
 /** How much typed input to bank while the pty socket is down, before dropping it.
  *
@@ -758,12 +779,15 @@ const INPUT_BUDGET = 1 << 16; // 64 KB
  *  drops, `null` when it is carrying output. One pill for both, the connbar's, so
  *  a pane that is not live never reads as one that is. */
 const BADGE = {
+  // Not "closed": the pane still holds everything the process printed, and the
+  // word people look for after typing `exit` is the one the shell itself uses.
+  exited: 'exited',
   connecting: 'connecting…',
   starting: 'starting…',
   reconnecting: 'reconnecting…',
 };
 
-function setBadge(/** @type {import('./core.js').TermEntry} */ entry, /** @type {'connecting' | 'starting' | 'reconnecting' | null} */ state) {
+function setBadge(/** @type {import('./core.js').TermEntry} */ entry, /** @type {'connecting' | 'starting' | 'reconnecting' | 'exited' | null} */ state) {
   const b = entry.badge;
   if (!b) return;
   /* **Nothing to blink at while nothing is attached.** A cursor on an empty pane
@@ -775,9 +799,9 @@ function setBadge(/** @type {import('./core.js').TermEntry} */ entry, /** @type 
   if (!state) { b.hidden = true; return; }
   /* Middle of the pane while it is empty, corner once there is scrollback under
      it. `connecting` and `starting` are both "nothing here yet"; `reconnecting`
-     is "this text is no longer live", and covering that text to say so would be
-     taking away the thing being talked about. */
-  b.classList.toggle('mid', state !== 'reconnecting');
+     and `exited` are both "this text is no longer live", and covering that text to
+     say so would be taking away the thing being talked about. */
+  b.classList.toggle('mid', state !== 'reconnecting' && state !== 'exited');
   const t = b.querySelector('.term-badge-t');
   if (t) t.textContent = (state && BADGE[state]) || BADGE.connecting;
   b.hidden = false;

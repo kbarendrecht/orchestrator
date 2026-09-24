@@ -1,6 +1,6 @@
 use axum::{
     extract::{
-        ws::{Message, WebSocket, WebSocketUpgrade},
+        ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade},
         Query, State,
     },
     http::StatusCode,
@@ -20,6 +20,14 @@ pub struct WsQuery {
     #[serde(default)]
     pub target: Option<String>,
 }
+
+/// The close code that says the pty's process ended, rather than the connection.
+///
+/// **4000-4999 is the application range**, and the distinction is the whole point:
+/// every standard code describes the socket, while the page's question is whether
+/// there is still a process to reattach to. `term.js` stops its backoff on this one
+/// and keeps retrying on everything else (#32).
+pub const PTY_EXITED: u16 = 4000;
 
 /// Browsers cannot set headers on a WebSocket handshake, so the token rides in
 /// the query string. It never leaves the loopback interface (§12).
@@ -213,6 +221,13 @@ async fn pty_loop(
     // which is every reconnect, a tab close and a window shutdown; the process
     // ending overrides it.
     let mut reason = "client left";
+    /* **And the page is told, not only the log** (#32). A closed socket is
+    ambiguous from the browser: the pane reconnects with backoff because a dropped
+    one used to eat every keystroke under a blinking cursor (#7), so without a
+    reason it retried forever against a shell somebody had typed `exit` into. The
+    daemon is the only side that knows the difference, and it already computes it
+    on this line. */
+    let mut exited = false;
     loop {
         tokio::select! {
             // The broadcast Sender lives in the PtyHandle, so `recv()` never
@@ -230,6 +245,7 @@ async fn pty_loop(
                     }
                 }
                 reason = "process exited";
+                exited = true;
                 break;
             }
             out = sub.recv() => match out {
@@ -253,7 +269,11 @@ async fn pty_loop(
                         break;
                     }
                 }
-                Err(_) => { reason = "process exited"; break }
+                Err(_) => {
+                    reason = "process exited";
+                    exited = true;
+                    break;
+                }
             },
             incoming = socket.recv() => match incoming {
                 Some(Ok(Message::Binary(data))) => {
@@ -280,6 +300,19 @@ async fn pty_loop(
                 _ => {}
             },
         }
+    }
+    /* A code in the application range, because every standard one already means
+    something about the *connection*: this is about the process behind it, and the
+    page has to tell the two apart to know whether reattaching could ever work.
+    Best effort — a socket the client has already dropped takes no close frame, and
+    that path is the one where nobody is waiting for the answer anyway. */
+    if exited {
+        let _ = socket
+            .send(Message::Close(Some(CloseFrame {
+                code: PTY_EXITED,
+                reason: "process exited".into(),
+            })))
+            .await;
     }
     tracing::info!(%target, reason, "pty client detached");
 }

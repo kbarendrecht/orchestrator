@@ -1581,6 +1581,7 @@ function archivedRow(/** @type {import('../snapshot').SessionView} */ s, /** @ty
     // worktree, so a conversation whose branch is gone can still be branched off.
     ['fork', null, s.has_transcript ? () => forkSession(s) : null],
     ['copy id', null, () => copyId(s)],
+    ['copy branch', null, s.branch ? () => copyBranch(s) : null],
     ['delete', 'bad', () => deleteSession(s)],
   ]);
   return btn;
@@ -1854,6 +1855,7 @@ function sessionRow(/** @type {import('../snapshot').SessionView} */ s, /** @typ
       ? ['cancel the restart', null, () => restartSession(s, true)]
       : ['restart', null, s.alive ? () => restartSession(s, false) : null],
     ['copy id', null, () => copyId(s)],
+    ['copy branch', null, s.branch ? () => copyBranch(s) : null],
     // The worktree, not the session: the row is the only place a worktree is
     // visible, so its workspace-level action lives here too.
     [moveLabel, null, moveDo],
@@ -1872,6 +1874,21 @@ function sessionRow(/** @type {import('../snapshot').SessionView} */ s, /** @typ
  *  not selectable text there. */
 async function copyId(/** @type {import('../snapshot').SessionView} */ s) {
   if (await copyText(s.id)) toast('id copied');
+}
+
+/** The branch this conversation is about, for pasting into a terminal (#31).
+ *
+ *  **The session's branch, not the tree's**, and the two are different questions:
+ *  `SessionView.branch` is what this conversation is working on, while the
+ *  workspace's is what its directory has checked out. A swap exchanges the second
+ *  and leaves the first alone, which is exactly when somebody wants to copy it.
+ *
+ *  Offered only when there is one. A session mid-create has no branch yet, and a
+ *  record written before the field existed never will — an item that copies an
+ *  empty string is worse than no item, which is why `fork` is gated the same way.
+ */
+async function copyBranch(/** @type {import('../snapshot').SessionView} */ s) {
+  if (s.branch && await copyText(s.branch)) toast('branch copied');
 }
 
 /** Sessions whose prompt would take a double-escape as "rewind".
