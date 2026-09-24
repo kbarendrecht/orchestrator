@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 # Does the .deb this build produced actually install and run?
 #
-#   docker run --rm -v <the deb>:/tmp/o.deb -v <this file>:/check.sh \
-#     -e WANT=<version> ubuntu:22.04 bash /check.sh
+#   tools/apt-check.sh <path to the .deb> [version]
+#
+# **It runs itself in the container.** The `docker run` was written out at each
+# call site and the two had already drifted — one copied the package to a fixed
+# path first, one mounted it in place, and each derived the version its own way.
+# The image, the mounts and the entrypoint are this script's business, so it owns
+# them: a workflow step is one line, and the gate can be run by hand, which is what
+# a call site written in YAML can never be.
 #
 # **`dpkg-deb -c` lists a package; it does not install one.** That listing is what
 # `bundle.yml` had, and it cannot see a dependency the package fails to declare, a
@@ -22,6 +28,22 @@ set -euo pipefail
 
 say() { printf '\n\033[36m▸\033[0m %s\n' "$1"; }
 die() { printf '\033[31m✗\033[0m %s\n' "$1" >&2; exit 1; }
+
+# Outside the container: mount what was asked about and run this same file inside.
+# `/.dockerenv` is the one file every container has and no host does.
+if [ ! -f /.dockerenv ]; then
+  deb=${1:?usage: apt-check.sh <path to the .deb> [version]}
+  [ -f "$deb" ] || die "no such package: $deb"
+  # The version to expect: given, or read off the workspace manifest beside this
+  # script — one spelling of a read that was written three different ways.
+  want=${2:-$(sed -n 's/^version = "\(.*\)"$/\1/p' "$(dirname "$0")/../Cargo.toml" | head -1)}
+  [ -n "$want" ] || die "no version to check against"
+  exec docker run --rm \
+    -v "$(cd "$(dirname "$deb")" && pwd)/$(basename "$deb")":/tmp/o.deb:ro \
+    -v "$(cd "$(dirname "$0")" && pwd)/$(basename "$0")":/check.sh:ro \
+    -e WANT="$want" \
+    ubuntu:22.04 bash /check.sh
+fi
 
 say "installing the package"
 export DEBIAN_FRONTEND=noninteractive

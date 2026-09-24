@@ -20,38 +20,32 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { until } from '../harness.mjs'
+
+const here = path.dirname(fileURLToPath(import.meta.url))
 
 export const name = 'the update button runs the installer and reports it'
 
-/** A `mise` that answers the three questions the daemon asks it, and records
- *  every call so the flow can assert what was run rather than that something was.
- *
- *  `upgrade` fails while `mise-fail` exists, which is how the failure half of the
- *  report is driven without a second sandbox. */
-const SHIM = (root) => `#!/usr/bin/env node
-const fs = require('node:fs')
-const argv = process.argv.slice(2)
-fs.appendFileSync(${JSON.stringify(path.join('ROOT', 'mise.log')).replace('ROOT', root)}, argv.join(' ') + '\\n')
-const [verb] = argv
-if (verb === 'which') {
-  // \`tool_of_install_path\` reads the tool out of mise's own layout.
-  process.stdout.write('${root}/installs/claude-code/2.1.0/claude\\n')
-} else if (verb === 'outdated') {
-  process.stdout.write(JSON.stringify({ 'claude-code': { current: '2.1.0', latest: '2.2.0' } }))
-} else if (verb === 'upgrade') {
-  if (fs.existsSync('${root}/mise-fail')) {
-    process.stderr.write('mise: no such version 2.2.0\\n')
-    process.exit(1)
-  }
-}
-`
-
 export async function run(t) {
-  fs.writeFileSync(path.join(t.bin, 'mise'), SHIM(t.root), { mode: 0o755 })
+  /* The same two-line shim the harness writes for `claude`, `curl` and `gh` — see
+     `tools/e2e/fake-mise.mjs` for what it answers. The sandbox is passed as an
+     argument, because a fake needs to know which run it is recording. */
+  fs.writeFileSync(
+    path.join(t.bin, 'mise'),
+    `#!/bin/sh\nexec node ${path.join(here, '..', 'fake-mise.mjs')} ${t.root} "$@"\n`,
+    { mode: 0o755 },
+  )
   const ran = () => (fs.existsSync(path.join(t.root, 'mise.log'))
     ? fs.readFileSync(path.join(t.root, 'mise.log'), 'utf8').trim().split('\n')
     : [])
+
+  /** A run that has stopped, whichever press started it. Three call sites wrote
+   *  this predicate out, and the third had already drifted from the other two. */
+  const finished = (what) => until(what, async () => {
+    const run = (await t.state()).upgrade_run
+    return run && !run.running ? run : null
+  })
 
   /* The check runs off a spawn as well as off the poller — starting a session is
      the moment the agent's version matters, because the agent nags about it in the
@@ -73,10 +67,7 @@ export async function run(t) {
     'the route answers with the pair it is moving between',
   )
 
-  const done = await until('the upgrade to finish', async () => {
-    const run = (await t.state()).upgrade_run
-    return run && !run.running ? run : null
-  })
+  const done = await finished('the upgrade to finish')
   assert.equal(done.tail, '', `a successful upgrade reports nothing, got ${JSON.stringify(done.tail)}`)
   assert.equal(done.to, '2.2.0')
   assert.ok(
@@ -92,20 +83,14 @@ export async function run(t) {
     /already running|no agent update/,
     'two upgrades of one tool must not race over the same install directory',
   )
-  await until('the second upgrade to finish', async () => {
-    const run = (await t.state()).upgrade_run
-    return run && !run.running
-  })
+  await finished('the second upgrade to finish')
 
   // --- and what it says when the installer refuses -------------------------
 
   fs.writeFileSync(path.join(t.root, 'mise-fail'), '')
   await t.api('POST', '/api/agent/upgrade/dismiss')
   await t.api('POST', '/api/agent/upgrade')
-  const failed = await until('the failed upgrade to report', async () => {
-    const run = (await t.state()).upgrade_run
-    return run && !run.running ? run : null
-  })
+  const failed = await finished('the failed upgrade to report')
   /* The *end* of what the installer said, which is what a person needs: `mise`
      writes the reason to stderr and its stdout is progress, so a tail that took
      stdout would carry the noise and lose the answer.

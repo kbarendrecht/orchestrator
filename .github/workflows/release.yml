@@ -315,11 +315,19 @@ jobs:
           fi
           printf 'the body is %s line(s)\n' "$(wc -l < notes.md)"
 
+      # **Drafted, and `publish` below is what makes it visible.** A draft is not in
+      # the releases API, so `mise` and `ubi` cannot resolve it — which means a
+      # release that fails `verify` was never installable and there is nothing to
+      # take back. Publishing first and retracting on failure was the other way
+      # round, and it needed a compensating step, a sentence explaining it, and a
+      # clause in `mise run release`'s own refusal to teach it that a drafted
+      # version is re-cuttable. One ordering removes all three.
       - name: Release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
         with:
           files: dist/*
           body_path: notes.md
+          draft: true
 
   # **What a user would install, installed** — from the release rather than from
   # the build tree. `bundle` asks whether the package this repository *makes*
@@ -327,11 +335,13 @@ jobs:
   # question the moment an asset is renamed, a job uploads the wrong directory, or
   # a dependency is declared for a machine the builder happened to have.
   #
+  # **Nothing is visible until this passes.** `release` uploads drafted, and
+  # `publish` below flips it — so a release that fails here was never in the API
+  # `mise` and `ubi` resolve from, and there is nothing to take back.
+  #
   # **And it is what gates the two publishing repositories**, without moving a
-  # token into CI to do it. `mise run release` waits for this whole workflow run to
-  # go green before it dispatches the tap and the apt index, so a release that
-  # fails here never reaches a cask or a package list at all — which is worth more
-  # than any retraction, because nothing has to be taken back.
+  # token into CI to do it: `mise run release` waits for this whole workflow run to
+  # go green before it dispatches the tap and the apt index.
   verify:
     needs: release
     strategy:
@@ -346,11 +356,17 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Two files are needed — `tools/apt-check.sh` and `tools/app-check.mjs` — so
+      # the history is not.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          fetch-depth: 1
+          sparse-checkout: tools
 
+      # The Linux leg is bash and docker; only the app drive needs node.
       - name: Set up node
+        if: runner.os == 'macOS'
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
@@ -368,11 +384,7 @@ jobs:
           gh release download "$tag" --pattern '*.deb' --dir /tmp/rel
           deb=$(find /tmp/rel -name '*.deb' | head -1)
           [ -n "$deb" ] || { echo "the release carries no .deb"; exit 1; }
-          docker run --rm \
-            -v "$deb:/tmp/o.deb:ro" \
-            -v "$PWD/tools/apt-check.sh:/check.sh:ro" \
-            -e WANT="${tag#v}" \
-            ubuntu:22.04 bash /check.sh
+          tools/apt-check.sh "$deb" "${tag#v}"
 
       # The `.dmg` is what a Mac user opens, so this opens it: mount, copy the app
       # out the way a person drags it, and drive that copy.
@@ -395,19 +407,22 @@ jobs:
           hdiutil detach -quiet /tmp/mnt
           node tools/app-check.mjs /tmp/Orchestrator.app/Contents/MacOS/orchestrator-desktop
 
-      # **Drafted, never deleted.** A draft leaves the releases API, so `mise` and
-      # `ubi` stop resolving the version, while the tag stays exactly where it is —
-      # deleting one leaves a stale ref in every clone that fetched it, and
-      # `git fetch --tags` then reports a conflict rather than moving it. The assets
-      # stay attached for reading afterwards, and `--draft=false` puts it back.
-      - name: Take it out of the API if it does not work
-        if: failure()
+
+  # **The last step of a release is making it visible**, and it runs only when both
+  # legs of `verify` installed what was uploaded. A failure leaves the draft exactly
+  # where it is: the tag stands, the assets stay attached to read, nobody could
+  # install it, and `mise run release --retry` re-cuts the same number.
+  publish:
+    needs: verify
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Out of draft
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
-          tag="${GITHUB_REF_NAME}"
-          gh release edit "$tag" --draft
-          echo "::error::$tag is drafted: it published assets that do not install. \
-            Nothing was dispatched to the tap or the apt index. Fix it, then \
-            \`mise run release --retry\`."
+          gh release edit "${GITHUB_REF_NAME}" --draft=false
+          echo "${GITHUB_REF_NAME} is published: it installs on both platforms."
 

@@ -110,15 +110,7 @@ jobs:
       # the whole point of having it here as well.
       - name: Install the package a user would install
         if: runner.os == 'Linux'
-        run: |
-          set -e
-          deb=$(find target/release/bundle -name '*.deb' | head -1)
-          cp "$deb" /tmp/o.deb
-          docker run --rm \
-            -v /tmp/o.deb:/tmp/o.deb:ro \
-            -v "$PWD/tools/apt-check.sh:/check.sh:ro" \
-            -e WANT="$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"(.*)".*/\1/')" \
-            ubuntu:22.04 bash /check.sh
+        run: tools/apt-check.sh "$(find target/release/bundle -name '*.deb' | head -1)"
 
       # The macOS half goes further, because it can: the bundle holds a runnable app,
       # so this starts it, opens a checkout, makes a session and restarts it. The

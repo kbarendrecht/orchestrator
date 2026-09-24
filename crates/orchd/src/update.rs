@@ -283,7 +283,7 @@ fn on_path(exe: &str) -> bool {
 /// same reason: read inside, the one thing this function does could only ever be
 /// asked about the test binary, which answers `--version` with libtest's usage.
 /// Handed in, a test stages a layout and asks about that.
-pub(crate) fn installed_version(running: &std::path::Path) -> Option<String> {
+fn installed_version(running: &std::path::Path) -> Option<String> {
     let exe = stable_exe(running);
     let dir = exe.parent()?.to_path_buf();
     let beside = dir.join("orchd");
@@ -303,30 +303,6 @@ pub(crate) fn installed_version(running: &std::path::Path) -> Option<String> {
         .split_whitespace()
         .next_back()
         .map(str::to_string)
-}
-
-/// What a finished run reports, per subject.
-///
-/// **The agent's upgrade is applied when it is installed; the app's is not.** A
-/// new `claude` is what the next spawn runs, so an exit code is the whole answer
-/// there. This process, on the other hand, is still the old build whatever the
-/// installer did — so the only honest question is what a *restart* would start,
-/// and a packager that exited 0 having done nothing is the ordinary way that is
-/// not what was asked for (see `plan`).
-///
-/// `have` is a closure rather than a value because the agent's arm must not pay
-/// for it: reading it spawns a process, and asking what the app is installed as
-/// tells you nothing about the agent.
-fn landed(
-    subject: Subject,
-    shown: &str,
-    to: &str,
-    have: impl FnOnce() -> Option<String>,
-) -> Option<String> {
-    match subject {
-        Subject::Agent => None,
-        Subject::App => upgrade_landed(shown, to, have()),
-    }
 }
 
 /// Did the upgrade change what a restart would start?
@@ -401,16 +377,19 @@ impl Subject {
     ///
     /// `Err` is the refusal the route reports verbatim: no update found, or an
     /// install with no installer to ask.
-    /// **`install` is handed in rather than read here**, which is what makes every
+    /// **Every fact is handed in rather than read here**, which is what makes each
     /// channel testable: the decision — which installer, or a refusal naming why
     /// there is none — is the thing that has gone wrong twice, and reading the
     /// running process's own install inside it left five of the six kinds
-    /// unreachable from a test. The caller asks the environment once
-    /// ([`Install::of_running`]); everything below is a function of its answer.
+    /// unreachable from a test. `have_pkexec` is the same argument one step on:
+    /// read here, the apt rule could only be asserted about whichever machine the
+    /// test ran on, and `offer_for` beside it already takes exactly this pair.
+    /// The caller asks the environment once; everything below is a function of it.
     fn offer(
         self,
         inner: &crate::state::Inner,
         install: Install,
+        have_pkexec: bool,
     ) -> std::result::Result<(Plan, Version), String> {
         match self {
             Subject::Agent => {
@@ -443,7 +422,7 @@ impl Subject {
                     "this install has no installer to ask — \
                      download the release, or install through mise, Homebrew or apt",
                 )?;
-                if p.argv.first().is_some_and(|a| a == PKEXEC) && !on_path(PKEXEC) {
+                if p.argv.first().is_some_and(|a| a == PKEXEC) && !have_pkexec {
                     // Refused in front of the run rather than reported after it:
                     // spawning a missing binary fails as "No such file", which is
                     // a sentence about `pkexec` rather than about what to do.
@@ -480,6 +459,10 @@ pub async fn start_upgrade(
     app: &Arc<AppState>,
     subject: Subject,
 ) -> std::result::Result<Version, String> {
+    /* The environment, read before the lock rather than under it. `offer` needs
+    these two and neither comes from `inner` — and the agent's press paid for a
+    Caskroom probe it never reads while every other request waited on the lock. */
+    let (install, have_pkexec) = (Install::of_running(), on_path(PKEXEC));
     let (plan, version) = {
         let mut inner = app.inner.write().await;
         if subject
@@ -489,8 +472,7 @@ pub async fn start_upgrade(
         {
             return Err("that upgrade is already running".to_string());
         }
-        // The one environment read, at the edge: see `Subject::offer`.
-        let (plan, version) = subject.offer(&inner, Install::of_running())?;
+        let (plan, version) = subject.offer(&inner, install, have_pkexec)?;
         *subject.run_slot(&mut inner) = Some(UpgradeRun {
             to: version.to.clone(),
             running: true,
@@ -573,8 +555,13 @@ fn run_upgrade(
             }
         }
 
-        // See `landed`: the app's outcome is decided by the build a restart would
-        // start, and the read is off the runtime because it spawns a process.
+        /* **The agent's upgrade is applied when it is installed; the app's is not.**
+        A new `claude` is what the next spawn runs, so an exit code is the whole
+        answer there. This process is still the old build whatever the installer
+        did, so the only honest question is what a *restart* would start — and a
+        packager that exits 0 having done nothing is the ordinary way that is not
+        what was asked for (see `plan`). Off the runtime, because answering it
+        spawns a process. */
         let failure = match (subject, &failure) {
             (Subject::App, None) => {
                 let have = tokio::task::spawn_blocking(|| {
@@ -585,7 +572,7 @@ fn run_upgrade(
                 })
                 .await
                 .unwrap_or(None);
-                landed(subject, &plan.shown, &to, || have)
+                upgrade_landed(&plan.shown, &to, have)
             }
             _ => failure,
         };
@@ -1154,62 +1141,62 @@ mod tests {
 
         // A mise install is the one kind no path can identify, so the tool rides on
         // the nudge — and when it is there it wins, whatever the install looks like.
-        for install in [
-            Install::Tarball,
-            Install::Homebrew,
-            Install::Apt,
-            Install::MacBundle,
-            Install::AppImage,
-            Install::Checkout,
-        ] {
-            app.inner.write().await.update = Some(nudge(Some("github:kbarendrecht/orchestrator")));
-            let (plan, version) = Subject::App
-                .offer(&*app.inner.read().await, install)
-                .unwrap_or_else(|e| panic!("mise should answer for {install:?}: {e}"));
-            assert_eq!(
-                plan.argv,
-                vec!["mise", "upgrade", "github:kbarendrecht/orchestrator"],
-                "{install:?} with a mise tool"
-            );
-            assert_eq!(
-                (version.from.as_str(), version.to.as_str()),
-                ("2026.9.1", "2026.9.2")
-            );
+        app.inner.write().await.update = Some(nudge(Some("github:kbarendrecht/orchestrator")));
+        {
+            let inner = app.inner.read().await;
+            for install in ALL {
+                let (plan, version) = Subject::App
+                    .offer(&inner, install, true)
+                    .unwrap_or_else(|e| panic!("mise should answer for {install:?}: {e}"));
+                assert_eq!(
+                    plan.argv,
+                    vec!["mise", "upgrade", "github:kbarendrecht/orchestrator"],
+                    "{install:?} with a mise tool"
+                );
+                assert_eq!(
+                    (version.from.as_str(), version.to.as_str()),
+                    ("2026.9.1", "2026.9.2"),
+                    "the pair the bar is moving between"
+                );
+            }
         }
 
-        // And without one, each kind answers for itself.
+        /* And without one, each kind answers for itself. What each *command* is
+        belongs to `every_channel_that_can_be_upgraded_runs_its_own_installer`,
+        which owns those strings; what this asks is whether a press ends in a
+        command at all or in a sentence saying why not. */
         app.inner.write().await.update = Some(nudge(None));
         let inner = app.inner.read().await;
 
-        let brew = Subject::App
-            .offer(&inner, Install::Homebrew)
-            .expect("a cask can be upgraded")
-            .0;
-        assert!(
-            brew.shown.starts_with("brew update &&"),
-            "the tap is refreshed first, or the upgrade does nothing: {}",
-            brew.shown
-        );
-
-        /* apt is the one that depends on the machine as well as the install: with no
-        `pkexec` there is nothing to ask for the password with, and the refusal has
-        to name the command rather than fail later as "No such file". */
-        let apt = Subject::App.offer(&inner, Install::Apt);
-        match (apt, on_path(PKEXEC)) {
-            (Ok((p, _)), true) => {
-                assert_eq!(p.shown, "sudo apt install --only-upgrade orchestrator")
-            }
-            (Err(why), false) => assert!(why.contains("pkexec"), "{why}"),
-            (Ok(_), false) => panic!("apt offered a run with no pkexec to run it"),
-            (Err(why), true) => panic!("apt refused on a machine with pkexec: {why}"),
+        for install in [Install::Homebrew, Install::Apt] {
+            let p = Subject::App
+                .offer(&inner, install, true)
+                .unwrap_or_else(|e| panic!("{install:?} can be upgraded: {e}"))
+                .0;
+            assert!(!p.argv.is_empty(), "{install:?} answered with no command");
         }
+
+        /* apt is the one kind that depends on the machine as well as the install,
+        and `have_pkexec` being an argument is what makes both answers reachable
+        wherever this runs: with nothing to ask for the password, the refusal has
+        to name the command rather than fail later as "No such file". */
+        // `.err()` rather than `expect_err`: the Ok half carries a `Version`, and
+        // deriving `Debug` on it to phrase an assertion is the tail wagging the dog.
+        let why = Subject::App
+            .offer(&inner, Install::Apt, false)
+            .err()
+            .expect("apt with no pkexec has nothing to run the install with");
+        assert!(
+            why.contains("pkexec") && why.contains("apt install"),
+            "{why}"
+        );
 
         // Three installs have no installer to ask, and the refusal is what the bar
         // turns into a link. A `.dmg` and an AppImage are files somebody downloaded;
         // a checkout is a build.
         for install in [Install::MacBundle, Install::AppImage, Install::Checkout] {
             let why = Subject::App
-                .offer(&inner, install)
+                .offer(&inner, install, true)
                 .err()
                 .unwrap_or_else(|| panic!("{install:?} has no installer and must refuse"));
             assert!(
@@ -1219,48 +1206,16 @@ mod tests {
         }
     }
 
-    /// **The app verifies and the agent does not**, which is the arm itself rather
-    /// than the sentence it produces. A new `claude` is applied the moment it is
-    /// installed; this process is still the old build whatever the installer did.
-    ///
-    /// Asserted through the closure: the agent's arm must never call it, because
-    /// reading it spawns a process to ask a question about the wrong thing.
-    #[test]
-    fn only_the_app_asks_what_a_restart_would_start() {
-        let asked = std::cell::Cell::new(false);
-        let reader = || {
-            asked.set(true);
-            Some("2026.9.1".to_string())
-        };
-
-        assert_eq!(
-            landed(Subject::Agent, "mise upgrade claude-code", "2.2.0", reader),
-            None
-        );
-        assert!(
-            !asked.get(),
-            "the agent's upgrade is applied already; asking is work for nothing"
-        );
-
-        let stale = landed(
-            Subject::App,
-            "brew upgrade --cask orchestrator",
-            "2026.9.2",
-            reader,
-        )
-        .expect("a build that did not move has to be reported");
-        assert!(asked.get(), "the app has to ask what a restart would start");
-        assert!(
-            stale.contains("2026.9.1") && stale.contains("2026.9.2"),
-            "{stale}"
-        );
-
-        assert_eq!(
-            landed(Subject::App, "x", "2026.9.1", || Some("2026.9.1".into())),
-            None,
-            "the version moved, so there is nothing to report"
-        );
-    }
+    /// Every way this app is installed, so a kind cannot be added without the table
+    /// above deciding what its button does.
+    const ALL: [Install; 6] = [
+        Install::Tarball,
+        Install::Homebrew,
+        Install::Apt,
+        Install::MacBundle,
+        Install::AppImage,
+        Install::Checkout,
+    ];
 
     /// **What a restart would actually start, read off the layout rather than
     /// guessed.** This is the half of the app upgrade nothing exercised: the agent's
@@ -1338,41 +1293,35 @@ mod tests {
     /// **The comparison that decides whether there is anything to offer at all.**
     /// Untested until now, and the shape that breaks it is a month rolling over:
     /// `2026.10.1` is newer than `2026.9.27` and string order says otherwise.
+    ///
+    /// Asserted on the parse itself rather than through a copy of the poller's own
+    /// `>`: a second spelling of the comparison passes whatever the first does.
     #[test]
     fn a_newer_release_is_decided_by_number_and_not_by_text() {
-        let newer = |a: &str, b: &str| match (parse_semver(a), parse_semver(b)) {
-            (Some(l), Some(r)) => Some(l > r),
-            _ => None,
-        };
-        assert_eq!(
-            newer("v2026.10.1", "2026.9.27"),
-            Some(true),
+        assert!(
+            parse_semver("v2026.10.1") > parse_semver("2026.9.27"),
             "a month rolled over"
         );
-        assert_eq!(newer("2026.9.28", "2026.9.27"), Some(true));
-        assert_eq!(
-            newer("2026.9.27", "2026.9.27"),
-            Some(false),
-            "the one you are on"
+        assert!(parse_semver("2026.9.28") > parse_semver("2026.9.27"));
+        assert!(
+            parse_semver("2027.1.1") > parse_semver("2026.12.9"),
+            "a year rolled over"
         );
-        assert_eq!(
-            newer("2026.9.2", "2026.9.10"),
-            Some(false),
+        assert!(
+            parse_semver("2026.9.2") < parse_semver("2026.9.10"),
             "10 is not 2 with a zero"
         );
         assert_eq!(
-            newer("2027.1.1", "2026.12.9"),
-            Some(true),
-            "a year rolled over"
-        );
-        // A tag nobody here writes, and the poller says nothing rather than nagging
-        // about a release it cannot compare.
-        assert_eq!(newer("nightly", "2026.9.27"), None);
-        assert_eq!(
             parse_semver("v2026.9.27"),
-            Some((2026, 9, 27)),
+            parse_semver("2026.9.27"),
             "the `v` is ours"
         );
+        /* A tag nobody here writes. `None` is what makes the poller say nothing
+        rather than nag about a release it cannot compare — and it must not read
+        as *newer*, which is the one thing `Option`'s own ordering gets right for
+        us rather than by our design. */
+        assert_eq!(parse_semver("nightly"), None);
+        assert!(parse_semver("nightly") < parse_semver("2026.9.27"));
     }
 
     /// **An installer that exits 0 having done nothing is not an upgrade.**

@@ -184,13 +184,27 @@ async function launch(tag) {
     }
     return said.match(/the host is serving the page.*?port.*?(\d{4,5})/)?.[1]
   })
-  // `GET /` is the one route with no token, and the page carries it — the same
-  // read `tools/shot.mjs` makes rather than a second way of getting one.
   const base = `http://127.0.0.1:${port}`
-  const page = await (await fetch(`${base}/`)).text()
-  const token = page.match(/token:\s*"([^"]+)"/)?.[1]
+  const token = await tokenOf(base)
   if (!token) throw new Error('the page went out without a token')
   return { base, token }
+}
+
+/** The token the served page carries, or `null` while nothing is serving.
+ *
+ *  `GET /` is the one route with no token, and the page carries it — the same read
+ *  `tools/shot.mjs` makes rather than a second way of getting one. One function
+ *  because stage 5 reads it too: it is the brittle string contract between the
+ *  daemon's HTML and every check here, and it should have exactly one spelling. */
+async function tokenOf(base) {
+  try {
+    const page = await (await fetch(`${base}/`)).text()
+    return page.match(/token:\s*"([^"]+)"/)?.[1] ?? null
+  } catch {
+    // Nothing is listening yet, which is an answer rather than a failure: the
+    // restart wait polls through exactly this window.
+    return null
+  }
 }
 
 async function stop() {
@@ -422,18 +436,16 @@ try {
      cannot hold it at once, so a changed pid is a process that really replaced the
      one this script started. */
   const back = await until('the app to come back on its own', async () => {
-    let token = null
-    try {
-      const page = await (await fetch(`${host.base}/`)).text()
-      token = page.match(/token:\s*"([^"]+)"/)?.[1]
-    } catch { return null }
+    const token = await tokenOf(host.base)
     if (!token || token === tokenBefore) return null
     const daemon = childPid()
     return daemon && daemon !== daemonBefore ? { token, daemon } : null
   }, 90)
   ok(`it came back by itself, and its checkout's daemon is pid ${back.daemon}, was ${daemonBefore}`)
-  host = { base: host.base, token: back.token }
-  relaunched = host
+  // One object, named twice on purpose: `host` is block-scoped and the teardown
+  // below cannot see it.
+  relaunched = { base: host.base, token: back.token }
+  host = relaunched
 
   kid = await until('its checkout to come back too', async () => {
     try { return await childOf(host) } catch { return null }
@@ -463,10 +475,7 @@ try {
      it is the same route the window's own ✕ posts. */
   if (relaunched) {
     try {
-      await fetch(`${relaunched.base}/api/window/close`, {
-        method: 'POST',
-        headers: { 'x-orch-token': relaunched.token, origin: relaunched.base },
-      })
+      await api(relaunched.base, relaunched.base, relaunched.token, 'POST', '/api/window/close')
     } catch { /* it has already gone */ }
   }
   /* **#29, and the one thing here that reads the window rather than the API.**

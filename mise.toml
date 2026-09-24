@@ -364,11 +364,12 @@ main() {
     # would change what a version means. `gh` exits non-zero when no release exists
     # at all, which is the ordinary case for a retry.
     #
-    # **A drafted release is not one anybody received.** `verify` drafts a release
-    # whose assets do not install, which takes it out of the API `mise` and `ubi`
-    # resolve from — so the version is spent in name only and re-cutting it repairs
-    # exactly what this refusal protects. Asked in one query, because "has assets"
-    # and "is published" are two halves of one question.
+    # **A release that never left draft is not one anybody received.** `release.yml`
+    # uploads drafted and only `publish` — after both legs of `verify` have
+    # installed what was uploaded — makes it visible. A draft is not in the API
+    # `mise` and `ubi` resolve from, so such a version is spent in name only and
+    # re-cutting it repairs exactly what this refusal protects. Asked in one query,
+    # because "has assets" and "is published" are two halves of one question.
     state=$(gh release view "$tag" --json assets,isDraft \\
               --jq '(.assets | length | tostring) + " " + (.isDraft | tostring)' 2>/dev/null || echo "0 false")
     published=$(echo "$state" | cut -d' ' -f1)
@@ -393,20 +394,27 @@ main() {
   # One wait, two workflows: `$1` is the file and `$2` is what the sentences call
   # it. Written as a function when the second caller arrived, rather than a second
   # copy of a loop whose every arm is a message somebody reads.
+  # `$1` the workflow file, `$2` what the sentences call it, `$3` the selector
+  # (`--commit <sha>` before the tag exists, `--branch <tag>` after), `$4` how long
+  # it may take and `$5` what to do about a red one — which differs either side of
+  # the tag, and is the whole reason this is an argument rather than a fixed
+  # sentence. Five arguments rather than three copies of the loop: every arm of it
+  # is something somebody reads at the end of a release, and the third copy had
+  # already drifted from the other two.
   wait_for() {
-    step "waiting for $2 on $(echo "$head" | cut -c1-8)"
-    deadline=$(( $(date +%s) + 1800 ))
+    step "waiting for $2"
+    deadline=$(( $(date +%s) + $4 ))
     while :; do
       # `|| true` because this is under `set -e`: one rate limit or dropped
       # connection would otherwise abort the wait rather than retrying on the next
       # tick, and the empty answer already has an arm below.
-      run=$(gh run list --workflow="$1" --commit "$head" --limit 1 \\
+      run=$(gh run list --workflow="$1" $3 --limit 1 \\
               --json status,conclusion,url --jq '.[] | .status + " " + (.conclusion // "") + " " + .url' || true)
       status=$(echo "$run" | cut -d' ' -f1)
       case $status in
         completed)
           [ "$(echo "$run" | cut -d' ' -f2)" = success ] \\
-            || die "$2 is $(echo "$run" | cut -d' ' -f2) for this commit — fix it before tagging
+            || die "$2 is $(echo "$run" | cut -d' ' -f2) for this commit — $5
   $(echo "$run" | cut -d' ' -f3)"
           printf '  %s succeeded — %s\\n' "$2" "$(echo "$run" | cut -d' ' -f3)"
           return 0
@@ -416,24 +424,34 @@ main() {
         "") printf '  no %s run for this commit yet…\\n' "$2" ;;
         *) printf '  %s is %s…\\n' "$2" "$status" ;;
       esac
-      [ "$(date +%s)" -lt "$deadline" ] || die "$2 has not finished in 30 minutes; look at it rather than tagging blind"
+      [ "$(date +%s)" -lt "$deadline" ] || die "$2 has not finished in time — $5"
       sleep 15
     done
   }
 
-  wait_for check.yml check
-
-  # **And the packages, which `check` never builds.** `bundle` is what opens a
-  # `.deb` in a container, installs it and starts what came out, and what drives the
-  # `.app` the `.dmg` will carry — the half of a release no test suite can see, and
-  # the half whose failures have reached users twice (#16, #26). It is path-filtered
-  # on `desktop/`, so an ordinary release has no run of its own; asking for one
-  # costs a build and answers before the tag exists rather than after.
+  # **The packages are asked for first, and waited on second.** `bundle` is what
+  # opens a `.deb` in a container, installs it and starts what came out, and what
+  # drives the `.app` the `.dmg` will carry — the half of a release no test suite
+  # can see, and the half whose failures have reached users twice (#16, #26). It is
+  # path-filtered on `desktop/`, so an ordinary release has no run of its own.
+  #
+  # Dispatched before the `check` wait rather than after it: the two workflows share
+  # nothing, and waiting for one before asking for the other serialised them —
+  # measured on the last three of each, 7m45s and 4m49s, so about five minutes of a
+  # person watching a poll loop.
   if [ -z "$(gh run list --workflow=bundle.yml --commit "$head" --limit 1 --json url --jq '.[].url' || true)" ]; then
+    # A dispatch names a *branch*, and the wait below names a *sha*. They are the
+    # same thing only while origin has this commit — otherwise the dispatched run
+    # carries a different sha and the wait spins to its deadline against a run that
+    # was never going to appear.
+    [ "$(git rev-parse "origin/$branch")" = "$head" ] \\
+      || die "origin/$branch is not at HEAD — push first, or the bundle run would be for another commit"
     step "asking for a bundle run on this commit"
     gh workflow run bundle.yml --ref "$branch" >/dev/null || die "could not dispatch bundle.yml"
   fi
-  wait_for bundle.yml bundle
+
+  wait_for check.yml check "--commit $head" 1800 "fix it before tagging"
+  wait_for bundle.yml bundle "--commit $head" 2700 "fix it before tagging"
 
   if [ "$RETRY" = 1 ]; then
     # Nothing to bump: the failed attempt committed these four files already,
@@ -545,28 +563,11 @@ main() {
   # was found only by somebody going to look: v2026.9.20 sat dead for hours that
   # way. Waiting is what turns a silently spent version number into one `--retry`
   # can reclaim.
-  step "waiting for the release workflow"
-  # An hour: the macOS leg builds a bundle and drives it, and a queued runner is
-  # not a failure. `check` gets 30 minutes because it only runs the suite.
-  deadline=$(( $(date +%s) + 3600 ))
-  while :; do
-    # `--branch` takes the tag: a tag push reports the tag as `headBranch`, so this
-    # names *this* release's run and not whatever ran last.
-    run=$(gh run list --workflow=release.yml --branch "$tag" --limit 1 \\
-            --json status,conclusion,url --jq '.[] | .status + " " + (.conclusion // "") + " " + .url' || true)
-    case $(echo "$run" | cut -d' ' -f1) in
-      completed)
-        [ "$(echo "$run" | cut -d' ' -f2)" = success ] \\
-          || die "the release workflow failed for $tag — fix it, then: mise run release --retry
-  $(echo "$run" | cut -d' ' -f3)"
-        break
-        ;;
-      "") printf '  no release run for %s yet…\\n' "$tag" ;;
-      *) printf '  the release workflow is %s…\\n' "$(echo "$run" | cut -d' ' -f1)" ;;
-    esac
-    [ "$(date +%s)" -lt "$deadline" ] || die "the release workflow has not finished in an hour — look at it, then: mise run release --retry"
-    sleep 20
-  done
+  # `--branch` takes the tag: a tag push reports the tag as `headBranch`, so this
+  # names *this* release's run and not whatever ran last. An hour, because the macOS
+  # leg builds a bundle, drives it, and then `verify` drives what was published.
+  wait_for release.yml "the release workflow" "--branch $tag" 3600 \\
+    "fix it, then: mise run release --retry"
 
   # **A green workflow is still not an installable release.** mise and ubi resolve a
   # version from its assets, so a release carrying none exists and cannot be
