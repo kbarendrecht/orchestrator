@@ -485,7 +485,10 @@ main() {
     git push --quiet origin ":refs/tags/$tag" 2>/dev/null || true
   else
     step "committing, tagging and pushing"
-    git add -A
+    # **The files the bump wrote, by name — not `-A`.** The tree is checked clean
+    # before the wait, not after it, and the wait for `check` is minutes: an edit
+    # made meanwhile went into `Release 2026.9.30` untested, because `-A` staged it.
+    git add Cargo.toml Cargo.lock desktop/tauri.conf.json THIRD-PARTY-RUST.md
     # `--no-verify`: CI has just answered for the commit underneath this one, and a
     # version bump cannot fail the hook's checks.
     git commit --no-verify -m "Release $VERSION"
