@@ -740,8 +740,21 @@ try {
 
   /* **Where you look when a pane is blank is the middle of it**, not the top
      right corner — which is where this sat, reading as a decoration rather than
-     as the answer. The stand-in agent prints nothing, so the centre pane is
-     exactly the case: attached, empty, and waiting. */
+     as the answer. The stand-in agent prints nothing, so a pane of its own is
+     exactly the case: attached, empty, and waiting.
+
+     **A fresh session's pane, not the one the steps above used.** A pty echoes
+     what is typed into it, and the finder above closes on an `Escape` that can
+     land in the terminal instead — then the pane has text, the badge rightly goes
+     away, and this failed one run in a few on a pane that was not empty. */
+  const { session: blank } = await t.api('POST', '/api/worktree', { name: 'blank-pane' })
+  await t.settled(blank)
+  await page.waitForSelector(`#rail .sess[data-id="${blank}"]`, { timeout: 5000 })
+  await page.$eval(`#rail .sess[data-id="${blank}"]`, (b) => /** @type {HTMLElement} */ (b).click())
+  await page.waitForFunction(() => {
+    const b = document.querySelector('#termwrap .termhost:not([hidden]) .term-badge')
+    return !!b && !/** @type {HTMLElement} */ (b).hidden
+  }, null, { timeout: 5000 }).catch(() => {})
   const badge = await page.$eval('#termwrap .termhost:not([hidden]) .term-badge', (b) => ({
     shown: !b.hidden,
     mid: b.classList.contains('mid'),
@@ -778,6 +791,9 @@ try {
     }),
     'and the centred rule really centres it',
   )
+  // Back to the session every step below works in.
+  await page.$eval(`#rail .sess[data-id="${session}"]`, (b) => /** @type {HTMLElement} */ (b).click())
+  await page.waitForTimeout(300)
 
   /* --- the search answers, and the viewer shows the file it found ------------- */
 
