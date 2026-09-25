@@ -940,80 +940,105 @@ pub fn stable_exe(exe: &std::path::Path) -> std::path::PathBuf {
 /// interval and its cost was the same; what it bought was being most of a working
 /// day behind a release that was already out.
 pub fn start_release_poller(app: Arc<AppState>) {
-    // The repo the binary is released from, not the monorepo it hosts.
-    const RELEASE_REPO: (&str, &str) = ("kbarendrecht", "orchestrator");
-    let current = env!("CARGO_PKG_VERSION").to_string();
-    let token_file = app.cfg.github_token_file.clone();
     tokio::spawn(async move {
         let interval = std::time::Duration::from_secs(60 * 60);
         loop {
-            let cur = current.clone();
-            // Rides the same token ladder the PR poller uses. The repo is public,
-            // so an unauthenticated read would usually work — but GitHub rate-limits
-            // those by IP at 60/hour, shared with everything else on the machine,
-            // and a token lifts it to 5000. Resolved per poll, off-thread, so a
-            // rotated token is picked up and a slow `gh auth token` never blocks
-            // the runtime. A missing token is not an error: the nudge just waits.
-            let tf = token_file.clone();
-            if let Ok(Some((tag, url))) = tokio::task::spawn_blocking(move || {
-                let token = crate::forge::resolve_token(tf.as_deref())
-                    .ok()
-                    .map(|t| t.value);
-                crate::forge::latest_release(RELEASE_REPO.0, RELEASE_REPO.1, token.as_deref())
-            })
-            .await
-            {
-                let newer = match (parse_semver(&tag), parse_semver(&cur)) {
-                    (Some(latest), Some(running)) => latest > running,
-                    _ => false,
-                };
-                // Only when there is something to offer, and off-thread because it
-                // shells mise. `None` is the ordinary answer for every install mise
-                // did not make, and the install kind below is what decides what to
-                // say about those.
-                let tool = if newer {
-                    let main = app.cfg.main_checkout.clone();
-                    tokio::task::spawn_blocking(move || app_providing_tool(&main))
-                        .await
-                        .unwrap_or(None)
-                } else {
-                    None
-                };
-                /* Both touch the filesystem — `Install::of_running` probes the
-                Caskroom and may read a bundle marker, `on_path` stats a
-                directory per `PATH` entry — so they go off the runtime with the
-                mise call rather than beside it. */
-                let tool_for_offer = tool.clone();
-                let offer = if newer {
-                    tokio::task::spawn_blocking(move || {
-                        offer_for(
-                            Install::of_running(),
-                            tool_for_offer.as_deref(),
-                            on_path(PKEXEC),
-                        )
-                    })
-                    .await
-                    .unwrap_or(Offer::LinkOnly)
-                } else {
-                    Offer::LinkOnly
-                };
-                let next = newer.then(|| UpdateInfo {
-                    current: cur.clone(),
-                    latest: tag.trim_start_matches('v').to_string(),
-                    url,
-                    tool,
-                    offer,
-                });
-                let mut inner = app.inner.write().await;
-                if inner.update != next {
-                    inner.update = next;
-                    drop(inner);
-                    app.notify().await;
-                }
+            // A missing token or an unreachable GitHub is not an error: the nudge
+            // just waits for the next hour.
+            if let Err(e) = check_release(&app).await {
+                tracing::debug!("the hourly release check found nothing: {e:#}");
             }
             tokio::time::sleep(interval).await;
         }
     });
+}
+
+/// What one look at the releases found.
+pub struct Checked {
+    /// The newest release, without its `v`.
+    pub latest: String,
+    /// Whether it is newer than the running build, which is when the bar shows.
+    pub newer: bool,
+}
+
+/// Look at the releases once, and record what was found where the bar reads it.
+///
+/// The hourly poller's body, and also the keyboard pane's "check for updates":
+/// one function, so a check you asked for and the one that runs on its own
+/// cannot disagree about what "newer" means.
+pub async fn check_release(app: &Arc<AppState>) -> Result<Checked> {
+    // The repo the binary is released from, not the monorepo it hosts.
+    const RELEASE_REPO: (&str, &str) = ("kbarendrecht", "orchestrator");
+    let current = env!("CARGO_PKG_VERSION");
+    // Rides the same token ladder the PR poller uses. The repo is public,
+    // so an unauthenticated read would usually work — but GitHub rate-limits
+    // those by IP at 60/hour, shared with everything else on the machine,
+    // and a token lifts it to 5000. Resolved per poll, off-thread, so a
+    // rotated token is picked up and a slow `gh auth token` never blocks
+    // the runtime. A missing token is not an error: the nudge just waits.
+    let tf = app.cfg.github_token_file.clone();
+    let found = tokio::task::spawn_blocking(move || {
+        let token = crate::forge::resolve_token(tf.as_deref())
+            .ok()
+            .map(|t| t.value);
+        crate::forge::latest_release(RELEASE_REPO.0, RELEASE_REPO.1, token.as_deref())
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("the release check panicked: {e}"))?;
+    let Some((tag, url)) = found else {
+        anyhow::bail!("could not read the latest release from GitHub");
+    };
+    let newer = match (parse_semver(&tag), parse_semver(current)) {
+        (Some(latest), Some(running)) => latest > running,
+        _ => false,
+    };
+    // Only when there is something to offer, and off-thread because it
+    // shells mise. `None` is the ordinary answer for every install mise
+    // did not make, and the install kind below is what decides what to
+    // say about those.
+    let tool = if newer {
+        let main = app.cfg.main_checkout.clone();
+        tokio::task::spawn_blocking(move || app_providing_tool(&main))
+            .await
+            .unwrap_or(None)
+    } else {
+        None
+    };
+    /* Both touch the filesystem — `Install::of_running` probes the
+    Caskroom and may read a bundle marker, `on_path` stats a
+    directory per `PATH` entry — so they go off the runtime with the
+    mise call rather than beside it. */
+    let tool_for_offer = tool.clone();
+    let offer = if newer {
+        tokio::task::spawn_blocking(move || {
+            offer_for(
+                Install::of_running(),
+                tool_for_offer.as_deref(),
+                on_path(PKEXEC),
+            )
+        })
+        .await
+        .unwrap_or(Offer::LinkOnly)
+    } else {
+        Offer::LinkOnly
+    };
+    let next = newer.then(|| UpdateInfo {
+        current: current.to_string(),
+        latest: tag.trim_start_matches('v').to_string(),
+        url,
+        tool,
+        offer,
+    });
+    let mut inner = app.inner.write().await;
+    if inner.update != next {
+        inner.update = next;
+        drop(inner);
+        app.notify().await;
+    }
+    Ok(Checked {
+        latest: tag.trim_start_matches('v').to_string(),
+        newer,
+    })
 }
 
 /// `v1.2.3` / `1.2.3` / `1.2.3-rc1` → `(1, 2, 3)`. Prerelease and build metadata

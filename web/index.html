@@ -821,6 +821,13 @@
       <dt data-mod>MOD&nbsp;Shift&nbsp;?</dt><dd>show or hide this list</dd>
     </dl>
   </div>
+  <!-- Below the list rather than in settings: it is the one other thing somebody
+       opening this pane from the `?` button is likely to be after, and the pane is
+       already where the version is written. -->
+  <div class="keyupdate">
+    <button class="head-btn" id="checkupdate" type="button">Check for updates</button>
+    <span class="keyupdate-say" id="checkupdatesay" aria-live="polite"></span>
+  </div>
   <!-- The AGPL's "Appropriate Legal Notices" (§0): a copyright line, no warranty,
        that it may be conveyed, and where to read the licence. Nothing obliges this
        — §5(d) excuses a work whose upstream shows none, and orchd showed none — but

@@ -1108,6 +1108,27 @@ Find.init();
 FileView.init();
 $('addshell').onclick = newShell;
 $('keyhelpx').onclick = () => closeLegend();
+/* A check now, rather than at the next hourly one. A newer release raises the
+   usual bar with its Upgrade button, so the button here only has to say what it
+   found — including that it could not tell, which is not "up to date". */
+$('checkupdate').onclick = async () => {
+  const btn = /** @type {HTMLButtonElement} */ ($('checkupdate'));
+  const say = $('checkupdatesay');
+  btn.disabled = true;
+  say.textContent = 'checking…';
+  try {
+    const r = await call('/api/update/check');
+    // An answer with no version is not "up to date" — it is not an answer.
+    if (typeof r.latest !== 'string') throw new Error('the update check gave no answer');
+    say.textContent = r.newer
+      ? `${r.latest} is out — the bar at the top can install it`
+      : `up to date (${r.current})`;
+  } catch (e) {
+    say.textContent = reason(e);
+  } finally {
+    btn.disabled = false;
+  }
+};
 // The visible way in, beside the gear. Its tooltip names the chord — the whole
 // point is that finding the button once is how you stop needing it.
 $('keysbtn').title = `Keyboard shortcuts · ${MOD_LABEL} Shift ?`;

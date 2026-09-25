@@ -163,6 +163,19 @@ try {
   const broken = seen.text.filter((s) => /\b(undefined|NaN)\b/.test(s))
   check(broken.length === 0, `nothing renders undefined or NaN${broken.length ? `: ${broken[0]}` : ''}`)
 
+  /* The legend's "check for updates". What it *finds* is GitHub's to say, so the
+     assertion is the wiring: it answers with a version or a reason. A missing
+     `.route(...)` compiles fine and got a 200 with no body here, which the button
+     first read as "up to date (undefined)". */
+  await page.click('#checkupdate')
+  const answered = await page.waitForFunction(() => {
+    const t = document.getElementById('checkupdatesay')?.textContent ?? ''
+    return t && t !== 'checking…' ? t : null
+  }, null, { timeout: 20_000 }).then((h) => h.jsonValue()).catch(() => null)
+  // One of the three real answers, each with a version or a reason in it.
+  check(/^up to date \(\d|^\d\S* is out|could not read the latest release/.test(String(answered)),
+    `the update check answers, got ${JSON.stringify(answered)}`)
+
   check(seen.wctl === 1, `one window-button group${seen.wctl === 1 ? '' : `, found ${seen.wctl}`}`)
   check(seen.buttons === 3, `three window buttons${seen.buttons === 3 ? '' : `, found ${seen.buttons}`}`)
 

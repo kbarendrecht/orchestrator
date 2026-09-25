@@ -731,6 +731,7 @@ fn daemon_router(app: Arc<AppState>) -> Router {
             post(api::dismiss_app_upgrade),
         )
         .route("/api/update/upgrade", post(api::upgrade_app))
+        .route("/api/update/check", post(api::check_for_update))
         // The page's own boot timing, so a slow start reads as one story rather
         // than a daemon log with a hole where the webview should be.
         .route("/api/client/timing", post(api::client_timing))

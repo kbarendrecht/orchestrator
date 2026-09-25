@@ -2079,6 +2079,22 @@ pub async fn upgrade_app(State(app): State<Arc<AppState>>) -> ApiResult<serde_js
     upgrade(&app, crate::update::Subject::App).await
 }
 
+/// Look for a newer release now, rather than at the next hourly check.
+///
+/// The keyboard pane's button. It records what it finds exactly as the poller
+/// does, so a newer release raises the same bar with the same Upgrade button; this
+/// answers only so the button can say "up to date" or why it could not tell.
+/// In any build, unlike the poller: a working tree always compares as behind,
+/// which is noise every hour and an honest answer to a person who asked.
+pub async fn check_for_update(State(app): State<Arc<AppState>>) -> ApiResult<serde_json::Value> {
+    let found = crate::update::check_release(&app).await?;
+    Ok(Json(json!({
+        "current": env!("CARGO_PKG_VERSION"),
+        "latest": found.latest,
+        "newer": found.newer,
+    })))
+}
+
 /// Put the app upgrade's report away. [`dismiss_agent_upgrade`]'s sibling, and
 /// refuses mid-run for the same reason.
 pub async fn dismiss_app_upgrade(State(app): State<Arc<AppState>>) -> ApiResult<serde_json::Value> {
