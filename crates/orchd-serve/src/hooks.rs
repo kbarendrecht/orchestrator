@@ -51,6 +51,35 @@ pub struct HookPayload {
     /// leave the process running, which is what [`ends_the_process`] is for.
     #[serde(default)]
     pub reason: Option<String>,
+    /// What is still in flight when a `Stop` fires ([`waits_on_agents`]).
+    #[serde(default)]
+    pub background_tasks: Vec<BackgroundTask>,
+}
+
+/// One entry of `Stop`'s `background_tasks`, as far as the daemon reads it.
+#[derive(Debug, Deserialize, Default)]
+pub struct BackgroundTask {
+    #[serde(rename = "type", default)]
+    pub kind: String,
+}
+
+/// Whether this `Stop` is the main agent pausing for its own subagents.
+///
+/// A background subagent does not fire `Stop`, but the main agent does, the
+/// moment it has launched them: then each one that finishes wakes it with a
+/// `UserPromptSubmit` and ends in another `Stop`. Measured on 2.1.282 with two
+/// background agents, that was three `Stop`s for one request, and the rail read
+/// "turn complete" after each while the work you asked for was still running. Only
+/// the last one comes with nothing in flight.
+///
+/// Subagents and workflows only. A shell task or a monitor can run for ever — a
+/// dev server started with `run_in_background` is one — and counting those would
+/// leave the session `Working` for good.
+fn waits_on_agents(payload: &HookPayload) -> bool {
+    payload
+        .background_tasks
+        .iter()
+        .any(|t| matches!(t.kind.as_str(), "subagent" | "workflow"))
 }
 
 /// Does this `SessionEnd` reason mean the process is going away?
@@ -468,16 +497,19 @@ pub async fn stop(
         orchd::health::build_failure_in(&inner, &workspace)
     };
 
-    app.with_session(id, |s| {
-        // `at_rest` answers `BuildFailing` or `YourTurn`, and only the second is a
-        // wait — `Session::wait_for` is the one place that decides not to restart a
-        // clock that is already running.
-        match orchd::health::at_rest(build_failure.as_deref()) {
-            State::YourTurn { reason, .. } => s.wait_for(reason),
-            other => s.set_state(other),
-        }
-    })
-    .await;
+    // Still `Working`: its own agents will wake it, and the turn is not yours yet.
+    if !waits_on_agents(&payload) {
+        app.with_session(id, |s| {
+            // `at_rest` answers `BuildFailing` or `YourTurn`, and only the second is
+            // a wait — `Session::wait_for` is the one place that decides not to
+            // restart a clock that is already running.
+            match orchd::health::at_rest(build_failure.as_deref()) {
+                State::YourTurn { reason, .. } => s.wait_for(reason),
+                other => s.set_state(other),
+            }
+        })
+        .await;
+    }
 
     refresh_title(&app, id).await;
     let _ = app.reconcile(&workspace).await;
@@ -1001,6 +1033,70 @@ mod tests {
     /// The exit watcher guards this by pty handle. A hook has no handle, so it is
     /// guarded on where the process ran: the moved conversation is somewhere else,
     /// and main's claim is what the old ending would have handed back.
+    /// The `Stop`s a request with background subagents produces, in the order
+    /// Claude Code 2.1.282 sent them: only the one with nothing in flight ends the
+    /// turn, and a background shell does not hold it open.
+    #[tokio::test]
+    async fn a_stop_waiting_on_its_own_agents_is_not_a_finished_turn() {
+        use orchd::model::Session;
+
+        let dir = orchd::testutil::scratch("stophook");
+        let here = resolved(&dir);
+        let app = orchd::testutil::app_at(&here, "");
+        let id = Uuid::new_v4();
+        {
+            let mut inner = app.inner.write().await;
+            let mut s = Session::new(id, orchd::model::MAIN.to_string(), here.clone(), None);
+            s.set_state(State::Working);
+            inner.sessions.insert(id, s);
+        }
+        let headers = {
+            let mut h = HeaderMap::new();
+            h.insert("x-orch-session", id.to_string().parse().unwrap());
+            h
+        };
+        let stop_with = |kinds: &[&str]| HookPayload {
+            background_tasks: kinds
+                .iter()
+                .map(|k| BackgroundTask {
+                    kind: (*k).to_string(),
+                })
+                .collect(),
+            ..HookPayload::default()
+        };
+        let state = || async { app.inner.read().await.sessions[&id].state.clone() };
+
+        let _ = stop(
+            AxState(app.clone()),
+            headers.clone(),
+            Json(stop_with(&["subagent", "shell"])),
+        )
+        .await;
+        assert_eq!(
+            state().await,
+            State::Working,
+            "its agents are still running"
+        );
+
+        let _ = stop(
+            AxState(app.clone()),
+            headers.clone(),
+            Json(stop_with(&["shell"])),
+        )
+        .await;
+        assert!(
+            matches!(
+                state().await,
+                State::YourTurn {
+                    reason: TurnReason::TurnComplete,
+                    ..
+                }
+            ),
+            "a dev server left running does not hold the turn open"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[tokio::test]
     async fn a_session_end_from_the_tree_the_conversation_left_settles_nothing() {
         use orchd::model::{Session, MAIN};
