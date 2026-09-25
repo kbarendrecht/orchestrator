@@ -30,7 +30,7 @@ and `--no-verify` is still the way past a mid-refactor commit.
 **`check.yml` runs them too now, and the hook is no longer the only thing that
 does.** It was: no workflow ran `tools/e2e/run.mjs` at all, so a fresh clone, a
 `--no-verify` habit or anybody who never said `git config core.hooksPath
-.githooks` skipped all 36 flows, and the class of fault they exist for reached
+.githooks` skipped all 37 flows, and the class of fault they exist for reached
 nobody. The bar this entry set was to measure the flake rate first, because the
 flows had flaked twice and a flaky gate is worse than no gate: **seven
 consecutive clean runs, 168 flow executions**, and both known flakes have a fix

@@ -49,7 +49,8 @@ function openAllButton(/** @type {import('../repo').Review[]} */ rows) {
     )) return;
     try {
       // One call, not one per row: `api::open_urls` says why the count has to come
-      // back from one place.
+      // back from one place. In the queue's own order, which the daemon keeps by
+      // spacing the hand-offs out.
       const r = await call('/api/open-all', { urls: rows.map((x) => x.url) });
       if (r.opened < rows.length) toast(`opened ${r.opened} of ${rows.length}`, true);
     } catch (err) {

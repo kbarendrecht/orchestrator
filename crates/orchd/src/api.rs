@@ -2624,6 +2624,15 @@ pub async fn open_url(
 /// already more than anybody meant.
 const OPEN_ALL_MAX: usize = 32;
 
+/// The pause between two hand-offs in [`open_urls`].
+///
+/// **What keeps the tabs in the queue's order.** The opener is spawned detached,
+/// so without a gap every URL reached the browser within a few milliseconds and
+/// the tabs came up in whatever order the openers finished. Small enough that the
+/// cap is still a few seconds; long enough for a running browser to take one URL
+/// before the next arrives.
+const OPEN_ALL_GAP: std::time::Duration = std::time::Duration::from_millis(200);
+
 #[derive(Deserialize)]
 pub struct OpenUrls {
     pub urls: Vec<String>,
@@ -2650,7 +2659,10 @@ pub async fn open_urls(
         );
     }
     let mut opened = 0usize;
-    for url in &body.urls {
+    for (n, url) in body.urls.iter().enumerate() {
+        if n > 0 {
+            tokio::time::sleep(OPEN_ALL_GAP).await;
+        }
         let url = url.trim();
         // The same rule `open_url` keeps, for the same reason: this can never be
         // coaxed into launching a local file or a `mailto:`/`file:` handler.
