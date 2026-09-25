@@ -506,6 +506,7 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
     start_stack_poller(app.clone());
     start_workspace_watcher(app.clone());
     start_head_poller(app.clone());
+    start_title_poller(app.clone());
     start_worktree_reaper(app.clone());
     start_external_poller(app.clone());
     start_restart_watcher(app.clone());
@@ -1567,6 +1568,88 @@ fn start_head_poller(app: Arc<AppState>) {
                         }
                     }
                 }
+            }
+            if changed {
+                app.notify().await;
+            }
+        }
+    });
+}
+
+/// Re-read a live session's title when its transcript changes.
+///
+/// The hooks read it on `SessionStart` and `Stop`, and a `/rename` fires neither:
+/// it is a local command, so no turn runs. Claude Code writes the new name within
+/// a second, and the rail sat on the old one until the next turn ended. A `stat`
+/// per live session is about a microsecond; the tail is read only when the file
+/// moved, which for a working session is every tick, at about 125µs.
+///
+/// No `pin_transcript` here: its fallback is a `read_dir` of every project, and
+/// the hooks already run it. A session whose file is not where its record says
+/// is simply skipped until they have.
+fn start_title_poller(app: Arc<AppState>) {
+    use std::collections::{HashMap, HashSet};
+    use std::time::SystemTime;
+
+    tokio::spawn(async move {
+        let interval = std::time::Duration::from_secs(2);
+        // session id -> the transcript's mtime when its title was last read.
+        let mut seen: HashMap<uuid::Uuid, SystemTime> = HashMap::new();
+        loop {
+            tokio::time::sleep(interval).await;
+            let live: Vec<(uuid::Uuid, PathBuf, Option<PathBuf>)> = {
+                let inner = app.inner.read().await;
+                inner
+                    .sessions
+                    .values()
+                    .filter(|s| s.state.is_live())
+                    .map(|s| (s.id, s.cwd.clone(), s.transcript_path.clone()))
+                    .collect()
+            };
+            let ids: HashSet<uuid::Uuid> = live.iter().map(|(id, ..)| *id).collect();
+            seen.retain(|id, _| ids.contains(id));
+
+            let last = seen.clone();
+            let Ok((stamps, titles)) = proc::run_blocking("re-reading session titles", move || {
+                let mut stamps = Vec::new();
+                let mut titles = Vec::new();
+                for (id, cwd, recorded) in live {
+                    let Some(path) = store::transcript_file(id, &cwd, recorded.as_deref()) else {
+                        continue;
+                    };
+                    let Ok(at) = std::fs::metadata(&path).and_then(|m| m.modified()) else {
+                        continue;
+                    };
+                    stamps.push((id, at));
+                    if last.get(&id) == Some(&at) {
+                        continue;
+                    }
+                    if let Some(title) = store::ai_title(id, &cwd, Some(&path)) {
+                        titles.push((id, cwd, title));
+                    }
+                }
+                (stamps, titles)
+            })
+            .await
+            else {
+                continue;
+            };
+            seen.extend(stamps);
+
+            let mut changed = false;
+            for (id, cwd, title) in titles {
+                // Same guard as the hooks' read: an answer about a directory the
+                // session has since left is not an answer about it.
+                changed |= app
+                    .with_session(id, |s| {
+                        if s.cwd != cwd || s.title.as_deref() == Some(title.as_str()) {
+                            return false;
+                        }
+                        s.title = Some(title);
+                        true
+                    })
+                    .await
+                    .unwrap_or(false);
             }
             if changed {
                 app.notify().await;

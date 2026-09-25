@@ -1028,6 +1028,12 @@ const TITLE_MAX: usize = 120;
 /// could invent: it is the same sentence `claude --resume` lists the
 /// conversation under.
 ///
+/// A `/rename` writes `{"type":"custom-title","customTitle":"…"}` instead, and
+/// that one wins wherever it sits in the tail: it is the name you typed, and
+/// Claude Code re-writes it on every append just like the ai-title. It is not
+/// mirrored into an ai-title either — a renamed session measured here carried
+/// none at all — so reading only the ai-title missed a rename entirely.
+///
 /// None is a normal answer, not a failure — the entry only appears after the
 /// first exchange, and the format is Claude Code's own and undocumented. The
 /// caller falls back to the workspace name, which is what the rail showed before
@@ -1039,27 +1045,30 @@ pub fn ai_title(id: uuid::Uuid, cwd: &Path, recorded: Option<&Path>) -> Option<S
     // Skip the first line: a tail read almost always lands mid-record.
     let mut lines = text.split('\n');
     lines.next();
-    let mut found = None;
+    let mut ai = None;
+    let mut custom = None;
     for line in lines {
         // Most of a tail is tool results, tens of KB each; parsing those to learn
         // they are not the title was the cost of every `Stop`.
-        if !line.contains("\"ai-title\"") {
+        if !line.contains("-title\"") {
             continue;
         }
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
         };
-        if v.get("type").and_then(|t| t.as_str()) != Some("ai-title") {
-            continue;
-        }
-        if let Some(t) = v.get("aiTitle").and_then(|t| t.as_str()) {
+        let (slot, field) = match v.get("type").and_then(|t| t.as_str()) {
+            Some("ai-title") => (&mut ai, "aiTitle"),
+            Some("custom-title") => (&mut custom, "customTitle"),
+            _ => continue,
+        };
+        if let Some(t) = v.get(field).and_then(|t| t.as_str()) {
             let t = t.trim();
             if !t.is_empty() {
-                found = Some(t.chars().take(TITLE_MAX).collect::<String>());
+                *slot = Some(t.chars().take(TITLE_MAX).collect::<String>());
             }
         }
     }
-    found
+    custom.or(ai)
 }
 
 /// The longest record a search will look inside.
@@ -1398,6 +1407,33 @@ mod tests {
                 .had_a_turn
         );
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_rename_beats_the_ai_title_wherever_it_sits() {
+        // The shape a `/rename` leaves: the custom title early and re-written, an
+        // ai-title after it that Claude Code generated on its own.
+        let dir = std::env::temp_dir().join(format!("orchd-rename-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("t.jsonl");
+        std::fs::write(
+            &file,
+            concat!(
+                r#"{"type":"user","message":"hi"}"#,
+                "\n",
+                r#"{"type":"custom-title","customTitle":"first name"}"#,
+                "\n",
+                r#"{"type":"custom-title","customTitle":"the name I typed"}"#,
+                "\n",
+                r#"{"type":"ai-title","aiTitle":"What the model thought"}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+
+        let got = ai_title(uuid::Uuid::new_v4(), Path::new("/nonexistent"), Some(&file));
+        assert_eq!(got.as_deref(), Some("the name I typed"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
