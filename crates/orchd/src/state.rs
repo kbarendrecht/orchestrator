@@ -424,6 +424,44 @@ impl Inner {
             .map(|w| w.id.clone())
     }
 
+    /// The workspace that has `head_ref` checked out **now**, among those `allow`
+    /// accepts.
+    ///
+    /// **Not the branch set.** `Workspace::branches` is every branch a tree has
+    /// ever held, and only a swap ever removes one, so asking it "who has this
+    /// branch" answered with history: main parked off a PR branch and went on
+    /// claiming the PR, and the row's session button then took you to whoever was
+    /// in main next, working on something else.
+    ///
+    /// Ordered by id, because `workspaces` is a `HashMap`: two trees on one branch
+    /// is rare, and a tie that changes its answer on a rehash is worse than either
+    /// answer.
+    pub fn workspace_on(
+        &self,
+        head_ref: &str,
+        allow: impl Fn(&Workspace) -> bool,
+    ) -> Option<WorkspaceId> {
+        self.workspaces
+            .values()
+            .filter(|w| allow(w) && w.tree.branch.as_deref() == Some(head_ref))
+            .min_by(|a, b| a.id.cmp(&b.id))
+            .map(|w| w.id.clone())
+    }
+
+    /// The live session whose conversation is about `head_ref`.
+    ///
+    /// By [`Session::branch`], the branch the conversation is about, rather than by
+    /// who is in the tree: that is what a swap already carries sessions by, and the
+    /// PR row's button promises "the session on this branch". The newest wins when
+    /// several share one, which is main with sharing on.
+    pub fn session_on(&self, head_ref: &str) -> Option<SessionId> {
+        self.sessions
+            .values()
+            .filter(|s| s.state.is_live() && s.branch.as_deref() == Some(head_ref))
+            .max_by_key(|s| (s.created_at, s.id))
+            .map(|s| s.id)
+    }
+
     /// The PR by number, as the last poll saw it.
     pub fn pr(&self, number: u64) -> Option<&crate::forge::Pr> {
         self.prs.iter().find(|p| p.number == number)
@@ -841,11 +879,9 @@ impl AppState {
 
     /// The **worktree** holding this branch, if one does.
     ///
-    /// Main is never the answer, even when its branch set says it has been on this
-    /// ref: main's branches accumulate and are never removed (§2), so a PR whose
-    /// head main once visited would otherwise send a fix or a review run into the
-    /// main checkout — rebasing and force-pushing the one tree every worktree is
-    /// cut from.
+    /// Main is never the answer, even when it has this ref checked out: a fix or a
+    /// review run sent there would rebase and force-push the one tree every
+    /// worktree is cut from.
     ///
     /// Beside [`Self::workspace_for`] rather than in `spawn`, because the two are
     /// one query with one word between them, and that word is the whole safety
@@ -854,20 +890,13 @@ impl AppState {
         self.holding(head_ref, |w| !w.is_main()).await
     }
 
-    /// The one traversal both questions above are: first workspace `allow` accepts
-    /// whose branch set holds `head_ref`.
+    /// The one traversal both questions above are: [`Inner::workspace_on`].
     async fn holding(
         &self,
         head_ref: &str,
         allow: impl Fn(&crate::model::Workspace) -> bool,
     ) -> Option<String> {
-        let inner = self.inner.read().await;
-        inner
-            .workspaces
-            .values()
-            .filter(|w| allow(w))
-            .find(|w| w.branches.iter().any(|b| b == head_ref))
-            .map(|w| w.id.clone())
+        self.inner.read().await.workspace_on(head_ref, allow)
     }
 
     /// Push a worktree's branch, with a lease, against the configured base.
@@ -1139,25 +1168,19 @@ impl AppState {
             .collect();
         workspaces.sort_by(|a, b| b.is_main.cmp(&a.is_main).then(a.id.cmp(&b.id)));
 
-        // A PR belongs to a workspace when its head ref is in that workspace's
-        // branch set (§2). Many-to-many, so this is a lookup rather than a
-        // field on either side.
+        // A PR belongs to the tree that has its head checked out, and to the
+        // session whose conversation is about it — two lookups, because after a
+        // tree is deleted under a live session the second can answer without the
+        // first.
         let mut prs: Vec<PrView> = inner
             .prs
             .iter()
             .map(|p| {
-                let workspace = inner
-                    .workspaces
-                    .values()
-                    .find(|w| w.branches.contains(&p.head_ref))
-                    .map(|w| w.id.clone());
-                let session = workspace.as_ref().and_then(|ws| {
-                    inner
-                        .sessions
-                        .values()
-                        .filter(|s| &s.workspace == ws && s.state.is_live())
-                        .map(|s| s.id)
-                        .next()
+                let session = inner.session_on(&p.head_ref);
+                let workspace = inner.workspace_on(&p.head_ref, |_| true).or_else(|| {
+                    session
+                        .and_then(|id| inner.sessions.get(&id))
+                        .map(|s| s.workspace.clone())
                 });
                 PrView {
                     pr: p.clone(),
@@ -1442,7 +1465,7 @@ impl AppState {
     pub async fn register_worktree(&self, name: &str, path: PathBuf, branch: Option<String>) {
         let mut inner = self.inner.write().await;
         let mut branches = HashSet::new();
-        if let Some(b) = branch {
+        if let Some(b) = branch.clone() {
             branches.insert(b);
         }
         inner
@@ -1459,8 +1482,14 @@ impl AppState {
                 occupant: None,
                 // A re-registered id starts from nothing measured, which is the
                 // whole point of the tree living here: the old incarnation's
-                // numbers went with it.
-                tree: Default::default(),
+                // numbers went with it. Except the branch, which the caller just
+                // read off git: the sweep that measures the rest runs off the boot
+                // path, and a fix run asking who holds a branch before it would cut
+                // a second tree for a branch this one has checked out.
+                tree: crate::model::Tree {
+                    branch,
+                    ..Default::default()
+                },
                 // Adopted from the refs at boot, not guessed here: a tree this
                 // daemon has never seen may still have work banked in it.
                 banked: None,
@@ -1533,16 +1562,12 @@ impl AppState {
         self.inner.read().await.workspace_for_path(path)
     }
 
-    /// Drop a branch a workspace no longer has checked out.
+    /// Drop a branch a workspace gave away in a swap.
     ///
-    /// `reconcile` only ever *adds* to a workspace's branch set, which was safe
-    /// while a worktree kept one branch for life — the set could only grow for
-    /// main, and [`Self::worktree_holding`] excludes main for exactly that reason.
-    ///
-    /// A swap breaks that: the worktree gives its branch away and would go on
-    /// claiming it, so a PR flow for that branch would be pointed at a tree that no
-    /// longer holds it — silently, since the mapping is by branch set. Nothing else
-    /// removes from the set, so the swap has to.
+    /// `reconcile` only ever *adds* to a workspace's branch set. Nothing asks the
+    /// set who holds a branch any more — that is [`Inner::workspace_on`], off what
+    /// is checked out now — but teardown's preflight reads it for unpushed work,
+    /// and a branch that moved to main with its commits is main's to lose now.
     pub async fn forget_branch(&self, workspace: &str, branch: &str) {
         let mut inner = self.inner.write().await;
         if let Some(w) = inner.workspaces.get_mut(workspace) {
@@ -1986,9 +2011,10 @@ pub struct PrView {
     #[serde(flatten)]
     pub pr: crate::forge::Pr,
     pub rank: u8,
-    /// The workspace whose branch set contains this PR's head ref.
+    /// The workspace that has this PR's head checked out ([`Inner::workspace_on`]).
     pub workspace: Option<String>,
-    /// A live session in that workspace, so the row can act as a jump link.
+    /// The live session working on this PR's head ([`Inner::session_on`]), so the
+    /// row can act as a jump link.
     pub session: Option<Uuid>,
 }
 
@@ -2884,29 +2910,36 @@ mod tests {
         assert!(!tree.rebasing, "stale rebase flag survived teardown");
     }
 
-    /// **Main answers "who has this branch" and never "who is working on it".**
+    /// **A branch a tree once held is not a branch it holds.**
     ///
-    /// Main's branch set only ever grows (§2), so a PR whose head main once
-    /// visited stays in it for good. Answering [`AppState::worktree_holding`] with
-    /// main would aim a fix or a review run at the checkout every worktree is cut
-    /// from, and force-push from there.
-    ///
-    /// Written because the rule is now one word of one closure. Deleting that word
-    /// failed nothing: the `ensure_pr_worktree` test that looked like it covered
-    /// this passes either way, because the branch has left main by the time it
-    /// asks.
+    /// Main's branch set only ever grows, so a PR whose head main once visited
+    /// stays in it for good. That used to answer `workspace_for` — the PR row then
+    /// pointed at whoever was in main next — and only one word of one closure kept
+    /// it from answering [`AppState::worktree_holding`] too, which would have aimed
+    /// a fix or a review run at the checkout every worktree is cut from.
     #[tokio::test]
-    async fn main_holds_a_branch_without_being_the_worktree_for_it() {
+    async fn a_branch_is_held_by_the_tree_that_has_it_checked_out_now() {
         let app = app().await;
         {
             let mut inner = app.inner.write().await;
-            inner
+            let main = inner
                 .workspaces
                 .get_mut(MAIN)
-                .expect("main is always there")
-                .branches
-                .insert("feature/x".to_string());
+                .expect("main is always there");
+            main.branches.insert("feature/x".to_string());
+            main.tree.branch = Some("develop".to_string());
         }
+        assert_eq!(app.workspace_for("feature/x").await, None, "main left it");
+
+        // On it now: main has it, and is still never the worktree for it.
+        app.inner
+            .write()
+            .await
+            .workspaces
+            .get_mut(MAIN)
+            .expect("main")
+            .tree
+            .branch = Some("feature/x".to_string());
         assert_eq!(app.workspace_for("feature/x").await.as_deref(), Some(MAIN));
         assert_eq!(
             app.worktree_holding("feature/x").await,
@@ -2914,7 +2947,8 @@ mod tests {
             "a run would have been sent into main"
         );
 
-        // And a worktree that really holds it answers both.
+        // And a worktree that really holds it answers both, from the branch it
+        // registered with, before any sweep has measured it.
         app.register_worktree(
             "pr-7",
             std::path::PathBuf::from("/tmp/pr-7"),
@@ -2925,5 +2959,44 @@ mod tests {
             app.worktree_holding("feature/x").await.as_deref(),
             Some("pr-7")
         );
+    }
+
+    /// The PR row's session is the one working on the PR's branch, not whoever
+    /// sits in the tree that used to hold it — the report this was written from:
+    /// main parked off a PR branch, a new session opened in main on another one,
+    /// and the row's `session` button went to it.
+    #[tokio::test]
+    async fn a_pr_points_at_the_session_on_its_branch_not_the_one_in_its_old_tree() {
+        let app = app().await;
+        let newcomer = live_in_main(&app).await;
+        {
+            let mut inner = app.inner.write().await;
+            let main = inner.workspaces.get_mut(MAIN).expect("main");
+            main.branches.insert("story-1".to_string());
+            main.tree.branch = Some("story-2".to_string());
+            inner
+                .sessions
+                .get_mut(&newcomer)
+                .expect("the session")
+                .branch = Some("story-2".to_string());
+            inner.prs.push(crate::forge::Pr {
+                head_ref: "story-1".into(),
+                ..crate::testutil::pr(1)
+            });
+        }
+        let snap = app.snapshot().await;
+        let row = snap.prs.iter().find(|p| p.pr.number == 1).expect("the PR");
+        assert_eq!(row.workspace, None, "no tree has story-1 checked out");
+        assert_eq!(row.session, None, "and nobody is working on it");
+
+        // Once the newcomer's own branch has a PR, that PR is the one it points at.
+        app.inner.write().await.prs.push(crate::forge::Pr {
+            head_ref: "story-2".into(),
+            ..crate::testutil::pr(2)
+        });
+        let snap = app.snapshot().await;
+        let row = snap.prs.iter().find(|p| p.pr.number == 2).expect("the PR");
+        assert_eq!(row.workspace.as_deref(), Some(MAIN));
+        assert_eq!(row.session, Some(newcomer));
     }
 }

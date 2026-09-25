@@ -2753,12 +2753,13 @@ pub async fn open_file(
             .workspaces
             .get(&body.workspace)
             .ok_or_else(|| anyhow::anyhow!("no such workspace: {}", body.workspace))?;
-        // The PR holding this workspace, matched the way `workspace_for` does in
-        // reverse: by head branch.
+        // The PR this workspace has checked out, matched the way `workspace_on`
+        // does in reverse. Not the branch set, which is every PR the tree ever
+        // visited, and would link a file at another PR's commit.
         let sha = inner
             .prs
             .iter()
-            .find(|p| w.branches.contains(&p.head_ref))
+            .find(|p| w.tree.branch.as_deref() == Some(p.head_ref.as_str()))
             .and_then(|p| p.head_sha.clone());
         (sha, w.path.clone())
     };

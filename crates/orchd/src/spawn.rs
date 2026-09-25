@@ -2903,7 +2903,10 @@ mod tests {
                     branches: ["feature".to_string()].into_iter().collect(),
                     processes: Vec::new(),
                     occupant: None,
-                    tree: Default::default(),
+                    tree: crate::model::Tree {
+                        branch: Some("feature".into()),
+                        ..Default::default()
+                    },
                     banked: None,
                 },
             );

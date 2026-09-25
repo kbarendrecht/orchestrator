@@ -76,10 +76,10 @@ pub struct Tree {
     /// What this tree has checked out *now*.
     ///
     /// Not to be confused with `Workspace::branches`, which accumulates every branch
-    /// a tree has ever held and is never pruned (§2) — a PR still belongs to the
-    /// session that made it after you have moved on. That set cannot answer "is main
-    /// free", and asking it anyway is what made the rail offer to *swap* with a main
-    /// that was already parked on its base.
+    /// a tree has ever held and is pruned only by a swap (§2). That set cannot
+    /// answer "is main free" or "who has this PR", and asking it anyway is what
+    /// made the rail offer to *swap* with a main already parked on its base, and
+    /// the PR row point at whoever sat in main next.
     pub branch: Option<String>,
     /// `merge-base(upstream, HEAD)` — the commit `changed` is measured from.
     pub base: Option<String>,
@@ -109,6 +109,8 @@ pub struct Workspace {
     pub id: WorkspaceId,
     pub path: PathBuf,
     pub kind: WorkspaceKind,
+    /// Every branch this tree has held, for teardown's unpushed-work check.
+    /// **History, not ownership**: ask [`Tree::branch`] what it holds now.
     pub branches: HashSet<String>,
     pub processes: Vec<Process>,
     /// Main only: the exclusivity mutex. The dev URL is bound to main, so

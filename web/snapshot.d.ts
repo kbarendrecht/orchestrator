@@ -226,11 +226,12 @@ at_head: string | null, at: { secs_since_epoch: number, nanos_since_epoch: numbe
 
 export type PrView = { rank: number, 
 /**
- * The workspace whose branch set contains this PR's head ref.
+ * The workspace that has this PR's head checked out ([`Inner::workspace_on`]).
  */
 workspace: string | null, 
 /**
- * A live session in that workspace, so the row can act as a jump link.
+ * The live session working on this PR's head ([`Inner::session_on`]), so the
+ * row can act as a jump link.
  */
 session: string | null, number: number, title: string, url: string, head_ref: string, 
 /**
