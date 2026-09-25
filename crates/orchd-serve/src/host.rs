@@ -168,6 +168,11 @@ pub struct Host {
     /// snapshot socket gives: the list is small, whole state cannot half-apply,
     /// and a dropped message costs freshness rather than correctness.
     changes: tokio::sync::broadcast::Sender<Vec<Checkout>>,
+    /// Files a deep link asked for (`link`), sent to the page on the same socket.
+    links: tokio::sync::broadcast::Sender<crate::link::OpenFile>,
+    /// A link that arrived with no page to take it — the one that launched the
+    /// app, most often. The first page to connect gets it.
+    pending_link: Mutex<Option<crate::link::OpenFile>>,
 }
 
 /// Lock, and survive a poisoning.
@@ -208,7 +213,25 @@ impl Host {
             // Small: a subscriber that falls this far behind is a page that has
             // stopped reading, and the list it eventually gets is the current one.
             changes: tokio::sync::broadcast::channel(16).0,
+            links: tokio::sync::broadcast::channel(4).0,
+            pending_link: Mutex::new(None),
         })
+    }
+
+    /// Open a file a deep link named, in whichever page is showing.
+    ///
+    /// Held when no page is connected yet, and raised to the front either way: a
+    /// link is clicked somewhere else, and a file opening behind that window is a
+    /// link that looks like it did nothing.
+    pub fn open_link(&self, file: crate::link::OpenFile) {
+        if self.links.send(file.clone()).is_err() {
+            *locked(&self.pending_link) = Some(file);
+        }
+        if let Some(control) = self.window() {
+            if let Err(e) = control.dispatch(orchd::window::WindowCmd::Focus) {
+                tracing::debug!("could not raise the window for a link: {e:#}");
+            }
+        }
     }
 
     /// Give the host its native window. Called once, by whichever process has one.
@@ -1422,6 +1445,7 @@ pub fn router(host: Arc<Host>) -> Router {
         .route("/api/host/checkout/reopen", post(reopen_checkout))
         .route("/api/host/checkout/order", post(order_checkouts))
         .route("/ws/host", get(host_socket))
+        .route("/api/host/open", post(open_link))
         .route("/api/host/recent", get(recent))
         .route("/api/host/pick", post(pick))
         .route("/api/host/validate", post(validate))
@@ -1643,9 +1667,33 @@ struct WsQuery {
     token: String,
 }
 
+/// A deep link, handed over by the second launch that received it (`link`).
+async fn open_link(State(host): State<Arc<Host>>, Json(body): Json<serde_json::Value>) -> Response {
+    let url = body
+        .get("url")
+        .and_then(|u| u.as_str())
+        .unwrap_or("")
+        .to_string();
+    match orchd::proc::run_blocking("resolving a link", move || crate::link::resolve(&url)).await {
+        Ok(Ok(file)) => {
+            host.open_link(file);
+            Json(json!({ "ok": true })).into_response()
+        }
+        Ok(Err(e)) | Err(e) => refusal(&format!("{e:#}")),
+    }
+}
+
 async fn host_socket_loop(host: Arc<Host>, mut socket: axum::extract::ws::WebSocket) {
     use axum::extract::ws::Message;
     let mut sub = host.changes.subscribe();
+    let mut links = host.links.subscribe();
+    async fn send_open(
+        socket: &mut axum::extract::ws::WebSocket,
+        file: &crate::link::OpenFile,
+    ) -> bool {
+        let text = json!({ "open": file }).to_string();
+        socket.send(Message::Text(text)).await.is_ok()
+    }
     async fn send(socket: &mut axum::extract::ws::WebSocket, list: Vec<Checkout>) -> bool {
         let Ok(text) = serde_json::to_string(&json!({ "checkouts": list })) else {
             // Unserialisable is not the socket's fault; keep it open.
@@ -1658,8 +1706,22 @@ async fn host_socket_loop(host: Arc<Host>, mut socket: axum::extract::ws::WebSoc
     if !send(&mut socket, host.checkouts()).await {
         return;
     }
+    // After the list, so the page knows the checkout the file is in.
+    let held = locked(&host.pending_link).take();
+    if let Some(file) = held {
+        if !send_open(&mut socket, &file).await {
+            return;
+        }
+    }
     loop {
         tokio::select! {
+            file = links.recv() => match file {
+                Ok(file) => if !send_open(&mut socket, &file).await { break },
+                // A link is a click, not state: a missed one is not repaired by a
+                // later one, and a page this far behind is not being looked at.
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(_) => break,
+            },
             msg = sub.recv() => match msg {
                 Ok(list) => if !send(&mut socket, list).await { break },
                 // The list is whole state, so a dropped message costs freshness
@@ -1866,6 +1928,49 @@ async fn dispatch(host: &Arc<Host>, cmd: orchd::window::WindowCmd) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The Linux half of a deep link, over a real socket: a second launch hands
+    /// its URL to the running host, which holds it for the page that has not
+    /// connected yet. And only on the host's own token.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_second_launch_hands_its_link_to_the_running_host() {
+        let serving = serve("the-token".into(), 0, orchd::window::Chrome::None)
+            .await
+            .unwrap();
+        let port = serving.host.port;
+        let dir = orchd::testutil::scratch("link");
+        let file = dir.join("a file.rs");
+        std::fs::write(&file, "fn main() {}\n").unwrap();
+        let url = format!(
+            "orchestrator://open?file={}&line=7",
+            file.display().to_string().replace(' ', "%20")
+        );
+
+        let wrong = url.clone();
+        let refused =
+            tokio::task::spawn_blocking(move || crate::link::send(port, "not-it", &wrong))
+                .await
+                .unwrap();
+        assert!(refused.is_err(), "a link on the wrong token is refused");
+        assert!(locked(&serving.host.pending_link).is_none());
+
+        tokio::task::spawn_blocking(move || crate::link::send(port, "the-token", &url))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            locked(&serving.host.pending_link).clone(),
+            Some(crate::link::OpenFile {
+                path: std::fs::canonicalize(&file)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+                line: 7,
+            }),
+            "held for the first page to connect"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// The app's page keeps one origin, and does not sit on a child's port.
     ///

@@ -1889,7 +1889,9 @@ function connectHost() {
     `${HOST.wsBase}/ws/host?token=${encodeURIComponent(HOST.token)}`
   );
   sock.onmessage = (ev) => {
-    const { checkouts } = JSON.parse(ev.data);
+    const message = JSON.parse(ev.data);
+    if (message.open) return openLink(message.open);
+    const { checkouts } = message;
     const open = new Set(checkouts.map((/** @type {import('./js/core.js').Target} */ c) => c.path));
     /* **A checkout that came back on a new port is as gone as one that left.** Both
        leave terminals attached to a daemon that has stopped, and nothing will ever
@@ -1921,6 +1923,38 @@ function connectHost() {
   // The host is the process serving this page: if its socket drops, the page is
   // talking to something that is going away. Retry anyway — a reload is worse.
   sock.onclose = () => setTimeout(connectHost, 1500);
+}
+
+/** A file an `orchestrator://` link named (`crates/orchd-serve/src/link.rs`).
+ *
+ *  The host has resolved the path already, so it compares with the resolved
+ *  checkout and workspace paths the snapshots carry. The deepest workspace wins,
+ *  as it does for a printed path, because a worktree sits inside its checkout.
+ *
+ *  @param {{ path: string, line: number }} file */
+function openLink(file) {
+  const abs = resolvePath(file.path);
+  /** @type {{ checkout: import('./js/core.js').Target, workspace: string, rel: string } | null} */
+  let best = null;
+  for (const c of CHECKOUTS) {
+    for (const w of snapshotOf(c.path)?.workspaces ?? []) {
+      const root = resolvePath(w.path);
+      if (!abs.startsWith(`${root}/`)) continue;
+      const rel = abs.slice(root.length + 1);
+      if (!best || rel.length < best.rel.length) best = { checkout: c, workspace: w.id, rel };
+    }
+  }
+  if (!best) return toast(`${file.path} is not in an open checkout`, true);
+  /* Into its checkout first, because the pane reads through whichever one is
+     active. A session in the file's own workspace if there is one, so the rest of
+     the board is about the same tree; otherwise the checkout's own landing. */
+  const found = best;
+  const here = (snapshotOf(found.checkout.path)?.sessions ?? [])
+    .find((s) => s.workspace === found.workspace && !isArchived(s));
+  if (here) setSelected(here.id);
+  else enterCheckout(found.checkout);
+  scheduleRender();
+  void FileView.openLink(found.workspace, found.rel, file.line);
 }
 
 // ---------------------------------------------------------------------------

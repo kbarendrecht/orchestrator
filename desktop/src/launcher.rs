@@ -296,12 +296,14 @@ pub(crate) fn install_desktop_entry() -> Result<Option<std::path::PathBuf>> {
          Type=Application\n\
          Name={APP_NAME}\n\
          {ENTRY_COMMENT}\n\
-         Exec={exe}\n\
+         Exec={exe} %u\n\
          Icon={APP_ID}\n\
          Terminal=false\n\
          Categories=Development;\n\
-         Keywords=claude;sessions;orchestrator;\n",
-        exe = exe.display()
+         Keywords=claude;sessions;orchestrator;\n\
+         MimeType=x-scheme-handler/{scheme};\n",
+        exe = exe.display(),
+        scheme = orchd_serve::link::SCHEME,
     );
     if !write_if_changed(&file, entry.as_bytes())? {
         return Ok(None);
@@ -311,6 +313,17 @@ pub(crate) fn install_desktop_entry() -> Result<Option<std::path::PathBuf>> {
     // `update-desktop-database` is not a failure worth reporting.
     let _ = std::process::Command::new("update-desktop-database")
         .arg(&apps)
+        .status();
+    /* The entry *can* take `orchestrator://` links; this makes it the one that
+    does. Two settings, and a desktop with no default for a scheme asks nobody.
+    Only when the entry was rewritten, so a handler somebody chose since is not
+    taken back on every launch. */
+    let _ = std::process::Command::new("xdg-mime")
+        .args([
+            "default",
+            &format!("{APP_ID}.desktop"),
+            &format!("x-scheme-handler/{}", orchd_serve::link::SCHEME),
+        ])
         .status();
     Ok(Some(file))
 }
@@ -563,6 +576,7 @@ fn info_plist() -> String {
     let exe = BINARIES[0];
     // Rust and LaunchServices spell it differently, and only these two matter: the
     // macOS targets this ever builds for are `aarch64` and `x86_64`.
+    let scheme = orchd_serve::link::SCHEME;
     let arch = match std::env::consts::ARCH {
         "aarch64" => "arm64",
         other => other,
@@ -585,6 +599,13 @@ fn info_plist() -> String {
   <key>LSMinimumSystemVersion</key><string>10.15</string>
   <key>LSArchitecturePriority</key><array><string>{arch}</string></array>
   <key>NSHighResolutionCapable</key><true/>
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key><string>{APP_ID}</string>
+      <key>CFBundleURLSchemes</key><array><string>{scheme}</string></array>
+    </dict>
+  </array>
 </dict>
 </plist>
 "#

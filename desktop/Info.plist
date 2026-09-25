@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Merged into the bundle's own plist by `tauri build`. The one key the config
+     cannot say without a plugin: `orchestrator://` links (crates/orchd-serve/src/link.rs). -->
+<plist version="1.0">
+<dict>
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key><string>dev.orchd.orchestrator</string>
+      <key>CFBundleURLSchemes</key><array><string>orchestrator</string></array>
+    </dict>
+  </array>
+</dict>
+</plist>

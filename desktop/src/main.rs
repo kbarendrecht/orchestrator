@@ -38,6 +38,10 @@ use login_path::adopt_login_path;
 /// The daemon, once started. Held so the exit hook can tear it down.
 static SERVER: OnceLock<Mutex<Option<orchd_serve::host::Serving>>> = OnceLock::new();
 
+/// Deep links that arrived before the host was up to take them (`link`): the one
+/// that launched the app, or a macOS `Opened` during the boot.
+static LINKS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
 /// Whether the window is showing the board yet.
 ///
 /// **The splash must not be remembered as the window's geometry.** It is 520x340
@@ -177,6 +181,22 @@ fn main() {
     #[cfg(target_os = "linux")]
     glib_log::log_glib_messages();
 
+    /* **A link is a second launch on Linux**, and the first one is still running:
+    `xdg-open` starts this binary again with the URL, and it cannot open a window
+    of its own — the host's port and lock are taken. So it hands the link over
+    and is done. Before anything slow, because the person is waiting on a click.
+    When nothing takes it, this is the launch, and the host opens it once up. */
+    if let Some(url) = orchd_serve::link::in_args(std::env::args()) {
+        match orchd_serve::link::forward(orchd_serve::host::PORT, &url) {
+            Ok(()) => {
+                tracing::info!("handed a link to the running app");
+                return;
+            }
+            Err(e) => tracing::info!("no running app took the link, so this is the app: {e:#}"),
+        }
+        take_link(url);
+    }
+
     // Held from the first thing `main` does that can be slow, because the phases
     // before the daemon are the ones a person launching from Finder pays for and
     // a person typing `cargo run` does not. `adopt_login_path` is the clearest
@@ -263,6 +283,14 @@ fn main() {
             #[cfg(target_os = "macos")]
             align_traffic_lights();
         }
+        // A deep link, which macOS delivers to the running app rather than by
+        // launching it again (`link`).
+        #[cfg(target_os = "macos")]
+        if let tauri::RunEvent::Opened { urls } = &event {
+            for url in urls {
+                take_link(url.to_string());
+            }
+        }
         if let tauri::RunEvent::ExitRequested { api, code, .. } = event {
             // Hold the loop open just long enough to take the children with us.
             api.prevent_exit();
@@ -277,6 +305,25 @@ fn main() {
             std::process::exit(code.unwrap_or(0));
         }
     });
+}
+
+/// Open a deep link now if the host is up, else once it is.
+fn take_link(url: String) {
+    let mut queued = LINKS.lock().unwrap_or_else(poisoned_is_still_usable);
+    let server = SERVER
+        .get()
+        .map(|s| s.lock().unwrap_or_else(poisoned_is_still_usable));
+    match server.as_ref().and_then(|s| s.as_ref()) {
+        Some(serving) => deliver_link(&serving.host, &url),
+        None => queued.push(url),
+    }
+}
+
+fn deliver_link(host: &orchd_serve::host::Host, url: &str) {
+    match orchd_serve::link::resolve(url) {
+        Ok(file) => host.open_link(file),
+        Err(e) => tracing::warn!("ignored a link: {e:#}"),
+    }
 }
 
 /// The id the Settings item is recognised by in [`with_settings_item`].
@@ -619,6 +666,12 @@ fn boot_daemon(
             app: app_handle.clone(),
         });
         serving.host.attach_window(control);
+        // For the next launch that is only a link. Best effort: without it a link
+        // starts a second app that says "already running", which is where every
+        // link was before this.
+        if let Err(e) = orchd_serve::link::write_token(&serving.host.token) {
+            tracing::warn!("could not leave the host token for links: {e:#}");
+        }
 
         // **A checkout that will not start is not a failed boot.** Every one is
         // tried, each on its own thread, and one bad path leaves the window open
@@ -648,10 +701,18 @@ fn boot_daemon(
             serving.host.port
         );
         let url = serving.url();
-        *SERVER
-            .get_or_init(|| Mutex::new(None))
-            .lock()
-            .unwrap_or_else(poisoned_is_still_usable) = Some(serving);
+        {
+            // Under the link queue's lock, so a link arriving now is either queued
+            // before the drain below or sees the server: never neither.
+            let mut queued = LINKS.lock().unwrap_or_else(poisoned_is_still_usable);
+            for url in queued.drain(..) {
+                deliver_link(&serving.host, &url);
+            }
+            *SERVER
+                .get_or_init(|| Mutex::new(None))
+                .lock()
+                .unwrap_or_else(poisoned_is_still_usable) = Some(serving);
+        }
 
         /* Grow from the splash to the board, then hand the window over. GTK calls
         only on the main thread.
@@ -1543,6 +1604,11 @@ impl WindowControl for TauriWindow {
                 request_restart(&self.app);
             }
             WindowCmd::StartDrag => start_dragging(&self.app, &w)?,
+            WindowCmd::Focus => {
+                let _ = w.unminimize();
+                w.show()?;
+                w.set_focus()?;
+            }
             // Only `Window` has this, not `WebviewWindow`, so go through the
             // webview to reach it. macOS never asks: it keeps its decorations,
             // and the underlying call is a no-op there anyway.

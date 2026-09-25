@@ -63,6 +63,8 @@ pub enum WindowCmd {
     /// the decorations, so the app has to put it back or the window is stuck at
     /// whatever size it opened.
     StartResize(ResizeEdge),
+    /// Bring the window to the front, for a deep link clicked in another app.
+    Focus,
 }
 
 /// Which edge or corner the pointer grabbed.

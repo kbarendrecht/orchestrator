@@ -28,9 +28,12 @@ import * as Viewer from './viewer.js';
  *  notes reads several, and having to press the same button for each one is the
  *  kind of small tax that makes a mode not worth having.
  *
+ *  `pinned` is a pane a deep link opened ([`openLink`]): it stays when the
+ *  selection is somewhere else, because a link names a file, not a session.
+ *
  *  @type {{ open: boolean, ws: string | null, path: string | null, rendered: boolean,
- *           line: number, last: number }} */
-const state = { open: false, ws: null, path: null, rendered: true, line: 1, last: 0 };
+ *           line: number, last: number, pinned: boolean }} */
+const state = { open: false, ws: null, path: null, rendered: true, line: 1, last: 0, pinned: false };
 
 /** @type {ReturnType<typeof Viewer.create> | null} */
 let view = null;
@@ -62,8 +65,21 @@ export async function open(ws, candidates, line, last, ev) {
   await show(ws, candidates[0] ?? '', line, last);
 }
 
-/** @param {string} ws @param {string} path @param {number} line @param {number} [last] */
-async function show(ws, path, line, last) {
+/** Show a file an `orchestrator://` link named, whatever session is selected.
+ *
+ *  **Pinned, because a link names a file and not a session.** The workspace it is
+ *  in often has no session at all — main, most of the time — and the rule that
+ *  closes this pane when the selection leaves its workspace would then close it
+ *  the frame after it opened.
+ *
+ *  @param {string} ws @param {string} rel @param {number} line */
+export async function openLink(ws, rel, line) {
+  await show(ws, rel, line, 0, true);
+}
+
+/** @param {string} ws @param {string} path @param {number} line @param {number} [last]
+ *  @param {boolean} [pinned] */
+async function show(ws, path, line, last, pinned = false) {
   /* **The buffer answers first, whatever changed.** This used to ask the editor
      only when the *workspace* was different, so clicking a second path an agent
      printed in the same workspace tore the textarea out from under somebody
@@ -75,6 +91,7 @@ async function show(ws, path, line, last) {
   // ask — so it is awaited, and a "keep editing" abandons the open.
   if (state.open && state.ws !== ws && !await close()) return;
   state.open = true;
+  state.pinned = pinned;
   state.ws = ws;
   state.path = path;
   state.line = Math.max(1, line);
@@ -109,6 +126,7 @@ export async function close() {
   // without asking, which is the one thing the editor exists to refuse.
   if (Editor.isOpen() && !await Editor.close()) return false;
   state.open = false;
+  state.pinned = false;
   state.path = null;
   $('fvoverlay').classList.remove('on');
   returnFocus('fileview', $('fvoverlay'));
@@ -118,7 +136,7 @@ export async function close() {
 /** The overlay belongs to the session it was opened from, so switching away
  *  closes it — the same rule the diff and the finder hold. */
 export function syncToSession() {
-  if (state.open && activeWorkspaceId() !== state.ws) void close();
+  if (state.open && !state.pinned && activeWorkspaceId() !== state.ws) void close();
 }
 
 /** The file on screen, so a modifier-click in this pane can say which file the

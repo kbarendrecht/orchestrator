@@ -411,6 +411,7 @@ crates/orchd/         the runtime core: the `orchd` library, what the daemon kno
 crates/orchd-serve/   the daemon: the server, and everything it starts.
   lib.rs          start, the router, the pollers, startup recovery
   host.rs         the page, the asset routes, the checkout list, the window commands
+  link.rs         orchestrator://open?file=… links, and a second launch handing one over
   hooks.rs        hook receiver and the generated settings file
   ws.rs           event stream + pty attach
   firstrun.rs     judging a folder, reading a repo, writing its config, the recents

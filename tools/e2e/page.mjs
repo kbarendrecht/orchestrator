@@ -1568,6 +1568,34 @@ try {
     (b) => (b.hidden ? null : b.textContent)).catch(() => 'no pane')
   check(says !== 'exited', `and it no longer says it has exited, got ${says}`)
 
+  /* --- an orchestrator:// link opens its file ---------------------------------- */
+
+  /* **The page half of a deep link**, from the host's route on: `link.rs` has the
+     parser and the hand-over from a second launch. What only the page can show is
+     that the link finds its checkout and workspace and opens the file at its line
+     — here in the `page` worktree, whose session has been moved into main by now.
+     A workspace with no session is the case the pane's usual rule, close when the
+     selection is somewhere else, would take away the frame after it opened. */
+  const linkedAt = path.join(t.worktreePath('page'), 'linked.txt')
+  fs.writeFileSync(linkedAt, 'one\ntwo\nthree\n')
+  await t.api('POST', '/api/host/open', {
+    url: `orchestrator://open?file=${encodeURIComponent(linkedAt)}&line=2`,
+  })
+  const linked = await page.waitForFunction(
+    () => document.getElementById('fvpath')?.textContent === 'linked.txt', null, { timeout: 5000 })
+    .then(() => true).catch(() => false)
+  check(linked, 'a link opens its file in the file pane')
+  check(
+    await page.$eval('#fvsrc .fnrow.on', (r) => r.textContent).catch(() => null) === 'two',
+    'at the line the link named',
+  )
+  await page.waitForTimeout(600)
+  check(
+    await page.$$eval('#fvoverlay.on', (o) => o.length) === 1,
+    'and it stays open with no session in its workspace',
+  )
+  await page.keyboard.press('Escape')
+
   console.log(`\npage-check: ${failed ? 'FAILED' : 'ok'}`)
 } finally {
   await browser?.close()

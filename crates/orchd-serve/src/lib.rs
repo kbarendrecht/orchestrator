@@ -13,6 +13,7 @@
 pub mod firstrun;
 pub mod hooks;
 pub mod host;
+pub mod link;
 pub mod serving;
 pub mod ws;
 
