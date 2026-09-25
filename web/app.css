@@ -2577,6 +2577,8 @@ select.opfield,input.opfield{appearance:none}
 .fnsrc > .preview{flex:1;border:0;background:#fff}
 /* An image, centred and never larger than the pane, on a checkerboard so a
    transparent one reads as transparent rather than as the pane's background. */
+/* A link to another file in the repo has no `href` to earn a pointer from. */
+.md-file{cursor:pointer}
 /* The legend's update check: a button and the sentence it answers with. */
 .keyupdate{display:flex;align-items:center;gap:10px;padding:10px 16px 0;font-size:calc(12px * var(--fs))}
 .keyupdate-say{color:var(--dim)}

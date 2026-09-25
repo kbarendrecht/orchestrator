@@ -1468,7 +1468,8 @@ function keymap(/** @type {KeyboardEvent} */ e) {
      field, so the letters belong to what you are typing until Tab moves off it. */
   if (FileView.isOpen() && e.key === 'Escape') {
     e.preventDefault();
-    void FileView.close();
+    // One step back through the links a page led to, and out once there are none.
+    void FileView.back();
     return;
   }
   if (Find.isOpen()) {

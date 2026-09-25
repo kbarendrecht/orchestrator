@@ -31,16 +31,51 @@ import * as Viewer from './viewer.js';
  *  `pinned` is a pane a deep link opened ([`openLink`]): it stays when the
  *  selection is somewhere else, because a link names a file, not a session.
  *
+ *  `asked` is the line the file was opened at as it was asked for, 0 for none,
+ *  because `line` is clamped to 1 and the difference decides the mode.
+ *
+ *  `trail` is the files a link in a rendered page was followed from, newest
+ *  last: **a link opens above the page it is in**, and backing out lands on that
+ *  page where it was scrolled to, rather than closing the pane and losing it.
+ *
  *  @type {{ open: boolean, ws: string | null, path: string | null, rendered: boolean,
- *           line: number, last: number, pinned: boolean }} */
-const state = { open: false, ws: null, path: null, rendered: true, line: 1, last: 0, pinned: false };
+ *           line: number, asked: number, last: number, pinned: boolean,
+ *           trail: { path: string, asked: number, last: number, scroll: number }[] }} */
+const state = {
+  open: false, ws: null, path: null, rendered: true, line: 1, asked: 0, last: 0, pinned: false,
+  trail: [],
+};
 
 /** @type {ReturnType<typeof Viewer.create> | null} */
 let view = null;
 const viewer = () => {
-  view ??= Viewer.create({ mount: $('fvsrc'), path: $('fvpath'), where: $('fvwhere') });
+  view ??= Viewer.create({
+    mount: $('fvsrc'), path: $('fvpath'), where: $('fvwhere'),
+    onFile: (rel, line) => void follow(rel, line),
+  });
   return view;
 };
+
+/** Open a file a rendered page links to, above the page. */
+async function follow(/** @type {string} */ rel, /** @type {number} */ line) {
+  if (!state.open || !state.ws || !state.path) return;
+  const from = { path: state.path, asked: state.asked, last: state.last, scroll: $('fvsrc').scrollTop };
+  state.trail.push(from);
+  await show(state.ws, rel, line, 0, state.pinned, true);
+}
+
+/** Back to the page a link was followed from, or closed when there is none.
+ *
+ *  What `Escape` and the mouse's back button do: one step, like a browser's back,
+ *  so a chain of links through the docs unwinds the way it was walked. */
+export async function back() {
+  const to = state.trail.at(-1);
+  if (!to || !state.ws) return close();
+  state.trail.pop();
+  await show(state.ws, to.path, to.asked, to.last, state.pinned, true);
+  // After the page is drawn, or there is nothing yet to scroll.
+  $('fvsrc').scrollTop = to.scroll;
+}
 
 export const isOpen = () => state.open;
 
@@ -78,8 +113,10 @@ export async function openLink(ws, rel, line) {
 }
 
 /** @param {string} ws @param {string} path @param {number} line @param {number} [last]
- *  @param {boolean} [pinned] */
-async function show(ws, path, line, last, pinned = false) {
+ *  @param {boolean} [pinned]
+ *  @param {boolean} [onTrail] a step along the trail rather than a fresh open, which
+ *  starts one */
+async function show(ws, path, line, last, pinned = false, onTrail = false) {
   /* **The buffer answers first, whatever changed.** This used to ask the editor
      only when the *workspace* was different, so clicking a second path an agent
      printed in the same workspace tore the textarea out from under somebody
@@ -90,10 +127,12 @@ async function show(ws, path, line, last, pinned = false) {
   // Re-pointing at another workspace is a close and a reopen, and the close can
   // ask — so it is awaited, and a "keep editing" abandons the open.
   if (state.open && state.ws !== ws && !await close()) return;
+  if (!onTrail) state.trail = [];
   state.open = true;
   state.pinned = pinned;
   state.ws = ws;
   state.path = path;
+  state.asked = line;
   state.line = Math.max(1, line);
   state.last = Math.max(0, last ?? 0);
   borrowFocus('fileview');
@@ -111,6 +150,11 @@ async function show(ws, path, line, last, pinned = false) {
 /** The header's two buttons: what this file can be shown as, and what it is
  *  being shown as. */
 function renderHead(/** @type {boolean} */ drawn) {
+  // Where back goes, named, so the step it takes is not a guess.
+  const prev = state.trail.at(-1);
+  $('fvback').hidden = !prev;
+  $('fvback').textContent = prev ? `← ${prev.path.split('/').pop()}` : '';
+  $('fvback').title = prev ? `Back to ${prev.path}  (Esc)` : '';
   const can = drawn && viewer().renderable();
   $('fvmode').hidden = !can;
   // A picture has no source to edit, and the editor's refusal would say so late.
@@ -129,6 +173,7 @@ export async function close() {
   if (Editor.isOpen() && !await Editor.close()) return false;
   state.open = false;
   state.pinned = false;
+  state.trail = [];
   state.path = null;
   $('fvoverlay').classList.remove('on');
   returnFocus('fileview', $('fvoverlay'));
@@ -274,12 +319,12 @@ export function init() {
   $('fvedit').onclick = () => (Editor.isOpen() ? Editor.close() : edit());
   $('fvsave').onclick = () => Editor.save();
   $('fvclose').onclick = () => void close();
-  /* The mouse's back button closes it, because this overlay is only ever a place
-     you were sent to — there is no trail through it the way there is through a
-     chain of definition jumps. Button 3 is the back one. */
+  $('fvback').onclick = () => void back();
+  /* The mouse's back button steps back, like `Escape`: through the files a
+     rendered page's links led to, and then out. Button 3 is the back one. */
   $('fvoverlay').addEventListener('mousedown', (ev) => {
     if (/** @type {MouseEvent} */ (ev).button !== 3) return;
     ev.preventDefault();
-    void close();
+    void back();
   });
 }

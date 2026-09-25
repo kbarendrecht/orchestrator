@@ -1627,6 +1627,50 @@ try {
   check(await page.$eval('#fvedit', (b) => /** @type {HTMLElement} */ (b).hidden), 'and it offers no edit')
   await page.keyboard.press('Escape')
 
+  /* --- a link in a rendered page opens above it --------------------------------- */
+
+  /* **The page you followed a link from is kept, not replaced.** Relative links
+     used to resolve against this page's own address and open the daemon in a new
+     window; and once they opened a file, `Escape` closed the pane and the note you
+     were reading went with it, scrolled to wherever you were. */
+  const docs = path.join(t.worktreePath('page'), 'docs')
+  fs.mkdirSync(docs, { recursive: true })
+  fs.writeFileSync(path.join(docs, 'a.md'),
+    '# A\n\n' + 'filler prose.\n\n'.repeat(80) + 'see [the other one](../other.md#L2) now.\n')
+  fs.writeFileSync(path.join(t.worktreePath('page'), 'other.md'), 'one\ntwo\nthree\n')
+  await t.api('POST', '/api/host/open', {
+    url: `orchestrator://open?file=${encodeURIComponent(path.join(docs, 'a.md'))}`,
+  })
+  await page.waitForFunction(() => document.getElementById('fvpath')?.textContent === 'docs/a.md',
+    null, { timeout: 5000 })
+  // The mode is remembered across files, and an earlier step may have left source.
+  if (!await page.$('#fvsrc .md')) await page.$eval('#fvmode', (b) => b.click())
+  const scrolled = await page.$eval('#fvsrc', (m) => {
+    m.querySelector('a.md-file')?.scrollIntoView()
+    return m.scrollTop
+  })
+  await page.$eval('#fvsrc a.md-file', (a) => /** @type {HTMLElement} */ (a).click())
+  const followed = await page.waitForFunction(
+    () => document.getElementById('fvpath')?.textContent === 'other.md', null, { timeout: 5000 })
+    .then(() => true).catch(() => false)
+  check(followed, 'a relative link in a rendered page opens the file it names')
+  check(await page.$eval('#fvsrc .fnrow.on', (r) => r.textContent).catch(() => null) === 'two',
+    'at the line its #L names')
+  check(await page.$eval('#fvback', (b) => !b.hidden && b.textContent === '← a.md'),
+    'and the header says where back goes')
+
+  await page.keyboard.press('Escape')
+  const backed = await page.waitForFunction(
+    () => document.getElementById('fvpath')?.textContent === 'docs/a.md', null, { timeout: 5000 })
+    .then(() => true).catch(() => false)
+  check(backed, 'Escape goes back to the page the link was in')
+  const rescrolled = await page.$eval('#fvsrc', (m) => ({ md: !!m.querySelector('.md'), top: m.scrollTop }))
+  check(rescrolled.md && scrolled > 0 && Math.abs(rescrolled.top - scrolled) < 5,
+    `rendered, where it was scrolled to (${scrolled}), got ${JSON.stringify(rescrolled)}`)
+  await page.keyboard.press('Escape')
+  await page.waitForTimeout(300)
+  check(await page.$$eval('#fvoverlay.on', (o) => o.length) === 0, 'and Escape again closes the pane')
+
   console.log(`\npage-check: ${failed ? 'FAILED' : 'ok'}`)
 } finally {
   await browser?.close()

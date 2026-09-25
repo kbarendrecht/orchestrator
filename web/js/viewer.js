@@ -40,7 +40,12 @@ const IMAGE = /\.(png|jpe?g|gif|webp|avif|svg|ico|bmp)$/i;
  *  `path` and `where` are the two header elements it writes: which file, and
  *  where in it. A pane that shows neither passes `null` for them.
  *
- *  @param {{ mount: HTMLElement, path?: HTMLElement | null, where?: HTMLElement | null }} on
+ *  `onFile` is how a rendered page follows a link to another file in the repo,
+ *  already resolved against the page's own directory: a pane that can open files
+ *  passes it, and without one those links do nothing.
+ *
+ *  @param {{ mount: HTMLElement, path?: HTMLElement | null, where?: HTMLElement | null,
+ *            onFile?: (rel: string, line: number) => void }} on
  */
 export function create(on) {
   /** `mode` is which of the two pictures is mounted. It exists because the band
@@ -55,6 +60,32 @@ export function create(on) {
    *           rowH: number, seq: number, mode: 'source' | 'markdown' | 'preview' | 'image',
    *           ws: string | null }} */
   const view = { file: null, spot: null, from: 0, to: 0, rowH: 0, seq: 0, mode: 'source', ws: null };
+
+  /* A click on a file link in the rendered page. Resolved the way the repo's own
+     docs mean it — against the directory of the file that holds the link, and a
+     leading `/` against the workspace root, as GitHub reads it — and `#L42` as a
+     line. A link that climbs out of the workspace goes nowhere. */
+  on.mount.addEventListener('click', (ev) => {
+    const a = /** @type {HTMLElement | null} */ (/** @type {HTMLElement} */ (ev.target).closest?.('a.md-file'));
+    if (!a || !on.onFile || !view.file) return;
+    ev.preventDefault();
+    const [target = '', frag = ''] = (a.dataset.file ?? '').split('#');
+    let wanted = target;
+    try {
+      wanted = decodeURIComponent(target);
+    } catch { /* not an escape, just a percent sign */ }
+    const dir = view.file.path.split('/').slice(0, -1);
+    const parts = wanted.startsWith('/') ? [] : dir;
+    for (const p of wanted.split('/')) {
+      if (!p || p === '.') continue;
+      if (p === '..') {
+        if (!parts.length) return;
+        parts.pop();
+      } else parts.push(p);
+    }
+    if (!parts.length) return;
+    on.onFile(parts.join('/'), Number(frag.match(/^L(\d+)/)?.[1] ?? 0));
+  });
 
   /** Keep the band under the viewport as it is scrolled. */
   on.mount.addEventListener('scroll', () => {
@@ -429,6 +460,10 @@ function table(/** @type {{ head: string[], rows: string[][] }} */ b) {
   return t;
 }
 
+/** A markdown link that names a file rather than a place on the web: no scheme,
+ *  not protocol-relative, and not only a fragment. */
+const FILE_LINK = /^(?![a-z][a-z0-9+.-]*:|\/\/|#)./i;
+
 /** Inline markup, appended to `into` as nodes.
  *
  *  One pass, longest marker first, because `**bold**` has to win over the `*` of
@@ -451,6 +486,17 @@ function inline(into, text) {
       into.appendChild(el('strong', null, strongA ?? strongB ?? ''));
     } else if (emA ?? emB) {
       into.appendChild(el('em', null, emA ?? emB ?? ''));
+    } else if (href !== undefined && FILE_LINK.test(href)) {
+      /* **A link to another file in the repo**, which is most links in a repo's
+         own docs. It used to go through `safeHref` like a URL, which resolved it
+         against this page's address and opened the daemon's own page in a new
+         window. Drawn as a link that navigates nowhere; the viewer that painted
+         it opens the file (`create`'s `onFile`), and where nothing does, it is
+         inert rather than wrong. */
+      const a = el('a', 'md-link md-file', label || href);
+      a.dataset.file = href;
+      a.title = `open ${href}`;
+      into.appendChild(a);
     } else if (href !== undefined) {
       /* Through `safeHref`, which is the SPA's one rule for a URL it would
          navigate to: a note is text somebody else wrote, and `javascript:` in it
