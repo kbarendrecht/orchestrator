@@ -679,6 +679,7 @@ function connect(/** @type {import('./core.js').TermEntry} */ entry, /** @type {
     // Back to healthy: clear the backoff and the "reconnecting" mark, then flush
     // anything typed while the socket was down.
     entry.backoff = 0;
+    entry.exited = false;
     setBadge(entry, 'starting');
     // A reattach replays the *whole* ring buffer, exactly as a first attach does —
     // but this terminal already holds the previous buffer, so writing the replay on
@@ -742,6 +743,7 @@ function connect(/** @type {import('./core.js').TermEntry} */ entry, /** @type {
        The scrollback stays. The shell's last words are usually why you are looking
        at it, and the drawer keeps the tab with its exit code beside them. */
     if (ev.code === PTY_EXITED) {
+      entry.exited = true;
       setBadge(entry, 'exited');
       return;
     }
@@ -960,6 +962,25 @@ function repaint(/** @type {import('./core.js').TermEntry} */ entry) {
   });
 }
 
+/** Reattach a pane whose process ended, now that its session runs again (#35).
+ *
+ *  **A restart keeps the id**, so the new pty answers to the key the old one had,
+ *  and a pane that stopped at `exited` would otherwise sit on the old scrollback
+ *  while the new `claude --resume` ran with nothing showing it. The daemon cannot
+ *  do this on its own: when the old process ends the new one is usually not
+ *  spawned yet, so the socket cannot tell a respawn from a real exit. The snapshot
+ *  can, a moment later — `alive` is the pty the record holds *now*.
+ *
+ *  In place rather than closed and reopened: the entry keeps its host and its
+ *  place in the drawer, and the reattach replays over a reset like any other. */
+function reviveTerm(/** @type {import('../serve').Checkout} */ checkout, /** @type {string} */ target) {
+  const entry = terms.get(termKey(checkout, target));
+  if (!entry || entry.closed || !entry.exited) return;
+  entry.exited = false;
+  setBadge(entry, 'reconnecting');
+  connect(entry, target);
+}
+
 function closeTerm(/** @type {import('../serve').Checkout} */ checkout, /** @type {string} */ target) {
   const entry = terms.get(termKey(checkout, target));
   if (!entry) return;
@@ -1085,6 +1106,6 @@ function hasSelection(/** @type {import('../serve').Checkout} */ checkout, /** @
 }
 
 export {
-  showTerm as show, closeTerm as close, refit, applyScale, applyTermTheme, readTerm,
+  showTerm as show, closeTerm as close, reviveTerm as revive, refit, applyScale, applyTermTheme, readTerm,
   hasSelection,
 };

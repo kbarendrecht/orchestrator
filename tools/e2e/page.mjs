@@ -63,7 +63,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 import { chromium } from 'playwright-core'
-import { sandbox } from './harness.mjs'
+import { sandbox, until } from './harness.mjs'
 
 const asMac = process.argv.includes('--mac')
 /* **The modifier the *page* is waiting for, not the one this machine has.**
@@ -91,7 +91,13 @@ const check = (ok, what) => {
 /* A `reviews_command` that is not there, so the boot preflight has something to
    find. Everything else here runs on a healthy sandbox; this one condition is
    deliberately broken, because the bar it raises is the assertion below. */
-const t = await sandbox({ turns: 1, reviewsCommand: ['/nonexistent-orchd-probe'] })
+/* `ws` at info for the restart step at the end, which counts the daemon's own
+   `pty client attached` lines; everything else stays at the suite's `warn`. */
+const t = await sandbox({
+  turns: 1,
+  reviewsCommand: ['/nonexistent-orchd-probe'],
+  log: 'warn,orchd_serve::ws=info',
+})
 let browser
 try {
   const { session } = await t.api('POST', '/api/worktree', { name: 'page' })
@@ -1538,6 +1544,29 @@ try {
   await page.keyboard.press('Escape')
 
   await t.api('POST', `/api/process/${shell}/close`)
+
+  /* --- a restart puts the pane back on the new process (#35) ----------------- */
+
+  /* **The one half the restart flows cannot see**, because they drive the API: a
+     respawn keeps the id, the old pty's socket closes as `exited`, and the pane
+     used to stop there — on the old scrollback, with the new `claude --resume`
+     running and nothing showing it. The stand-in agent prints nothing, so the
+     proof is the daemon's own line for each socket it attaches, and a pane that
+     did not come back is one that never asks again. */
+  const { session: again } = await t.api('POST', '/api/worktree', { name: 'restart-me' })
+  await t.settled(again)
+  await page.click(`#rail .sess[data-id="${again}"]`)
+  const attaches = () => t.log().split('\n')
+    .filter((l) => l.includes('pty client attached') && l.includes(`session:${again}`)).length
+  await until('the pane to attach', async () => attaches() >= 1)
+  const attachedBefore = attaches()
+  await t.api('POST', `/api/session/${again}/restart`)
+  const reattached = await until('the pane to attach to the new process',
+    async () => attaches() > attachedBefore).then(() => true).catch(() => false)
+  check(reattached, "a restarted session's pane attaches to the new process")
+  const says = await page.$eval('#termwrap .termhost:not([hidden]) .term-badge',
+    (b) => (b.hidden ? null : b.textContent)).catch(() => 'no pane')
+  check(says !== 'exited', `and it no longer says it has exited, got ${says}`)
 
   console.log(`\npage-check: ${failed ? 'FAILED' : 'ok'}`)
 } finally {

@@ -1771,7 +1771,10 @@ function connect(path) {
       const target = key.slice(key.indexOf('\u0000') + 1);
       if (target.startsWith('session:')) {
         const id = target.slice('session:'.length);
-        if (!state.sessions.some((/** @type {import('./snapshot').SessionView} */ x) => x.id === id)) Term.close(checkout, target);
+        const s = state.sessions.find((/** @type {import('./snapshot').SessionView} */ x) => x.id === id);
+        if (!s) Term.close(checkout, target);
+        // Respawned under the same id: the pane that saw the old one end goes back on.
+        else if (s.alive) Term.revive(checkout, target);
       } else if (!liveProcs.has(target)) {
         // A shell that closed cleanly is gone from the snapshot; drop its
         // terminal rather than leaving a hidden host behind forever.

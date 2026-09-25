@@ -1386,7 +1386,7 @@ export function saveZoom(/** @type {number} */ z) {
  *  @typedef {{ term: any, fit: any, host: HTMLDivElement,
  *              checkout: Target, key: string,
  *              badge?: HTMLElement, sock?: WebSocket,
- *              closed?: boolean, everOpened?: boolean,
+ *              closed?: boolean, exited?: boolean, everOpened?: boolean,
  *              needsReset?: boolean, backoff?: number, box?: string | null,
  *              reconnectTimer?: ReturnType<typeof setTimeout>,
  *              pending: (string | Uint8Array)[], pendingBytes: number,
