@@ -52,6 +52,9 @@ export async function run(t) {
   assert.equal(branchOf(t.repo), HEAD)
   await t.settled(session)
   assert.equal((await t.workspace('main')).occupant, session)
+  // Named for the PR rather than left to fall back to its workspace (#36).
+  const title = (await t.state()).prs.find((p) => p.number === PR).title
+  assert.equal((await t.session(session)).name, `#${PR} - ${title}`)
 
   // A second one is refused by the checkout, not by the session count: moving main
   // under a live agent replaces every file it is looking at.
@@ -78,4 +81,6 @@ export async function run(t) {
   assert.equal(branchOf(t.worktreePath(`pr-${PR}`)), HEAD)
   assert.equal(branchOf(t.repo), base, 'a worktree open must leave main alone')
   await t.settled(opened.session)
+  assert.equal((await t.session(opened.session)).name, `#${PR} - ${title}`,
+    'and in a worktree, where the fallback was `pr-<number>`')
 }

@@ -274,6 +274,17 @@ pub async fn open_pr(
     // arm already refused an occupied main inside `switch_main_to_pr`.)
     refuse_if_occupied(&app, &workspace).await?;
     let id = spawn::spawn_session(&app, &workspace, None, None).await?;
+    /* Named for the PR (#36). Until Claude Code titled it, the row fell back to the
+    workspace, which is `pr-1234` — the number again and nothing else. A name and
+    not a title, so Claude Code's own does not replace it a turn later; the same
+    cap the rename route has, so the row stays one line. */
+    let name: String = format!("#{number} - {}", pr.title)
+        .chars()
+        .take(80)
+        .collect();
+    app.with_session(id, |s| s.name = Some(name)).await;
+    // Persists on the way out, as a rename does.
+    app.notify().await;
     Ok(Json(json!({ "session": id, "workspace": workspace })))
 }
 
