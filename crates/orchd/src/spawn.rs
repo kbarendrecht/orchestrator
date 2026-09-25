@@ -2754,11 +2754,17 @@ mod tests {
         watch_session_exit(app.clone(), id, pty.handle.clone());
         let _ = pty.handle.kill();
 
+        /* **Waited on the publication itself, not on the state.** The state flips
+        first and the observer runs after it, so a loop that stopped at "no longer
+        live" and only then looked could find nothing yet — which failed this on a
+        busy machine as "never published". By this session's id, because the
+        recorder is a `static` every test in the process shares. */
         let mut published = None;
-        for _ in 0..100 {
+        for _ in 0..300 {
             tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-            if !app.inner.read().await.sessions[&id].state.is_live() {
-                published = PUBLISHED.lock().expect("the recorder").pop();
+            let mut seen = PUBLISHED.lock().expect("the recorder");
+            if let Some(at) = seen.iter().position(|e| e.session == id) {
+                published = Some(seen.remove(at));
                 break;
             }
         }
