@@ -388,6 +388,7 @@ crates/orchd-repo/    one checkout, described. No session state lives here.
 crates/orchd/         the runtime core: the `orchd` library, what the daemon knows.
   api.rs          HTTP surface and the origin/token guards
   model.rs        Workspace / Session / Process, State, ArchiveState
+  preview.rs      the file pane's html preview: a sandboxed frame's token and route
   relocate.rs     the swap, the move out of main, and the conversation that travels
   restart.rs      respawn sessions in place on the installed claude, each when idle
   review_api.rs   the review overlay's routes: the threads, the proposals, one

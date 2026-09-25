@@ -1451,6 +1451,61 @@ try {
   )
   await page.keyboard.press('Escape')
 
+  /* --- and an html file runs in a sandbox ------------------------------------ */
+
+  /* **What only a browser can say**: that the page's own scripts run, that its
+     relative CSS and module script load through the preview route, and that the
+     same scripts can reach neither this page's token nor the daemon's API. The
+     route's rules are `preview.rs`'s test and flow 36; this is the frame. The
+     script writes what it got into its own title, which is the one thing a
+     cross-origin frame hands back without being asked to. */
+  fs.writeFileSync(path.join(tree, 'demo.html'),
+    '<link rel="stylesheet" href="demo.css"><p id="p">hi</p><script type="module" src="demo.js"></script>')
+  fs.writeFileSync(path.join(tree, 'demo.css'), '#p { color: rgb(255, 0, 0) }')
+  fs.writeFileSync(path.join(tree, 'demo.js'), [
+    'const out = { ran: true }',
+    "try { out.token = typeof parent.__ORCH__ } catch { out.token = 'blocked' }",
+    "try { out.api = (await fetch(location.origin + '/api/state')).status } catch { out.api = 'blocked' }",
+    "out.css = getComputedStyle(document.getElementById('p')).color",
+    'document.title = JSON.stringify(out)',
+  ].join('\n'))
+  await focusTerm()
+  await page.keyboard.type("printf 'see dem%s.html now\\n' o")
+  await page.keyboard.press('Enter')
+  const htmlAt = await pointAt('see demo.html now', 4, 13)
+  await page.mouse.move(htmlAt.x, htmlAt.y)
+  await page.waitForTimeout(150)
+  await page.mouse.click(htmlAt.x, htmlAt.y)
+  await page.waitForFunction(
+    () => document.getElementById('fvpath')?.textContent === 'demo.html', null, { timeout: 5000 })
+  /* The mode is remembered across files and the step above left it on source, so
+     the button is what says which mode this is: it offers the one not showing. */
+  check(
+    await page.$eval('#fvmode', (b) => b.textContent) === 'Preview',
+    'the toggle names the preview for an html file',
+  )
+  await page.$eval('#fvmode', (b) => b.click())
+  const framed = await page.waitForSelector('#fvsrc iframe.preview', { timeout: 5000 })
+    .then(() => true).catch(() => false)
+  check(framed, 'an html file opens as a preview, not as lines')
+  check(
+    await page.$eval('#fvsrc iframe.preview', (f) => f.getAttribute('sandbox')).catch(() => null)
+      === 'allow-scripts',
+    'and the frame is sandboxed with scripts and nothing else',
+  )
+  /** @type {any} */
+  let ran = null
+  for (let i = 0; i < 50 && !ran; i++) {
+    const frame = page.frames().find((f) => f.url().includes('/preview/'))
+    const title = frame ? await frame.evaluate(() => document.title).catch(() => '') : ''
+    try { ran = JSON.parse(title) } catch { await page.waitForTimeout(100) }
+  }
+  check(ran?.ran === true, `the page's module script runs, got ${JSON.stringify(ran)}`)
+  check(ran?.css === 'rgb(255, 0, 0)', `its relative stylesheet loads, got ${ran?.css}`)
+  check(ran?.token === 'blocked', `its script cannot reach this page's token, got ${ran?.token}`)
+  check(ran != null && ran.api !== 200, `nor read the daemon's API, got ${ran?.api}`)
+  await page.keyboard.press('Escape')
+
   /* --- and the finder hands a file to that pane ------------------------------ */
 
   /* **The index is for finding and the file pane is for reading.** Below an index

@@ -23,7 +23,8 @@ import * as Viewer from './viewer.js';
  *  sessions left the answers describing one tree while the next request asked
  *  about another.
  *
- *  `rendered` is the markdown mode, remembered across files: a person reading
+ *  `rendered` is the markdown mode, and an HTML file's preview, remembered
+ *  across files: a person reading
  *  notes reads several, and having to press the same button for each one is the
  *  kind of small tax that makes a mode not worth having.
  *
@@ -86,7 +87,7 @@ async function show(ws, path, line, last) {
   /* **A line number is a reason to show the source.** `notes.md:42` means that
      line, and a rendered page cannot point at it — so the mode gives way to the
      thing that was actually asked for, and the button is right there. */
-  if (drawn && viewer().renderable() && state.rendered && !line) viewer().renderMarkdown();
+  if (drawn && viewer().renderable() && state.rendered && !line) viewer().render();
   renderHead(drawn);
 }
 
@@ -95,10 +96,11 @@ async function show(ws, path, line, last) {
 function renderHead(/** @type {boolean} */ drawn) {
   const can = drawn && viewer().renderable();
   $('fvmode').hidden = !can;
-  $('fvmode').textContent = state.rendered ? 'Source' : 'Rendered';
+  const html = viewer().kind() === 'html';
+  $('fvmode').textContent = state.rendered ? 'Source' : html ? 'Preview' : 'Rendered';
   $('fvmode').title = state.rendered
     ? 'Show the file as it is written'
-    : 'Show the file as markdown';
+    : html ? 'Run the page in a sandbox' : 'Show the file as markdown';
 }
 
 export async function close() {
@@ -238,14 +240,14 @@ function edit() {
 async function redraw() {
   if (!state.open || !state.ws || !state.path) return;
   await viewer().show(state.ws, state.path, { line: state.line, last: state.last, col: 0, len: 0 });
-  if (state.rendered && viewer().renderable()) viewer().renderMarkdown();
+  if (state.rendered && viewer().renderable()) viewer().render();
 }
 
 /** Wire the chrome. Called once, at boot. */
 export function init() {
   $('fvmode').onclick = () => {
     state.rendered = !state.rendered;
-    if (state.rendered) viewer().renderMarkdown();
+    if (state.rendered) viewer().render();
     else viewer().renderSource();
     renderHead(true);
   };

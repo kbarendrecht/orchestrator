@@ -445,6 +445,20 @@ pub struct OutsideAsk {
     pub path: PathBuf,
 }
 
+/// What one preview token may read. See `preview`.
+///
+/// Here rather than beside the handler because [`crate::state::AppState`] holds
+/// the map, and `state` importing `preview` would be a cycle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreviewGrant {
+    pub workspace: WorkspaceId,
+    /// The page the token was minted for, workspace-relative.
+    pub page: String,
+    /// Whether git ignores that page, which makes it build output: its own
+    /// directory is then served even though git ignores it too.
+    pub page_ignored: bool,
+}
+
 /// How to rebuild a torn-down worktree so an archived session can be resumed (§2).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "recovery", rename_all = "snake_case")]

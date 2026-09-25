@@ -32,6 +32,7 @@ pub mod managed;
 pub mod model;
 pub mod names;
 pub mod post;
+pub mod preview;
 pub mod relocate;
 pub mod restart;
 pub mod review_api;

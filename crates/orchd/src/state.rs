@@ -196,6 +196,9 @@ pub struct AppState {
     /// forget the session, and the pre-filters have already dropped the ones no
     /// start can fix (a `cwd` that is gone, a conversation with no turn).
     pub pending_resume: std::sync::Mutex<std::collections::HashSet<SessionId>>,
+    /// The file pane's preview tokens, keyed by token. For the life of the process:
+    /// one per page, so the map grows by the pages somebody previewed and no more.
+    pub previews: std::sync::Mutex<HashMap<String, PreviewGrant>>,
     /// Fan-out of state snapshots to connected SPAs.
     pub events: broadcast::Sender<String>,
     /// How the SPA should draw its top bar.
@@ -669,6 +672,7 @@ impl AppState {
             cutting: tokio::sync::Mutex::new(()),
             shutting_down: std::sync::atomic::AtomicBool::new(false),
             pending_resume: std::sync::Mutex::new(std::collections::HashSet::new()),
+            previews: std::sync::Mutex::new(HashMap::new()),
             events,
             chrome,
             answered: Arc::new(Notify::new()),

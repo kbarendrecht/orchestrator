@@ -304,14 +304,21 @@ pub async fn guard(
     let is_ask = is_agent_route(&path);
 
     let is_get = req.method() == axum::http::Method::GET;
-    if !origin_ok(
-        origin,
-        port,
-        app.cfg.host_origin.as_deref(),
-        is_hook || is_ask,
-        is_get,
-        token_ok,
-    ) {
+    /* A preview frame's own reads. Its origin is opaque, so a module script or a
+    `fetch` arrives as `Origin: null`, which no rule below admits — and a page
+    whose module could not load is a blank preview. The token in the path is the
+    check here, in `preview::serve`, and the Host check above still applies. */
+    let is_preview = is_get && path.starts_with("/preview/");
+    if !is_preview
+        && !origin_ok(
+            origin,
+            port,
+            app.cfg.host_origin.as_deref(),
+            is_hook || is_ask,
+            is_get,
+            token_ok,
+        )
+    {
         tracing::warn!(
             %path,
             origin = origin.unwrap_or("-"),

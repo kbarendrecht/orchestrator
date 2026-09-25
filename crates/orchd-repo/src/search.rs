@@ -477,6 +477,14 @@ fn ask_git_which_are_ignored(root: &Path, candidates: &[String]) -> Vec<std::pat
         .collect()
 }
 
+/// Whether git ignores this one workspace-relative path.
+///
+/// `false` when git cannot answer, the same degradation the search makes: a tree
+/// that is not a git work tree has nothing ignored in it.
+pub fn is_ignored(root: &Path, rel: &str) -> bool {
+    !ask_git_which_are_ignored(root, &[rel.to_string()]).is_empty()
+}
+
 /// How many of one refused directory's children may be searched on their own.
 ///
 /// **Measured, and the number is doing real work.** Without a limit the monorepo

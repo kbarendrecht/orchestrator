@@ -2571,6 +2571,10 @@ select.opfield,input.opfield{appearance:none}
    which is why the textarea gets the whole width. */
 .modheld .fnrow s,.modheld .ln s{cursor:pointer}
 .fnsrc.editing{overflow:hidden;display:flex}
+/* The preview frame fills the pane. White, not a token: a page brings its own
+   colours, and most of them assume the default white a browser gives it. */
+.fnsrc:has(> .preview){overflow:hidden;display:flex}
+.fnsrc > .preview{flex:1;border:0;background:#fff}
 .fnsrc.editing .editarea{flex:1}
 .fnfoot{
   flex:0 0 auto;padding:5px 16px;border-top:1px solid var(--line);

@@ -760,6 +760,9 @@ fn daemon_router(app: Arc<AppState>) -> Router {
         // The rail's default: spawn a session running `/resolve <pr>` in a pane.
         .route("/api/pr/:number/open", post(review_api::open_pr))
         .route("/api/pr/:number/fix-pr", post(api::fix_pr))
+        .route("/api/preview", post(orchd::preview::open))
+        // Outside `/api/`: a sandboxed frame reads it, on a token of its own.
+        .route("/preview/:token/*path", get(orchd::preview::serve))
         .route("/ws/events", get(ws::events))
         .route("/ws/pty", get(ws::pty))
         // Hook endpoints live under their own prefix and are treated as

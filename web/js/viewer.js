@@ -14,7 +14,7 @@
 // document is as tall as the band and scrolling stops after 320 lines, which
 // reads as a truncated file rather than a broken viewer.
 
-import { el, get, reason, safeHref } from './core.js';
+import { activeCheckout, call, el, get, reason, safeHref } from './core.js';
 import { charRanges, hlTokens, langFor, paintRanges } from './source.js';
 import { parse } from './markdown.js';
 
@@ -45,9 +45,13 @@ export function create(on) {
    *  it with rows — reported as "scrolling toggled it back to source", which is
    *  exactly what it was.
    *
+   *  `ws` is the workspace the file was read from, which the preview needs to
+   *  ask for its token.
+   *
    *  @type {{ file: Loaded | null, spot: Spot | null, from: number, to: number,
-   *           rowH: number, seq: number, mode: 'source' | 'markdown' }} */
-  const view = { file: null, spot: null, from: 0, to: 0, rowH: 0, seq: 0, mode: 'source' };
+   *           rowH: number, seq: number, mode: 'source' | 'markdown' | 'preview',
+   *           ws: string | null }} */
+  const view = { file: null, spot: null, from: 0, to: 0, rowH: 0, seq: 0, mode: 'source', ws: null };
 
   /** Keep the band under the viewport as it is scrolled. */
   on.mount.addEventListener('scroll', () => {
@@ -158,13 +162,56 @@ export function create(on) {
     on.mount.scrollTop = 0;
   }
 
+  /** Run the loaded page in a sandboxed frame.
+   *
+   *  **`allow-scripts` and never `allow-same-origin`.** Together they would let
+   *  the page's scripts take the sandbox off, and without the second one they run
+   *  in an opaque origin that cannot read this page or its token. The frame loads
+   *  from the daemon's `/preview/` route rather than `srcdoc`, so relative CSS and
+   *  JS resolve; `preview.rs` says what that route will and will not serve. */
+  async function paintAsPreview() {
+    const file = view.file;
+    if (!file || !view.ws) return;
+    const mine = view.seq;
+    view.mode = 'preview';
+    if (on.path) on.path.textContent = file.path;
+    if (on.where) on.where.textContent = 'preview · scripts on';
+    let token;
+    try {
+      ({ token } = await call('/api/preview', { workspace: view.ws, path: file.path }));
+    } catch (e) {
+      if (mine === view.seq) on.mount.replaceChildren(el('div', 'fnsay', reason(e)));
+      return;
+    }
+    // Another file, or back to source, while the token was in the air.
+    if (mine !== view.seq || view.mode !== 'preview') return;
+    const frame = /** @type {HTMLIFrameElement} */ (el('iframe', 'preview'));
+    frame.setAttribute('sandbox', 'allow-scripts');
+    frame.setAttribute('referrerpolicy', 'no-referrer');
+    frame.title = file.path;
+    frame.src = `${activeCheckout().base}/preview/${token}/`
+      + file.path.split('/').map(encodeURIComponent).join('/');
+    on.mount.replaceChildren(frame);
+  }
+
+  /** What the file on screen can be rendered as, if anything. */
+  const kind = () => {
+    const path = view.file?.path ?? '';
+    if (/\.(md|markdown)$/i.test(path)) return 'markdown';
+    if (/\.html?$/i.test(path)) return 'html';
+    return null;
+  };
+
   return {
     /** Whether the file on screen is one this can render. */
-    renderable: () => /\.(md|markdown)$/i.test(view.file?.path ?? ''),
+    renderable: () => kind() != null,
 
-    /** Draw what is loaded as markdown. The caller decides when: a line number is
+    /** `'markdown'`, `'html'` or `null`, for the button that says which. */
+    kind,
+
+    /** Draw what is loaded as a page. The caller decides when: a line number is
      *  a reason to show the source, and no line number is a reason not to. */
-    renderMarkdown: () => paintAsMarkdown(),
+    render: () => (kind() === 'html' ? void paintAsPreview() : paintAsMarkdown()),
 
     /** Draw what is loaded as lines again, at the spot it was opened on. */
     renderSource: () => {
@@ -181,6 +228,7 @@ export function create(on) {
      *  @param {string} path
      *  @param {Spot} spot */
     async show(ws, path, spot) {
+      view.ws = ws;
       if (view.file?.path !== path) {
         const mine = ++view.seq;
         let answer;
