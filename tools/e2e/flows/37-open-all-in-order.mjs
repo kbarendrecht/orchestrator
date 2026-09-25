@@ -15,11 +15,13 @@ export const name = 'open all opens the reviews in order, spaced apart'
 
 export async function run(t) {
   const log = path.join(t.root, 'opened.log')
-  /* `open` on macOS, `xdg-open` elsewhere: the first opener `open_external` finds.
-     The clock is node's rather than `date +%s%3N`, which is GNU's and prints a
-     literal `3N` on the Mac the flows also run on. */
+  /* `open` on macOS, `xdg-open` elsewhere — and `wslview` first of all under WSL,
+     which `open_external` prefers there because the portal `xdg-open` reaches does
+     nothing. Shim every name it may pick, or the flow opens four real tabs and
+     records none. The clock is node's rather than `date +%s%3N`, which is GNU's and
+     prints a literal `3N` on the Mac the flows also run on. */
   const record = `require('fs').appendFileSync(process.argv[1], Date.now() + ' ' + process.argv[2] + '\\n')`
-  for (const opener of ['xdg-open', 'open']) {
+  for (const opener of ['wslview', 'xdg-open', 'open']) {
     const shim = path.join(t.bin, opener)
     fs.writeFileSync(shim, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} -e ${JSON.stringify(record)} ${JSON.stringify(log)} "$1"\n`)
     fs.chmodSync(shim, 0o755)
