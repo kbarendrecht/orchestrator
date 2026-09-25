@@ -368,7 +368,10 @@ jobs:
           if [ "${{ runner.os }}" = "Linux" ]; then
             xvfb-run -a node tools/app-check.mjs target/debug/orchestrator-desktop
           else
-            node tools/app-check.mjs target/debug/orchestrator-desktop \
+            # From the bundle the step above wrote, because a link reaches only a
+            # registered `.app` on macOS: the bare binary cannot receive one.
+            node tools/app-check.mjs \
+              "$HOME/Applications/Orchestrator.app/Contents/MacOS/orchestrator-desktop" \
               --shots "${{ runner.temp }}/app-shots"
           fi
 

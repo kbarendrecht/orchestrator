@@ -16,6 +16,9 @@
 //
 //   1. the app starts, spawns a checkout's daemon, and serves its page
 //   2. a session created in it is **still there after a restart**
+//   3. an `orchestrator://` link reaches the running app and its page — through a
+//      second launch on Linux, the way `xdg-open` delivers one, and through
+//      LaunchServices on macOS
 //
 // **No clicking, deliberately.** A synthetic click is available on a macOS runner
 // and it works — a coordinate click opened the native folder picker — but it is a
@@ -155,20 +158,21 @@ function writeAgentShim() {
   return bin
 }
 
+/** What every launch of the app runs under, the second one a link makes included:
+ *  that one finds the running app through the token file in this same config dir. */
+const appEnv = () => ({
+  ...process.env,
+  PATH: `${agentBin}${path.delimiter}${process.env.PATH}`,
+  ORCHD_CONFIG_DIR: cfg,
+  // Skips `adopt_login_path`'s shell round trip *and* keeps this process's
+  // PATH — which is what carries the stand-in agent.
+  ORCHD_ADOPTED_LOGIN_PATH: '1',
+})
+
 async function launch(tag) {
   outFile = path.join(root, `${tag}.out`)
   const out = fs.openSync(outFile, 'a')
-  child = spawn(appBin, [], {
-    stdio: ['ignore', out, out],
-    env: {
-      ...process.env,
-      PATH: `${agentBin}${path.delimiter}${process.env.PATH}`,
-      ORCHD_CONFIG_DIR: cfg,
-      // Skips `adopt_login_path`'s shell round trip *and* keeps this process's
-      // PATH — which is what carries the stand-in agent.
-      ORCHD_ADOPTED_LOGIN_PATH: '1',
-    },
-  })
+  child = spawn(appBin, [], { stdio: ['ignore', out, out], env: appEnv() })
   const port = await until(`${tag}: the page`, () => {
     const said = fs.existsSync(outFile) ? fs.readFileSync(outFile, 'utf8') : ''
     if (/could not open|would start/.test(said)) {
@@ -316,6 +320,51 @@ try {
   else bad(`the session is gone. state held: ${JSON.stringify(
     (after.sessions ?? []).map((x) => ({ id: x.id?.slice(0, 8), workspace: x.workspace })))}`)
   await shot('3-reopened')
+
+  // --- 5. a deep link -------------------------------------------------------
+  //
+  // `link.rs` holds the parser and the hand-over, `page-check` what the page does
+  // with one. What only the real app shows is the delivery: on Linux a second
+  // process that must hand the link over and get out of the way, on macOS an Apple
+  // Event that only a registered bundle receives — and on both, a page in a real
+  // webview listening on the host socket when the link arrives.
+  console.log('\n5. an orchestrator:// link reaches the running app')
+  const linked = fs.realpathSync(path.join(checkout, 'README.md'))
+  const url = `orchestrator://open?file=${encodeURIComponent(linked)}&line=1`
+  if (process.platform === 'darwin') {
+    const bundle = appBin.match(/^(.*?\.app)\//)?.[1]
+    if (!bundle) {
+      bad(`${appBin} is not inside an .app, and only a bundle can receive a link on macOS`)
+    } else {
+      // Registered by hand: a bundle written by a script is known to LaunchServices
+      // only once something has opened it, and nothing here does.
+      const lsregister = '/System/Library/Frameworks/CoreServices.framework/Frameworks/'
+        + 'LaunchServices.framework/Support/lsregister'
+      await run(lsregister, ['-f', bundle])
+      const opened = await run('open', [url])
+      if (opened.e) bad(`open refused the link: ${opened.err || opened.e.message}`)
+      else ok('open handed the link to LaunchServices')
+    }
+  } else {
+    const second = await new Promise((res) => {
+      const p = spawn(appBin, [url], { stdio: ['ignore', 'pipe', 'pipe'], env: appEnv() })
+      let said = ''
+      p.stdout.on('data', (d) => { said += d })
+      p.stderr.on('data', (d) => { said += d })
+      const late = setTimeout(() => { p.kill('SIGKILL'); res({ code: 'still running after 20s', said }) }, 20000)
+      p.on('exit', (code) => { clearTimeout(late); res({ code, said }) })
+    })
+    if (second.code === 0) ok('a second launch with the link handed it over and exited')
+    else bad(`the second launch did not hand the link over (${second.code}): ${second.said.slice(-600)}`)
+  }
+  const heard = await until('the running app to take the link', () => {
+    const said = fs.readFileSync(outFile, 'utf8').replace(/\u001b\[[0-9;]*m/g, '')
+    return said.match(/a link (went to the page|is held until a page connects)/)?.[1]
+  }, 20).catch(() => null)
+  if (heard === 'went to the page') ok('the running app sent it to its page')
+  else if (heard) bad('the link was held: no page was listening on the host socket')
+  else bad('the running app never heard of the link')
+  await shot('4-linked')
 } catch (e) {
   bad(String(e?.message ?? e))
   if (outFile && fs.existsSync(outFile)) {
