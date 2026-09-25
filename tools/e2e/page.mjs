@@ -1671,6 +1671,30 @@ try {
   await page.waitForTimeout(300)
   check(await page.$$eval('#fvoverlay.on', (o) => o.length) === 0, 'and Escape again closes the pane')
 
+  /* --- a file's own menu: its path, and the line under the pointer ------------- */
+
+  /* Workspace-relative, which is what an agent and a PR comment take. One handler
+     in `viewer.js` serves the finder as well, so this is both panes' menu. The
+     item is read rather than pressed: a headless browser's clipboard is not the
+     thing under test. */
+  await t.api('POST', '/api/host/open', {
+    url: `orchestrator://open?file=${encodeURIComponent(path.join(t.worktreePath('page'), 'other.md'))}&line=1`,
+  })
+  await page.waitForFunction(() => document.getElementById('fvpath')?.textContent === 'other.md',
+    null, { timeout: 5000 })
+  const second = await page.$$eval('#fvsrc .fnrow', (rs) => {
+    const r = rs.find((x) => x.textContent === 'two')?.getBoundingClientRect()
+    return r ? { x: r.left + 40, y: r.top + r.height / 2 } : null
+  })
+  if (second) await page.mouse.click(second.x, second.y, { button: 'right' })
+  const offered = await page.waitForSelector('#ctxmenu:not([hidden])', { timeout: 3000 })
+    .then(() => page.$$eval('#ctxmenu .ctxmenu-item', (bs) => bs.map((b) => b.textContent)))
+    .catch(() => [])
+  check(offered.includes('copy other.md:2') && offered.includes('copy path'),
+    `a row offers its path and line, got ${JSON.stringify(offered)}`)
+  await page.keyboard.press('Escape')
+  await page.keyboard.press('Escape')
+
   console.log(`\npage-check: ${failed ? 'FAILED' : 'ok'}`)
 } finally {
   await browser?.close()

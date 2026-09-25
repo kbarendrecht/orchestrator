@@ -14,7 +14,7 @@
 // document is as tall as the band and scrolling stops after 320 lines, which
 // reads as a truncated file rather than a broken viewer.
 
-import { activeCheckout, call, el, get, reason, safeHref } from './core.js';
+import { activeCheckout, call, copyText, el, get, openMenu, reason, safeHref, toast } from './core.js';
 import { charRanges, hlTokens, langFor, paintRanges } from './source.js';
 import { parse } from './markdown.js';
 
@@ -85,6 +85,29 @@ export function create(on) {
     }
     if (!parts.length) return;
     on.onFile(parts.join('/'), Number(frag.match(/^L(\d+)/)?.[1] ?? 0));
+  });
+
+  /* **The file's own menu: its path, and the line under the pointer.** Workspace-
+     relative, `src/Domain/Order.php:42`, because that is what an agent, a PR
+     comment and every editor's "go to file" take. Here rather than in each pane,
+     so the finder and the file pane cannot drift. The app's menu replaces the
+     webview's, so a selection gets its plain copy back as the first item. */
+  on.mount.addEventListener('contextmenu', (ev) => {
+    const path = view.file?.path ?? (view.mode === 'image' ? on.path?.textContent : null);
+    if (!path) return;
+    const row = /** @type {HTMLElement | null} */ (
+      /** @type {HTMLElement} */ (ev.target).closest?.('.fnrow'));
+    const n = row?.querySelector('i')?.dataset.n;
+    const copy = (/** @type {string} */ text) => () => {
+      void copyText(text).then((ok) => { if (ok) toast(`copied ${text}`); });
+    };
+    /** @type {[string, string | null, (() => void) | null][]} */
+    const items = [];
+    const picked = String(window.getSelection() ?? '');
+    if (picked) items.push(['copy selection', null, copy(picked)]);
+    if (n) items.push([`copy ${path}:${n}`, null, copy(`${path}:${n}`)]);
+    items.push(['copy path', null, copy(path)]);
+    openMenu(ev, items);
   });
 
   /** Keep the band under the viewport as it is scrolled. */
