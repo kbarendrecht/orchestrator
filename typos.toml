@@ -13,6 +13,8 @@ promot = "promot"
 ba = "ba"
 caf = "caf"
 Wil = "Wil"
+# A label as it looks when clipped, quoted in the CSS that stops it clipping.
+archiv = "archiv"
 
 [default.extend-identifiers]
 # `PN` is the start of `PNGs`.
