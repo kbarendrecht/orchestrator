@@ -2628,10 +2628,10 @@ const OPEN_ALL_MAX: usize = 32;
 ///
 /// **What keeps the tabs in the queue's order.** The opener is spawned detached,
 /// so without a gap every URL reached the browser within a few milliseconds and
-/// the tabs came up in whatever order the openers finished. Small enough that the
-/// cap is still a few seconds; long enough for a running browser to take one URL
-/// before the next arrives.
-const OPEN_ALL_GAP: std::time::Duration = std::time::Duration::from_millis(200);
+/// the tabs came up in whatever order the openers finished. A running browser
+/// takes a hand-off in well under this, and the cap of 32 is under two seconds;
+/// 200ms kept the order too and made eight reviews wait over a second.
+const OPEN_ALL_GAP: std::time::Duration = std::time::Duration::from_millis(50);
 
 #[derive(Deserialize)]
 pub struct OpenUrls {

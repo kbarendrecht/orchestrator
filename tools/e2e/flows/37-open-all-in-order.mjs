@@ -37,6 +37,6 @@ export async function run(t) {
   assert.deepEqual(seen.map((s) => s.url), urls, 'in the order the queue sent them')
   for (let i = 1; i < seen.length; i++) {
     const gap = seen[i].at - seen[i - 1].at
-    assert.ok(gap >= 150, `hand-off ${i} came ${gap}ms after the one before it`)
+    assert.ok(gap >= 40, `hand-off ${i} came ${gap}ms after the one before it`)
   }
 }
