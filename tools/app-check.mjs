@@ -357,13 +357,22 @@ try {
     if (second.code === 0) ok('a second launch with the link handed it over and exited')
     else bad(`the second launch did not hand the link over (${second.code}): ${second.said.slice(-600)}`)
   }
-  const heard = await until('the running app to take the link', () => {
-    const said = fs.readFileSync(outFile, 'utf8').replace(/\u001b\[[0-9;]*m/g, '')
-    return said.match(/a link (went to the page|is held until a page connects)/)?.[1]
-  }, 20).catch(() => null)
-  if (heard === 'went to the page') ok('the running app sent it to its page')
-  else if (heard) bad('the link was held: no page was listening on the host socket')
-  else bad('the running app never heard of the link')
+  /* **Straight to the page, or held for it — both are right**, and which one a
+     run sees is a race with the webview loading the board: a link can arrive
+     before the page has dialled the host socket, and the host keeps it for the
+     first page that does. What must happen either way is the page getting it. */
+  const said = () => fs.readFileSync(outFile, 'utf8').replace(/\u001b\[[0-9;]*m/g, '')
+  const heard = await until('the running app to take the link',
+    () => said().match(/a link went to the page|a link is held until a page connects/)?.[0], 20)
+    .catch(() => null)
+  if (!heard) bad('the running app never heard of the link')
+  else if (heard.includes('went to the page')) ok('the running app sent it to its page')
+  else {
+    const reached = await until('the page to connect and take the held link',
+      () => said().includes('a held link went to the page'), 30).catch(() => false)
+    if (reached) ok('the running app held it until its page connected, then sent it')
+    else bad('the link was held and no page ever connected to take it')
+  }
   await shot('4-linked')
 } catch (e) {
   bad(String(e?.message ?? e))

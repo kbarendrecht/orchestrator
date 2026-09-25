@@ -1716,6 +1716,7 @@ async fn host_socket_loop(host: Arc<Host>, mut socket: axum::extract::ws::WebSoc
         if !send_open(&mut socket, &file).await {
             return;
         }
+        tracing::info!(path = %file.path, "a held link went to the page");
     }
     loop {
         tokio::select! {
