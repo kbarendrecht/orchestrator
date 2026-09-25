@@ -224,8 +224,12 @@ impl Host {
     /// link is clicked somewhere else, and a file opening behind that window is a
     /// link that looks like it did nothing.
     pub fn open_link(&self, file: crate::link::OpenFile) {
-        if self.links.send(file.clone()).is_err() {
-            *locked(&self.pending_link) = Some(file);
+        match self.links.send(file.clone()) {
+            Ok(pages) => tracing::info!(path = %file.path, pages, "a link went to the page"),
+            Err(_) => {
+                tracing::info!(path = %file.path, "a link is held until a page connects");
+                *locked(&self.pending_link) = Some(file);
+            }
         }
         if let Some(control) = self.window() {
             if let Err(e) = control.dispatch(orchd::window::WindowCmd::Focus) {

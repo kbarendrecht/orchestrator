@@ -162,6 +162,21 @@ fn main() {
         return;
     }
 
+    /* **A link is a second launch on Linux**, and the first one is still running:
+    `xdg-open` starts this binary again with the URL, and it cannot open a window
+    of its own — the host's port and lock are taken. So it hands the link over
+    and is done. **Before the logger**, because installing it rotates the log:
+    a link clicked five times would have pushed the running app's own log out of
+    the window. When nothing takes it, this is the launch, and the host opens it
+    once it is up. */
+    let handed = match orchd_serve::link::in_args(std::env::args()) {
+        Some(url) => match orchd_serve::link::forward(orchd_serve::host::PORT, &url) {
+            Ok(()) => return,
+            Err(e) => Some((url, e)),
+        },
+        None => None,
+    };
+
     wsl_render_workaround();
 
     // Both from the library, so a checkout's own child daemon logs the same lines
@@ -181,19 +196,8 @@ fn main() {
     #[cfg(target_os = "linux")]
     glib_log::log_glib_messages();
 
-    /* **A link is a second launch on Linux**, and the first one is still running:
-    `xdg-open` starts this binary again with the URL, and it cannot open a window
-    of its own — the host's port and lock are taken. So it hands the link over
-    and is done. Before anything slow, because the person is waiting on a click.
-    When nothing takes it, this is the launch, and the host opens it once up. */
-    if let Some(url) = orchd_serve::link::in_args(std::env::args()) {
-        match orchd_serve::link::forward(orchd_serve::host::PORT, &url) {
-            Ok(()) => {
-                tracing::info!("handed a link to the running app");
-                return;
-            }
-            Err(e) => tracing::info!("no running app took the link, so this is the app: {e:#}"),
-        }
+    if let Some((url, refused)) = handed {
+        tracing::info!("no running app took the link, so this is the app: {refused:#}");
         take_link(url);
     }
 
