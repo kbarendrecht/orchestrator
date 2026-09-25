@@ -568,6 +568,14 @@ pub struct Session {
     /// Maintained by [`Session::set_state`], because a turn starting and a turn
     /// ending are the only two things that change the answer.
     pub interrupted: bool,
+    /// The idle state a respawn under the same id comes back in, instead of `Ready`.
+    ///
+    /// `SessionStart` turns a `Starting` record into `Ready`, which is right for a
+    /// session you just opened and wrong for one the daemon restarted under you: a
+    /// restart onto the installed Claude Code turned "turn complete" into "ready" and
+    /// reset the wait clock to zero, and the rail then said you owed it nothing.
+    /// Taken by that hook, so it applies once.
+    pub comes_back_as: Option<State>,
     /// Whether a turn has *ever* started in this session.
     ///
     /// A session that spawned and was never typed into owns a headers-only
@@ -682,6 +690,7 @@ impl Session {
             boundary_violations: Vec::new(),
             last_reconcile: None,
             interrupted: false,
+            comes_back_as: None,
             had_a_turn: false,
             forked_from: None,
             spawned_by: None,

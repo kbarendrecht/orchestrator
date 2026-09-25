@@ -27,6 +27,10 @@ export async function run(t) {
   await t.api('POST', `/api/session/${idle}/rename`, { name: 'keeps its name' })
 
   const before = { idle: spawns(t, idle), busy: spawns(t, busy) }
+  // Where the idle one stands, to hold the respawn to: the agent takes a turn per
+  // launch, so this is a finished turn with a clock already running.
+  const rested = (await t.session(idle)).state
+  assert.equal(rested.reason, 'turn_complete')
 
   t.hold(true)
   try {
@@ -49,6 +53,10 @@ export async function run(t) {
     assert.equal(back.name, 'keeps its name', 'the name survived the respawn')
     assert.equal(back.has_transcript, true, 'the conversation survived the respawn')
     assert.equal(back.restart_queued, false, 'and it is out of the queue')
+    /* **Not `ready`.** `SessionStart` opens a fresh record at `ready` with the
+       clock at zero, and a restart used to take that too: a finished turn you had
+       not looked at yet read as a session that owed you nothing. */
+    assert.deepEqual(back.state, rested, 'it came back where it stood, clock and all')
 
     // The working one has not been touched, and says it is waiting.
     const waiting = await t.session(busy)
@@ -66,6 +74,7 @@ export async function run(t) {
   const done = await t.session(busy)
   assert.equal(done.workspace, 'busy')
   assert.equal(done.restart_queued, false)
+  assert.equal(done.state.reason, 'turn_complete', 'the turn it waited for is still unread')
 
   // One restart each, not one per snapshot: the watcher wakes on every notify, and
   // a flag that outlived its respawn would restart the session forever.

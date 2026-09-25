@@ -276,11 +276,14 @@ pub async fn session_start(
             if matches!(s.state, State::Starting) {
                 // Started, but nothing is running: the prompt box is empty and
                 // waiting for you. `Working` here made a brand-new session look
-                // busy and blocked actions that only fight a running agent.
-                s.set_state(State::YourTurn {
+                // busy and blocked actions that only fight a running agent. A
+                // respawn under the same id goes back to where it stood instead,
+                // clock and all (`Session::comes_back_as`).
+                let rest = s.comes_back_as.take().unwrap_or(State::YourTurn {
                     since: SystemTime::now(),
                     reason: TurnReason::Ready,
                 });
+                s.set_state(rest);
             }
             s.pending_prompt.take().map(|p| (p, s.pty.clone()))
         })

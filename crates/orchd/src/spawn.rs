@@ -105,13 +105,15 @@ pub async fn relocate_session(
         .with_context(|| format!("unknown workspace {dest_workspace}"))?;
     // Read before anything moves: `spawn_session` rebuilds the record under this
     // same id, so what the conversation *was* has to be captured now or it is
-    // overwritten by defaults.
+    // overwritten by defaults. The state too, and it is written rather than read:
+    // the kill below makes it `Exited` before `Carried::from` ever looks.
     let (src_cwd, src_workspace, handle, title, name, created_at, pass) = {
-        let inner = app.inner.read().await;
+        let mut inner = app.inner.write().await;
         let s = inner
             .sessions
-            .get(&id)
+            .get_mut(&id)
             .with_context(|| format!("unknown session {}", crate::model::short_id(&id)))?;
+        s.comes_back_as = at_rest(&s.state);
         (
             s.cwd.clone(),
             s.workspace.clone(),
@@ -289,6 +291,25 @@ pub(crate) async fn insert_and_spawn(
     Ok(spawned)
 }
 
+/// The idle state a respawn can honestly come back in.
+///
+/// A finished or interrupted turn, or a prompt nobody has typed into yet. Not a
+/// question or a permission prompt: those belonged to the process that asked, and
+/// the respawn is a different one.
+fn at_rest(state: &State) -> Option<State> {
+    match state {
+        State::YourTurn { reason, .. }
+            if !matches!(
+                reason,
+                TurnReason::AskedAQuestion | TurnReason::NeedsPermission
+            ) =>
+        {
+            Some(state.clone())
+        }
+        _ => None,
+    }
+}
+
 /// What a resume or a fork carries over from the record it continues.
 #[derive(Default)]
 struct Carried {
@@ -296,6 +317,10 @@ struct Carried {
     /// interrupted is the one thing it cannot re-derive. A fork starts a fresh
     /// direction, so it is never interrupted.
     interrupted: bool,
+    /// Where the respawn stood (`Session::comes_back_as`), stamped by
+    /// `relocate_session` before its kill. Resume only. Nothing else stamps it, so a
+    /// resume of an archived session, and auto-resume at boot, open at `Ready`.
+    turn: Option<State>,
     /// Carries across both: a resumed conversation already had its turns, and a
     /// fork replays the parent's — so both open on a real conversation, not an
     /// empty pane, and reading it fresh would say otherwise until the next
@@ -364,6 +389,11 @@ impl Carried {
         };
         Carried {
             interrupted: !fork && prev.interrupted,
+            turn: if fork {
+                None
+            } else {
+                prev.comes_back_as.clone()
+            },
             had_a_turn: prev.had_a_turn,
             branch: prev.branch.clone(),
             notice: prev.arrival_notice.clone(),
@@ -397,6 +427,7 @@ impl Carried {
     /// the struct so it cannot be the field somebody forgets.
     fn apply(self, session: &mut Session) -> Option<String> {
         session.interrupted = self.interrupted;
+        session.comes_back_as = self.turn;
         session.had_a_turn = self.had_a_turn;
         session.arrival_notice = self.notice;
         session.name = self.name;
@@ -2587,6 +2618,11 @@ mod tests {
         let mut prev = Session::new(Uuid::new_v4(), "wt".into(), PathBuf::from("/tmp"), None);
         prev.interrupted = true;
         prev.had_a_turn = true;
+        let rested = State::YourTurn {
+            since: began,
+            reason: TurnReason::TurnComplete,
+        };
+        prev.comes_back_as = at_rest(&rested);
         prev.branch = Some("feature/x".into());
         prev.arrival_notice = Some("moved while you were away".into());
         prev.name = Some("the one you named".into());
@@ -2600,6 +2636,7 @@ mod tests {
 
         assert_eq!(branch.as_deref(), Some("feature/x"), "the branch");
         assert!(next.interrupted, "the interrupted turn");
+        assert_eq!(next.comes_back_as, Some(rested), "where the turn stood");
         assert!(next.had_a_turn, "that it is a conversation at all");
         assert_eq!(
             next.arrival_notice.as_deref(),
@@ -2610,6 +2647,19 @@ mod tests {
         assert!(next.spawn_cut_worktree, "whether that spawn cut the tree");
         assert_eq!(next.forked_from, Some(parent), "that it was forked");
         assert_eq!(next.created_at, began, "when the conversation began");
+    }
+
+    /// A question belonged to the process that asked it, so a respawn never comes
+    /// back claiming to ask it.
+    #[test]
+    fn only_a_state_the_new_process_can_be_in_comes_back() {
+        let at = std::time::SystemTime::UNIX_EPOCH;
+        let turn = |reason| State::YourTurn { since: at, reason };
+        assert!(at_rest(&turn(TurnReason::TurnComplete)).is_some());
+        assert!(at_rest(&turn(TurnReason::Interrupted)).is_some());
+        assert!(at_rest(&turn(TurnReason::AskedAQuestion)).is_none());
+        assert!(at_rest(&turn(TurnReason::NeedsPermission)).is_none());
+        assert!(at_rest(&State::Working).is_none());
     }
 
     /// A fork is a new conversation, so four of those deliberately do *not* travel.
@@ -2623,11 +2673,19 @@ mod tests {
         prev.forked_from = Some(parent);
         prev.created_at = began;
         prev.had_a_turn = true;
+        prev.comes_back_as = at_rest(&State::YourTurn {
+            since: began,
+            reason: TurnReason::TurnComplete,
+        });
 
         let mut next = Session::new(Uuid::new_v4(), "wt".into(), PathBuf::from("/tmp"), None);
         Carried::from(Some(&prev), true).apply(&mut next);
 
         assert!(!next.interrupted, "a fork opens at a fresh prompt");
+        assert!(
+            next.comes_back_as.is_none(),
+            "a fork opens at a fresh prompt"
+        );
         assert!(next.name.is_none(), "a fork earns its own name");
         assert!(
             next.forked_from.is_none(),
