@@ -103,6 +103,11 @@ async function loadConfigInto(force = false) {
     $('setnote').textContent = reason(e);
     return;
   }
+  /* **And again after the read**, because the pane is open and typeable while it
+     is in the air: somebody who typed straight after opening lost the text to the
+     answer, which then wrote `dirty = false` under it. It was page-check's
+     "a config field marks the pane unsaved" failing one run in three. */
+  if (dirty && !force) return;
   ctl('setlang').value = cfg.default_language || '';
   /* Read-only, and the pane says so. A tracker is three fields, one of them a
      per-site host, so the old dropdown of two names cannot spell one — and a
