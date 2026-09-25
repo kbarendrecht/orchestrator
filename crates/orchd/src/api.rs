@@ -2626,11 +2626,10 @@ const OPEN_ALL_MAX: usize = 32;
 
 /// The pause between two hand-offs in [`open_urls`].
 ///
-/// **What keeps the tabs in the queue's order.** The opener is spawned detached,
-/// so without a gap every URL reached the browser within a few milliseconds and
-/// the tabs came up in whatever order the openers finished. A running browser
-/// takes a hand-off in well under this, and the cap of 32 is under two seconds;
-/// 200ms kept the order too and made eight reviews wait over a second.
+/// **Half of what keeps the tabs in the queue's order**, and [`open_in_turn`] is
+/// the other: that waits for the opener to hand its URL on, and this gives the
+/// browser a moment to turn it into a tab before the next one arrives. The cap of
+/// 32 is under two seconds; 200ms made eight reviews wait over a second.
 const OPEN_ALL_GAP: std::time::Duration = std::time::Duration::from_millis(50);
 
 #[derive(Deserialize)]
@@ -2670,7 +2669,7 @@ pub async fn open_urls(
             tracing::warn!("refusing to open a non-http URL");
             continue;
         }
-        match open_detached(url).await {
+        match open_in_turn(url).await {
             Ok(()) => opened += 1,
             Err(e) => tracing::warn!("could not open {url}: {e:#}"),
         }
@@ -2825,7 +2824,23 @@ pub async fn open_file(
 async fn open_detached(url: &str) -> anyhow::Result<()> {
     let url = url.to_string();
     crate::proc::run_blocking("handing the URL to the browser", move || {
-        open_external(&url)
+        open_external(&url, None)
+    })
+    .await?
+}
+
+/// [`open_detached`], and then wait for the opener to hand the URL on.
+///
+/// **What keeps "open all" in order.** A gap alone did not: the openers start
+/// detached, and one that is slower to start overtakes the one before it — which
+/// the flow for this caught as two hand-offs 21ms apart behind a 50ms gap. Waiting
+/// for the exit makes the order the browser sees the order they were sent in.
+/// Bounded, because an opener that has to start the browser can stay in the
+/// foreground as it; past the bound it is reaped on a thread like any other.
+async fn open_in_turn(url: &str) -> anyhow::Result<()> {
+    let url = url.to_string();
+    crate::proc::run_blocking("handing the URL to the browser", move || {
+        open_external(&url, Some(std::time::Duration::from_secs(1)))
     })
     .await?
 }
@@ -2835,7 +2850,7 @@ async fn open_detached(url: &str) -> anyhow::Result<()> {
 /// On WSL the standard `xdg-open` often resolves to a portal that silently does
 /// nothing, so `wslview` (which reaches the Windows default browser) is tried
 /// first there. Elsewhere the usual Linux openers are tried in turn.
-fn open_external(url: &str) -> anyhow::Result<()> {
+fn open_external(url: &str, settle: Option<std::time::Duration>) -> anyhow::Result<()> {
     use std::process::{Command, Stdio};
 
     let is_wsl = std::env::var_os("WSL_DISTRO_NAME").is_some()
@@ -2871,11 +2886,20 @@ fn open_external(url: &str) -> anyhow::Result<()> {
             .stderr(Stdio::null())
             .spawn()
             .with_context(|| format!("spawning {cmd}"))?;
+        let mut child = child;
+        if let Some(limit) = settle {
+            let deadline = std::time::Instant::now() + limit;
+            while std::time::Instant::now() < deadline {
+                if matches!(child.try_wait(), Ok(Some(_))) {
+                    return Ok(());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
         // Reaped on a thread. Dropping the `Child` unwaited leaves a zombie for
         // the life of the daemon, and this is a per-click path — `xdg-open` exits
         // as soon as it has handed the URL on, so the thread is short-lived.
         std::thread::spawn(move || {
-            let mut child = child;
             let _ = child.wait();
         });
         return Ok(());
