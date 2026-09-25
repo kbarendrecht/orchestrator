@@ -10,7 +10,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 
-export const name = 'an html preview serves its page and nothing it must not'
+export const name = 'an html preview and an image serve their file and nothing they must not'
 
 export async function run(t) {
   const site = path.join(t.repo, 'site')
@@ -55,6 +55,18 @@ export async function run(t) {
   // is refused, which is what keeps the frame's `fetch` away from everything else.
   const api = await fetch(`${base}/api/state`, { headers: { origin: 'null' } })
   assert.equal(api.status, 403, 'an opaque origin still cannot read the API')
+
+  /* The file pane's images, on a route of their own. The page is trusted, so the
+     preview's file rules are not these; what this must never do is serve a
+     workspace's HTML from the daemon's origin, where it would run as the app. */
+  fs.writeFileSync(path.join(t.repo, 'shot.png'), Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64'))
+  const image = (rel) => fetch(`${base}/api/file/image?workspace=main&path=${encodeURIComponent(rel)}`)
+  const png = await image('shot.png')
+  assert.equal(png.status, 200)
+  assert.equal(png.headers.get('content-type'), 'image/png')
+  assert.match(png.headers.get('content-security-policy') ?? '', /sandbox/)
+  assert.equal((await image('site/index.html')).status, 404, 'an image route serves no html')
+  assert.equal((await image('../outside.png')).status, 404, 'nor anything outside the workspace')
 
   // Only a page mints a token.
   await assert.rejects(

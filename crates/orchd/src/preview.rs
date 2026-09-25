@@ -15,7 +15,7 @@
 //! the app token does — only reads, only in one workspace, and only files that
 //! pass [`servable`].
 
-use axum::extract::{Json, Path as AxPath, State};
+use axum::extract::{Json, Path as AxPath, Query, State};
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
@@ -145,6 +145,60 @@ pub async fn serve(
     response
 }
 
+#[derive(Deserialize)]
+pub struct ImageQuery {
+    pub workspace: String,
+    pub path: String,
+}
+
+/// One image, for the file pane's `<img>`.
+///
+/// **Here rather than in `/api/file`**, which answers JSON with text in it and
+/// refuses a binary file on purpose. An `<img>` cannot send the app token, and it
+/// needs none: this is a GET, which the guard serves without one, the same as the
+/// text the pane already reads.
+///
+/// **Images only, and sandboxed.** The page is trusted, so this has none of
+/// [`servable`]'s rules; what it must not be is a way to serve a workspace's HTML
+/// from this daemon's origin. An SVG opened in a tab of its own runs its scripts,
+/// so every answer carries a CSP that forbids them, and any other type is a 404.
+pub async fn image(State(app): State<Arc<AppState>>, Query(q): Query<ImageQuery>) -> Response {
+    let kind = content_type(&q.path);
+    if !kind.starts_with("image/") {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let Some(root) = app.workspace_path(&q.workspace).await else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let shared = app.cfg.shared_worktree_paths.clone();
+    let read = crate::proc::run_blocking("reading an image", move || {
+        let at = crate::edit::resolve_in_workspace(&root, &q.path, &shared).ok()?;
+        let md = std::fs::metadata(&at).ok()?;
+        if !md.is_file() || md.len() > MAX_BYTES {
+            return None;
+        }
+        std::fs::read(&at).ok()
+    })
+    .await;
+    let Ok(Some(bytes)) = read else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let mut response = bytes.into_response();
+    let headers = response.headers_mut();
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(kind));
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("default-src 'none'; style-src 'unsafe-inline'; sandbox"),
+    );
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    // A screenshot an agent just rewrote is the one you are opening it to see.
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
 /// Whether a preview may read `rel`, before it is resolved on disk.
 ///
 /// **Not the whole workspace**, because the frame runs the page's scripts and a
@@ -185,6 +239,7 @@ fn content_type(rel: &str) -> &'static str {
         "webp" => "image/webp",
         "avif" => "image/avif",
         "ico" => "image/x-icon",
+        "bmp" => "image/bmp",
         "woff" => "font/woff",
         "woff2" => "font/woff2",
         "ttf" => "font/ttf",

@@ -376,7 +376,7 @@ this file, which churned it from every build; that feature is gone.
   the way `docs/traps/macos.md` says it does: a screen recorded on Linux is not
   evidence about the same agent under WebKitGTK's pty on a Mac.
 
-- **An image viewer, and then an image differ.** The file pane can show one file
+- **An image differ.** The file pane can show one file
   and the diff can show one changed file, and neither has an answer for a `.png`:
   `edit::read` refuses a binary file rather than mangling it, and `git diff`
   reports `-` for both counts on one, which the parser surfaces as `binary`. So
@@ -384,14 +384,10 @@ this file, which churned it from every build; that feature is gone.
   whose agents write screenshots, that is the one file type you most want to look
   at without leaving the window.
 
-  Two pieces, and the first is the useful half on its own. **Showing one** needs
-  the bytes to reach the page, which is the open question: a route that serves
-  them with a content type (cheap, cacheable, and a second way into the workspace
-  that `resolve_in_workspace` has to guard exactly as `reveal_path` does), or
-  base64 in the JSON the viewer already fetches (no new route, no new guard, and a
-  third more bytes on a path that has a size cap for good reasons). A size cap and
-  a refusal sentence are needed either way, because the pane already has both for
-  text.
+  **Showing one is done**, and it took the route: `/api/file/image` serves image
+  types only, through `resolve_in_workspace`, under a CSP that forbids scripts,
+  and `viewer.js` paints it as an `<img>`. `preview.rs` says why nothing else goes
+  through it.
 
   **Differing one** is the part with a design question rather than a mechanism.
   Side by side is the least surprising, a slider or an onion-skin reads better for

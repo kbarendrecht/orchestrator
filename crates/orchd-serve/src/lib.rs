@@ -762,6 +762,7 @@ fn daemon_router(app: Arc<AppState>) -> Router {
         .route("/api/pr/:number/open", post(review_api::open_pr))
         .route("/api/pr/:number/fix-pr", post(api::fix_pr))
         .route("/api/preview", post(orchd::preview::open))
+        .route("/api/file/image", get(orchd::preview::image))
         // Outside `/api/`: a sandboxed frame reads it, on a token of its own.
         .route("/preview/:token/*path", get(orchd::preview::serve))
         .route("/ws/events", get(ws::events))

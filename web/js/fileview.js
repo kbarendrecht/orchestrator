@@ -113,6 +113,8 @@ async function show(ws, path, line, last, pinned = false) {
 function renderHead(/** @type {boolean} */ drawn) {
   const can = drawn && viewer().renderable();
   $('fvmode').hidden = !can;
+  // A picture has no source to edit, and the editor's refusal would say so late.
+  $('fvedit').hidden = drawn && viewer().isImage();
   const html = viewer().kind() === 'html';
   $('fvmode').textContent = state.rendered ? 'Source' : html ? 'Preview' : 'Rendered';
   $('fvmode').title = state.rendered

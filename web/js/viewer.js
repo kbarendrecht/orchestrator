@@ -26,6 +26,9 @@ const MARGIN = 80;
  *  tokenises a line at a time here, so the cost is the band; the cap is about the
  *  fetch and the string, not the highlighting. */
 const HUGE = 512 * 1024;
+/** Files shown as a picture rather than as lines: what the daemon's image route
+ *  serves, so the two cannot disagree about which files are pictures. */
+const IMAGE = /\.(png|jpe?g|gif|webp|avif|svg|ico|bmp)$/i;
 
 /**
  * @typedef {{ line: number, last?: number, col: number, len: number }} Spot
@@ -49,7 +52,7 @@ export function create(on) {
    *  ask for its token.
    *
    *  @type {{ file: Loaded | null, spot: Spot | null, from: number, to: number,
-   *           rowH: number, seq: number, mode: 'source' | 'markdown' | 'preview',
+   *           rowH: number, seq: number, mode: 'source' | 'markdown' | 'preview' | 'image',
    *           ws: string | null }} */
   const view = { file: null, spot: null, from: 0, to: 0, rowH: 0, seq: 0, mode: 'source', ws: null };
 
@@ -194,6 +197,37 @@ export function create(on) {
     on.mount.replaceChildren(frame);
   }
 
+  /** Show an image, fetched by the `<img>` itself from `/api/file/image`.
+   *
+   *  **Not through `/api/file`**, which refuses a binary file on purpose rather
+   *  than mangle it into a string. `preview.rs` has the route and why it serves
+   *  pictures and nothing else.
+   *
+   *  @param {string} ws @param {string} path */
+  function paintImage(ws, path) {
+    const mine = ++view.seq;
+    view.file = null;
+    view.spot = null;
+    view.mode = 'image';
+    if (on.path) on.path.textContent = path;
+    if (on.where) on.where.textContent = 'image';
+    const img = /** @type {HTMLImageElement} */ (el('img', 'fvimage'));
+    img.alt = path;
+    img.onload = () => {
+      if (mine === view.seq && on.where) on.where.textContent = `${img.naturalWidth} × ${img.naturalHeight}`;
+    };
+    // An empty pane is indistinguishable from a broken one, for the reason `show` gives.
+    img.onerror = () => {
+      if (mine === view.seq) on.mount.replaceChildren(el('div', 'fnsay', `${path} could not be shown as an image`));
+    };
+    img.src = `${activeCheckout().base}/api/file/image?workspace=${encodeURIComponent(ws)}`
+      + `&path=${encodeURIComponent(path)}`;
+    const box = el('div', 'fvimagebox');
+    box.appendChild(img);
+    on.mount.replaceChildren(box);
+    on.mount.scrollTop = 0;
+  }
+
   /** What the file on screen can be rendered as, if anything. */
   const kind = () => {
     const path = view.file?.path ?? '';
@@ -208,6 +242,9 @@ export function create(on) {
 
     /** `'markdown'`, `'html'` or `null`, for the button that says which. */
     kind,
+
+    /** Whether a picture is on screen, which has no source to edit. */
+    isImage: () => view.mode === 'image',
 
     /** Draw what is loaded as a page. The caller decides when: a line number is
      *  a reason to show the source, and no line number is a reason not to. */
@@ -229,6 +266,10 @@ export function create(on) {
      *  @param {Spot} spot */
     async show(ws, path, spot) {
       view.ws = ws;
+      if (IMAGE.test(path)) {
+        paintImage(ws, path);
+        return true;
+      }
       if (view.file?.path !== path) {
         const mine = ++view.seq;
         let answer;

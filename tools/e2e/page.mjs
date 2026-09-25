@@ -1596,6 +1596,24 @@ try {
   )
   await page.keyboard.press('Escape')
 
+  /* --- an image shows as a picture ------------------------------------------ */
+
+  /* `/api/file` refuses a binary file, so an image goes through its own route and
+     an `<img>`. Asserted on the loaded picture rather than on the element: an
+     `<img>` pointing at a 404 is still an `<img>`. */
+  fs.writeFileSync(path.join(t.worktreePath('page'), 'shot.png'), Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64'))
+  await t.api('POST', '/api/host/open', {
+    url: `orchestrator://open?file=${encodeURIComponent(path.join(t.worktreePath('page'), 'shot.png'))}`,
+  })
+  const pictured = await page.waitForFunction(() => {
+    const img = /** @type {HTMLImageElement | null} */ (document.querySelector('#fvsrc img.fvimage'))
+    return !!img && img.complete && img.naturalWidth === 1
+  }, null, { timeout: 5000 }).then(() => true).catch(() => false)
+  check(pictured, 'an image opens as a picture, and it loads')
+  check(await page.$eval('#fvwhere', (w) => w.textContent) === '1 × 1', 'and the header says its size')
+  check(await page.$eval('#fvedit', (b) => /** @type {HTMLElement} */ (b).hidden), 'and it offers no edit')
+  await page.keyboard.press('Escape')
+
   console.log(`\npage-check: ${failed ? 'FAILED' : 'ok'}`)
 } finally {
   await browser?.close()

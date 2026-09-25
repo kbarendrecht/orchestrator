@@ -2575,6 +2575,16 @@ select.opfield,input.opfield{appearance:none}
    colours, and most of them assume the default white a browser gives it. */
 .fnsrc:has(> .preview){overflow:hidden;display:flex}
 .fnsrc > .preview{flex:1;border:0;background:#fff}
+/* An image, centred and never larger than the pane, on a checkerboard so a
+   transparent one reads as transparent rather than as the pane's background. */
+.fvimagebox{
+  min-height:100%;box-sizing:border-box;padding:20px;
+  display:flex;align-items:center;justify-content:center;
+}
+.fvimage{
+  max-width:100%;max-height:calc(100vh - 160px);object-fit:contain;
+  background:repeating-conic-gradient(var(--line) 0% 25%, transparent 0% 50%) 0 0 / 16px 16px;
+}
 .fnsrc.editing .editarea{flex:1}
 .fnfoot{
   flex:0 0 auto;padding:5px 16px;border-top:1px solid var(--line);
