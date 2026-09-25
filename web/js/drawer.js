@@ -11,7 +11,7 @@
 // It reaches for `term` the way `rail` does — a tab is a terminal — and for
 // nothing else of the SPA's beyond `core`.
 
-import { $, activeCheckout, call, currentSession, currentWorkspaceId, drawerCollapsed, drawerTouched, el, openMenu, pendingProcFocus, procOrder, reason, selectedProc, setDrawerTouched, setPendingProcFocus, setProcOrder, setSelectedProc, snap, toast, unchanged, workspaceById, wsKey } from './core.js';
+import { $, activeCheckout, call, currentSession, currentWorkspaceId, drawerCollapsed, drawerTouched, el, openMenu, pendingProcFocus, procOrder, reason, selectedProc, setDrawerCollapsed, setDrawerTouched, setPendingProcFocus, setProcOrder, setSelectedProc, snap, toast, unchanged, workspaceById, wsKey } from './core.js';
 import * as Term from './term.js';
 
 /* The workspace whose tab strip is being dragged, or null. A snapshot arriving
@@ -296,7 +296,16 @@ export function renderDrawer() {
         : `shell ${shellNo}`)
       : p.name;
     tab.appendChild(el('span', null, label));
-    tab.onclick = () => { setSelectedProc(wsId, p.id); setDrawerTouched(true); renderDrawer(); };
+    /* The selected tab's title is the collapse toggle, and any tab opens a
+       collapsed drawer: `dcollapse` is one small word at the far left, and the
+       tab is where the pointer already is. */
+    tab.onclick = () => {
+      const toggle = collapsed || p.id === active;
+      setSelectedProc(wsId, p.id);
+      setDrawerTouched(true);
+      if (toggle) setDrawerCollapsed(!collapsed);
+      else renderDrawer();
+    };
     /* The tab's menu, which is the same one the pane body offers. It goes here
        rather than on a fourth glyph: the tab already holds a dot, a label, ✕, ⟳
        and a drag, and "type this into your agent" one stray click from Close and
