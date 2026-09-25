@@ -1695,6 +1695,24 @@ try {
   await page.keyboard.press('Escape')
   await page.keyboard.press('Escape')
 
+  /* --- a worktree being cut sits where it will land ------------------------- */
+
+  /* A new session goes to the top of its own group, and main's group is drawn
+     above the worktrees'. The placeholder used to go above everything, so the row
+     you were watching jumped down past main the moment the worktree was done. */
+  await page.$eval('body', (b) => /** @type {HTMLElement} */ (b).focus())
+  await page.keyboard.press(chord('KeyN'))
+  const placed = await page.waitForSelector('#rail .sess.starting', { timeout: 5000 })
+    .then(() => page.$$eval('#rail .sess', (rows) => ({
+      at: rows.findIndex((r) => r.classList.contains('starting')),
+      lastMain: rows.map((r) => !!r.querySelector('.sess-main')).lastIndexOf(true),
+    })))
+    .catch(() => null)
+  check(!!placed && placed.lastMain >= 0 && placed.at > placed.lastMain,
+    `a worktree being cut sits below main's rows, got ${JSON.stringify(placed)}`)
+  await page.waitForFunction(() => !document.querySelector('#rail .sess.starting'), null, { timeout: 20_000 })
+    .catch(() => {})
+
   console.log(`\npage-check: ${failed ? 'FAILED' : 'ok'}`)
 } finally {
   await browser?.close()

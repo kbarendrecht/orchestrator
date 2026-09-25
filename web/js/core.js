@@ -1703,6 +1703,12 @@ export const creating = () => creatingWhat;
 let creatingWhere = null;
 export const creatingIn = () => creatingWhere;
 
+/** Whether the create in flight lands in main, so its placeholder can sit where
+ *  the session will: a new row goes to the top of its own group (`inRailOrder`),
+ *  and main's group is drawn above the worktrees'. */
+let creatingMain = false;
+export const creatingIntoMain = () => creatingMain;
+
 /** Whether the centre pane is still about the create in flight.
  *
  *  **A create is not a modal, and it used to behave like one.** The overlay covers
@@ -1734,13 +1740,14 @@ export function onCreatingChange(/** @type {(what: string | null) => void} */ fn
  *  because the interesting frame is the one where the button goes dead — the
  *  snapshot that would have redrawn it is not promised to arrive while a worktree
  *  is being cut. */
-async function asTheOnlyCreate(/** @type {string} */ what, /** @type {Target} */ where, /** @type {() => Promise<any>} */ go) {
+async function asTheOnlyCreate(/** @type {string} */ what, /** @type {Target} */ where, /** @type {boolean} */ intoMain, /** @type {() => Promise<any>} */ go) {
   if (creatingWhat) {
     toast(`still ${creatingWhat}`);
     return;
   }
   creatingWhat = what;
   creatingWhere = where.path;
+  creatingMain = intoMain;
   // You pressed `+`, so the create is what you are looking at — until you say
   // otherwise by picking a session.
   startingWatched = true;
@@ -1750,6 +1757,7 @@ async function asTheOnlyCreate(/** @type {string} */ what, /** @type {Target} */
   } finally {
     creatingWhat = null;
     creatingWhere = null;
+    creatingMain = false;
     for (const fn of creatingListeners) fn(null);
   }
 }
@@ -1758,7 +1766,8 @@ async function asTheOnlyCreate(/** @type {string} */ what, /** @type {Target} */
  *  @param {Target} [where] the checkout to create in; the active one by default */
 export async function newSession(workspace, where) {
   const target = where ?? activeCheckout();
-  await asTheOnlyCreate('starting a session', target, async () => {
+  const intoMain = workspace === mainWorkspace(snapshotOf(target.path) ?? snap)?.id;
+  await asTheOnlyCreate('starting a session', target, intoMain, async () => {
     try {
       const r = await callOn(target, '/api/session', { workspace });
       if (startingWatched) pendingSelect = r.session;
@@ -1788,7 +1797,7 @@ export async function newWorktree(named, where) {
   // take to type, and holding the claim across it would disable the `+` on a
   // dialog you might cancel.
   const target = where ?? activeCheckout();
-  await asTheOnlyCreate(name ? `creating worktree ${name}` : 'creating a worktree', target, async () => {
+  await asTheOnlyCreate(name ? `creating worktree ${name}` : 'creating a worktree', target, false, async () => {
     try {
       const r = await callOn(target, '/api/worktree', name ? { name } : {});
       /* **Only if you are still watching it.** Landing you on what you asked for is

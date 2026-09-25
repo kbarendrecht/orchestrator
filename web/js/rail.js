@@ -1,7 +1,7 @@
 // The rail: what is running, what is waiting on you, and the PRs beside it.
 // Twenty-four names, three out; the rest is how a row decides what it says.
 
-import { $, activeCheckout, bandOf, byNewest, call, callFor, callHost, callOn, caret, checkoutOf, CHECKOUTS, chooseBox, clock, confirmBox, copyText, creating, creatingIn, dotClass, el, enterCheckout, everySession, getHost, getOn, inTrouble, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, QUEUE_MAX, reason, refreshButton, repoSummary, safeHref, selected, sessionsOf, sessionOrder, setPendingSelect, setSelected, setSessionOrder, snap, snapshotFor, snapshotOf, startingShown, stateClass, stateLabel, terms, toast, paintSig, reconcile, unchanged, watchStarting } from './core.js';
+import { $, activeCheckout, bandOf, byNewest, call, callFor, callHost, callOn, caret, checkoutOf, CHECKOUTS, chooseBox, clock, confirmBox, copyText, creating, creatingIn, creatingIntoMain, dotClass, el, enterCheckout, everySession, getHost, getOn, inTrouble, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, QUEUE_MAX, reason, refreshButton, repoSummary, safeHref, selected, sessionsOf, sessionOrder, setPendingSelect, setSelected, setSessionOrder, snap, snapshotFor, snapshotOf, startingShown, stateClass, stateLabel, terms, toast, paintSig, reconcile, unchanged, watchStarting } from './core.js';
 import * as Open from './open.js';
 import * as Review from './review.js';
 import * as Term from './term.js';
@@ -1097,8 +1097,12 @@ function fillSessions(/** @type {HTMLElement} */ group, /** @type {import('./cor
      and four in which nothing appeared in the rail at all, so the button read as
      dead and pressing again was the reasonable thing to do. The row lands first and
      the real one replaces it, which is what `pendingSelect` was already for.
-     At the top, because it is the newest thing there is. */
-  if (creatingIn() === c.path) items.push({ key: 'starting', sig: chrome, build: () => startingRow() });
+     **Where the session will land**: at the top of its own group, which for a
+     worktree is below main's rows. It sat above them, so the row you watched
+     jumped down past main the moment it was done. */
+  const placeholder = { key: 'starting', sig: chrome, build: () => startingRow() };
+  const starting = creatingIn() === c.path;
+  if (starting && creatingIntoMain()) items.push(placeholder);
 
   /* Newest first until you say otherwise, and then your order — see
      `inRailOrder`. Main stays first whatever the order says: it is the checkout
@@ -1161,6 +1165,7 @@ function fillSessions(/** @type {HTMLElement} */ group, /** @type {import('./cor
       build: () => draggable(sessionRow(s, main, true), s, 'main'),
     });
   }
+  if (starting && !creatingIntoMain()) items.push(placeholder);
   // The workspace is only needed for the name it lends the row.
   for (const s of treeRows) {
     items.push({
