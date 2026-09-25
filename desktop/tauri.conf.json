@@ -16,7 +16,6 @@
     "active": true,
     "targets": [
       "deb",
-      "appimage",
       "dmg"
     ],
     "icon": [
@@ -41,12 +40,6 @@
         "/usr/bin/orchd": "../target/release/orchd"
         },
         "desktopTemplate": "orchestrator.desktop"
-      },
-      "appimage": {
-        "files": {
-          "usr/bin/orch": "../target/release/orch",
-        "usr/bin/orchd": "../target/release/orchd"
-        }
       }
     },
     "macOS": {

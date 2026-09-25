@@ -73,11 +73,11 @@ Each of those installs the app, the `orchd` daemon it runs per checkout, and the
 bar at the top carries an Upgrade button that runs your own channel's command —
 `mise upgrade`, `brew upgrade --cask`, or apt behind a password prompt — and then
 a Restart button, because the running process is the old build until it goes. A
-downloaded `.dmg`, AppImage or tarball gets the release link instead, since there
-is no installer to ask. The
+downloaded `.dmg` or tarball gets the release link instead, since there is no
+installer to ask. The
 [release page](https://github.com/kbarendrecht/orchestrator/releases/latest) also
-attaches a `.dmg`, a `.deb`, an AppImage and a tarball for anyone who would rather
-download one. Apple Silicon and x86-64 Linux are built.
+attaches a `.dmg`, a `.deb` and a tarball for anyone who would rather download
+one. Apple Silicon and x86-64 Linux are built.
 
 Launch it and point it at a git checkout when it asks. That checkout is *main*;
 worktrees are cut inside it under `.claude/worktrees/`. State lives in

@@ -43,7 +43,7 @@ jobs:
       matrix:
         include:
           - os: ubuntu-22.04
-            bundles: deb,appimage
+            bundles: deb
           - os: macos-14
             bundles: app
     runs-on: ${{ matrix.os }}

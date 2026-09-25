@@ -353,7 +353,7 @@ jobs:
       #
       # **Both platforms, and the Linux half needs Xvfb.** This ran on macOS alone
       # to begin with, on the assumption that a runner with no display cannot open a
-      # window — which left the app that ships as a `.deb` and an AppImage built and
+      # window — which left the app that ships as a `.deb` built and
       # never executed, so a Linux #16 would have been caught by nothing but
       # `check-ship` reading a config file. Xvfb is enough: measured locally, and
       # measured again with `WEBKIT_DISABLE_COMPOSITING_MODE=0` forced, because the

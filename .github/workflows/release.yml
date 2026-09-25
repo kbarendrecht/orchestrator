@@ -29,13 +29,11 @@ jobs:
           # build.
           - os: ubuntu-22.04
             slug: x86_64-linux
-            # Both, because they answer different questions: the `.deb` is the one
-            # that installs (menu entry, icon, `orch` on PATH, apt removes it), and
-            # the AppImage is for everything that is not Debian. It is the one that
-            # costs: measured locally, the deb adds seconds to a build that already
-            # happens and weighs 6.5 MB, the AppImage adds ~55s and weighs 79 MB,
-            # because it carries its own GTK/WebKit tree.
-            bundles: deb,appimage
+            # The `.deb` only: it installs (menu entry, icon, `orch` on PATH, the
+            # `orchestrator://` handler, apt removes it). The AppImage was dropped
+            # because it cannot give the whole app — no link handler, no upgrade
+            # from inside — and it cost ~55s and 79 MB a release for that.
+            bundles: deb
           # macos-14 is the Apple Silicon runner, so the host target is
           # aarch64-apple-darwin and no `--target` is needed. Intel Macs are not
           # built for: every Mac sold since 2020 is arm64, and a second runner
@@ -172,7 +170,7 @@ jobs:
           # spend minutes compiling one on every release. This also builds
           # `orchestrator-desktop --release`, which is why that step is gone.
           # Pinned exactly, not `^2`: the bundler decides the layout of the
-          # `.deb`, the AppImage and the `.dmg`, so a minor release of it can change
+          # `.deb` and the `.dmg`, so a minor release of it can change
           # what ships without a line of this repo changing — and a release is the
           # one build nobody re-runs to compare. Bump it deliberately, like the
           # toolchain.
@@ -224,7 +222,7 @@ jobs:
           # Whatever the bundler produced, under its own conventional name: a .deb
           # is named the way apt expects, not the way the tarball is.
           find target/release/bundle -maxdepth 2 -type f \
-            \( -name '*.deb' -o -name '*.AppImage' -o -name '*.dmg' \) \
+            \( -name '*.deb' -o -name '*.dmg' \) \
             -exec mv {} dist/ \;
           # `for f in *` expands once, before the loop writes anything, so the sums
           # do not get sums of their own.

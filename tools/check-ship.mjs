@@ -92,7 +92,6 @@ for (const b of [app.name, ...shipped]) {
 const tauri = JSON.parse(read('desktop/tauri.conf.json'))
 const maps = {
   deb: tauri.bundle?.linux?.deb?.files,
-  appimage: tauri.bundle?.linux?.appimage?.files,
   macOS: tauri.bundle?.macOS?.files,
 }
 
