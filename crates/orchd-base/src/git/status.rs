@@ -37,7 +37,20 @@ pub fn status(cwd: &Path, exclude: Option<&str>, untracked: Untracked) -> Result
         Untracked::Collapsed => "--untracked-files=normal",
         Untracked::Each => "--untracked-files=all",
     };
-    let raw = git_raw(cwd, &["status", "--porcelain=v2", mode, "-z"])?;
+    // `--no-optional-locks`: a plain status takes `index.lock` to write back the
+    // stat cache it refreshed, so the daemon's own polling made a swap, a move out
+    // or their undo fail on "index.lock: File exists" whenever the two met. Git
+    // documents the flag for exactly this, a status run in the background.
+    let raw = git_raw(
+        cwd,
+        &[
+            "--no-optional-locks",
+            "status",
+            "--porcelain=v2",
+            mode,
+            "-z",
+        ],
+    )?;
     Ok(parse_status(&raw, exclude))
 }
 
@@ -52,6 +65,7 @@ pub fn status_of(cwd: &Path, rel: &str) -> Result<FileSet> {
     let raw = git_raw(
         cwd,
         &[
+            "--no-optional-locks",
             "status",
             "--porcelain=v2",
             "--untracked-files=all",

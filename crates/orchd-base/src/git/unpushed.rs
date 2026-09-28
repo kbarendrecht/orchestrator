@@ -97,7 +97,8 @@ pub fn unpushed(cwd: &Path, branch: &str, upstream: &str) -> Result<Unpushed> {
 }
 
 pub fn is_clean(cwd: &Path) -> Result<bool> {
-    let raw = git_raw(cwd, &["status", "--porcelain"])?;
+    // Read-only, so it must not take `index.lock`; see `status`.
+    let raw = git_raw(cwd, &["--no-optional-locks", "status", "--porcelain"])?;
     Ok(raw.iter().all(|b| b.is_ascii_whitespace()))
 }
 
