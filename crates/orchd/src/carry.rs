@@ -138,14 +138,22 @@ pub(crate) async fn move_back(app: &Arc<AppState>, out: &MovedOut) -> anyhow::Re
             wip_error: None,
         },
     );
-    crate::proc::run_blocking("moving the branch back into main", move || {
+    let res = crate::proc::run_blocking("moving the branch back into main", move || {
         crate::git::move_branch_back(&main, &path, &git)
     })
-    .await??;
-    app.inner.write().await.workspaces.remove(&out.name);
+    .await
+    .and_then(|r| r);
+    // The workspace goes with the tree, whichever way the undo ended: a failure after
+    // the removal used to leave it registered for a directory that was gone.
+    if !out.path.exists() {
+        app.inner.write().await.workspaces.remove(&out.name);
+    }
     let _ = app.reconcile(MAIN).await;
+    if out.path.exists() {
+        let _ = app.reconcile(&out.name).await;
+    }
     app.notify().await;
-    Ok(())
+    res
 }
 
 /// A directory-safe stem from a branch name.

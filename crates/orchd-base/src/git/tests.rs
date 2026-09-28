@@ -811,7 +811,9 @@ fn moving_a_branch_back_undoes_a_move_out_of_main() {
     git(&main, &["add", "staged.txt"]).unwrap();
     let dest = main.join(".claude/worktrees/b");
     let moved = move_branch_out(&main, &dest, "develop", "worktree-b").expect("the move");
-    move_branch_back(&main, &dest, &moved).expect("the undo");
+    // What a setup hook leaves behind: untracked, and not ignored.
+    std::fs::write(dest.join("hook-output.txt"), "made by setup\n").unwrap();
+    move_branch_back(&main, &dest, &moved).expect("the undo, untracked hook output and all");
 
     assert!(!dest.exists(), "the tree cut for the move is gone");
     assert_eq!(current_branch(&main).unwrap(), "feature/b");
@@ -848,6 +850,49 @@ fn moving_a_branch_back_undoes_a_move_out_of_main() {
         std::fs::read_to_string(main.join("f.txt")).unwrap(),
         "started in main on develop\n"
     );
+}
+
+/// An undo that main refuses changes nothing: the tree keeps its branch and its
+/// work. The refusal here is the ordinary one — main has picked up an untracked
+/// file the branch tracks, so switching would overwrite it.
+#[test]
+fn a_refused_move_back_leaves_the_tree_and_its_work_alone() {
+    let dir = std::env::temp_dir().join(format!(
+        "orchd-moveback-refused-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let main = dir.join("repo");
+    git(&dir, &["init", "-q", "-b", "develop", "repo"]).unwrap();
+    git(&main, &["config", "user.email", "t@t"]).unwrap();
+    git(&main, &["config", "user.name", "t"]).unwrap();
+    std::fs::write(main.join("f.txt"), "base\n").unwrap();
+    git(&main, &["add", "-A"]).unwrap();
+    git(&main, &["commit", "-qm", "base"]).unwrap();
+    git(&main, &["switch", "-qc", "feature/b"]).unwrap();
+    std::fs::write(main.join("tracked-on-b.txt"), "b\n").unwrap();
+    git(&main, &["add", "-A"]).unwrap();
+    git(&main, &["commit", "-qm", "b"]).unwrap();
+    std::fs::write(main.join("f.txt"), "unsaved on b\n").unwrap();
+
+    let dest = main.join(".claude/worktrees/b");
+    let moved = move_branch_out(&main, &dest, "develop", "worktree-b").expect("the move");
+    std::fs::write(main.join("tracked-on-b.txt"), "main's own\n").unwrap();
+
+    move_branch_back(&main, &dest, &moved).expect_err("main cannot take the branch back");
+    assert_eq!(
+        current_branch(&dest).unwrap(),
+        "feature/b",
+        "the tree is back on its branch"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dest.join("f.txt")).unwrap(),
+        "unsaved on b\n",
+        "and its work is back in it"
+    );
+    assert_eq!(current_branch(&main).unwrap(), "develop");
 }
 
 /// Removal is a backstop, so "already gone" is a success.

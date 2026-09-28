@@ -935,29 +935,78 @@ pub fn move_branch_out(main: &Path, dest: &Path, base: &str, new_branch: &str) -
 /// and the branch holds no commit of its own. A handed-over branch goes back into
 /// main.
 pub fn move_branch_back(main: &Path, dest: &Path, moved: &MovedOut) -> Result<()> {
+    let branch = &moved.branch;
     let wip = capture_wip(dest)?;
-    if let Err(e) = worktree_remove(main, dest) {
-        let mut err = e.context(format!(
-            "the tree for {} could not be removed",
-            moved.branch
-        ));
-        if let Some(sha) = &wip {
-            if let Err(back) = apply_wip(dest, sha, "the move was being undone") {
-                err = err.context(format!(
+    // Where the work is, for every error below: a stash commit is unreachable, so an
+    // error that does not name it has lost the work as surely as a delete.
+    let named = |e: anyhow::Error| match &wip {
+        Some(sha) => e.context(format!("the uncommitted work is in commit {sha}")),
+        None => e,
+    };
+    // Back into the tree it came from, for a failure that leaves the tree standing.
+    let restore = |e: anyhow::Error| -> anyhow::Error {
+        match &wip {
+            Some(sha) => match apply_wip(dest, sha, "the move was being undone") {
+                Ok(()) => e,
+                Err(back) => e.context(format!(
                     "and its uncommitted work is still in commit {sha}: {back:#}"
-                ));
-            }
+                )),
+            },
+            None => e,
         }
-        return Err(err);
+    };
+
+    /* **Main takes the branch back before the tree goes**, so no step that can fail
+    comes after the work has left the tree. Detaching the tree is what frees the
+    branch for main; a switch that fails then puts the tree back on it, with its
+    work, and nothing has moved. It used to remove the tree first, and a switch
+    refused after that returned before the work was applied anywhere. */
+    if !moved.created {
+        if let Err(e) = switch_detach(dest) {
+            return Err(restore(
+                e.context(format!("{branch} could not be freed from its tree")),
+            ));
+        }
+        if let Err(e) = switch_branch(main, branch) {
+            let _ = switch_branch(dest, branch);
+            return Err(restore(
+                e.context(format!("main could not take {branch} back")),
+            ));
+        }
     }
-    if moved.created {
-        branch_delete(main, &moved.branch)?;
-    } else {
-        switch_branch(main, &moved.branch)
-            .with_context(|| format!("main could not take {} back", moved.branch))?;
+
+    /* `--force`, because the tree holds untracked files the undo cannot bank:
+    whatever the repo's worktree hooks made in a tree this daemon cut a moment ago.
+    A plain remove refused every undo in a repo whose setup writes a file git does
+    not ignore. The tracked work is banked above; the rest is the hooks' output. */
+    let at = dest.to_string_lossy().into_owned();
+    if let Err(e) = git(main, &["worktree", "remove", "--force", "--force", &at]) {
+        let e = e.context(format!("the tree for {branch} could not be removed"));
+        // A handed-over branch is in main by now, so its work goes there.
+        return Err(if moved.created {
+            restore(e)
+        } else {
+            match &wip {
+                Some(sha) => match apply_wip(main, sha, "the move was undone") {
+                    Ok(()) => e,
+                    Err(back) => named(e.context(format!("{back:#}"))),
+                },
+                None => e,
+            }
+        });
     }
+
     if let Some(sha) = &wip {
-        apply_wip(main, sha, "the move was undone")?;
+        apply_wip(main, sha, "the move was undone").map_err(named)?;
+    }
+    // Last, because it is the one step that can fail with the work already home: a
+    // branch cut for the move and left behind costs a name and nothing else.
+    if moved.created {
+        branch_delete(main, branch).map_err(|e| {
+            e.context(format!(
+                "the work is back in main; the empty branch {branch} is left over"
+            ))
+        })?;
     }
     Ok(())
 }
