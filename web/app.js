@@ -790,6 +790,14 @@ function renderContext() {
      making it. `branch` is what the tree has checked out now, which is what a
      header beside the session's name means. */
   $('ctxbranch').textContent = (w && w.branch) || '';
+  /* The worktree, beside its branch. A name you typed or Claude's title says which
+     conversation; this says which tree it is in, which the rail's grouping shows
+     and the pane did not. Left out when the name already is the workspace, the
+     fallback for a session with no title, or the header says it twice. */
+  const wsLabel = wsId ? (w?.is_main ? 'main' : wsId) : '';
+  const ws = $('ctxws');
+  ws.textContent = wsLabel;
+  ws.hidden = !wsLabel || $('ctxname').textContent === wsLabel;
   const pr = wsId ? prForWorkspace(wsId) : null;
   const bits = [];
   if (s) bits.push(stateLabel(s));

@@ -255,6 +255,14 @@ body[data-chrome="custom"] .resizers{display:block}
 
 /* ---------- context bar ---------- */
 .ctx-name{font-family:var(--mono);font-size:calc(11.5px * var(--fs));color:var(--text);flex:0 0 auto}
+/* The worktree reads before its branch and a step brighter: it is where you are,
+   the branch is what that place holds. The branch is the one that gives way first
+   when the bar is short, since the rail and the changes pane both name it too. */
+.ctx-ws{font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--dim);white-space:nowrap;flex:0 0 auto}
+.ctx-ws[hidden]{display:none}
+/* A slash between the two, only when both are there: side by side they read as
+   one phrase, `page worktree-page`. */
+.ctx-ws:not([hidden]) + .ctx-branch:not(:empty)::before{content:'/';margin-right:8px;color:var(--ghost)}
 .ctx-branch{font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ctx-pr{font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--dim);white-space:nowrap;flex:0 1 auto;overflow:hidden;text-overflow:ellipsis}
 .ctx-sep{color:var(--ghost);font-size:calc(10.5px * var(--fs))}
