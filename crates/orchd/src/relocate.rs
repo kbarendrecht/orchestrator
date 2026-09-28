@@ -184,7 +184,7 @@ async fn swap_with_main_inner(
     // choosing as we go would let the second choice see the session the first one
     // just delivered — for the moment in between, both live in the worktree — and
     // send it straight back.
-    let (_, outgoing_records) = to_carry(&app, MAIN, &main_was).await;
+    let (_, mut outgoing_records) = to_carry(&app, MAIN, &main_was).await;
     let (on_branch, incoming_records) = to_carry(&app, &workspace, &tree_was).await;
     let outgoing = live_in(&app, MAIN).await;
     let several = app.settings().allow_several_in_main;
@@ -275,10 +275,24 @@ async fn swap_with_main_inner(
     let mut into_worktree = Vec::new();
     let mut into_main = Vec::new();
     let mut failure = None;
-    'moves: for (ids, dest, from, landed) in [
+    let mut records_out = Vec::new();
+    'moves: for (phase, (ids, dest, from, landed)) in [
         (outgoing, workspace.as_str(), MAIN, &mut into_worktree),
         (incoming, MAIN, workspace.as_str(), &mut into_main),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        /* Main's stopped sessions leave before anything arrives, not after. A session
+        auto-resume has not reached yet is one of them, and it holds main
+        (`AppState::waiting_in_main`), so while it was still there the arrival was
+        refused and every swap in the first seconds after a launch undid itself. */
+        if phase == 1 {
+            for id in &outgoing_records {
+                carry_record(&app, *id, &workspace, &tree, &swapped.worktree_now).await;
+            }
+            records_out = std::mem::take(&mut outgoing_records);
+        }
         for id in ids {
             let was = state_of(&app, id).await;
             match spawn::relocate_session(&app, id, dest, CARRY_GRACE).await {
@@ -309,7 +323,11 @@ async fn swap_with_main_inner(
     if let Some((failed, e)) = failure {
         let why = format!("{e:#}");
         let restored: Vec<_> = journal.iter().map(|l| l.original).collect();
-        match undo_swap(&app, &main, &tree, &workspace, &swapped, journal, failed).await {
+        let undo = Undo {
+            moves: journal,
+            records_out,
+        };
+        match undo_swap(&app, &main, &tree, &workspace, &swapped, undo, failed).await {
             Ok(()) => {
                 tracing::warn!(%workspace, %why, ?restored, "swap undone");
                 refuse_busy!("swap failed, nothing moved: {why}");
@@ -324,9 +342,6 @@ async fn swap_with_main_inner(
     // The conversations that were not running. No process work, so these cannot
     // fail the swap and are not reported back as a carry: the rail simply shows
     // them where their branch went.
-    for id in outgoing_records {
-        carry_record(&app, id, &workspace, &tree, &swapped.worktree_now).await;
-    }
     for id in incoming_records {
         carry_record(&app, id, MAIN, &main, &swapped.main_now).await;
     }
@@ -468,7 +483,20 @@ pub async fn move_out_of_main(
             Err(e) => {
                 let why = format!("{e:#}");
                 let back = crate::carry::move_back(&app, &out).await;
-                let home = spawn::relocate_back(&app, id, MAIN, CARRY_GRACE, &was).await;
+                /* Home is wherever the branch is now: main when the move came back,
+                the new tree when it could not. And an empty session whose fresh
+                start failed has no record left — the exit watcher drops a session
+                that never had a turn — so there is nothing to bring home, which
+                is not a failure of the undo. The swap's undo makes the same check. */
+                let to = if back.is_ok() { MAIN } else { name.as_str() };
+                let exists = app.inner.read().await.sessions.contains_key(&id);
+                let home = if exists {
+                    spawn::relocate_back(&app, id, to, CARRY_GRACE, &was)
+                        .await
+                        .map(|_| ())
+                } else {
+                    Ok(())
+                };
                 match (back, home) {
                     (Ok(()), Ok(_)) => {
                         tracing::warn!(session = %id, %why, "move out of main undone");
@@ -558,6 +586,14 @@ fn moved_json(moved: &spawn::Relocated) -> serde_json::Value {
     })
 }
 
+/// What a swap did before it failed, in the order it did it.
+struct Undo {
+    /// Each live session that landed, oldest move first.
+    moves: Vec<Landed>,
+    /// Main's stopped sessions, carried out before anything arrived.
+    records_out: Vec<SessionId>,
+}
+
 /// A session the swap moved, and how to send it back.
 struct Landed {
     /// Its id now: the same one after a resume, a new one after a fork or a fresh
@@ -597,9 +633,13 @@ async fn undo_swap(
     tree: &std::path::Path,
     workspace: &str,
     swapped: &crate::git::Swap,
-    journal: Vec<Landed>,
+    undo: Undo,
     failed: Landed,
 ) -> anyhow::Result<()> {
+    let Undo {
+        moves: journal,
+        records_out,
+    } = undo;
     let mut left = Vec::new();
     let (m, t) = (main.to_path_buf(), tree.to_path_buf());
     match tokio::task::spawn_blocking(move || crate::git::swap_branches(&m, &t)).await {
@@ -615,6 +655,11 @@ async fn undo_swap(
     let _ = app.reconcile(MAIN).await;
     let _ = app.reconcile(workspace).await;
 
+    // Main's stopped sessions, carried out before the arrivals, come home first so
+    // main is as it was before any live session returns to it.
+    for id in records_out {
+        carry_record(app, id, MAIN, main, &swapped.worktree_now).await;
+    }
     for moved in journal.into_iter().rev() {
         if let Err(e) =
             spawn::relocate_back(app, moved.now, &moved.from, CARRY_GRACE, &moved.was).await
