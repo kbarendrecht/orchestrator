@@ -19,7 +19,7 @@ use serde_json::json;
 use std::sync::Arc;
 use uuid::Uuid;
 
-use crate::api::{refuse, ApiError, ApiResult};
+use crate::api::{refuse, refuse_busy, ApiError, ApiResult};
 use crate::model::*;
 use crate::spawn;
 use crate::state::AppState;
@@ -263,13 +263,61 @@ async fn swap_with_main_inner(
     // the arrival is refused outright ("main is occupied by …"). Vacating makes the
     // room. Found by driving a two-way swap against a real daemon, not by reading it.
 
+    /* **All or nothing, and the undo is the transaction.** Git and a starting
+    `claude` cannot share a lock, so a session that will not start at the far end is
+    found out after the branches have moved. Every move that landed is written down
+    as it lands, and a failure walks the list back: the branches swap back, each
+    arrived session goes home, and the one that failed is resumed where it was.
+    A fork that stays up is not a failure — the conversation did arrive, under a
+    new id — so only a session that could not be started at all undoes the swap. */
+    let mut journal = Vec::new();
     let mut into_worktree = Vec::new();
-    for id in outgoing {
-        into_worktree.push(spawn::relocate_session(&app, id, &workspace, CARRY_GRACE).await);
-    }
     let mut into_main = Vec::new();
-    for id in incoming {
-        into_main.push(spawn::relocate_session(&app, id, MAIN, CARRY_GRACE).await);
+    let mut failure = None;
+    'moves: for (ids, dest, from, landed) in [
+        (outgoing, workspace.as_str(), MAIN, &mut into_worktree),
+        (incoming, MAIN, workspace.as_str(), &mut into_main),
+    ] {
+        for id in ids {
+            let was = state_of(&app, id).await;
+            match spawn::relocate_session(&app, id, dest, CARRY_GRACE).await {
+                Ok(moved) => {
+                    journal.push(Landed {
+                        now: moved.id,
+                        original: id,
+                        from: from.to_string(),
+                        was,
+                    });
+                    landed.push(moved);
+                }
+                Err(e) => {
+                    failure = Some((
+                        Landed {
+                            now: id,
+                            original: id,
+                            from: from.to_string(),
+                            was,
+                        },
+                        e,
+                    ));
+                    break 'moves;
+                }
+            }
+        }
+    }
+    if let Some((failed, e)) = failure {
+        let why = format!("{e:#}");
+        let restored: Vec<_> = journal.iter().map(|l| l.original).collect();
+        match undo_swap(&app, &main, &tree, &workspace, &swapped, journal, failed).await {
+            Ok(()) => {
+                tracing::warn!(%workspace, %why, ?restored, "swap undone");
+                refuse_busy!("swap failed, nothing moved: {why}");
+            }
+            Err(left) => {
+                tracing::error!(%workspace, %why, "swap failed and the undo did not finish: {left:#}");
+                refuse!("swap failed and could not be fully undone: {why}. {left:#}");
+            }
+        }
     }
 
     // The conversations that were not running. No process work, so these cannot
@@ -289,7 +337,7 @@ async fn swap_with_main_inner(
         (&into_worktree, &swapped.worktree_now, &main, &tree, false),
         (&into_main, &swapped.main_now, &tree, &main, true),
     ] {
-        for moved in moved.iter().flatten() {
+        for moved in moved.iter() {
             let notice = arrival_notice(&app, branch, from, to, into_main);
             let mut inner = app.inner.write().await;
             if let Some(s) = inner.sessions.get_mut(&moved.id) {
@@ -304,14 +352,9 @@ async fn swap_with_main_inner(
     let select = into_main
         .iter()
         .chain(&into_worktree)
-        .find_map(|r| r.as_ref().ok())
+        .next()
         .map(|r| r.id.to_string());
-    let landed = |v: &[anyhow::Result<spawn::Relocated>]| -> Vec<SessionId> {
-        v.iter()
-            .filter_map(|r| r.as_ref().ok())
-            .map(|r| r.id)
-            .collect()
-    };
+    let landed = |v: &[spawn::Relocated]| -> Vec<SessionId> { v.iter().map(|r| r.id).collect() };
 
     tracing::info!(
         %workspace,
@@ -334,10 +377,10 @@ async fn swap_with_main_inner(
         "select": select,
         // The first of each, for callers that read one; the whole lists beside them,
         // since main now sends every live session out and several may come in.
-        "into_main": carried_json(&into_main.first()),
-        "into_worktree": carried_json(&into_worktree.first()),
-        "moved_in": into_main.iter().map(|r| carried_json(&Some(r))).collect::<Vec<_>>(),
-        "moved_out": into_worktree.iter().map(|r| carried_json(&Some(r))).collect::<Vec<_>>(),
+        "into_main": into_main.first().map_or(serde_json::Value::Null, moved_json),
+        "into_worktree": into_worktree.first().map_or(serde_json::Value::Null, moved_json),
+        "moved_in": into_main.iter().map(moved_json).collect::<Vec<_>>(),
+        "moved_out": into_worktree.iter().map(moved_json).collect::<Vec<_>>(),
         // A partial success, said as one: the branches moved, this did not. The
         // message names the WIP commit the work is still in.
         "wip_error": swapped.wip_error,
@@ -512,7 +555,7 @@ pub async fn move_out_of_main(
         "branch": moved.branch,
         "created": moved.created,
         "main": moved.base,
-        "session": carried_json(&carried.as_ref()),
+        "session": carried_json(&carried),
         "wip_error": moved.wip_error,
         // Named, not counted, for the reason the swap gives: which files stayed is
         // the difference between fetching them and wondering what you lost.
@@ -563,21 +606,152 @@ fn free_worktree_name(app: &Arc<AppState>, stem: &str) -> String {
 ///
 /// `null` is its own answer and not an error: it means there was nothing in that
 /// tree to move, which is the ordinary case for a swap into an empty main.
-fn carried_json(r: &Option<&anyhow::Result<spawn::Relocated>>) -> serde_json::Value {
+fn carried_json(r: &Option<anyhow::Result<spawn::Relocated>>) -> serde_json::Value {
     match r {
         None => serde_json::Value::Null,
-        Some(Ok(moved)) => json!({
-            "session": moved.id.to_string(),
-            // A fork, not the move that was promised — the id changed, so the rail
-            // is about to show a second row and it is worth saying why.
-            "degraded": moved.degraded,
-            "error": serde_json::Value::Null,
-        }),
+        Some(Ok(moved)) => moved_json(moved),
         Some(Err(e)) => json!({
             "session": serde_json::Value::Null,
             "degraded": false,
             "error": format!("{e:#}"),
         }),
+    }
+}
+
+/// One move that landed, as the SPA reads it.
+fn moved_json(moved: &spawn::Relocated) -> serde_json::Value {
+    json!({
+        "session": moved.id.to_string(),
+        // A fork, not the move that was promised — the id changed, so the rail is
+        // about to show a second row and it is worth saying why.
+        "degraded": moved.degraded,
+        "error": serde_json::Value::Null,
+    })
+}
+
+/// A session the swap moved, and how to send it back.
+struct Landed {
+    /// Its id now: the same one after a resume, a new one after a fork or a fresh
+    /// start.
+    now: SessionId,
+    /// Its id before the move, which is what a fork left behind as a stopped record.
+    original: SessionId,
+    /// The workspace it came from.
+    from: String,
+    /// Its state before the move, so it comes back at the turn it was sitting on.
+    was: crate::model::State,
+}
+
+async fn state_of(app: &Arc<AppState>, id: SessionId) -> crate::model::State {
+    let inner = app.inner.read().await;
+    inner
+        .sessions
+        .get(&id)
+        .map(|s| s.state.clone())
+        .unwrap_or(crate::model::State::Starting)
+}
+
+/// Put a swap back: the branches, then every session that moved, then the one that
+/// failed to.
+///
+/// Branches first, so each session is resumed into a tree that holds its own branch
+/// again. The arrivals go back newest-first, which empties main before main's own
+/// sessions return to it. The failed one last: its record is wherever the failure
+/// left it — still at home, or at the far end after a start that died — and
+/// `relocate_back` moves it home from either.
+///
+/// Every step is tried even when one before it fails, and the failures are named
+/// together: a half-finished undo that stops at the first error hides the rest.
+async fn undo_swap(
+    app: &Arc<AppState>,
+    main: &std::path::Path,
+    tree: &std::path::Path,
+    workspace: &str,
+    swapped: &crate::git::Swap,
+    journal: Vec<Landed>,
+    failed: Landed,
+) -> anyhow::Result<()> {
+    let mut left = Vec::new();
+    let (m, t) = (main.to_path_buf(), tree.to_path_buf());
+    match tokio::task::spawn_blocking(move || crate::git::swap_branches(&m, &t)).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => left.push(format!(
+            "the branches stay swapped ({} in main, {} in {workspace}): {e:#}",
+            swapped.main_now, swapped.worktree_now
+        )),
+        Err(e) => left.push(format!("swapping the branches back panicked: {e}")),
+    }
+    app.forget_branch(workspace, &swapped.main_now).await;
+    app.forget_branch(MAIN, &swapped.worktree_now).await;
+    let _ = app.reconcile(MAIN).await;
+    let _ = app.reconcile(workspace).await;
+
+    for moved in journal.into_iter().rev() {
+        if let Err(e) =
+            spawn::relocate_back(app, moved.now, &moved.from, CARRY_GRACE, &moved.was).await
+        {
+            left.push(format!(
+                "{} is stopped outside {}: {e:#}",
+                crate::model::short_id(&moved.now),
+                moved.from
+            ));
+        }
+        // A fork leaves the original behind at the far end as a stopped record, and it
+        // is about the same branch, so it goes home too.
+        if moved.now != moved.original {
+            // Its branch is the one its home tree holds again after the swap back.
+            let branch = if moved.from == MAIN {
+                &swapped.worktree_now
+            } else {
+                &swapped.main_now
+            };
+            if let Some(path) = app.workspace_path(&moved.from).await {
+                carry_record(app, moved.original, &moved.from, &path, branch).await;
+            }
+        }
+    }
+    // An empty session that failed to start fresh has no record left: its old one
+    // had no turn, so the exit watcher dropped it, and there is nothing to bring back.
+    let exists = app.inner.read().await.sessions.contains_key(&failed.now);
+    if exists {
+        // A fork tried as the fallback and died too sits at the far end as a stopped
+        // record about the same branch, so it goes home with the one it forked from.
+        let forks: Vec<_> = {
+            let inner = app.inner.read().await;
+            inner
+                .sessions
+                .values()
+                .filter(|s| s.forked_from == Some(failed.original) && s.workspace != failed.from)
+                .map(|s| s.id)
+                .collect()
+        };
+        let branch = if failed.from == MAIN {
+            &swapped.worktree_now
+        } else {
+            &swapped.main_now
+        };
+        if let Some(path) = app.workspace_path(&failed.from).await {
+            for fork in forks {
+                carry_record(app, fork, &failed.from, &path, branch).await;
+            }
+        }
+    }
+    if exists {
+        if let Err(e) =
+            spawn::relocate_back(app, failed.now, &failed.from, CARRY_GRACE, &failed.was).await
+        {
+            left.push(format!(
+                "{} could not be resumed in {}; it is stopped and resumable from the rail: {e:#}",
+                crate::model::short_id(&failed.now),
+                failed.from
+            ));
+        }
+    }
+    app.notify().await;
+    if left.is_empty() {
+        Ok(())
+    } else {
+        anyhow::bail!("{}", left.join("; "))
     }
 }
 

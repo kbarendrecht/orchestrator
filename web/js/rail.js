@@ -2103,16 +2103,14 @@ async function swapWithMain(wsId, s) {
     // Land in main, where the branch now is — the whole point of pressing this.
     if (r.select) setPendingSelect(r.select);
     toast(`main is on ${r.main}; ${wsId} is on ${r.worktree}${inCheckout(s)}`);
-    // The branches moved even if a conversation could not follow, so these are
-    // second lines rather than errors over the top of a success.
+    // A session that could not follow undoes the whole swap and lands in the catch
+    // below, so what is left to say about a move that worked is a fork: the id
+    // changed, so there is a new row rather than the one you were looking at.
     for (const [dir, where] of [
       ...r.moved_in.map((/** @type {any} */ d) => [d, 'into main']),
       ...r.moved_out.map((/** @type {any} */ d) => [d, `into ${wsId}`]),
     ]) {
-      if (dir.error) toast(`the branches swapped, but ${dir.error}`, true);
-      // A fork, not the move that was promised: the id changed, so there is a new
-      // row rather than the one you were looking at.
-      else if (dir.degraded) toast(`the conversation ${where} would not resume, so it was forked instead`, true);
+      if (dir.degraded) toast(`the conversation ${where} would not resume, so it was forked instead`, true);
     }
     // The other partial success: the branches exchanged but the banked work would
     // not re-apply. A second line for the same reason the relocation errors are —

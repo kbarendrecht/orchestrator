@@ -57,6 +57,22 @@ if (!pluginDir || !fs.existsSync(path.join(pluginDir, 'skills/orch/SKILL.md'))) 
   )
 }
 
+// A resume that will not stay up, which is what a move's undo exists for and what
+// no real agent can be asked to do on cue. The file holds `skip,die`: let the next
+// `skip` resumes through, then make `die` of them exit at once (forks count, since
+// a fork is a resume too). Each one counts down, so a flow can pick which move in a
+// swap fails, fail its fork fallback as well, and still let the undo's own resumes
+// through.
+const dieFile = process.env.ORCH_E2E_DIR && path.join(process.env.ORCH_E2E_DIR, 'die-on-resume')
+if (resumeOf && dieFile && fs.existsSync(dieFile)) {
+  const [skip, die] = fs.readFileSync(dieFile, 'utf8').trim().split(',').map(Number)
+  if (skip > 0) fs.writeFileSync(dieFile, `${skip - 1},${die}`)
+  else if (die > 0) {
+    fs.writeFileSync(dieFile, `0,${die - 1}`)
+    process.exit(1)
+  }
+}
+
 /** Claude Code keys its transcript dir by cwd, slugging every `/` *and* `.`. */
 const transcriptDir = (cwd) =>
   path.join(home, '.claude/projects', cwd.replaceAll(/[/.]/g, '-'))

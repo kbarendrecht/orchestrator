@@ -99,6 +99,33 @@ pub async fn relocate_session(
     dest_workspace: &str,
     grace: std::time::Duration,
 ) -> Result<Relocated> {
+    relocate(app, id, dest_workspace, grace, None).await
+}
+
+/// Move a conversation back where it came from, as it stood before it left.
+///
+/// The undo of a move that failed part way. [`relocate_session`] stamps the state
+/// to come back in from the session as it is *now*, and a session killed on its way
+/// out is `Exited` by then, so it would come back at an empty prompt rather than
+/// at the finished turn it was sitting on. `was` is the state it had before the
+/// first move.
+pub async fn relocate_back(
+    app: &Arc<AppState>,
+    id: SessionId,
+    dest_workspace: &str,
+    grace: std::time::Duration,
+    was: &State,
+) -> Result<Relocated> {
+    relocate(app, id, dest_workspace, grace, Some(at_rest(was))).await
+}
+
+async fn relocate(
+    app: &Arc<AppState>,
+    id: SessionId,
+    dest_workspace: &str,
+    grace: std::time::Duration,
+    comes_back_as: Option<Option<State>>,
+) -> Result<Relocated> {
     let dest_path = app
         .workspace_path(dest_workspace)
         .await
@@ -113,7 +140,7 @@ pub async fn relocate_session(
             .sessions
             .get_mut(&id)
             .with_context(|| format!("unknown session {}", crate::model::short_id(&id)))?;
-        s.comes_back_as = at_rest(&s.state);
+        s.comes_back_as = comes_back_as.unwrap_or_else(|| at_rest(&s.state));
         (
             s.cwd.clone(),
             s.workspace.clone(),
@@ -284,20 +311,27 @@ pub(crate) async fn insert_and_spawn(
     unset: &[&str],
 ) -> Result<crate::pty::Spawned> {
     crate::headroom::check().map_err(|why| anyhow::anyhow!("not starting a session: {why}"))?;
-    {
+    let previous = {
         let mut inner = app.inner.write().await;
         /* The bar reports the *last* attempt, the way `pr_error` reports the last
         poll, so a new one clears it here rather than at each of the ten sites that
         set `had_a_turn` — nine of which would have been the site somebody forgot.
         A press that fails again puts it straight back, ~50ms later. */
         inner.agent_error = None;
-        inner.sessions.insert(id, session);
-    }
+        inner.sessions.insert(id, session)
+    };
     let spawned = match PtyHandle::spawn(cmd, cwd, env, unset, DEFAULT_SIZE) {
         Ok(spawned) => spawned,
         Err(e) => {
+            // A resume reuses the id, so the insert replaced the record it continues.
+            // Put that one back rather than leave nothing: a move whose far end would
+            // not start is undone from this record, and without it the conversation
+            // was a transcript file with no row.
             let mut inner = app.inner.write().await;
-            inner.sessions.remove(&id);
+            match previous {
+                Some(prev) => inner.sessions.insert(id, prev),
+                None => inner.sessions.remove(&id),
+            };
             return Err(e);
         }
     };
@@ -2414,6 +2448,36 @@ mod tests {
             !app.inner.read().await.sessions.contains_key(&id),
             "the record must not outlive the attempt"
         );
+    }
+
+    /// A resume reuses the id, so its insert replaced the record it continues. A
+    /// spawn that then fails puts that record back: it is what a move's undo moves
+    /// home, and removing it left the conversation as a transcript with no row.
+    #[tokio::test]
+    async fn a_refused_resume_puts_the_record_it_replaced_back() {
+        let (app, dir) = crate::testutil::app("refused-resume");
+
+        let id = Uuid::new_v4();
+        let mut before = Session::new(id, "invoice".to_string(), dir.clone(), None);
+        before.had_a_turn = true;
+        before.set_state(State::Exited);
+        app.inner.write().await.sessions.insert(id, before);
+
+        let resumed = Session::new(id, MAIN.to_string(), dir.clone(), None);
+        let cmd = ["orchd-no-such-binary-ever".to_string()];
+        let err = insert_and_spawn(&app, id, resumed, &cmd, &dir, &[], &[]).await;
+
+        assert!(err.is_err(), "a missing binary is a failed spawn");
+        let inner = app.inner.read().await;
+        let kept = inner
+            .sessions
+            .get(&id)
+            .expect("the record it replaced is back");
+        assert_eq!(
+            kept.workspace, "invoice",
+            "and it is the old record, not the new one"
+        );
+        assert!(kept.had_a_turn);
     }
 
     #[tokio::test]

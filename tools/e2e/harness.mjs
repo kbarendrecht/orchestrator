@@ -418,6 +418,9 @@ export async function sandbox({
     /** How many turns the next spawned agent takes on its own. */
     setTurns: (n) => fs.writeFileSync(path.join(root, 'turns'), String(n)),
 
+    /** Let `skip` resumes through, then make the next `die` exit at once, forks included. */
+    dieOnResume: (skip, die) => fs.writeFileSync(path.join(root, 'die-on-resume'), `${skip},${die}`),
+
     /** Hold every agent turn open, or let go.
      *
      *  For the refusals that only exist while an agent is mid-turn — a swap, a move
