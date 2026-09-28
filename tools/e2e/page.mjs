@@ -654,6 +654,19 @@ try {
   check(await branch?.isEnabled() === true, 'and a worktree session has a branch to copy')
   await page.keyboard.press('Escape')
 
+  /* A rename that changes nothing still has to put the row back. It changes no
+     signature, so the rail skipped the redraw and the input stayed, deaf to Enter
+     and Escape. Both ways out, since Escape and an unchanged Enter take the same
+     path through `finish`. */
+  for (const key of ['Escape', 'Enter']) {
+    await (await rowMenu('rename'))?.click()
+    await page.waitForSelector('#rail .sess-rename', { timeout: 5000 })
+    await page.keyboard.press(key)
+    const gone = await page.waitForFunction(() => !document.querySelector('#rail .sess-rename'),
+      null, { timeout: 3000 }).then(() => true, () => false)
+    check(gone, `${key} on an unchanged rename puts the row back`)
+  }
+
   const move = await rowMenu('move to main')
   check(!!move, 'the row offers a move')
   await move?.click()

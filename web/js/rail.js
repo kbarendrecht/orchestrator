@@ -1700,9 +1700,13 @@ function railName(/** @type {import('../snapshot').SessionView} */ s, /** @type 
   // A pass's workspace is `pr-10006`, which repeats the number it is about to
   // print and says nothing else. The PR's own title is already in the snapshot,
   // put there for the pane at the bottom of this rail.
+  // A name you typed wins over the PR's title, and keeps the number in front: the
+  // row below says only which pass it is, so the number is what says which PR.
+  // It used to be ignored here, so a rename saved and the row never changed.
   if (s.pass) {
     const pr = (snapshotFor(s.id).prs || []).find((p) => p.number === s.pass?.pr);
-    return pr ? `#${s.pass.pr} ${pr.title}` : `#${s.pass.pr}`;
+    const called = s.name || pr?.title;
+    return called ? `#${s.pass.pr} ${called}` : `#${s.pass.pr}`;
   }
   return s.title || w?.id || '';
 }
@@ -2188,6 +2192,11 @@ function renameSession(/** @type {import('../snapshot').SessionView} */ s) {
     done = true;
     const given = input.value.trim();
     editingName = null;           // let the rail rebuild again before the await.
+    /* The name goes back here, not only through the rebuild below. A rename that
+       changed nothing — Escape, or Enter on the same name — changes no signature,
+       so neither the rail nor the row redrew, and the input stayed with `done`
+       set: Enter and Escape did nothing from then on. */
+    input.replaceWith(span);
     if (commit && given !== (s.name || '')) {
       try {
         await callFor(s.id, `/api/session/${s.id}/rename`, { name: given });
