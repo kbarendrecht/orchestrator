@@ -565,9 +565,10 @@ fn carried_json(r: &Option<anyhow::Result<spawn::Relocated>>) -> serde_json::Val
 /// "about the work that is leaving" are different questions. A session with no
 /// recorded branch answers neither and stays put.
 ///
-/// A session started as a pass is left alone deliberately: a fix or resolve run
-/// belongs to its PR's worktree, and moving one into main would put an agent that
-/// rebases and force-pushes on the tree every worktree is cut from.
+/// A session started as a pass travels too, because a swap is you asking for the
+/// whole piece of work. It used to stay behind so that a force-pushing agent never
+/// sat in main, which left the branch in main and its conversation in the old
+/// worktree. The push guard already refuses a push to the base branch from anywhere.
 async fn to_carry(
     app: &Arc<AppState>,
     workspace: &str,
@@ -582,7 +583,6 @@ async fn to_carry(
             .sessions
             .values()
             .filter(|s| s.workspace == workspace)
-            .filter(|s| s.pass.is_none())
             .filter(|s| s.branch.as_deref() == Some(branch));
         let mut live = Vec::new();
         let mut records = Vec::new();
@@ -976,6 +976,33 @@ mod tests {
         let (_, records) = to_carry(&app, "wt", "feature/a").await;
         assert_eq!(records, vec![wanted]);
         assert!(!records.contains(&newer), "recency is not the question");
+    }
+
+    /// A fix or resolve run is still the conversation about its branch, so it goes
+    /// where the branch goes. It used to be filtered out, and swapping the PR it was
+    /// fixing moved the branch into main and left the run behind.
+    #[tokio::test]
+    async fn a_pass_travels_with_its_branch() {
+        use crate::model::{Pass, Session, State};
+
+        let (app, dir) = crate::testutil::app("carry-pass");
+        let id = {
+            let mut inner = app.inner.write().await;
+            let pass = Pass {
+                pr: 4242,
+                command: Pass::FIX_PR.to_string(),
+            };
+            let mut s = Session::new(Uuid::new_v4(), "wt".into(), dir.clone(), Some(pass));
+            s.branch = Some("feature/a".into());
+            s.had_a_turn = true;
+            s.state = State::Archived { resumable: true };
+            let id = s.id;
+            inner.sessions.insert(id, s);
+            id
+        };
+
+        let (_, records) = to_carry(&app, "wt", "feature/a").await;
+        assert_eq!(records, vec![id]);
     }
 
     /// Moving the record is only half of it: the conversation comes back believing
