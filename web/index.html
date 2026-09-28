@@ -561,6 +561,12 @@
           <button class="stepbtn" id="tsup" title="Bigger">+</button>
         </span>
       </div>
+      <!-- What the three rows above add up to, drawn by xterm itself: the pane covers
+           the terminal it styles, so without this a change was judged blind. A real
+           terminal rather than styled text, because xterm's cell width, line height
+           and bold are what you are choosing and CSS gets each of them slightly
+           wrong. `settings.js` writes into it. -->
+      <div class="settings-termdemo" id="thtermdemo" aria-hidden="true"></div>
     </section>
 
     <section class="settings-sec">

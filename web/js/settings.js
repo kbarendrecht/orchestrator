@@ -1,7 +1,7 @@
 // The settings panel. The zoom control it offers lives in core, because the
 // terminals read the scale too.
 
-import { ctl, $, WHEEL, ZOOM, borrowFocus, call, callHost, caret, setUiPx, uiPx, UI_PX_MAX, UI_PX_MIN, closeLegend, el, get, MOD_LABEL, onSelection, reason, returnFocus, saveWheel, saveZoom, setWheel, setZoom, snap, wheelScale } from './core.js';
+import { ctl, $, WHEEL, ZOOM, borrowFocus, call, callHost, caret, setUiPx, uiPx, UI_PX_MAX, UI_PX_MIN, closeLegend, el, get, MOD_LABEL, onSelection, reason, returnFocus, saveWheel, saveZoom, setWheel, setZoom, snap, uiScale, wheelScale } from './core.js';
 import { currentPreset, detectedFonts, FONTS, fontStack, PRESETS, resetTheme, SEE_THROUGH, setTheme, SIZE_MAX, SIZE_MIN, theme, validFontName } from './theme.js';
 /* The arithmetic, for reading a typed hex back. A leaf with no imports of its own,
    so the module graph stays the DAG `dependency-cruiser` insists on — and the same
@@ -85,6 +85,8 @@ function openSettings() {
   $('settingsver').textContent = snap.version ? `orchd ${snap.version}` : '';
   if (!dirty) $('setnote').textContent = '';
   $('settings').hidden = false;
+  // Now there is a box to measure, the terminal sample can open in it.
+  showTermDemo();
   $('gearbtn').setAttribute('aria-expanded', 'true');
   showDirty();
   // The panel edits the daemon's config, not the snapshot, so read it fresh.
@@ -432,6 +434,51 @@ function showTheme() {
   // `setZoom` writes this too; said here so the renderer covers all six controls
   // rather than covering five and relying on something else for the sixth.
   showSize('fs', uiPx(), UI_PX_MIN, UI_PX_MAX);
+  showTermDemo();
+}
+
+/* What an agent pane prints on an ordinary afternoon: a prompt with a branch, a
+   build, a pass and a failure, a warning, a tool line in bold with a dim tail, and
+   the bright half of the palette, which the swatch's dots never showed. */
+const DEMO = [
+  '\x1b[?25l\x1b[2m~/scienta\x1b[0m \x1b[35mfeature/kanban-pane\x1b[0m $ cargo test relocate',
+  '   \x1b[1;32mCompiling\x1b[0m orchd v2026.9.30',
+  'test relocate::a_pass_travels_with_its_branch ... \x1b[32mok\x1b[0m',
+  'test relocate::a_swap_that_cannot_finish ... \x1b[1;31mFAILED\x1b[0m',
+  '\x1b[33mwarning\x1b[0m: unused variable: `was` \x1b[2m--> src/relocate.rs:212\x1b[0m',
+  '\x1b[1m> Read\x1b[0m(crates/orchd/src/relocate.rs) \x1b[90m· 1,063 lines\x1b[0m',
+  '\x1b[91mred \x1b[92mgreen \x1b[93myellow \x1b[94mblue \x1b[95mmagenta \x1b[96mcyan \x1b[97mwhite\x1b[0m',
+];
+
+/** @type {any} */
+let demo = null;
+
+/** Draw the sample in the terminal's own font, size and colours.
+ *
+ *  Opened on the first paint with the pane showing, because xterm measures its
+ *  cells when it opens and a `display:none` box has none to measure. After that
+ *  the same instance takes each change, so it never rebuilds under the pointer. */
+function showTermDemo() {
+  const host = $('thtermdemo');
+  if (!host || $('settings').hidden) return;
+  const colours = Palette.termColours(theme, theme.term);
+  host.style.background = colours.background;
+  const options = {
+    theme: colours,
+    fontFamily: fontStack('mono'),
+    fontSize: Math.round(theme.termSize * uiScale()),
+    lineHeight: 1.25,
+  };
+  if (demo) {
+    Object.assign(demo.options, options);
+    return;
+  }
+  demo = new Terminal({
+    ...options, rows: DEMO.length, cols: 96, disableStdin: true,
+    cursorBlink: false, scrollback: 0,
+  });
+  demo.open(host);
+  demo.write(DEMO.join('\r\n'));
 }
 
 /** One size readout, and its two buttons at the ends of its own range.

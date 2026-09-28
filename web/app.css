@@ -1098,6 +1098,10 @@ body.row-resizing{cursor:row-resize;user-select:none}
   /* The form's measure, in one place: the card and the foot have to agree or
      Save stops lining up with the right edge of the inputs. */
   --setw:760px;
+  /* **One label column for every row.** Rows used to push their control to the far
+     right, 600px from its label, while fields started theirs at 38% and their help
+     wrapped at a third width, so nothing on the pane shared an edge. */
+  --setlab:220px;--setgap:24px;
 }
 /* `hidden` is only a UA rule, so the `display` above beats it and the panel is
    on screen from first paint: empty, because nothing has loaded the config into
@@ -1114,7 +1118,7 @@ body.row-resizing{cursor:row-resize;user-select:none}
    belongs. `max()` keeps the 16px gutter when the pane is narrower than the
    measure. */
 .settings-card{
-  flex:1;min-height:0;overflow-y:auto;
+  flex:1;min-height:0;overflow-y:auto;container-type:inline-size;
   /* 40 at the foot rather than 24: the last row of the last group used to end
      within a row's height of the window edge, which reads as the pane having been
      cut off rather than as having ended. */
@@ -1140,9 +1144,12 @@ body.row-resizing{cursor:row-resize;user-select:none}
    Scoped to `.settings-sec` rather than to `.settings-group`, because the keyboard
    legend reuses that class inside a grid and has no sections to bound anything. */
 .settings-sec{position:relative}
+/* **`top` is minus the card's own top padding, and the padding comes back inside.**
+   Stuck at 0, the heading left the card's 16px gutter above it open, and the text
+   scrolling under it showed through that band and ran into the heading's letters. */
 .settings-sec>.settings-group{
-  position:sticky;top:0;z-index:2;background:var(--bg);
-  font-family:var(--label);font-size:calc(9px * var(--fs));font-weight:700;
+  position:sticky;top:-16px;z-index:2;background:var(--bg);
+  font-family:var(--label);font-size:calc(10px * var(--fs));font-weight:700;
   letter-spacing:.16em;text-transform:uppercase;color:var(--dim);
   /* Clear of the block above it: at 20px a new group was only 2px further away
      than the next field in the one you were reading, so the headings scanned as
@@ -1153,14 +1160,19 @@ body.row-resizing{cursor:row-resize;user-select:none}
      heading gets its own air for the same reason — it belonged to the heading and
      sat 2px off it, so the band read as a line drawn through a label rather than
      as the top of the block below. */
-  margin:40px 0 4px;padding-bottom:10px;border-bottom:1px solid var(--line-soft);
+  margin:32px 0 0;padding:16px 0 12px;border-bottom:1px solid var(--line-soft);
 }
-.settings-group:first-of-type{margin-top:16px}
+/* The first group only. This was `.settings-group:first-of-type`, and every heading
+   is the first `div` in its own section — so at equal specificity and later in the
+   file it gave *every* group 16px, and the 40px above never rendered: a division
+   smaller than the 18px between two rows, which is most of why the pane felt
+   packed however much the rows were spaced. */
+.settings-sec:first-child>.settings-group{margin-top:0}
 /* A heading already carries the space; the field under it must not add the full
    block gap on top, or every group opens with a hole in it. Enough to clear the
    rule, and still under the 18 that separates two rows, so the first field still
    reads as belonging to the heading. */
-.settings-group + .settings-field,.settings-group + .settings-row{margin-top:14px}
+.settings-group + .settings-field,.settings-group + .settings-row{margin-top:20px}
 .settings-x{margin-left:auto;letter-spacing:0}
 /* The shortcut legend: a two-column list of chord -> what it does, one grid for
    the whole thing so the descriptions line up across the groups.
@@ -1205,27 +1217,33 @@ body.row-resizing{cursor:row-resize;user-select:none}
 .settings-in.settings-ro{
   border-color:transparent;background:none;color:var(--dim);padding-left:0;cursor:default;
 }
-.settings-row{display:flex;align-items:center;gap:12px;margin-top:18px}
+.settings-row,.settings-field{
+  display:grid;grid-template-columns:var(--setlab) minmax(0,1fr);
+  column-gap:var(--setgap);align-items:center;margin-top:22px;
+}
 /* **An author `display` beats `[hidden]`**, and this file has now been bitten by
    that four times — see `.forked[hidden]` below for the third. The refusal note is
    a row that spends most of its life hidden, so without this it is a row that
    never hides: `el.hidden = true` sets the attribute and `display:flex` ignores
    it. */
 .settings-row[hidden]{display:none}
-.settings-k{font-family:var(--mono);font-size:calc(11.5px * var(--fs));color:var(--text)}
+.settings-k{font-family:var(--mono);font-size:calc(13px * var(--fs));color:var(--text);line-height:1.35}
 /* Which panes a setting reaches, where that is not obvious from its name. Dimmer
    and smaller than the key it qualifies, so the row still reads as one label. */
-.settings-hint{color:var(--faint-solid);font-size:calc(9.5px * var(--fs))}
-.settings-step{margin-left:auto;display:flex;align-items:center;gap:2px}
+.settings-hint{
+  display:block;margin-top:3px;
+  color:var(--faint-solid);font-size:calc(11px * var(--fs));line-height:1.4;
+}
+.settings-step{justify-self:start;display:flex;flex-wrap:wrap;align-items:center;gap:6px 4px;min-width:0;max-width:100%}
 .stepbtn{
-  width:24px;height:24px;border-radius:2px;border:1px solid var(--line);
-  font-family:var(--mono);font-size:calc(11.5px * var(--fs));line-height:1;color:var(--dim);
+  width:28px;height:28px;border-radius:2px;border:1px solid var(--line);
+  font-family:var(--mono);font-size:calc(13px * var(--fs));line-height:1;color:var(--dim);
 }
 .stepbtn:hover:not(:disabled){color:var(--text);background:var(--bg)}
 .stepbtn:disabled{color:var(--ghost);cursor:default}
 .stepval{
-  min-width:44px;text-align:center;font-family:var(--mono);font-size:calc(11.5px * var(--fs));
-  color:var(--dim);
+  min-width:52px;text-align:center;font-family:var(--mono);font-size:calc(12.5px * var(--fs));
+  color:var(--text);font-variant-numeric:tabular-nums;
 }
 /* Inside the stepper it resets, not on a line of its own. Full width and left
    aligned it took the same column, size and left edge as a `.settings-k`, so it
@@ -1240,8 +1258,8 @@ body.row-resizing{cursor:row-resize;user-select:none}
    rather than a cleverer probe: `Courier New` previewing as Liberation Mono is
    visible, where a dropdown claiming it is installed is not. */
 .thsample{
-  color:var(--faint-solid);font-size:calc(11.5px * var(--fs));
-  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:150px;
+  color:var(--dim);font-size:calc(12.5px * var(--fs));
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:170px;margin-right:6px;
 }
 /* The eight normal hues on the scheme's own ground, beside the dropdown that
    chooses it. A scheme's *name* is not a colour, and half of what this control
@@ -1253,9 +1271,9 @@ body.row-resizing{cursor:row-resize;user-select:none}
 }
 .thswatch i{width:6px;height:6px;border-radius:50%;display:block}
 .settings-select{
-  padding:3px 6px;border:1px solid var(--line);border-radius:2px;
-  background:var(--bg);color:var(--dim);
-  font-family:var(--mono);font-size:calc(10.5px * var(--fs));
+  min-width:0;max-width:100%;padding:5px 8px;border:1px solid var(--line);border-radius:2px;
+  background:var(--bg);color:var(--text);
+  font-family:var(--mono);font-size:calc(12.5px * var(--fs));
 }
 .settings-select:focus{outline:2px solid var(--focus);outline-offset:1px}
 /* The rows of the list a select opens. `color-scheme` is what makes the popup dark
@@ -1268,11 +1286,11 @@ body.row-resizing{cursor:row-resize;user-select:none}
    The widths differ because the contents do — a family name is long and a hex is
    seven characters — so only that is said separately. */
 .thname,.thhex{
-  padding:3px 6px;border:1px solid var(--line);border-radius:2px;
-  background:var(--bg);color:var(--dim);
-  font-family:var(--mono);font-size:calc(10.5px * var(--fs));
+  padding:5px 8px;border:1px solid var(--line);border-radius:2px;
+  background:var(--bg);color:var(--text);
+  font-family:var(--mono);font-size:calc(12.5px * var(--fs));
 }
-.thname{width:190px}
+.thname{width:220px}
 .thhex{width:74px;text-transform:lowercase}
 /* The colour picker the engine draws. It needs its own chrome removed: browsers
    draw a padded swatch inside a border that ignores the pane's own line colour,
@@ -1289,12 +1307,13 @@ body.row-resizing{cursor:row-resize;user-select:none}
 .thslider{width:120px;accent-color:var(--focus)}
 /* A refusal is a sentence under the rows it is about, not a control snapping
    back. Amber rather than `--bad`: nothing failed, an answer was declined. */
-.thnote{padding-top:0}
+.thnote{padding-top:0;margin-top:8px}
+.thnote>.settings-note{grid-column:2}
 .settings-note{color:var(--attn);font-size:calc(10.5px * var(--fs));line-height:1.45}
 
 .settings-reset{
   margin-left:6px;
-  font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid);
+  font-family:var(--mono);font-size:calc(12px * var(--fs));color:var(--faint-solid);
 }
 .settings-reset:hover{color:var(--text)}
 /* Quieter than the controls beside it: it is information, not something to press. */
@@ -1306,11 +1325,10 @@ body.row-resizing{cursor:row-resize;user-select:none}
    against the help's 3px, so a paragraph sat almost as close to the *next* field
    as to the one it explains, and the form read as one undivided column of prose.
    18px against 4px says which help belongs to which field without a rule or a box. */
-.settings-field{display:flex;align-items:center;gap:12px;margin-top:18px}
 .settings-in{
-  margin-left:auto;flex:0 1 62%;min-width:0;padding:4px 8px;
+  justify-self:stretch;width:100%;max-width:440px;min-width:0;padding:6px 9px;
   background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:2px;
-  font-family:var(--mono);font-size:calc(11.5px * var(--fs));
+  font-family:var(--mono);font-size:calc(12.5px * var(--fs));box-sizing:border-box;
 }
 .settings-in:focus{outline:none;border-color:var(--focus)}
 /* The one line a checkout with no forge gets, in place of two panes. Quiet: it is
@@ -1321,16 +1339,17 @@ body.row-resizing{cursor:row-resize;user-select:none}
 }
 /* A note is prose, not a value, so its row aligns to the top of the box rather
    than centring a two-line textarea against a one-line label. */
-.settings-field-tall{align-items:flex-start}
+.settings-field-tall{align-items:start}
+.settings-field-tall>.settings-k{padding-top:6px}
 .settings-area{resize:vertical;line-height:1.45;font-family:var(--sans)}
 /* A checkbox in a settings row: pushed right like `.settings-in`, but never
    stretched to its 62% width. */
-.settings-check{margin-left:auto}
+.settings-check{justify-self:start}
 /* A `select` takes its colours from the platform unless every part is named, so
    on a dark card WebKitGTK renders black-on-black. The option list is drawn by
    the OS and needs telling separately. */
 select.settings-in{
-  flex:0 0 auto;color:var(--text);background-color:var(--bg);
+  width:auto;color:var(--text);background-color:var(--bg);
   /* The value shown when the list is closed is painted by the platform unless
      the native appearance is gone entirely, which is why setting `color` alone
      left it black on black under WebKitGTK. */
@@ -1342,12 +1361,15 @@ select.settings-in{
 /* The open list is an OS menu, so it needs telling separately. */
 select.settings-in option{color:var(--text);background-color:var(--bg)}
 /* What a field is for, under the field rather than in a tooltip nobody hovers. */
+/* In the control's column, so a field's help shares the edge of the box it
+   explains; the paragraph that opens a group is the group's, and keeps the left. */
 .settings-help{
-  margin:4px 0 0;padding-left:2px;max-width:62ch;
-  font-size:calc(10.5px * var(--fs));line-height:1.5;color:var(--faint-solid);
+  margin:8px 0 0 calc(var(--setlab) + var(--setgap));max-width:60ch;
+  font-size:calc(12px * var(--fs));line-height:1.55;color:var(--faint-solid);
 }
+.settings-group + .settings-help{margin:18px 0 0}
 .settings-help code{font-family:var(--mono);color:var(--dim)}
-.settings-procs-head{margin-top:12px;gap:8px}
+.settings-procs-head{display:flex;margin-top:12px;gap:8px}
 /* The same caret the rail's groups use, so folding reads the same everywhere. */
 .settings-fold{color:var(--faint-solid);display:flex;align-items:center;padding:0}
 .settings-fold:hover{color:var(--text)}
@@ -1367,7 +1389,8 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
   margin-top:8px;padding:8px 8px;border:1px solid var(--line);border-radius:4px;
   display:flex;flex-direction:column;gap:8px;
 }
-.settings-proc .settings-field{margin-top:0}
+.settings-proc .settings-field{display:flex;gap:12px;margin-top:0}
+.settings-proc .settings-in{margin-left:auto;flex:0 1 62%;width:auto;max-width:none}
 /* Collapsed, a process is its name and what it runs. Enough to recognise it
    without opening it, and it is the field that identifies one. */
 .settings-proc-gist{
@@ -1410,6 +1433,18 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 /* Save is what clears it, so it stops being the quietest thing on the row. */
 .settings-foot:has(.settings-note.dirty) .settings-save{
   border-color:var(--bad);color:var(--text);
+}
+/* A pane too narrow for a label column stacks each row, label over control. */
+@container (max-width: 560px) {
+  .settings-row,.settings-field{grid-template-columns:minmax(0,1fr);row-gap:8px}
+  .settings-help{margin-left:0}
+  .thnote>.settings-note{grid-column:1}
+}
+/* The terminal sample: real xterm, on the scheme's own ground, which `settings.js`
+   paints on this box so the padding around the cells is the terminal's colour. */
+.settings-termdemo{
+  margin:22px 0 0;padding:12px 14px;border:1px solid var(--line);border-radius:2px;
+  overflow:hidden;
 }
 
 /* ---------- context menu ---------- */
