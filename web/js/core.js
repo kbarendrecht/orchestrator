@@ -1511,7 +1511,11 @@ export async function copyText(/** @type {string} */ text) {
 export function openMenu(/** @type {MouseEvent} */ ev, /** @type {MenuItem[]} */ items) {
   ev.preventDefault();
   const menu = $('ctxmenu');
+  menuAnchor?.removeAttribute('data-menu-open');
   menuAnchor = /** @type {HTMLElement} */ (ev.currentTarget || ev.target);
+  // The row the menu is about stays marked while it is open, so a menu opened over
+  // a list of look-alike rows says which one it will act on.
+  menuAnchor.setAttribute('data-menu-open', '');
   menu.replaceChildren(...items.map(menuRow));
   // Un-hidden before it is measured, or there is no box to clamp.
   menu.hidden = false;
@@ -1670,6 +1674,7 @@ function menuRow(/** @type {MenuItem} */ [label, cls, handler]) {
 
 export function closeMenu() {
   $('ctxmenu').hidden = true;
+  menuAnchor?.removeAttribute('data-menu-open');
   menuAnchor = null;
 }
 

@@ -663,6 +663,8 @@ try {
      what is in it has to be visible then, not only present in the markup. */
   const copy = await rowMenu('copy')
   check(!!copy, 'the row offers a copy level')
+  check(await page.$eval('#rail .sess[data-id]', (r) => r.hasAttribute('data-menu-open')),
+    'the row a menu is open on stays marked')
   await copy?.click()
   const copies = await page.$$eval('#ctxmenu .ctxmenu-sub:not([hidden]) .ctxmenu-item',
     (bs) => bs.map((b) => b.textContent?.trim()))
@@ -671,6 +673,8 @@ try {
   check(await branch?.isVisible() === true, 'and it is on screen')
   check(await branch?.isEnabled() === true, 'and a worktree session has a branch to copy')
   await page.keyboard.press('Escape')
+  check(!(await page.$eval('#rail .sess[data-id]', (r) => r.hasAttribute('data-menu-open'))),
+    'and loses the mark when the menu closes')
 
   /* A rename that changes nothing still has to put the row back. It changes no
      signature, so the rail skipped the redraw and the input stayed, deaf to Enter
