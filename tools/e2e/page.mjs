@@ -640,9 +640,18 @@ try {
      is archived. The item is drawn disabled when there is none, so `isEnabled` is
      the half that says the value arrived: a row whose workspace never reached the
      page would still offer the item. */
-  const branch = await rowMenu('copy branch')
-  check(!!branch, 'the row offers to copy its branch')
-  check(await branch?.isEnabled() === true, 'and a worktree session has one to copy')
+  /* Both copies sit one level down, under a single `copy` row. The level has to
+     open on a press — a mouse hovers it open, a keyboard or a tap presses — and
+     what is in it has to be visible then, not only present in the markup. */
+  const copy = await rowMenu('copy')
+  check(!!copy, 'the row offers a copy level')
+  await copy?.click()
+  const copies = await page.$$eval('#ctxmenu .ctxmenu-sub:not([hidden]) .ctxmenu-item',
+    (bs) => bs.map((b) => b.textContent?.trim()))
+  check(JSON.stringify(copies) === '["id","branch"]', `the copy level holds id and branch (${JSON.stringify(copies)})`)
+  const branch = await page.$('#ctxmenu .ctxmenu-sub:not([hidden]) .ctxmenu-item:nth-child(2)')
+  check(await branch?.isVisible() === true, 'and it is on screen')
+  check(await branch?.isEnabled() === true, 'and a worktree session has a branch to copy')
   await page.keyboard.press('Escape')
 
   const move = await rowMenu('move to main')

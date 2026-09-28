@@ -1467,6 +1467,10 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 .ctxmenu-item:hover:not(:disabled){background:var(--bg)}
 .ctxmenu-item:disabled{color:var(--ghost);cursor:default}
 .ctxmenu-item.bad:hover:not(:disabled){color:var(--bad)}
+/* A row that opens a second level says so at its right edge. */
+.ctxmenu-parent{display:flex;justify-content:space-between;gap:16px}
+.ctxmenu-parent::after{content:'\203A';color:var(--faint-solid)}
+.ctxmenu-parent[aria-expanded="true"]{background:var(--bg)}
 
 /* ---------- toast ---------- */
 /* A stack of toasts, newest at the bottom. The container ignores the pointer so

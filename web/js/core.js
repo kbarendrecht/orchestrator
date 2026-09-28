@@ -1472,7 +1472,10 @@ export const isWaiting = (/** @type {import('../snapshot').SessionView} */ s) =>
 /**
  * A menu at the cursor. `items` are `[label, extraClass, handler]`; a null
  * handler renders the row disabled, so right-clicking a session that has
- * already ended still says what the menu would have offered.
+ * already ended still says what the menu would have offered. A list in place of
+ * the handler is a second level, opened beside the row.
+ *
+ * @typedef {[string, string | null, (() => void) | null | MenuItem[]]} MenuItem
  */
 /** Put text on the clipboard, whatever the webview allows.
  *
@@ -1505,17 +1508,11 @@ export async function copyText(/** @type {string} */ text) {
   }
 }
 
-export function openMenu(/** @type {MouseEvent} */ ev, /** @type {([string, string | null, (() => void) | null])[]} */ items) {
+export function openMenu(/** @type {MouseEvent} */ ev, /** @type {MenuItem[]} */ items) {
   ev.preventDefault();
   const menu = $('ctxmenu');
   menuAnchor = /** @type {HTMLElement} */ (ev.currentTarget || ev.target);
-  menu.replaceChildren();
-  for (const [label, cls, handler] of items) {
-    const item = el('button', 'ctxmenu-item' + (cls ? ` ${cls}` : ''), label);
-    if (handler) item.onclick = () => { closeMenu(); handler(); };
-    else item.disabled = true;
-    menu.appendChild(item);
-  }
+  menu.replaceChildren(...items.map(menuRow));
   // Un-hidden before it is measured, or there is no box to clamp.
   menu.hidden = false;
   const box = menu.getBoundingClientRect();
@@ -1608,6 +1605,67 @@ export function returnFocus(/** @type {string} */ who, /** @type {HTMLElement | 
   try {
     back.focus();
   } catch (e) { /* disposed while the dialog was up */ }
+}
+
+/** One row of a menu, or a row that opens a second level beside it. */
+function menuRow(/** @type {MenuItem} */ [label, cls, handler]) {
+  const item = el('button', 'ctxmenu-item' + (cls ? ` ${cls}` : ''), label);
+  item.setAttribute('role', 'menuitem');
+  if (!Array.isArray(handler)) {
+    if (handler) item.onclick = () => { closeMenu(); handler(); };
+    else item.disabled = true;
+    return item;
+  }
+  /* **Inside `#ctxmenu`, not a second menu beside it.** The outside-click, scroll
+     and blur dismissals all ask whether something is in `#ctxmenu`, so a level
+     that lives there is covered by every one of them for free. Opened on hover for
+     a mouse, on click for a touchpad tap, and on → for a keyboard, and closed by
+     leaving the row or ←; Escape closes the whole menu as it always has. */
+  const sub = el('div', 'ctxmenu ctxmenu-sub');
+  sub.setAttribute('role', 'menu');
+  sub.hidden = true;
+  sub.append(...handler.map(menuRow));
+  item.classList.add('ctxmenu-parent');
+  item.setAttribute('aria-haspopup', 'menu');
+  item.setAttribute('aria-expanded', 'false');
+  const show = (/** @type {boolean} */ on) => {
+    sub.hidden = !on;
+    item.setAttribute('aria-expanded', String(on));
+    if (!on) return;
+    /* Beside the row, or on its other side when there is no room; never off-screen.
+       Overlapping the row by a couple of pixels rather than leaving a gap: the
+       pointer on its way across would otherwise leave the row, over the menu's own
+       padding, and close the level before it got there. */
+    const r = item.getBoundingClientRect();
+    const box = sub.getBoundingClientRect();
+    const right = r.right - 2;
+    sub.style.left = `${right + box.width + 6 > window.innerWidth ? Math.max(6, r.left - box.width + 2) : right}px`;
+    sub.style.top = `${Math.min(r.top - 5, window.innerHeight - box.height - 6)}px`;
+  };
+  const group = el('div', 'ctxmenu-group');
+  // A moment's grace on leaving, so a pointer cutting a corner on its way to the
+  // level does not shut it; coming back inside cancels the close.
+  /** @type {ReturnType<typeof setTimeout> | undefined} */
+  let leaving;
+  group.onmouseenter = () => { clearTimeout(leaving); show(true); };
+  group.onmouseleave = () => { leaving = setTimeout(() => show(false), 200); };
+  // Opens, never toggles: a mouse has already hovered it open by the time it
+  // clicks, so a toggle shut the level under the pointer that reached for it.
+  item.onclick = () => show(true);
+  item.onkeydown = (e) => {
+    if (e.key !== 'ArrowRight') return;
+    e.preventDefault();
+    show(true);
+    /** @type {HTMLElement | null} */ (sub.querySelector('.ctxmenu-item:not(:disabled)'))?.focus();
+  };
+  sub.onkeydown = (e) => {
+    if (e.key !== 'ArrowLeft') return;
+    e.preventDefault();
+    show(false);
+    item.focus();
+  };
+  group.append(item, sub);
+  return group;
 }
 
 export function closeMenu() {

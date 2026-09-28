@@ -1585,8 +1585,10 @@ function archivedRow(/** @type {import('../snapshot').SessionView} */ s, /** @ty
     // Not gated on `resumable` the way opening it is: a fork cuts its own
     // worktree, so a conversation whose branch is gone can still be branched off.
     ['fork', null, s.has_transcript ? () => forkSession(s) : null],
-    ['copy id', null, () => copyId(s)],
-    ['copy branch', null, sessionBranch(s) ? () => copyBranch(s) : null],
+    ['copy', null, [
+      ['id', null, () => copyId(s)],
+      ['branch', null, sessionBranch(s) ? () => copyBranch(s) : null],
+    ]],
     ['delete', 'bad', () => deleteSession(s)],
   ]);
   return btn;
@@ -1850,8 +1852,10 @@ function sessionRow(/** @type {import('../snapshot').SessionView} */ s, /** @typ
     s.restart_queued
       ? ['cancel the restart', null, () => restartSession(s, true)]
       : ['restart', null, s.alive ? () => restartSession(s, false) : null],
-    ['copy id', null, () => copyId(s)],
-    ['copy branch', null, sessionBranch(s) ? () => copyBranch(s) : null],
+    ['copy', null, [
+      ['id', null, () => copyId(s)],
+      ['branch', null, sessionBranch(s) ? () => copyBranch(s) : null],
+    ]],
     // The worktree, not the session: the row is the only place a worktree is
     // visible, so its workspace-level action lives here too.
     [moveLabel, null, moveDo],
