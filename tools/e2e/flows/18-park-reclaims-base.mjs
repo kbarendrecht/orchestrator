@@ -37,6 +37,10 @@ export async function run(t) {
   // session to close is the one now in main.
   await until('the conversation to arrive in main', async () =>
     (await t.session(session))?.workspace === 'main')
+  // Uncommitted work in main: it goes with the branch, since a conversation is
+  // about that branch and the work belongs beside it.
+  const baseReadme = fs.readFileSync(path.join(t.repo, 'README.md'), 'utf8')
+  fs.writeFileSync(path.join(t.repo, 'README.md'), '# left unsaved in main\n')
   await t.api('POST', `/api/session/${session}/kill`)
   await until('main to take its base back', async () => branchOf(t.repo) === base, {
     context: async () => `main is on ${branchOf(t.repo)}, the tree on ${branchOf(dir)}`,
@@ -53,6 +57,21 @@ export async function run(t) {
   // claim left behind points every PR flow for that branch at the wrong tree.
   const ws = await t.workspace('invoice')
   assert.ok(!ws.branches.includes(base), `invoice still claims ${ws.branches}`)
+
+  /* **And the branch main came off did not just stop being checked out.** The
+     session that closed is about it, so parking main on base under it would leave
+     a conversation to be resumed on base later with nothing to say so. The branch
+     moves out into a tree of its own, and the conversation goes with it. */
+  const home = await until('the closed session to follow its branch out', async () => {
+    const x = await t.session(session)
+    return x && x.workspace !== 'main' && x.workspace !== 'invoice' ? x.workspace : null
+  })
+  assert.equal(branchOf(t.worktreePath(home)), 'worktree-invoice',
+    `the session went to ${home}, which does not hold its branch`)
+  assert.equal(fs.readFileSync(path.join(t.worktreePath(home), 'README.md'), 'utf8'),
+    '# left unsaved in main\n', 'the unsaved work did not go with its branch')
+  assert.equal(fs.readFileSync(path.join(t.repo, 'README.md'), 'utf8'), baseReadme,
+    'main kept work that belonged to the branch it gave up')
 
   // --- never from a tree somebody is in ---------------------------------------
 

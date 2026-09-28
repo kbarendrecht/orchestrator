@@ -68,17 +68,25 @@ export async function run(t) {
   )
 
   // Closing it hands the checkout back, which is the pair this route relies on:
-  // without it main would stand on a PR branch until somebody noticed.
+  // without it main would stand on a PR branch until somebody noticed. The branch
+  // does not just stop being checked out: the closed session is about it, so both
+  // move into a tree of their own.
   await t.api('POST', `/api/session/${session}/kill`)
   await until('main to go back to its base', async () => branchOf(t.repo) === base, {
     context: async () => `main is on ${branchOf(t.repo)}, wanted ${base}`,
   })
+  const moved = await until('the closed session to follow its branch', async () => {
+    const w = (await t.session(session))?.workspace
+    return w && w !== 'main' ? w : null
+  })
+  assert.equal(branchOf(t.worktreePath(moved)), HEAD)
 
   // --- the other arm of the same route ----------------------------------------
-
+  //
+  // The branch already has a tree, so the PR opens there rather than in a second
+  // tree cut for the same branch, which git would refuse anyway.
   const opened = await t.api('POST', `/api/pr/${PR}/open`, { where: 'worktree' })
-  assert.equal(opened.workspace, `pr-${PR}`)
-  assert.equal(branchOf(t.worktreePath(`pr-${PR}`)), HEAD)
+  assert.equal(opened.workspace, moved)
   assert.equal(branchOf(t.repo), base, 'a worktree open must leave main alone')
   await t.settled(opened.session)
   assert.equal((await t.session(opened.session)).name, `#${PR} - ${title}`,

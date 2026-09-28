@@ -52,9 +52,11 @@ export async function run(t) {
   assert.ok(!fs.existsSync(t.worktreePath(`pr-${PR}`)), 'a refusal must not cut a worktree')
   assert.equal(branchOf(t.repo), HEAD, 'a refusal must not move main either')
 
-  // Closing it is not enough on its own: the park that follows leaves a dirty main
-  // exactly where it is, which is why the branch is still here to be moved.
-  await t.api('POST', `/api/session/${session}/kill`)
+  // Deleted rather than closed: a closed session is still about this branch, and
+  // parking main moves a branch out with the sessions about it, work included —
+  // which would take the branch away before the route under test ever saw it in
+  // main. With nobody about it, a dirty main is left where it is.
+  await t.api('POST', `/api/session/${session}/delete`)
   await until('main to come free', async () => (await t.workspace('main')).occupant == null)
   assert.equal(branchOf(t.repo), HEAD)
 

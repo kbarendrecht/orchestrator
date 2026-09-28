@@ -114,9 +114,15 @@ swapped-in one, a hand-checkout — and not only what `open_pr(main)` put there.
 It used to need that provenance (an `AppState::main_pr_park` mark, now gone), on
 the reasoning that parking a swapped-in branch would undo the swap; but nobody is
 working it once the last session has gone, and a branch resting in main blocks
-every flow that needs main on base. The branch is not lost, and
-`move_branch_out` is how it gets a tree if you want one. `park_on_base` still
-refuses a dirty main, which is the safety that matters.
+every flow that needs main on base.
+**When a session is about the branch, the branch moves out instead of being
+parked.** The session that just closed is always one: a stopped record in main,
+still about that branch. Parking under it left the conversation to be resumed on
+base later with nothing saying so, and the next reconcile erased which branch it
+had been about. So `park_main` moves the branch into a tree of its own through
+`carry::move_out`, uncommitted work included, and the sessions follow it. Only a
+branch nobody is about is parked, and a dirty main with nobody about it is still
+left alone: there is no conversation to keep the work beside.
 **The other half is that base can be somewhere else entirely.** Git allows one
 checkout per branch, so a worktree sitting on `develop` makes main's return
 *impossible* rather than refused, and a swap is how it gets there: main resting

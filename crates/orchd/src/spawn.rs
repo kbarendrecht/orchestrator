@@ -1526,28 +1526,40 @@ async fn park_main(app: &Arc<AppState>) {
         let (at, base_ref, exclude) = (path.clone(), base_ref.clone(), exclude.clone());
         tokio::task::spawn_blocking(move || {
             let base = crate::git::base_checkout_branch(&at, &base_ref)?;
-            // Already there, or carrying work: `park_on_base` would do nothing, so
-            // there is nothing to clear the way for either.
-            if crate::git::current_branch(&at).ok()? == base {
+            // Already there: nothing to park and nothing to clear the way for.
+            let branch = crate::git::current_branch(&at).ok()?;
+            if branch == base {
                 return None;
             }
-            if !crate::git::is_clean_excluding(&at, Some(&exclude)).ok()? {
-                return None;
-            }
+            let clean = crate::git::is_clean_excluding(&at, Some(&exclude)).ok()?;
             let holder = crate::git::holder_of_branch(&at, &base)
                 .ok()
                 .flatten()
                 .filter(|h| h != &at);
-            Some((base, holder))
+            Some((base, branch, clean, holder))
         })
         .await
         .ok()
         .flatten()
     };
-    // Nothing parkable: dirty, already on base, or no base ref fetched yet.
-    let Some((base, holder)) = plan else {
+    // Nothing parkable: already on base, or no base ref fetched yet.
+    let Some((base, branch, clean, holder)) = plan else {
         return;
     };
+    /* **The sessions about the branch go with it, and then so does the branch.**
+    The session that just closed is one of them: it is a stopped record by now,
+    still in main and still about this branch. Parking main on base under them left
+    each one to be resumed later on base, with nothing to say so, and the next
+    reconcile erased which branch it had been about. So when any session is about
+    the branch, the branch moves out into a tree of its own the way "move out of
+    main" moves it, uncommitted work included, and they follow.
+    With nobody about it, the branch stays a branch and main parks as before — and a
+    dirty main with nobody about it is still left alone: there is no conversation to
+    keep the work beside, and moving it would be moving your edits unasked. */
+    let (_, about) = crate::carry::to_carry(app, MAIN, &branch).await;
+    if !clean && about.is_empty() {
+        return;
+    }
     let holder = holder.map(|tree| (tree, base.clone()));
     if let Some((tree, base)) = holder {
         let ws = app.workspace_for_path(&tree).await;
@@ -1602,6 +1614,26 @@ async fn park_main(app: &Arc<AppState>) {
                 return;
             }
         }
+    }
+
+    if !about.is_empty() {
+        match crate::carry::move_out(app, Board::Quiet).await {
+            Ok(out) => {
+                for id in &out.records {
+                    crate::carry::carry_record(app, *id, &out.name, &out.path, &out.git.branch)
+                        .await;
+                }
+                tracing::info!(
+                    branch = %out.git.branch, tree = %out.name, sessions = out.records.len(),
+                    wip_error = ?out.git.wip_error,
+                    "the last session in main closed; its branch moved out with its sessions and main is back on {}",
+                    out.git.base
+                );
+                app.notify().await;
+            }
+            Err(e) => tracing::warn!("main stays on {branch}: moving it out failed: {e:#}"),
+        }
+        return;
     }
 
     /* Whatever main holds, not only a branch `open_pr(main)` put there. It used to
