@@ -338,7 +338,12 @@ function applyTheme() {
   }
   root.style.setProperty('--sans', fontStack('ui'));
   root.style.setProperty('--label', fontStack('ui'));
-  root.style.setProperty('--mono', fontStack('mono'));
+  /* **The interface's monospace is not the terminal's.** `--mono` sets the rail's
+     ids, branches, paths and every other fixed-width label, and it used to follow
+     the terminal font, so picking a face for the pty restyled the whole board. The
+     terminal reads its role through `fontStack('mono')` in `term.js` and nothing
+     else does; the board keeps the bundled face it was designed around. */
+  root.style.setProperty('--mono', FONTS[/** @type {keyof typeof FONTS} */ (THEME_DEF.mono)].stack);
   root.style.setProperty('--code', fontStack('code'));
   /* **What the box around a terminal is painted.** xterm paints its own ground and
      nothing else, so the 8px inset `.termhost` holds would stay the *board's*
