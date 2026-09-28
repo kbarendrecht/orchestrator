@@ -1617,7 +1617,7 @@ async fn park_main(app: &Arc<AppState>) {
     }
 
     if !about.is_empty() {
-        match crate::carry::move_out(app, Board::Quiet).await {
+        match crate::carry::move_out(app, Board::Quiet, None).await {
             Ok(out) => {
                 for id in &out.records {
                     crate::carry::carry_record(app, *id, &out.name, &out.path, &out.git.branch)
@@ -1691,10 +1691,11 @@ pub async fn ensure_pr_worktree(app: &Arc<AppState>, pr: u64, head_ref: &str) ->
     if !path.exists() {
         /* Main holding this very branch is the one case where cutting the tree and
         freeing main are the same act, so it is done rather than refused.
-        `park_main` leaves a dirty main exactly where it is — correctly, it will
-        not carry your work to another branch — and the branch then sits there
-        for days making every PR flow for it impossible, which is the state this
-        used to bail out of and send you off to stash.
+        `park_main` leaves a dirty main where it is when no session is about the
+        branch — correctly, there is no conversation to keep the work beside — and
+        the branch then sits there for days making every PR flow for it
+        impossible, which is the state this used to bail out of and send you off
+        to stash.
         `move_branch_out` is the way out that loses nothing: the branch *and* its
         uncommitted work land in the tree this flow was about to create anyway,
         and main goes back to base. Untracked files stay in main, which
@@ -1722,22 +1723,14 @@ pub async fn ensure_pr_worktree(app: &Arc<AppState>, pr: u64, head_ref: &str) ->
             // and then main is no longer the tree that holds the branch.
             if main_is_on(app, head_ref).await? {
                 refuse_if_main_is_busy(app, pr, head_ref).await?;
-                let moved = {
-                    let (main, path) = (app.cfg.main_checkout.clone(), path.clone());
-                    let base_ref = app.cfg.upstream_ref.clone();
-                    let head_ref = head_ref.to_string();
-                    tokio::task::spawn_blocking(move || -> Result<crate::git::MovedOut> {
-                        let base = crate::git::base_checkout_branch(&main, &base_ref).ok_or_else(
-                            || anyhow::anyhow!("no base branch to put main back on — {base_ref} has not been fetched"),
-                        )?;
-                        crate::git::move_branch_out(&main, &path, &base, &head_ref)
-                    })
-                    .await
-                    .map_err(|e| anyhow::anyhow!("moving main's branch out panicked: {e}"))??
-                };
-                // Main gave the branch away, and `reconcile` only adds.
-                app.forget_branch(MAIN, head_ref).await;
-                let _ = app.reconcile(MAIN).await;
+                // Through `carry::move_out`, like every other move of main's branch:
+                // it holds `cutting` around the `git worktree add`, which this arm
+                // did not, and it hands back the stopped sessions about the branch
+                // so they follow it into the tree rather than stay in main.
+                let out = crate::carry::move_out(app, Board::Loud, Some((&name, &path))).await?;
+                for id in &out.records {
+                    crate::carry::carry_record(app, *id, &out.name, &out.path, head_ref).await;
+                }
                 /* A log line rather than something in the response, for `park_main`'s
                 reason: the checkout under every worktree just changed and that is
                 worth recording, but there are five callers of this and threading a
@@ -1746,11 +1739,10 @@ pub async fn ensure_pr_worktree(app: &Arc<AppState>, pr: u64, head_ref: &str) ->
                 of the branch it came from, so the apply lands on the tree it was
                 taken from, which is the same argument `swap_branches` makes. */
                 tracing::info!(
-                    %head_ref, wip_error = ?moved.wip_error,
+                    %head_ref, wip_error = ?out.git.wip_error, sessions = out.records.len(),
                     "main was on #{pr}'s branch, so it moved into {name} and main went back to {}",
-                    moved.base
+                    out.git.base
                 );
-                crate::worktree::run_worktree_hooks(app, &path, Board::Loud).await;
                 moved_out = true;
             }
         }
@@ -1804,6 +1796,36 @@ pub async fn switch_main_to_pr(app: &Arc<AppState>, head_ref: &str) -> Result<St
 
     let path = app.cfg.main_checkout.clone();
     let branch = head_ref.to_string();
+
+    /* **The branch main is leaving goes with the sessions about it.** A stopped
+    session in main about the branch that is on it now would otherwise stay in main
+    while main switches to someone else's branch under it. So when one is there, the
+    branch moves into a tree of its own first, as a park would have moved it, and
+    main is on base when the switch below runs. Base itself is not work and stays. */
+    let (on, base) = {
+        let (at, base_ref) = (path.clone(), app.cfg.upstream_ref.clone());
+        crate::proc::run_blocking("reading main's branch", move || {
+            (
+                crate::git::current_branch(&at).ok(),
+                crate::git::base_checkout_branch(&at, &base_ref),
+            )
+        })
+        .await?
+    };
+    if let Some(on) = on.filter(|on| Some(on) != base.as_ref() && on != head_ref) {
+        let (_, about) = crate::carry::to_carry(app, MAIN, &on).await;
+        if !about.is_empty() {
+            let out = crate::carry::move_out(app, Board::Loud, None).await?;
+            for id in &out.records {
+                crate::carry::carry_record(app, *id, &out.name, &out.path, &out.git.branch).await;
+            }
+            tracing::info!(
+                branch = %out.git.branch, tree = %out.name, sessions = out.records.len(),
+                "main is leaving {on} for {head_ref}, so {on} moved out with its sessions"
+            );
+        }
+    }
+
     // Excluding the worktrees dir: main contains it, so plain `is_clean` reads main
     // as dirty on any repo that has not gitignored it, and this refused forever.
     let exclude = app.cfg.worktrees_subdir_str();

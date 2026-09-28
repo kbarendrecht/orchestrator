@@ -448,7 +448,7 @@ pub async fn move_out_of_main(
 
     let main = app.cfg.main_checkout.clone();
     let was = state_of(&app, id).await;
-    let out = crate::carry::move_out(&app, crate::model::Board::Loud).await?;
+    let out = crate::carry::move_out(&app, crate::model::Board::Loud, None).await?;
     let crate::carry::MovedOut {
         name,
         path,

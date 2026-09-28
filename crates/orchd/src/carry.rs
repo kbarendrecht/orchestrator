@@ -38,8 +38,14 @@ pub(crate) struct MovedOut {
 /// The tree is named for the branch, and uniquified rather than refused, since a
 /// tree left behind by earlier work on the same branch is a reason to pick another
 /// name, not to stop. Main sitting on base has no branch to hand over, so the tree
-/// is named for the work and `move_branch_out` cuts it a branch.
-pub(crate) async fn move_out(app: &Arc<AppState>, board: Board) -> anyhow::Result<MovedOut> {
+/// is named for the work and `move_branch_out` cuts it a branch. `at` overrides
+/// both, for a caller whose tree already has a name and a place, as a PR's
+/// `pr-<n>` or a recorded tree being cut again where it stood.
+pub(crate) async fn move_out(
+    app: &Arc<AppState>,
+    board: Board,
+    at: Option<(&str, &std::path::Path)>,
+) -> anyhow::Result<MovedOut> {
     let main = app.cfg.main_checkout.clone();
     let base_ref = app.cfg.upstream_ref.clone();
     let (branch, base_now) = crate::proc::run_blocking("reading main's branch", {
@@ -57,9 +63,15 @@ pub(crate) async fn move_out(app: &Arc<AppState>, board: Board) -> anyhow::Resul
     } else {
         branch_leaf(&branch)
     };
-    let name = free_worktree_name(app, &stem);
+    let (name, path) = match at {
+        Some((name, path)) => (name.to_string(), path.to_path_buf()),
+        None => {
+            let name = free_worktree_name(app, &stem);
+            let path = app.cfg.worktree_path(&name);
+            (name, path)
+        }
+    };
     crate::worktree::validate_worktree_name(&name)?;
-    let path = app.cfg.worktree_path(&name);
     // The naming Claude Code's own worktrees use, so a branch cut here reads like
     // every other worktree branch in the repo rather than like a special case.
     let new_branch = format!("worktree-{name}");
