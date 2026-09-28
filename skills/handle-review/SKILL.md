@@ -27,12 +27,15 @@ query($owner:String!,$repo:String!,$num:Int!){
     headRefName headRepositoryOwner{login}
     reviewThreads(first:100){ nodes{ isResolved isOutdated
       comments(first:20){ nodes{ databaseId author{login} body path line url
-        reactionGroups{ content viewerHasReacted } } } } } } } }
+        reactionGroups{ content viewerHasReacted } } } } }
+    reviews(first:100){ nodes{ id author{login} body url submittedAt
+      reactionGroups{ content viewerHasReacted } } } } } }
 ' -F owner=<owner> -F repo=<repo> -F num=$ORCH_PR
 ```
 
-`gh repo view --json owner,name` gives the two you need. Plus `gh pr view $ORCH_PR
---json reviews,comments` for review-level bodies that are not anchored to a line.
+`gh repo view --json owner,name` gives the two you need. `reviews` are the
+review-level bodies that are not anchored to a line; skip the empty ones. Plus
+`gh pr view $ORCH_PR --json comments` for the PR's own conversation.
 
 **`headRepositoryOwner.login` is not `gh api user --jq .login` → stop, it is
 someone else's branch to force-push.** Say whose it is. Reading the threads is
@@ -54,6 +57,11 @@ that reads only comments offers you back every thread you settled that way, and
 the ones you thumbed by hand on GitHub besides. That is `reactionGroups` in the
 query above, and it is the same rule the daemon keeps in `forge::model::answered`.
 Do not re-answer an answered thread; say it was already settled and move on.
+
+**A review body is feedback too, and it is sorted with the threads.** It is
+already answered when you have 👍'd it, or a PR comment of yours after its
+`submittedAt` links its `url`. That link is what makes the second half readable,
+so the reply below always carries it.
 
 ## Sort
 
@@ -126,6 +134,23 @@ Post a threaded reply with the comment id from the thread URL's
 ```bash
 gh api repos/<owner>/<repo>/pulls/$ORCH_PR/comments/<id>/replies -f body="$reply"
 ```
+
+A review body has no thread to reply in and no REST reaction endpoint, so it
+takes two other calls. The 👍 goes on the review's node `id`:
+
+```bash
+gh api graphql -f query='mutation($id:ID!){ addReaction(input:{subjectId:$id,content:THUMBS_UP}){ reaction{ content } } }' -F id=<review id>
+```
+
+A reply is a PR comment that opens with a link to the review's `url` and quotes
+the question it answers, one comment per review:
+
+```bash
+gh pr comment $ORCH_PR --body "$reply"
+```
+
+A body that asks questions gets the reply, not the 👍: the 👍 says there was
+nothing to answer.
 
 ## Out of scope: file the story, don't promise it
 
