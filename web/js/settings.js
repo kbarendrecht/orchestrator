@@ -1,7 +1,7 @@
 // The settings panel. The zoom control it offers lives in core, because the
 // terminals read the scale too.
 
-import { ctl, $, WHEEL, ZOOM, borrowFocus, call, callHost, caret, setUiPx, uiPx, UI_PX_MAX, UI_PX_MIN, closeLegend, el, get, MOD_LABEL, reason, returnFocus, saveWheel, saveZoom, setWheel, setZoom, snap, wheelScale } from './core.js';
+import { ctl, $, WHEEL, ZOOM, borrowFocus, call, callHost, caret, setUiPx, uiPx, UI_PX_MAX, UI_PX_MIN, closeLegend, el, get, MOD_LABEL, onSelection, reason, returnFocus, saveWheel, saveZoom, setWheel, setZoom, snap, wheelScale } from './core.js';
 import { currentPreset, detectedFonts, FONTS, fontStack, PRESETS, resetTheme, SEE_THROUGH, setTheme, SIZE_MAX, SIZE_MIN, theme, validFontName } from './theme.js';
 /* The arithmetic, for reading a typed hex back. A leaf with no imports of its own,
    so the module graph stays the DAG `dependency-cruiser` insists on — and the same
@@ -695,6 +695,13 @@ function setupSettings() {
   $('setdiscard').title = 'Throw the unsaved edits away and read the config again';
 
   $('setclose').onclick = () => closeSettings();
+  /* Picking a session in the rail is going to that session, so the pane that sat
+     over it gets out of the way. Not on the pick the app makes for you when a
+     session ends: that is not you leaving the settings. An unsaved draft survives
+     the close, the same as with Escape, because `dirty` keeps it. */
+  onSelection((_id, auto) => {
+    if (!auto && settingsOpen()) closeSettings();
+  });
 
   $('setprocadd').onclick = () => {
     procDraft.push({
