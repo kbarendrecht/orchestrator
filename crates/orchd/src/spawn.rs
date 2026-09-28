@@ -1798,6 +1798,23 @@ pub async fn switch_main_to_pr(app: &Arc<AppState>, head_ref: &str) -> Result<St
 
     let path = app.cfg.main_checkout.clone();
     let branch = head_ref.to_string();
+    // Excluding the worktrees dir: main contains it, so plain `is_clean` reads main
+    // as dirty on any repo that has not gitignored it, and this refused forever.
+    let exclude = app.cfg.worktrees_subdir_str();
+
+    /* **Refused before anything moves.** The check used to come after the move out
+    below, and a move out leaves untracked files in main, which this check counts:
+    so an untracked file moved your branch into a new tree and *then* refused. */
+    let clean = {
+        let (at, exclude) = (path.clone(), exclude.clone());
+        crate::proc::run_blocking("checking main is clean", move || {
+            crate::git::is_clean_excluding(&at, Some(&exclude))
+        })
+        .await??
+    };
+    if !clean {
+        bail!("the main checkout has uncommitted changes; commit or stash them first");
+    }
 
     /* **The branch main is leaving goes with the sessions about it.** A stopped
     session in main about the branch that is on it now would otherwise stay in main
@@ -1828,13 +1845,7 @@ pub async fn switch_main_to_pr(app: &Arc<AppState>, head_ref: &str) -> Result<St
         }
     }
 
-    // Excluding the worktrees dir: main contains it, so plain `is_clean` reads main
-    // as dirty on any repo that has not gitignored it, and this refused forever.
-    let exclude = app.cfg.worktrees_subdir_str();
     tokio::task::spawn_blocking(move || -> Result<()> {
-        if !crate::git::is_clean_excluding(&path, Some(&exclude))? {
-            bail!("the main checkout has uncommitted changes; commit or stash them first");
-        }
         crate::git::switch_branch(&path, &branch)
     })
     .await
