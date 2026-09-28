@@ -1789,26 +1789,7 @@ pub async fn switch_main_to_pr(app: &Arc<AppState>, head_ref: &str) -> Result<St
     Ok(MAIN.to_string())
 }
 
-/// Worktree names become directory names and branch names (`worktree-<name>`),
-/// so anything that would escape the worktrees dir is refused outright.
-pub fn validate_worktree_name(name: &str) -> Result<()> {
-    if name.is_empty() {
-        bail!("worktree name is empty");
-    }
-    if name.len() > 64 {
-        bail!("worktree name is too long");
-    }
-    if !name
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
-    {
-        bail!("worktree name may only contain letters, digits, '-', '_' and '.'");
-    }
-    if name.starts_with('.') || name.contains("..") {
-        bail!("worktree name may not start with '.' or contain '..'");
-    }
-    Ok(())
-}
+pub use crate::worktree::validate_worktree_name;
 
 /// Drop terminal escapes, so what is left is what a person would have read.
 ///

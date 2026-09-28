@@ -784,6 +784,72 @@ fn moving_a_branch_out_of_main_carries_its_work_and_leaves_main_on_base() {
     assert_eq!(cut.branch, "worktree-work-2");
 }
 
+/// A move out of main, undone: the branch and its work go back into main and the
+/// tree is gone. Both shapes, the handed-over branch and the one cut for the work,
+/// because the undo differs between them.
+#[test]
+fn moving_a_branch_back_undoes_a_move_out_of_main() {
+    let dir = std::env::temp_dir().join(format!(
+        "orchd-moveback-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let main = dir.join("repo");
+    git(&dir, &["init", "-q", "-b", "develop", "repo"]).unwrap();
+    git(&main, &["config", "user.email", "t@t"]).unwrap();
+    git(&main, &["config", "user.name", "t"]).unwrap();
+    std::fs::write(main.join("f.txt"), "base\n").unwrap();
+    git(&main, &["add", "-A"]).unwrap();
+    git(&main, &["commit", "-qm", "base"]).unwrap();
+
+    // Handed over: main was on a branch of its own, with work on it.
+    git(&main, &["switch", "-qc", "feature/b"]).unwrap();
+    std::fs::write(main.join("f.txt"), "edited in main\n").unwrap();
+    std::fs::write(main.join("staged.txt"), "staged\n").unwrap();
+    git(&main, &["add", "staged.txt"]).unwrap();
+    let dest = main.join(".claude/worktrees/b");
+    let moved = move_branch_out(&main, &dest, "develop", "worktree-b").expect("the move");
+    move_branch_back(&main, &dest, &moved).expect("the undo");
+
+    assert!(!dest.exists(), "the tree cut for the move is gone");
+    assert_eq!(current_branch(&main).unwrap(), "feature/b");
+    assert_eq!(
+        std::fs::read_to_string(main.join("f.txt")).unwrap(),
+        "edited in main\n"
+    );
+    assert!(
+        status(&main, Some(".claude/worktrees/"), Untracked::Each)
+            .unwrap()
+            .staged
+            .iter()
+            .any(|f| f.path == "staged.txt"),
+        "the staged file came back staged"
+    );
+
+    // Cut for the work: main was on base, so it never moved, and the branch made
+    // for the move goes again.
+    git(&main, &["stash", "-q"]).unwrap();
+    git(&main, &["switch", "-q", "develop"]).unwrap();
+    std::fs::write(main.join("f.txt"), "started in main on develop\n").unwrap();
+    let second = main.join(".claude/worktrees/work");
+    let cut = move_branch_out(&main, &second, "develop", "worktree-work").expect("the cut");
+    assert!(cut.created);
+    move_branch_back(&main, &second, &cut).expect("the undo");
+
+    assert!(!second.exists());
+    assert_eq!(current_branch(&main).unwrap(), "develop");
+    assert!(
+        !branch_exists(&main, "worktree-work"),
+        "the branch made for it is gone"
+    );
+    assert_eq!(
+        std::fs::read_to_string(main.join("f.txt")).unwrap(),
+        "started in main on develop\n"
+    );
+}
+
 /// Removal is a backstop, so "already gone" is a success.
 ///
 /// The repo's `WorktreeRemove` hook runs first and may do the whole job. Without

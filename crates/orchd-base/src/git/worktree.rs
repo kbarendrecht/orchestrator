@@ -923,6 +923,45 @@ pub fn move_branch_out(main: &Path, dest: &Path, base: &str, new_branch: &str) -
     })
 }
 
+/// Undo a [`move_branch_out`]: the branch and its uncommitted work go back into
+/// main, and the tree cut for them is removed.
+///
+/// For a move whose session would not start in the new tree: the move is all or
+/// nothing, and git and a starting agent cannot share a lock, so the git half is
+/// what gets taken back. The work is banked before the tree goes, and put back in
+/// the tree if the removal is refused, so a failure here loses nothing.
+///
+/// A branch that was *created* for the move is deleted again: main never left base,
+/// and the branch holds no commit of its own. A handed-over branch goes back into
+/// main.
+pub fn move_branch_back(main: &Path, dest: &Path, moved: &MovedOut) -> Result<()> {
+    let wip = capture_wip(dest)?;
+    if let Err(e) = worktree_remove(main, dest) {
+        let mut err = e.context(format!(
+            "the tree for {} could not be removed",
+            moved.branch
+        ));
+        if let Some(sha) = &wip {
+            if let Err(back) = apply_wip(dest, sha, "the move was being undone") {
+                err = err.context(format!(
+                    "and its uncommitted work is still in commit {sha}: {back:#}"
+                ));
+            }
+        }
+        return Err(err);
+    }
+    if moved.created {
+        branch_delete(main, &moved.branch)?;
+    } else {
+        switch_branch(main, &moved.branch)
+            .with_context(|| format!("main could not take {} back", moved.branch))?;
+    }
+    if let Some(sha) = &wip {
+        apply_wip(main, sha, "the move was undone")?;
+    }
+    Ok(())
+}
+
 /// `stem`, or the first `stem-N` no branch has taken.
 ///
 /// A worktree cut for work that had no branch is named after the tree, and a tree

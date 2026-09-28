@@ -1196,6 +1196,27 @@ fn usable_hook_path(said: &str) -> Option<std::path::PathBuf> {
     made.is_dir().then_some(made)
 }
 
+/// Worktree names become directory names and branch names (`worktree-<name>`),
+/// so anything that would escape the worktrees dir is refused outright.
+pub fn validate_worktree_name(name: &str) -> anyhow::Result<()> {
+    if name.is_empty() {
+        anyhow::bail!("worktree name is empty");
+    }
+    if name.len() > 64 {
+        anyhow::bail!("worktree name is too long");
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+    {
+        anyhow::bail!("worktree name may only contain letters, digits, '-', '_' and '.'");
+    }
+    if name.starts_with('.') || name.contains("..") {
+        anyhow::bail!("worktree name may not start with '.' or contain '..'");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
