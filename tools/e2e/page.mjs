@@ -387,6 +387,21 @@ try {
   await page.waitForTimeout(2000)
   check((await railNames()).join('|') === after.join('|'), 'the order survives a reload and the snapshots after it')
 
+  /* A drag whose `dragend` never reached the page left the rail frozen: it stands
+     still while a drag is in flight, so the highlight stayed on one row while a
+     click selected another and the terminal followed. A `dragstart` with no end is
+     that state; the next press has to end it. */
+  await page.evaluate(() => document.querySelector('#rail .sess[data-id]')
+    ?.dispatchEvent(new DragEvent('dragstart', { bubbles: true })))
+  const target = rows.nth(await rows.count() - 1)
+  const targetId = await target.getAttribute('data-id')
+  await target.click()
+  const unfrozen = await page.waitForFunction(
+    (id) => document.querySelector(`#rail .sess[data-id="${id}"]`)?.getAttribute('aria-current') === 'true',
+    targetId, { timeout: 3000 },
+  ).then(() => true, () => false)
+  check(unfrozen, 'a drag that never ended does not freeze the rail\'s highlight')
+
   /* --- the number the window chrome depends on --------------------------------- */
 
   /* **The top row's height is two copies of one number**, and the other is

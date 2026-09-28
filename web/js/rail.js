@@ -84,6 +84,11 @@ function renderRail() {
   renderWaitbar();
   // A gesture is on a node this function replaces: rebuilding mid-drag drops the
   // header out from under the pointer and the drop never lands.
+  /* A rename whose box is gone is over, however it ended. This return is the rail's
+     only way to stop redrawing, so a flag left set by a gesture that ended without
+     its closing event froze it for good: the selection moved, the terminal
+     followed, and the highlight stayed on the row it was on. */
+  if (editingName !== null && !document.querySelector('#rail .sess-rename')) editingName = null;
   if (editingName !== null || dragging !== null || rowDrag !== null) return;
 
   /* The whole snapshot rather than the fields this reads, on purpose: a
@@ -405,6 +410,23 @@ let dragging = null;
  *  drawn; those drops are refused rather than silently ignored. */
 /** @type {{ id: string, path: string, list: string } | null} */
 let rowDrag = null;
+
+/* **A drag that never said it ended is ended by the next pointer event.** Pointer
+   events do not fire while an HTML5 drag is in flight, so one arriving with no
+   button held means the drag is over, whether or not `dragend` reached the page.
+   It does not always: a drag the webview's own drop handling swallowed, or one let
+   go outside the window, can leave the flag set, and the rail stands still for as
+   long as it is — which read as the highlight stuck on one row while clicks
+   selected others. */
+for (const ev of /** @type {const} */ (['pointermove', 'pointerdown'])) {
+  document.addEventListener(ev, (e) => {
+    if ((rowDrag || dragging) && (e.type === 'pointerdown' || e.buttons === 0)) {
+      rowDrag = null;
+      dragging = null;
+      renderRail();
+    }
+  }, true);
+}
 
 /** The rail's own order for one checkout, with anything the order has never seen
  *  **above** every placed row — `byNewest` is ascending over an age, so the newest
