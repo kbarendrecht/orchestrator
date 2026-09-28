@@ -34,15 +34,26 @@ use crate::state::AppState;
 pub async fn swap_with_main(
     State(app): State<Arc<AppState>>,
     Path(workspace): Path<String>,
+    body: Option<Json<SwapBody>>,
 ) -> ApiResult<serde_json::Value> {
-    tracing::info!(%workspace, "swap requested");
-    let out = swap_with_main_inner(app, workspace.clone()).await;
+    let session = body.and_then(|Json(b)| b.session);
+    tracing::info!(%workspace, session = ?session, "swap requested");
+    let out = swap_with_main_inner(app, workspace.clone(), session).await;
     if let Err(e) = &out {
         // Warn, not error: most of these are the daemon correctly declining, and a
         // refusal you can read is the point rather than a fault to page about.
         tracing::warn!(%workspace, "swap refused: {:#}", e.0);
     }
     out
+}
+
+/// The row the swap was pressed from.
+///
+/// Optional, so a bare `POST` still works: with no session the one live session on
+/// the branch goes, and two of them are refused rather than picked between.
+#[derive(Default, serde::Deserialize)]
+pub struct SwapBody {
+    pub session: Option<Uuid>,
 }
 
 /// Exchange the branches checked out in main and a worktree.
@@ -60,10 +71,14 @@ pub async fn swap_with_main(
 ///
 /// # Both ways
 ///
-/// The branches trade places, and so do the conversations about them: the
-/// worktree's session is relocated into main and main's own session, if it had one,
-/// is relocated out to the worktree. Symmetry is the point — a swap that moved one
+/// The branches trade places, and so do the conversations about them: the session
+/// you pressed swap on is relocated into main, and every live session in main is
+/// relocated out to the worktree. Symmetry is the point — a swap that moved one
 /// side only left main's session reading a tree that had changed under it.
+///
+/// Every live session in main goes, empty ones included, because main holds one
+/// session and the one left behind would refuse the arrival — after git had
+/// already moved, with the arriving session killed on its way in.
 ///
 /// Relocating keeps the session id, so each conversation continues as one rail row
 /// rather than gaining a forked sibling; `spawn::relocate_session` has the how, and
@@ -71,7 +86,9 @@ pub async fn swap_with_main(
 ///
 /// # The refusals
 ///
-/// An unclean tree, a stopped rebase, or a session **mid-turn** in either.
+/// A stopped rebase, a session **mid-turn** in either, or a second live session on
+/// the branch that would have to stay behind. Uncommitted work is not a refusal: it
+/// travels with its branch, see `git::swap_branches`.
 ///
 /// Mid-turn, not merely open: swapping is a regular move, and a session sitting at
 /// its prompt in main is the normal state to do it from. Refusing on any live
@@ -84,6 +101,7 @@ pub async fn swap_with_main(
 async fn swap_with_main_inner(
     app: Arc<AppState>,
     workspace: String,
+    pressed: Option<Uuid>,
 ) -> ApiResult<serde_json::Value> {
     if workspace == MAIN {
         refuse!("main cannot be swapped with itself");
@@ -165,8 +183,14 @@ async fn swap_with_main_inner(
     // choosing as we go would let the second choice see the session the first one
     // just delivered — for the moment in between, both live in the worktree — and
     // send it straight back.
-    let (outgoing, outgoing_records) = to_carry(&app, MAIN, &main_was).await;
-    let (incoming, incoming_records) = to_carry(&app, &workspace, &tree_was).await;
+    let (_, outgoing_records) = to_carry(&app, MAIN, &main_was).await;
+    let (on_branch, incoming_records) = to_carry(&app, &workspace, &tree_was).await;
+    let outgoing = live_in(&app, MAIN).await;
+    let several = app.settings().allow_several_in_main;
+    let incoming = match pick_incoming(&app, &workspace, &on_branch, pressed, several).await {
+        Ok(ids) => ids,
+        Err(why) => refuse!("{why}"),
+    };
     // Counted here because the loops below consume the vectors, and the log at the
     // end is the only place this number is ever read.
     let carried_records = outgoing_records.len() + incoming_records.len();
@@ -239,14 +263,14 @@ async fn swap_with_main_inner(
     // the arrival is refused outright ("main is occupied by …"). Vacating makes the
     // room. Found by driving a two-way swap against a real daemon, not by reading it.
 
-    let into_worktree = match outgoing {
-        Some(id) => Some(spawn::relocate_session(&app, id, &workspace, CARRY_GRACE).await),
-        None => None,
-    };
-    let into_main = match incoming {
-        Some(id) => Some(spawn::relocate_session(&app, id, MAIN, CARRY_GRACE).await),
-        None => None,
-    };
+    let mut into_worktree = Vec::new();
+    for id in outgoing {
+        into_worktree.push(spawn::relocate_session(&app, id, &workspace, CARRY_GRACE).await);
+    }
+    let mut into_main = Vec::new();
+    for id in incoming {
+        into_main.push(spawn::relocate_session(&app, id, MAIN, CARRY_GRACE).await);
+    }
 
     // The conversations that were not running. No process work, so these cannot
     // fail the swap and are not reported back as a carry: the rail simply shows
@@ -265,11 +289,12 @@ async fn swap_with_main_inner(
         (&into_worktree, &swapped.worktree_now, &main, &tree, false),
         (&into_main, &swapped.main_now, &tree, &main, true),
     ] {
-        let Some(Ok(moved)) = moved else { continue };
-        let notice = arrival_notice(&app, branch, from, to, into_main);
-        let mut inner = app.inner.write().await;
-        if let Some(s) = inner.sessions.get_mut(&moved.id) {
-            s.arrival_notice = Some(notice);
+        for moved in moved.iter().flatten() {
+            let notice = arrival_notice(&app, branch, from, to, into_main);
+            let mut inner = app.inner.write().await;
+            if let Some(s) = inner.sessions.get_mut(&moved.id) {
+                s.arrival_notice = Some(notice);
+            }
         }
     }
     app.notify().await;
@@ -277,10 +302,16 @@ async fn swap_with_main_inner(
     // Where to land the pane: main is what you pressed this for, so the session that
     // arrived there wins, and the one that left main is the fallback.
     let select = into_main
-        .as_ref()
-        .and_then(|r| r.as_ref().ok())
-        .or_else(|| into_worktree.as_ref().and_then(|r| r.as_ref().ok()))
+        .iter()
+        .chain(&into_worktree)
+        .find_map(|r| r.as_ref().ok())
         .map(|r| r.id.to_string());
+    let landed = |v: &[anyhow::Result<spawn::Relocated>]| -> Vec<SessionId> {
+        v.iter()
+            .filter_map(|r| r.as_ref().ok())
+            .map(|r| r.id)
+            .collect()
+    };
 
     tracing::info!(
         %workspace,
@@ -289,8 +320,8 @@ async fn swap_with_main_inner(
         wip_error = ?swapped.wip_error,
         // Which conversations travelled, because "it did not move" can mean the
         // branches or the sessions, and the two have different causes.
-        into_main = ?into_main.as_ref().and_then(|r| r.as_ref().ok()).map(|r| r.id),
-        into_worktree = ?into_worktree.as_ref().and_then(|r| r.as_ref().ok()).map(|r| r.id),
+        into_main = ?landed(&into_main),
+        into_worktree = ?landed(&into_worktree),
         carried_records,
         "swapped branches with main"
     );
@@ -301,8 +332,12 @@ async fn swap_with_main_inner(
         "worktree": swapped.worktree_now,
         "workspace": workspace,
         "select": select,
-        "into_main": carried_json(&into_main),
-        "into_worktree": carried_json(&into_worktree),
+        // The first of each, for callers that read one; the whole lists beside them,
+        // since main now sends every live session out and several may come in.
+        "into_main": carried_json(&into_main.first()),
+        "into_worktree": carried_json(&into_worktree.first()),
+        "moved_in": into_main.iter().map(|r| carried_json(&Some(r))).collect::<Vec<_>>(),
+        "moved_out": into_worktree.iter().map(|r| carried_json(&Some(r))).collect::<Vec<_>>(),
         // A partial success, said as one: the branches moved, this did not. The
         // message names the WIP commit the work is still in.
         "wip_error": swapped.wip_error,
@@ -477,7 +512,7 @@ pub async fn move_out_of_main(
         "branch": moved.branch,
         "created": moved.created,
         "main": moved.base,
-        "session": carried_json(&carried),
+        "session": carried_json(&carried.as_ref()),
         "wip_error": moved.wip_error,
         // Named, not counted, for the reason the swap gives: which files stayed is
         // the difference between fetching them and wondering what you lost.
@@ -528,7 +563,7 @@ fn free_worktree_name(app: &Arc<AppState>, stem: &str) -> String {
 ///
 /// `null` is its own answer and not an error: it means there was nothing in that
 /// tree to move, which is the ordinary case for a swap into an empty main.
-fn carried_json(r: &Option<anyhow::Result<spawn::Relocated>>) -> serde_json::Value {
+fn carried_json(r: &Option<&anyhow::Result<spawn::Relocated>>) -> serde_json::Value {
     match r {
         None => serde_json::Value::Null,
         Some(Ok(moved)) => json!({
@@ -548,9 +583,11 @@ fn carried_json(r: &Option<anyhow::Result<spawn::Relocated>>) -> serde_json::Val
 
 /// Everything in a workspace that belongs to `branch`, split by what moving it costs.
 ///
-/// `.0` is the one live conversation, which has to be *relocated*: killed, re-filed
-/// and resumed in the destination. `.1` is every other session recorded there on the
-/// same branch, which is a field update and a file move with no process in it.
+/// `.0` is every live session on the branch, each of which has to be *relocated*:
+/// killed, re-filed and resumed in the destination. Which of them may go is the
+/// caller's call, because main holds one session and a worktree holds any number.
+/// `.1` is every other session recorded there on the same branch, which is a field
+/// update and a file move with no process in it.
 ///
 /// **Both halves matter, and the second one is the ordinary case.** The old version
 /// of this returned only the live pick, so a swap made while nothing was running
@@ -573,49 +610,102 @@ async fn to_carry(
     app: &Arc<AppState>,
     workspace: &str,
     branch: &str,
-) -> (Option<SessionId>, Vec<SessionId>) {
-    // Read out under one guard, decided outside it: `has_conversation` below is a
-    // file read, and the lock is fair, so a writer queued behind it would block
-    // every reader queued behind that in turn.
-    let (mut live, records) = {
-        let inner = app.inner.read().await;
-        let mine = inner
-            .sessions
-            .values()
-            .filter(|s| s.workspace == workspace)
-            .filter(|s| s.branch.as_deref() == Some(branch));
-        let mut live = Vec::new();
-        let mut records = Vec::new();
-        for s in mine {
-            if s.state.is_live() {
-                live.push((s.created_at, s.id, s.cwd.clone(), s.transcript_path.clone()));
-            } else if s.recovery.is_none() {
-                // A recovery record describes a worktree that was torn down, so the
-                // session is not *in* either tree here and which branch sits where
-                // has nothing to do with it. `worktree::branch_drift` already says
-                // its piece when one of those is resumed.
-                records.push(s.id);
+) -> (Vec<SessionId>, Vec<SessionId>) {
+    let inner = app.inner.read().await;
+    let mut live = Vec::new();
+    let mut records = Vec::new();
+    for s in inner
+        .sessions
+        .values()
+        .filter(|s| s.workspace == workspace)
+        .filter(|s| s.branch.as_deref() == Some(branch))
+    {
+        if s.state.is_live() {
+            live.push((s.created_at, s.id));
+        } else if s.recovery.is_none() {
+            // A recovery record describes a worktree that was torn down, so the
+            // session is not *in* either tree here and which branch sits where
+            // has nothing to do with it. `worktree::branch_drift` already says
+            // its piece when one of those is resumed.
+            records.push(s.id);
+        }
+    }
+    // Oldest first, so the order sessions arrive in is the order they were made.
+    live.sort_by_key(|(created, _)| *created);
+    (live.into_iter().map(|(_, id)| id).collect(), records)
+}
+
+/// Every live session in a workspace, oldest first.
+///
+/// Main's side of a swap, where the branch does not matter: whatever is running in
+/// main has the tree replaced under it, so all of it goes.
+async fn live_in(app: &Arc<AppState>, workspace: &str) -> Vec<SessionId> {
+    let inner = app.inner.read().await;
+    let mut live: Vec<_> = inner
+        .sessions
+        .values()
+        .filter(|s| s.workspace == workspace && s.state.is_live())
+        .map(|s| (s.created_at, s.id))
+        .collect();
+    live.sort_by_key(|(created, _)| *created);
+    live.into_iter().map(|(_, id)| id).collect()
+}
+
+/// Which of the worktree's live sessions go into main.
+///
+/// The one you pressed swap on, and nobody else: main holds one session, so a
+/// second live session on the branch would stay in a tree whose branch just left.
+/// That is refused and named rather than picked for you. With
+/// `allow_several_in_main` main takes them all. With no pressed session, the one
+/// live session on the branch goes, and two are refused the same way.
+async fn pick_incoming(
+    app: &Arc<AppState>,
+    workspace: &str,
+    on_branch: &[SessionId],
+    pressed: Option<Uuid>,
+    several: bool,
+) -> Result<Vec<SessionId>, String> {
+    let inner = app.inner.read().await;
+    // The label to recognise it by, and the id to find it by whatever it is called.
+    let name = |id: &SessionId| {
+        let short = crate::model::short_id(id);
+        match inner.sessions.get(id).and_then(|s| s.label()) {
+            Some(label) => format!("{label}, {short}"),
+            None => short,
+        }
+    };
+    if let Some(id) = pressed {
+        match inner.sessions.get(&id) {
+            Some(s) if s.workspace == workspace => {}
+            _ => {
+                return Err(format!(
+                    "{} is not a session in {workspace}",
+                    crate::model::short_id(&id)
+                ))
             }
         }
-        live.sort_by_key(|(created, ..)| std::cmp::Reverse(*created));
-        (live, records)
-    };
-    // A file does not prove a conversation — a session that started but never spoke
-    // owns a file of headers — so this asks `has_conversation`. Newest-first,
-    // stopping at the first hit, so the usual cost is one read rather than one per
-    // session to then discard all but the newest.
-    // Off the runtime, because each of those reads opens a file, and a swap runs
-    // this three times.
-    let carried = crate::proc::run_blocking("looking for the conversation to carry", move || {
-        live.drain(..)
-            .find(|(_, id, cwd, recorded)| {
-                crate::store::has_conversation(*id, cwd, recorded.as_deref())
-            })
-            .map(|(_, id, ..)| id)
+    }
+    if several {
+        return Ok(on_branch.to_vec());
+    }
+    let others: Vec<_> = on_branch
+        .iter()
+        .filter(|id| Some(**id) != pressed)
+        .collect();
+    if let Some(other) = others.first() {
+        if pressed.is_some() || others.len() > 1 {
+            return Err(format!(
+                "another live session is on this branch in {workspace} ({}); main takes one \
+                 session, so close it or swap from its row",
+                name(other)
+            ));
+        }
+    }
+    Ok(match pressed {
+        Some(id) if on_branch.contains(&id) => vec![id],
+        Some(_) => Vec::new(),
+        None => on_branch.to_vec(),
     })
-    .await
-    .unwrap_or(None);
-    (carried, records)
 }
 
 /// What an agent is told when its conversation has been moved.
@@ -692,13 +782,13 @@ fn arrival_notice(
 /// record in one checkout, its uncommitted edits in another — and each time the only
 /// symptom was the agent eventually noticing.
 ///
-/// Live sessions with no pass only. An archived one is history and is allowed to
-/// name a branch that has since moved; a pass is pinned to its PR's branch by
-/// construction.
+/// Live sessions only. An archived one is history and is allowed to name a branch
+/// that has since moved. Passes are checked too: they travel with their branch now,
+/// so a pass left behind is exactly the mismatch this is here to say out loud.
 async fn check_moves_landed(app: &Arc<AppState>, what: &str) {
     let inner = app.inner.read().await;
     for s in inner.sessions.values() {
-        if !s.state.is_live() || s.pass.is_some() {
+        if !s.state.is_live() {
             continue;
         }
         let Some(mine) = s.branch.as_deref() else {
@@ -814,7 +904,7 @@ mod tests {
                 true
             });
         }
-        let err = swap_with_main_inner(app.clone(), "idle-tree".into())
+        let err = swap_with_main_inner(app.clone(), "idle-tree".into(), None)
             .await
             .expect_err("a spare is not a swap target");
         assert!(
@@ -825,7 +915,7 @@ mod tests {
 
         // And an ordinary workspace is refused for its own reasons, not this one —
         // the guard must not swallow every unknown name.
-        let err = swap_with_main_inner(app, "not-pooled".into())
+        let err = swap_with_main_inner(app, "not-pooled".into(), None)
             .await
             .expect_err("an unknown workspace is still refused");
         assert!(
@@ -934,7 +1024,10 @@ mod tests {
         };
 
         let (live, records) = to_carry(&app, "wt", "feature/a").await;
-        assert_eq!(live, None, "nothing was running, so nothing is relocated");
+        assert!(
+            live.is_empty(),
+            "nothing was running, so nothing is relocated"
+        );
         assert_eq!(
             records,
             vec![mine],
@@ -976,6 +1069,55 @@ mod tests {
         let (_, records) = to_carry(&app, "wt", "feature/a").await;
         assert_eq!(records, vec![wanted]);
         assert!(!records.contains(&newer), "recency is not the question");
+    }
+
+    /// Who goes into main, one row per case. Main holds one session, so a second
+    /// live session on the branch is refused and named rather than left behind in a
+    /// tree whose branch just left.
+    #[tokio::test]
+    async fn the_pressed_row_goes_into_main_and_a_second_one_refuses() {
+        use crate::model::{Session, State};
+
+        let (app, dir) = crate::testutil::app("pick-incoming");
+        let live = |ws: &str| {
+            let mut s = Session::new(Uuid::new_v4(), ws.into(), dir.clone(), None);
+            s.branch = Some("feature/a".into());
+            s.state = State::Starting;
+            s
+        };
+        let (a, b, elsewhere) = {
+            let mut inner = app.inner.write().await;
+            let (a, b, elsewhere) = (live("wt"), live("wt"), live("other"));
+            let ids = (a.id, b.id, elsewhere.id);
+            for s in [a, b, elsewhere] {
+                inner.sessions.insert(s.id, s);
+            }
+            ids
+        };
+
+        let pick = |on: Vec<SessionId>, pressed, several| {
+            let app = app.clone();
+            async move { pick_incoming(&app, "wt", &on, pressed, several).await }
+        };
+        assert_eq!(pick(vec![a], Some(a), false).await, Ok(vec![a]));
+        assert_eq!(pick(vec![a], None, false).await, Ok(vec![a]));
+        assert_eq!(pick(vec![], None, false).await, Ok(vec![]));
+
+        let refused = pick(vec![a, b], Some(a), false)
+            .await
+            .expect_err("b would stay");
+        assert!(
+            refused.contains(&crate::model::short_id(&b)),
+            "names b: {refused}"
+        );
+        pick(vec![a, b], None, false)
+            .await
+            .expect_err("two with nobody pressed is not picked between");
+
+        assert_eq!(pick(vec![a, b], Some(a), true).await, Ok(vec![a, b]));
+        pick(vec![a], Some(elsewhere), false)
+            .await
+            .expect_err("a session from another tree is not this swap's");
     }
 
     /// A fix or resolve run is still the conversation about its branch, so it goes

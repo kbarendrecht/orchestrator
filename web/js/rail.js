@@ -2091,20 +2091,24 @@ async function swapWithMain(wsId, s) {
     ? `swapping ${wsId} with main${inCheckout(s)}\u2026`
     : `moving ${wsId}'s branch to main${inCheckout(s)}\u2026`);
   try {
-    const r = await callFor(s.id, `/api/workspace/${encodeURIComponent(wsId)}/swap-main`);
+    // The row pressed is the session that goes into main, not whichever is newest.
+    const r = await callFor(s.id, `/api/workspace/${encodeURIComponent(wsId)}/swap-main`, { session: s.id });
     // A relocated session keeps its id, so the dead terminal is still in `terms`
     // under the key the new pty wants and `openTerm` would hand back the corpse —
-    // the same reason resume closes it. Both directions, since both were respawned.
-    for (const dir of [r.into_main, r.into_worktree]) {
-      if (dir && dir.session) Term.close(checkoutOf(s.id) ?? activeCheckout(), `session:${dir.session}`);
+    // the same reason resume closes it. Both directions, since both were respawned,
+    // and every session in each: main sends all of its live ones out.
+    for (const dir of [...r.moved_in, ...r.moved_out]) {
+      if (dir.session) Term.close(checkoutOf(s.id) ?? activeCheckout(), `session:${dir.session}`);
     }
     // Land in main, where the branch now is — the whole point of pressing this.
     if (r.select) setPendingSelect(r.select);
     toast(`main is on ${r.main}; ${wsId} is on ${r.worktree}${inCheckout(s)}`);
     // The branches moved even if a conversation could not follow, so these are
     // second lines rather than errors over the top of a success.
-    for (const [dir, where] of [[r.into_main, 'into main'], [r.into_worktree, `into ${wsId}`]]) {
-      if (!dir) continue;
+    for (const [dir, where] of [
+      ...r.moved_in.map((/** @type {any} */ d) => [d, 'into main']),
+      ...r.moved_out.map((/** @type {any} */ d) => [d, `into ${wsId}`]),
+    ]) {
       if (dir.error) toast(`the branches swapped, but ${dir.error}`, true);
       // A fork, not the move that was promised: the id changed, so there is a new
       // row rather than the one you were looking at.

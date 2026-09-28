@@ -107,7 +107,7 @@ pub async fn relocate_session(
     // same id, so what the conversation *was* has to be captured now or it is
     // overwritten by defaults. The state too, and it is written rather than read:
     // the kill below makes it `Exited` before `Carried::from` ever looks.
-    let (src_cwd, src_workspace, handle, title, name, created_at, pass) = {
+    let (src_cwd, src_workspace, handle, title, name, created_at, pass, recorded) = {
         let mut inner = app.inner.write().await;
         let s = inner
             .sessions
@@ -122,7 +122,20 @@ pub async fn relocate_session(
             s.name.clone(),
             s.created_at,
             s.pass.clone(),
+            s.transcript_path.clone(),
         )
+    };
+    // Nothing to resume: a session that never had a turn has no conversation, and
+    // `--resume` on it exits at once, as does the fork after it. So it is started
+    // fresh at the far end instead. The swap moves every live session out of main,
+    // empty ones too, or the one left behind holds main and refuses the arrival.
+    let spoke = {
+        let (id, cwd) = (id, src_cwd.clone());
+        crate::proc::run_blocking("checking for a conversation to move", move || {
+            crate::store::has_conversation(id, &cwd, recorded.as_deref())
+        })
+        .await
+        .unwrap_or(false)
     };
 
     // The pty holds the transcript open, and it is the process that decides when
@@ -143,6 +156,15 @@ pub async fn relocate_session(
     // "main is occupied" by the very session on its way out.
     if src_workspace == MAIN && dest_workspace != MAIN {
         app.release_main(id).await;
+    }
+
+    if !spoke {
+        let fresh = spawn_session_confirmed(app, dest_workspace, pass, None, grace).await?;
+        restore_after_relocate(app, fresh, title, name, created_at).await;
+        return Ok(Relocated {
+            id: fresh,
+            degraded: false,
+        });
     }
 
     // Best effort by construction — the resume does not depend on it.
