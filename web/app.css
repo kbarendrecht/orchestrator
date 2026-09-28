@@ -1106,9 +1106,9 @@ body.row-resizing{cursor:row-resize;user-select:none}
   /* The form's measure, in one place: the card and the foot have to agree or
      Save stops lining up with the right edge of the inputs. */
   --setw:760px;
-  /* **One label column for every row.** Rows used to push their control to the far
-     right, 600px from its label, while fields started theirs at 38% and their help
-     wrapped at a third width, so nothing on the pane shared an edge. */
+  /* **One label column for every row**, with the controls on the right edge. Fields
+     used to start their input at 38% while rows pushed theirs right, so nothing on
+     the pane shared an edge; now every control ends on the same line. */
   --setlab:220px;--setgap:24px;
 }
 /* `hidden` is only a UA rule, so the `display` above beats it and the panel is
@@ -1175,7 +1175,7 @@ body.row-resizing{cursor:row-resize;user-select:none}
    file it gave *every* group 16px, and the 40px above never rendered: a division
    smaller than the 18px between two rows, which is most of why the pane felt
    packed however much the rows were spaced. */
-.settings-sec:first-child>.settings-group{margin-top:0}
+.settings-sec.lead>.settings-group{margin-top:0}
 /* A heading already carries the space; the field under it must not add the full
    block gap on top, or every group opens with a hole in it. Enough to clear the
    rule, and still under the 18 that separates two rows, so the first field still
@@ -1242,7 +1242,7 @@ body.row-resizing{cursor:row-resize;user-select:none}
   display:block;margin-top:3px;
   color:var(--faint-solid);font-size:calc(11px * var(--fs));line-height:1.4;
 }
-.settings-step{justify-self:start;display:flex;flex-wrap:wrap;align-items:center;gap:6px 4px;min-width:0;max-width:100%}
+.settings-step{justify-self:end;display:flex;flex-wrap:wrap;justify-content:flex-end;align-items:center;gap:6px 4px;min-width:0;max-width:100%}
 .stepbtn{
   width:28px;height:28px;border-radius:2px;border:1px solid var(--line);
   font-family:var(--mono);font-size:calc(13px * var(--fs));line-height:1;color:var(--dim);
@@ -1316,7 +1316,7 @@ body.row-resizing{cursor:row-resize;user-select:none}
 /* A refusal is a sentence under the rows it is about, not a control snapping
    back. Amber rather than `--bad`: nothing failed, an answer was declined. */
 .thnote{padding-top:0;margin-top:8px}
-.thnote>.settings-note{grid-column:2}
+.thnote>.settings-note{grid-column:2;justify-self:end;text-align:right}
 .settings-note{color:var(--attn);font-size:calc(10.5px * var(--fs));line-height:1.45}
 
 .settings-reset{
@@ -1334,7 +1334,7 @@ body.row-resizing{cursor:row-resize;user-select:none}
    as to the one it explains, and the form read as one undivided column of prose.
    18px against 4px says which help belongs to which field without a rule or a box. */
 .settings-in{
-  justify-self:stretch;width:100%;max-width:440px;min-width:0;padding:6px 9px;
+  justify-self:end;width:100%;max-width:440px;min-width:0;padding:6px 9px;
   background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:2px;
   font-family:var(--mono);font-size:calc(12.5px * var(--fs));box-sizing:border-box;
 }
@@ -1352,7 +1352,7 @@ body.row-resizing{cursor:row-resize;user-select:none}
 .settings-area{resize:vertical;line-height:1.45;font-family:var(--sans)}
 /* A checkbox in a settings row: pushed right like `.settings-in`, but never
    stretched to its 62% width. */
-.settings-check{justify-self:start}
+.settings-check{justify-self:end}
 /* A `select` takes its colours from the platform unless every part is named, so
    on a dark card WebKitGTK renders black-on-black. The option list is drawn by
    the OS and needs telling separately. */
@@ -1369,13 +1369,12 @@ select.settings-in{
 /* The open list is an OS menu, so it needs telling separately. */
 select.settings-in option{color:var(--text);background-color:var(--bg)}
 /* What a field is for, under the field rather than in a tooltip nobody hovers. */
-/* In the control's column, so a field's help shares the edge of the box it
-   explains; the paragraph that opens a group is the group's, and keeps the left. */
+/* Under the label, from the left edge, at a reading measure: the control it explains
+   sits at the right of the same row. */
 .settings-help{
-  margin:8px 0 0 calc(var(--setlab) + var(--setgap));max-width:60ch;
+  margin:8px 0 0;max-width:62ch;
   font-size:calc(12px * var(--fs));line-height:1.55;color:var(--faint-solid);
 }
-.settings-group + .settings-help{margin:18px 0 0}
 .settings-help code{font-family:var(--mono);color:var(--dim)}
 .settings-procs-head{display:flex;margin-top:12px;gap:8px}
 /* The same caret the rail's groups use, so folding reads the same everywhere. */
@@ -1445,8 +1444,9 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 /* A pane too narrow for a label column stacks each row, label over control. */
 @container (max-width: 560px) {
   .settings-row,.settings-field{grid-template-columns:minmax(0,1fr);row-gap:8px}
-  .settings-help{margin-left:0}
-  .thnote>.settings-note{grid-column:1}
+  .settings-step,.settings-in,.settings-check{justify-self:start}
+  .settings-step{justify-content:flex-start}
+  .thnote>.settings-note{grid-column:1;justify-self:start;text-align:left}
 }
 /* The terminal sample: real xterm, on the scheme's own ground, which `settings.js`
    paints on this box so the padding around the cells is the terminal's colour. */
@@ -1454,6 +1454,36 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
   margin:22px 0 0;padding:12px 14px;border:1px solid var(--line);border-radius:2px;
   overflow:hidden;
 }
+/* The diff sample: the pane's own `.diff` rows, so `.diff`'s font and size apply,
+   minus the pane's flex and scroll, which belong to a pane and not to a sample. */
+.settings-diffdemo{
+  flex:none;overflow:hidden;margin:22px 0 0;padding:8px 0;
+  border:1px solid var(--line);border-radius:2px;background:var(--bg);
+}
+.settings-diffdemo .ln{white-space:pre;word-break:normal}
+/* The tabs, a bar of their own under the title, padded to the same measure as the
+   card so the first tab starts where the labels do. */
+.settings-tabs{
+  flex:0 0 auto;display:flex;gap:4px;
+  padding:0 max(16px, calc((100% - var(--setw)) / 2));
+  border-bottom:1px solid var(--line);background:var(--surface);
+}
+.settings-tab{
+  padding:11px 12px 9px;margin-bottom:-1px;border-bottom:2px solid transparent;
+  font-family:var(--mono);font-size:calc(12.5px * var(--fs));color:var(--faint-solid);
+}
+.settings-tab:hover{color:var(--text)}
+.settings-tab[aria-selected="true"]{color:var(--text);border-bottom-color:var(--text)}
+.settings-tab:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
+/* How the open tab's settings apply, said once at its top instead of once for the
+   whole pane in a paragraph that scrolled away. */
+.settings-tabnote{
+  margin:20px 0 4px;max-width:62ch;
+  font-size:calc(12px * var(--fs));line-height:1.55;color:var(--dim);
+}
+/* Save belongs to the checkout's config, which the Theme tab has none of: it goes
+   while that tab is open, unless there is a draft from another tab waiting. */
+.settings[data-tab="theme"] .settings-foot:not(:has(.settings-note.dirty)) .settings-save{visibility:hidden}
 
 /* ---------- context menu ---------- */
 /* Right-click on a session row. Above the toast, because it is the thing you

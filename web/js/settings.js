@@ -2,7 +2,7 @@
 // terminals read the scale too.
 
 import { ctl, $, WHEEL, ZOOM, borrowFocus, call, callHost, caret, setUiPx, uiPx, UI_PX_MAX, UI_PX_MIN, closeLegend, el, get, MOD_LABEL, onSelection, reason, returnFocus, saveWheel, saveZoom, setWheel, setZoom, snap, uiScale, wheelScale } from './core.js';
-import { currentPreset, detectedFonts, FONTS, fontStack, PRESETS, resetTheme, SEE_THROUGH, setTheme, SIZE_MAX, SIZE_MIN, theme, validFontName } from './theme.js';
+import { currentPreset, detectedFonts, FONTS, fontStack, onThemeChange, PRESETS, resetTheme, SEE_THROUGH, setTheme, SIZE_MAX, SIZE_MIN, theme, validFontName } from './theme.js';
 /* The arithmetic, for reading a typed hex back. A leaf with no imports of its own,
    so the module graph stays the DAG `dependency-cruiser` insists on — and the same
    parser `loadTheme` uses, so the pane and the store cannot disagree about what
@@ -85,8 +85,7 @@ function openSettings() {
   $('settingsver').textContent = snap.version ? `orchd ${snap.version}` : '';
   if (!dirty) $('setnote').textContent = '';
   $('settings').hidden = false;
-  // Now there is a box to measure, the terminal sample can open in it.
-  showTermDemo();
+  showTab(currentTab());
   $('gearbtn').setAttribute('aria-expanded', 'true');
   showDirty();
   // The panel edits the daemon's config, not the snapshot, so read it fresh.
@@ -434,6 +433,54 @@ function showTheme() {
   // `setZoom` writes this too; said here so the renderer covers all six controls
   // rather than covering five and relying on something else for the sixth.
   showSize('fs', uiPx(), UI_PX_MIN, UI_PX_MAX);
+  showPreviews();
+}
+
+/* ---- tabs ---- */
+
+/** What each tab is, and the one line that says how its settings apply. */
+const TABS = {
+  theme: 'How this window looks. Applies the moment you touch it, and is kept in this browser.',
+  git: 'This checkout\'s config. A draft until Save; the upstream ref and the remote also restart the daemon.',
+  tracker: 'This checkout\'s config. A draft until Save.',
+  other: 'Wheel speed applies at once and is kept in this browser. Sessions and processes are this checkout\'s config, a draft until Save; the processes also restart the daemon.',
+};
+const TAB_KEY = 'orch.settings.tab';
+
+/** The tab to open on: the last one you were on, kept in this browser. */
+function currentTab() {
+  try {
+    const t = localStorage.getItem(TAB_KEY);
+    if (t && t in TABS) return t;
+  } catch (e) { /* storage refused: the first tab is a fine answer */ }
+  return 'theme';
+}
+
+function showTab(/** @type {string} */ tab) {
+  for (const b of document.querySelectorAll('.settings-tab')) {
+    const on = /** @type {HTMLElement} */ (b).dataset.tab === tab;
+    b.setAttribute('aria-selected', String(on));
+    b.setAttribute('tabindex', on ? '0' : '-1');
+  }
+  let lead = true;
+  for (const sec of document.querySelectorAll('#settings .settings-sec')) {
+    const el = /** @type {HTMLElement} */ (sec);
+    el.hidden = el.dataset.tab !== tab;
+    // The first section a tab shows carries no gap above its heading; which one
+    // that is depends on the tab, so it is marked rather than left to a selector.
+    el.classList.toggle('lead', !el.hidden && lead);
+    if (!el.hidden) lead = false;
+  }
+  $('settabnote').textContent = TABS[/** @type {keyof typeof TABS} */ (tab)] ?? '';
+  $('settings').dataset.tab = tab;
+  /** @type {HTMLElement} */ ($('settings').querySelector('.settings-card')).scrollTop = 0;
+  try { localStorage.setItem(TAB_KEY, tab); } catch (e) { /* kept for this page only */ }
+  // A preview opened in a hidden tab had no box to measure; this one is showing now.
+  showPreviews();
+}
+
+/** Both samples, whichever of them is on screen. */
+function showPreviews() {
   showTermDemo();
 }
 
@@ -460,7 +507,9 @@ let demo = null;
  *  the same instance takes each change, so it never rebuilds under the pointer. */
 function showTermDemo() {
   const host = $('thtermdemo');
-  if (!host || $('settings').hidden) return;
+  // Nothing to measure in a hidden pane or a hidden tab, and xterm measures its
+  // cells once, when it opens.
+  if (!host || host.offsetParent === null) return;
   const colours = Palette.termColours(theme, theme.term);
   host.style.background = colours.background;
   const options = {
@@ -742,6 +791,24 @@ function setupSettings() {
   $('setdiscard').title = 'Throw the unsaved edits away and read the config again';
 
   $('setclose').onclick = () => closeSettings();
+  /* The previews follow every change to the theme, not only the ones that happen to
+     repaint the whole pane: the scheme and font selects each repaint their own row,
+     so the samples used to stand still until a size stepper was pressed. */
+  onThemeChange(() => showPreviews());
+  /* Arrow keys move along the tabs, the way a tab list is driven everywhere else;
+     only the selected tab is in the Tab order, so Tab goes on into the pane. */
+  const tabs = /** @type {HTMLElement[]} */ ([...document.querySelectorAll('.settings-tab')]);
+  for (const [i, b] of tabs.entries()) {
+    b.onclick = () => showTab(b.dataset.tab || 'theme');
+    b.onkeydown = (e) => {
+      const step = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+      if (!step) return;
+      e.preventDefault();
+      const next = tabs[(i + step + tabs.length) % tabs.length];
+      next.focus();
+      showTab(next.dataset.tab || 'theme');
+    };
+  }
   /* Picking a session in the rail is going to that session, so the pane that sat
      over it gets out of the way. Not on the pick the app makes for you when a
      session ends: that is not you leaving the settings. An unsaved draft survives

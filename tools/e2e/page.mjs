@@ -287,12 +287,15 @@ try {
     await page.waitForTimeout(150)
     return page.$eval('#setdiscard', (b) => !b.hidden)
   }
+  // The notes are on the Git tab; a field on a tab that is not open cannot be typed into.
+  await page.click('.settings-tab[data-tab="git"]')
   check(await dirtyAfter('#setnotemain', 'the dev stack runs here') === true,
     'a config field marks the pane unsaved')
   await page.click('#setdiscard')
   await page.waitForTimeout(300)
   check(await page.$eval('#setdiscard', (b) => b.hidden), 'and Discard clears it')
   // A theme control is this browser's and applies at once, so it is not a draft.
+  await page.click('.settings-tab[data-tab="theme"]')
   await page.selectOption('#thpreset', { index: 1 }).catch(() => {})
   await page.waitForTimeout(300)
   check(await page.$eval('#setdiscard', (b) => b.hidden),

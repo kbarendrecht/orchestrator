@@ -381,8 +381,19 @@
     <button class="settings-x" id="setclose" type="button"
             title="Close · Esc" aria-label="Close settings">&#10005;</button>
   </div>
+  <!-- Four tabs rather than one long scroll: the pane was three screens tall, and it
+       holds two kinds of setting that apply differently — this browser's look,
+       which applies as you touch it, and the checkout's config, which waits for
+       Save. The line under the tabs says which the open tab is. -->
+  <div class="settings-tabs" role="tablist" aria-label="Settings sections">
+    <button class="settings-tab" type="button" role="tab" data-tab="theme">Theme</button>
+    <button class="settings-tab" type="button" role="tab" data-tab="git">Git</button>
+    <button class="settings-tab" type="button" role="tab" data-tab="tracker">Tracker</button>
+    <button class="settings-tab" type="button" role="tab" data-tab="other">Other</button>
+  </div>
   <div class="settings-card">
-    <section class="settings-sec">
+    <p class="settings-tabnote" id="settabnote"></p>
+    <section class="settings-sec" data-tab="theme">
       <div class="settings-group">Theme</div>
       <!-- The colours are the theme now. Three wells and their hex boxes used to sit
            here, and they are gone: a palette is a set of decisions judged against each
@@ -391,10 +402,6 @@
            dark board to a light one without passing through a board you cannot read.
            `palette.js` still mixes every token from three colours; a preset is how you
            choose them. -->
-      <p class="settings-help">Everything down to Wheel speed applies the moment you
-        touch it and is kept in this browser. Everything from Tracker down is a draft
-        until <b>Save</b>, which applies it; only the upstream ref, the remote and the
-        main processes also restart.</p>
       <div class="settings-row">
         <span class="settings-k">Theme
           <span class="settings-hint">ground, panel, text and opacity together</span>
@@ -485,7 +492,7 @@
            rather than a cleverer probe. -->
     </section>
 
-    <section class="settings-sec">
+    <section class="settings-sec" data-tab="theme">
       <div class="settings-group">Interface</div>
       <div class="settings-row">
         <span class="settings-k">Font
@@ -521,7 +528,7 @@
       </div>
     </section>
 
-    <section class="settings-sec">
+    <section class="settings-sec" data-tab="theme">
       <div class="settings-group">Terminal</div>
       <!-- The one appearance control that does not read the board. A scheme arrives
            whole — its ground, its text and its sixteen — because a scheme with its
@@ -572,7 +579,7 @@
       <div class="settings-termdemo" id="thtermdemo" aria-hidden="true"></div>
     </section>
 
-    <section class="settings-sec">
+    <section class="settings-sec" data-tab="theme">
       <div class="settings-group">Diff</div>
       <div class="settings-row">
         <span class="settings-k">Font</span>
@@ -601,12 +608,23 @@
           <button class="stepbtn" id="dsup" title="Bigger">+</button>
         </span>
       </div>
+      <!-- The diff pane's own rows, so the font and size above reach it through the
+           same `--code` and `--code-px` the pane reads: no script, and nothing to
+           drift from what a real diff looks like. -->
+      <div class="settings-diffdemo diff" aria-hidden="true">
+        <div class="ln"><i data-n="208"></i><s>    <span class="tok-keyword">for</span> id <span class="tok-keyword">in</span> ids {</s></div>
+        <div class="ln"><i data-n="209"></i><s>        <span class="tok-keyword">let</span> was <span class="tok-operator">=</span> <span class="tok-function">state_of</span><span class="tok-punctuation">(</span><span class="tok-operator">&amp;</span>app<span class="tok-punctuation">,</span> id<span class="tok-punctuation">).</span><span class="tok-keyword">await</span><span class="tok-punctuation">;</span></s></div>
+        <div class="ln del"><i data-n="210"></i><s>        <span class="w-del">into_main.push(</span>spawn<span class="tok-punctuation">::</span><span class="tok-function">relocate_session</span><span class="tok-punctuation">(</span><span class="tok-operator">&amp;</span>app<span class="tok-punctuation">,</span> id<span class="tok-punctuation">,</span> <span class="tok-constant">MAIN</span><span class="tok-punctuation">)</span><span class="w-del">)</span><span class="tok-punctuation">;</span></s></div>
+        <div class="ln add"><i data-n="210"></i><s>        <span class="w-add">match</span> spawn<span class="tok-punctuation">::</span><span class="tok-function">relocate_session</span><span class="tok-punctuation">(</span><span class="tok-operator">&amp;</span>app<span class="tok-punctuation">,</span> id<span class="tok-punctuation">,</span> <span class="tok-constant">MAIN</span><span class="tok-punctuation">)</span> <span class="w-add">{</span></s></div>
+        <div class="ln add"><i data-n="211"></i><s>            <span class="tok-class-name">Ok</span><span class="tok-punctuation">(</span>moved<span class="tok-punctuation">)</span> <span class="tok-operator">=&gt;</span> journal<span class="tok-punctuation">.</span><span class="tok-function">push</span><span class="tok-punctuation">(</span>moved<span class="tok-punctuation">),</span> <span class="tok-comment">// "undo" walks it back</span></s></div>
+        <div class="ln"><i data-n="212"></i><s>    }</s></div>
+      </div>
 
       <!-- Not appearance: how far a gesture scrolls. It sat under Appearance because it
            is a stepper and the steppers were there. -->
     </section>
 
-    <section class="settings-sec">
+    <section class="settings-sec" data-tab="other">
       <div class="settings-group">Input</div>
       <div class="settings-row">
         <span class="settings-k">Wheel speed
@@ -626,7 +644,7 @@
          than to the pane: the appearance half above applies the moment you touch it
          and is this browser's, so a theme change marking the config unsaved would
          both cry wolf and stop the pane ever re-reading the config. -->
-    <section class="settings-sec" data-config>
+    <section class="settings-sec" data-config data-tab="tracker">
       <div class="settings-group">Tracker</div>
 
       <!-- Shown, not offered. A tracker is three fields including a host that is
@@ -657,7 +675,7 @@
          than to the pane: the appearance half above applies the moment you touch it
          and is this browser's, so a theme change marking the config unsaved would
          both cry wolf and stop the pane ever re-reading the config. -->
-    <section class="settings-sec" data-config>
+    <section class="settings-sec" data-config data-tab="git">
       <div class="settings-group">Git</div>
 
       <label class="settings-field">
@@ -744,7 +762,7 @@
          than to the pane: the appearance half above applies the moment you touch it
          and is this browser's, so a theme change marking the config unsaved would
          both cry wolf and stop the pane ever re-reading the config. -->
-    <section class="settings-sec" data-config>
+    <section class="settings-sec" data-config data-tab="other">
       <div class="settings-group">Sessions</div>
 
       <label class="settings-field">
@@ -764,7 +782,7 @@
          than to the pane: the appearance half above applies the moment you touch it
          and is this browser's, so a theme change marking the config unsaved would
          both cry wolf and stop the pane ever re-reading the config. -->
-    <section class="settings-sec" data-config>
+    <section class="settings-sec" data-config data-tab="other">
       <div class="settings-group">Processes</div>
 
       <div class="settings-field settings-procs-head">
