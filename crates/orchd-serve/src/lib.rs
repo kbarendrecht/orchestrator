@@ -1251,7 +1251,21 @@ fn first_per_workspace(
 /// owns the pty. Resuming costs the scrollback — ring buffers are in memory —
 /// but keeps the conversation, which is the part that took time to build.
 fn auto_resume(app: Arc<AppState>, records: Vec<store::SessionRecord>) {
+    // Set before the task starts, so nothing that runs first sees main as free, and
+    // cleared however the task ends, early return included.
+    struct Done(Arc<AppState>);
+    impl Drop for Done {
+        fn drop(&mut self) {
+            self.0
+                .auto_resuming
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    app.auto_resuming
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let done = Done(app.clone());
     tokio::spawn(async move {
+        let _done = done;
         // Any session that was live, whatever started it. A run started with a
         // skill used to be skipped here, and skipping it silently meant the pane
         // you were actually sitting in was the one that did not come back. `--resume`
@@ -1296,12 +1310,23 @@ fn auto_resume(app: Arc<AppState>, records: Vec<store::SessionRecord>) {
             .extend(to_resume.iter().map(|r| r.id));
         let mut resumed = 0usize;
         for r in to_resume {
+            // Where the record is now, not where it was at boot: a swap or a move
+            // in the stagger window carries a waiting session as a record, and it
+            // has to come back where its branch went.
+            let workspace = app
+                .inner
+                .read()
+                .await
+                .sessions
+                .get(&r.id)
+                .map(|s| s.workspace.clone())
+                .unwrap_or_else(|| r.workspace.clone());
             // Its recorded pass, not `None`: a resumed fix run is still the run
             // the guard table counts, and the one `posts_proposals` mints a post
             // token for.
             match spawn::spawn_session(
                 &app,
-                &r.workspace,
+                &workspace,
                 r.kind.clone().pass(),
                 Some(spawn::Source::Resume(r.id)),
             )
@@ -1316,7 +1341,7 @@ fn auto_resume(app: Arc<AppState>, records: Vec<store::SessionRecord>) {
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
                         .remove(&id);
-                    tracing::info!(session = %id, workspace = %r.workspace, "auto-resumed");
+                    tracing::info!(session = %id, %workspace, "auto-resumed");
                     resumed += 1;
                     // Staggered: half a dozen Claude processes starting at once
                     // makes for a slow, noisy boot.

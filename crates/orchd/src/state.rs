@@ -196,6 +196,15 @@ pub struct AppState {
     /// forget the session, and the pre-filters have already dropped the ones no
     /// start can fix (a `cwd` that is gone, a conversation with no turn).
     pub pending_resume: std::sync::Mutex<std::collections::HashSet<SessionId>>,
+    /// True while auto-resume is still working through `pending_resume`.
+    ///
+    /// Which session holds main is only in memory, so until auto-resume reaches the
+    /// session that was in main, main reads as empty — and "open in main", a fix-pr
+    /// worktree or a new session in main could take it, moving the branch that
+    /// session is about to come back to. So a pending session in main holds main
+    /// while this is set. Cleared when auto-resume is done, so a resume that failed
+    /// does not hold main for the life of the process.
+    pub auto_resuming: std::sync::atomic::AtomicBool,
     /// The file pane's preview tokens, keyed by token. For the life of the process:
     /// one per page, so the map grows by the pages somebody previewed and no more.
     pub previews: std::sync::Mutex<HashMap<String, PreviewGrant>>,
@@ -710,6 +719,7 @@ impl AppState {
             cutting: tokio::sync::Mutex::new(()),
             shutting_down: std::sync::atomic::AtomicBool::new(false),
             pending_resume: std::sync::Mutex::new(std::collections::HashSet::new()),
+            auto_resuming: std::sync::atomic::AtomicBool::new(false),
             previews: std::sync::Mutex::new(HashMap::new()),
             events,
             chrome,
@@ -1344,15 +1354,42 @@ impl AppState {
         // with the recorded one alone would let a swap pull the tree out from under
         // the others. Deterministic — oldest first — so the message names the same
         // session twice running.
-        recorded.or_else(|| {
-            let mut live: Vec<&Session> = inner
-                .sessions
-                .values()
-                .filter(|s| s.workspace == MAIN && s.state.is_live())
-                .collect();
-            live.sort_by_key(|s| s.created_at);
-            live.first().map(|s| s.id)
-        })
+        recorded
+            .or_else(|| {
+                let mut live: Vec<&Session> = inner
+                    .sessions
+                    .values()
+                    .filter(|s| s.workspace == MAIN && s.state.is_live())
+                    .collect();
+                live.sort_by_key(|s| s.created_at);
+                live.first().map(|s| s.id)
+            })
+            .or_else(|| self.waiting_in_main(&inner))
+    }
+
+    /// The session in main that auto-resume has not reached yet, if there is one.
+    ///
+    /// See [`AppState::auto_resuming`]: it holds main until auto-resume is done.
+    pub fn waiting_in_main(&self, inner: &Inner) -> Option<SessionId> {
+        if !self.auto_resuming.load(std::sync::atomic::Ordering::SeqCst) {
+            return None;
+        }
+        let pending = self
+            .pending_resume
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        inner
+            .sessions
+            .values()
+            .filter(|s| s.workspace == MAIN && !s.state.is_live() && pending.contains(&s.id))
+            .min_by_key(|s| s.created_at)
+            .map(|s| s.id)
+    }
+
+    /// [`AppState::waiting_in_main`], for a caller not already holding the state.
+    pub async fn waiting_main(&self) -> Option<SessionId> {
+        let inner = self.inner.read().await;
+        self.waiting_in_main(&inner)
     }
 
     /// Take a named lock, or `None` when somebody already holds it.
@@ -1412,7 +1449,10 @@ impl AppState {
                     .filter(|s| s.workspace == MAIN && s.state.is_live() && s.id != session)
                     .min_by_key(|s| s.created_at)
                     .map(|s| s.id)
-            });
+            })
+            // A session auto-resume has not reached yet holds main too, except
+            // against its own resume.
+            .or_else(|| self.waiting_in_main(&inner).filter(|id| *id != session));
         if let Some(holder) = held {
             if holder != session && !several {
                 bail!("main is occupied by session {holder}");
@@ -2293,6 +2333,52 @@ mod tests {
             .expect("the pending set")
             .remove(&id);
         assert!(!app.session_records().await[0].was_live);
+    }
+
+    /// Until auto-resume reaches the session that was in main, that session holds
+    /// main: nothing else may claim it or move its branch. And only until
+    /// auto-resume is done, or a resume that failed would hold main for good.
+    #[tokio::test]
+    async fn a_session_waiting_to_resume_in_main_holds_main_until_auto_resume_ends() {
+        use std::sync::atomic::Ordering::SeqCst;
+
+        let app = app().await;
+        let waiting = Uuid::new_v4();
+        {
+            let mut inner = app.inner.write().await;
+            let mut s = Session::new(
+                waiting,
+                MAIN.to_string(),
+                std::path::PathBuf::from("/tmp"),
+                None,
+            );
+            s.set_state(State::Exited);
+            inner.sessions.insert(waiting, s);
+        }
+        app.pending_resume
+            .lock()
+            .expect("the pending set")
+            .insert(waiting);
+        app.auto_resuming.store(true, SeqCst);
+
+        assert_eq!(app.main_occupant().await, Some(waiting));
+        app.claim_main(Uuid::new_v4())
+            .await
+            .expect_err("a new session must not take main from one coming back");
+        app.claim_main(waiting)
+            .await
+            .expect("its own resume takes main");
+        app.release_main(waiting).await;
+
+        app.auto_resuming.store(false, SeqCst);
+        assert_eq!(
+            app.main_occupant().await,
+            None,
+            "auto-resume is done, so main is free"
+        );
+        app.claim_main(Uuid::new_v4())
+            .await
+            .expect("a resume that failed does not hold main for good");
     }
 
     /// Two snapshots of an unchanged daemon have to be the same bytes.

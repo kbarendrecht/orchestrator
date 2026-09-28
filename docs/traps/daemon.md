@@ -511,3 +511,30 @@ them has to return. **Checked against deliberate breakage**: dropping the overri
 fails it with "timed out waiting for every session to be live again". It watches
 the API rather than the log, because the sandbox runs the daemon at `warn` and
 `auto-resumed` is an INFO line that is never written there.
+
+## A move of main is all or nothing, and the undo is the transaction.
+Git and a starting `claude` cannot share a lock, so a session that will not start
+at the far end is found out after the branches have moved. That used to be a
+partial success inside a 200: "the branches swapped, but …", with the branch in one
+tree and its conversation stopped in the other. It was worse when main held a new
+session with no turn: that one was never picked to go out, main holds one session,
+and the arriving session was refused after it had been killed on its way in.
+So a swap and a move out of main decide every session move before git runs, and
+write down each move as it lands. A session that cannot start walks the list back:
+`swap_branches` again (its own inverse, WIP included) or `git::move_branch_back`,
+each arrived session home through `spawn::relocate_back`, which restores the state
+it had before the first move, and the failed one resumed where it was. The answer
+is a 409, "swap failed, nothing moved". A fork that stays up is not a failure: the
+conversation arrived, under a new id.
+Three things this rests on. **Every live session in main goes out**, empty ones
+included, which is why `relocate_session` starts a session with no conversation
+fresh instead of resuming it. **A failed spawn puts the record it replaced back**
+(`insert_and_spawn`), or the undo would have nothing to move. And **background
+`git status` runs with `--no-optional-locks`**: a plain status takes
+`index.lock`, and the daemon's own polling failed the undo 4 runs in 6 with
+"index.lock: File exists" until it stopped. `tools/e2e/fake-claude.mjs` reads a
+`die-on-resume` file (`t.dieOnResume(skip, die)`) so flows 39 and 40 can make a
+resume fail on cue; no real agent can be asked to.
+Parking and the PR routes carry sessions too, through `carry.rs`, which sits below
+`spawn` so the exit watcher can call it without a module cycle. They only ever
+carry stopped sessions, so they need no undo of their own.

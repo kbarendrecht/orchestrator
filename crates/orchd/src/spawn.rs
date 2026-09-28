@@ -1442,7 +1442,7 @@ pub async fn branch_busy(app: &Arc<AppState>, head_ref: &str) -> Option<String> 
 /// flow for it was impossible until you went and stashed by hand. They are carried
 /// now; see the move in [`ensure_pr_worktree`].
 async fn refuse_if_main_is_busy(app: &Arc<AppState>, pr: u64, head_ref: &str) -> Result<()> {
-    if app.live_sessions_in(MAIN).await.is_empty() {
+    if app.live_sessions_in(MAIN).await.is_empty() && app.waiting_main().await.is_none() {
         return Ok(());
     }
     bail!(
@@ -1477,7 +1477,9 @@ async fn park_main(app: &Arc<AppState>) {
     if app.shutting_down.load(std::sync::atomic::Ordering::SeqCst) {
         return;
     }
-    if !app.live_sessions_in(MAIN).await.is_empty() {
+    // Nor while auto-resume is still bringing a session back into main: it expects
+    // the branch it left on, the same reason a shutdown does not park.
+    if !app.live_sessions_in(MAIN).await.is_empty() || app.waiting_main().await.is_some() {
         return;
     }
     /* **This moves main's branch, and possibly a worktree's, so it is a swap.**
