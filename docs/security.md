@@ -32,8 +32,10 @@ token — which matters because those are the runs that read other people's revi
 comments.
 
 There is a `PreToolUse` guard on the agent's git (`orch guard push`) with three
-rules: no lease-less `--force`, no push to the base branch, and no git aimed out of
-the worktree the session works in. The third replaces the isolation
+rules: no lease-less force push (`--force` or a `+<ref>`), no push that writes the
+base branch or removes branches (`--delete`, `:<ref>`, `--mirror`, `--all`,
+`--prune`), and no git that changes main or another managed worktree. Git that only
+reads (`status`, `log`, `rev-parse` and a few more) is let through. The third replaces the isolation
 `claude --worktree` used to pin, and it is deliberately narrower — git only, never
 your writes, because main's branch and its recorded occupant are what the daemon
 needs protected and a shared scratch dir is not its business.

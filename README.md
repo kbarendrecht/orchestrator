@@ -303,8 +303,9 @@ agent's terminal. Do not run this on a machine you share with people you do not
 trust.
 
 Agents get narrower credentials than the page does, and a `PreToolUse` guard
-refuses three things on the agent's git: a lease-less `--force`, a push to the
-base branch, and git aimed outside the session's worktree. Read it as a
+refuses three things on the agent's git: a lease-less force push, a push that
+writes the base branch or removes branches, and git that changes main or another
+worktree the app manages. Read it as a
 mistake-catcher, not a control — it sees `Bash` calls only.
 
 [`docs/security.md`](docs/security.md) has the reasoning behind each of those, and

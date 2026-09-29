@@ -52,9 +52,9 @@ by accident while poking at the API.
 is and is not — a **mistake-catcher, not a control**, Bash only, so `gh` or a
 script the agent writes goes around it. Do not write docs that claim otherwise;
 the README did, and that is the kind of sentence that earns misplaced trust.
-Three rules: no lease-less `--force`, no push to the base branch (from
-`upstream_ref`, never a list of likely names), and no git aimed out of the
-worktree the session works in. Never `git merge` into a branch here, rebase.
+Three rules: no lease-less force push, no push that writes the base branch (from
+`upstream_ref`, never a list of likely names) or removes branches, and no git that
+changes main or another managed worktree. Never `git merge` into a branch here, rebase.
 **The two halves.** `orch guard push` runs them as a `PreToolUse` hook on the
 agent's Bash, and `git::push_with_lease` re-states the base-branch rule because
 a *daemon* push never passes through a hook. The hook cannot name two facts per

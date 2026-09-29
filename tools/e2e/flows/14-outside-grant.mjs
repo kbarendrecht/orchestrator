@@ -23,10 +23,12 @@ export async function run(t) {
   const { session } = await t.api('POST', '/api/worktree', { name: 'invoice' })
   await t.settled(session)
   const tree = t.worktreePath('invoice')
-  // A second checkout, for the half of this flow that proves one yes is not every
-  // yes. The bare clone the sandbox already made is a real directory outside the
-  // main checkout, which is exactly the shape the grant must not reach.
-  const elsewhere = path.join(t.root, 'origin.git')
+  // A second tree, for the half of this flow that proves one yes is not every yes.
+  // It has to be one the daemon manages: a folder outside main and the trees is
+  // not fenced at all, so a grant on it proves nothing.
+  const { session: second } = await t.api('POST', '/api/worktree', { name: 'payroll' })
+  await t.settled(second)
+  const elsewhere = t.worktreePath('payroll')
 
   // What Claude Code gives a `command` hook: the session's own environment.
   const env = {
@@ -48,7 +50,8 @@ export async function run(t) {
 
   // Refused by default, and the refusal has to carry the way out — an agent told
   // only "no" has nothing to do next.
-  const aimed = `git -C ${t.repo} status`
+  // A write, because a command that only looks is let through anywhere.
+  const aimed = `git -C ${elsewhere} checkout -b topic`
   const before = guard(aimed)
   assert.equal(before.exit, 2, `the guard let ${aimed} through: ${before.said}`)
   assert.match(before.said, /orch outside/)
@@ -66,13 +69,13 @@ export async function run(t) {
     const s = await t.session(session)
     return s && s.interaction && !s.interaction.answer ? s.interaction : null
   })
-  const asking = askFor(t.repo)
+  const asking = askFor(elsewhere)
 
   // It arrives as an ordinary interaction: the same field, the same box, the same
   // `your_turn`. A second permission mechanism beside that one is how two of them
   // come to disagree.
   const ask = await question()
-  assert.match(ask.question, rx(t.repo))
+  assert.match(ask.question, rx(elsewhere))
   assert.deepEqual(ask.options.map((o) => o.value), ['outside-allow', 'outside-no'])
   assert.equal((await t.session(session)).state.state, 'your_turn')
 
@@ -85,7 +88,7 @@ export async function run(t) {
   assert.equal(guard('git push --force').exit, 2, 'the grant must not widen the push rules')
 
   // Remembered for that folder, so the same question is never asked twice.
-  const again = execFileSync(ORCH, ['outside', t.repo], { env, encoding: 'utf8' }).trim()
+  const again = execFileSync(ORCH, ['outside', elsewhere], { env, encoding: 'utf8' }).trim()
   assert.equal(again, 'allowed')
   assert.equal((await t.session(session)).interaction.answer, 'outside-allow',
     'a second ask would have replaced the answered one')
@@ -96,19 +99,19 @@ export async function run(t) {
   // is read by a *different process* per git command, so "per folder" is only true
   // if the list makes that trip. It was a bool, and the first yes let the session
   // reach every checkout on the machine for the rest of the conversation.
-  const other = `git -C ${elsewhere} status`
+  const other = `git -C ${t.repo} checkout -b topic`
   const refused = guard(other)
-  assert.equal(refused.exit, 2, `the grant on ${t.repo} reached ${elsewhere}`)
-  assert.match(refused.said, rx(`orch outside ${elsewhere}`))
+  assert.equal(refused.exit, 2, `the grant on ${elsewhere} reached ${t.repo}`)
+  assert.match(refused.said, rx(`orch outside ${t.repo}`))
 
   // So it is asked about, on its own, and answered on its own.
-  const asking2 = askFor(elsewhere)
+  const asking2 = askFor(t.repo)
   const ask2 = await question()
   assert.notEqual(ask2.id, ask.id, 'the answered question was handed back instead of a new one')
-  assert.match(ask2.question, rx(elsewhere))
+  assert.match(ask2.question, rx(t.repo))
   await t.api('POST', `/api/session/${session}/answer`, { ask: ask2.id, answer: 'outside-allow' })
   assert.equal(await asking2, 'allowed')
-  assert.equal(guard(other).exit, 0, `still refused after the grant on ${elsewhere}`)
+  assert.equal(guard(other).exit, 0, `still refused after the grant on ${t.repo}`)
 
   // Both stand, and neither widened the push rules.
   assert.equal(guard(aimed).exit, 0, 'the second grant dropped the first')

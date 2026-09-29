@@ -714,22 +714,20 @@ fn guard(a: &Parsed) -> ExitCode {
     is working in it. So a session in main is handed the worktrees dir as its fence
     and asked about the tree it aimed at, exactly as a worktree session is asked
     about another checkout. A session that is neither — an unreadable cwd, no
-    `--main` — still gets nothing, which is this file's fail-open rule. */
+    `--main` — still gets nothing, which is this file's fail-open rule.
+
+    A worktree session is fenced the same way, out of main and the other trees,
+    and not out of everything but its own tree: a scratch repo in `/tmp` is none of
+    the daemon's business. Without `--worktrees`, which is what an older daemon's
+    settings file looks like, only main is fenced. */
+    let trees = a.value("--worktrees").map(std::path::PathBuf::from);
     let (worktree, git_dir, worktrees_dir) =
         match (a.value("--main"), cwd.filter(|_| mentions_git(command))) {
             (Some(main), Some(cwd)) => match worktree_of(cwd) {
-                // A worktree session: its own tree is the bound, and the fence is not
-                // its business — every tree but its own is already outside it.
                 Some((top, dir)) if top != std::path::Path::new(main) => {
-                    (Some(top), Some(dir), None)
+                    (Some(top), Some(dir), trees)
                 }
-                // A session in main. Without `--worktrees` there is nothing to fence,
-                // which is what an older daemon's settings file looks like.
-                Some(_) => (
-                    None,
-                    None,
-                    a.value("--worktrees").map(std::path::PathBuf::from),
-                ),
+                Some(_) => (None, None, trees),
                 None => (None, None, None),
             },
             _ => (None, None, None),
@@ -757,6 +755,7 @@ fn guard(a: &Parsed) -> ExitCode {
         cwd: cwd.map(std::path::Path::new),
         worktree: worktree.as_deref(),
         git_dir: git_dir.as_deref(),
+        main: a.value("--main").map(std::path::Path::new),
         worktrees_dir: worktrees_dir.as_deref(),
         granted: &granted,
     };

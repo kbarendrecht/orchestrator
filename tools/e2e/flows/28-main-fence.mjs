@@ -93,7 +93,7 @@ export async function run(t) {
   assert.match(before.said, rx(`orch outside ${invoice}`))
   // A `cd` in the same tool call moves where the git runs, which is the spelling
   // that has no path on the git command at all.
-  assert.equal(guard(`cd ${invoice} && git status`).exit, 2)
+  assert.equal(guard(`cd ${invoice} && git commit -m x`).exit, 2)
   // The push rules are a different rule on the same hook; neither grants the other.
   assert.equal(guard('git push --force').exit, 2)
 
@@ -126,7 +126,7 @@ export async function run(t) {
   // One yes is one folder here too. A grant that covered "the worktrees" would
   // hand over every tree on the first question, which is the shape the worktree
   // side already had to be talked out of.
-  const next = `git -C ${payroll} status`
+  const next = `git -C ${payroll} checkout -b topic`
   const refused = guard(next)
   assert.equal(refused.exit, 2, `the grant on ${invoice} reached ${payroll}`)
   assert.match(refused.said, rx(`orch outside ${payroll}`))
