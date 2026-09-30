@@ -1729,13 +1729,25 @@ impl AppState {
     /// Hooks are the primary signal (§4); this catches the Bash-driven changes
     /// no `Edit` hook reported — codegen, builds, git ops.
     pub async fn reconcile(&self, workspace: &str) -> Result<()> {
-        let (path, is_main) = {
+        /* **Who was live here before git was asked**, because only they may take
+        the branch it answers. A session spawned while the git below runs has
+        already read its branch from the tree, later than this measurement, and
+        stamping the older answer over it filed the conversation under the branch
+        main was on a moment before. `to_carry` then carried nothing. Seen on
+        macOS, where the boot sweep's git is slow enough to straddle a spawn. */
+        let (path, is_main, before) = {
             let inner = self.inner.read().await;
             let w = inner
                 .workspaces
                 .get(workspace)
                 .ok_or_else(|| anyhow::anyhow!("unknown workspace {workspace}"))?;
-            (w.path.clone(), w.is_main())
+            let before: std::collections::HashSet<SessionId> = inner
+                .sessions
+                .values()
+                .filter(|s| s.workspace == workspace && s.state.is_live())
+                .map(|s| s.id)
+                .collect();
+            (w.path.clone(), w.is_main(), before)
         };
         // Main's tree contains every worktree, so drop paths under the worktrees
         // dir; a worktree sees only its own. The prefix follows a relocated layout.
@@ -1877,7 +1889,7 @@ impl AppState {
                 // difference between "this conversation was about that branch" and
                 // "that branch happens to be here now", which is the difference a
                 // swap depends on to know who travels.
-                if s.state.is_live() {
+                if s.state.is_live() && before.contains(&s.id) {
                     if let Some(b) = branch.clone() {
                         s.branch = Some(b);
                     }
