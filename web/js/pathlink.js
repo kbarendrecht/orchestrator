@@ -242,3 +242,57 @@ export function matching(list, path) {
     // likelier answer, and it is the tie-break the name ranking already uses.
     .sort((a, b) => a.length - b.length || a.localeCompare(b));
 }
+
+/** The folders in `list` that `path` names, each with every file under it,
+ *  relative to that folder. Nearest the root first, as [`matching`] ranks files.
+ *
+ *  **The same tail rule as a file**, so `pages/` and
+ *  `apps/editor/pages/` both find `resources/script/angular/apps/editor/pages`,
+ *  and a name two folders share answers with both, the way a file name does.
+ *  `list` holds files only, so a folder is known by the files under it, and an
+ *  empty one is not found.
+ *
+ *  @param {string[]} list
+ *  @param {string} path workspace-relative, with or without its trailing slash
+ *  @returns {{ folder: string, files: string[] }[]} */
+export function folders(list, path) {
+  const dir = path.replace(/\/+$/, '');
+  if (!dir) return [];
+  /** @type {Map<string, string[]>} */
+  const found = new Map();
+  for (const p of list) {
+    let end = dir.length;
+    if (!p.startsWith(`${dir}/`)) {
+      const inside = p.indexOf(`/${dir}/`);
+      if (inside < 0) continue;
+      end += inside + 1;
+    }
+    const folder = p.slice(0, end);
+    const files = found.get(folder) ?? [];
+    files.push(p.slice(end + 1));
+    found.set(folder, files);
+  }
+  return [...found]
+    .map(([folder, files]) => ({ folder, files: files.sort() }))
+    .sort((a, b) => a.folder.length - b.folder.length || a.folder.localeCompare(b.folder));
+}
+
+/** One level of a folder, as a menu draws it: the subfolders, each with the files
+ *  under it relative to that subfolder, and then the files directly in it.
+ *
+ *  @param {string[]} files relative to the folder
+ *  @returns {{ dirs: [string, string[]][], files: string[] }} */
+export function level(files) {
+  /** @type {Map<string, string[]>} */
+  const dirs = new Map();
+  const here = [];
+  for (const f of files) {
+    const cut = f.indexOf('/');
+    if (cut < 0) { here.push(f); continue; }
+    const name = f.slice(0, cut);
+    const under = dirs.get(name) ?? [];
+    under.push(f.slice(cut + 1));
+    dirs.set(name, under);
+  }
+  return { dirs: [...dirs].sort(([a], [b]) => a.localeCompare(b)), files: here.sort() };
+}

@@ -974,9 +974,12 @@ Term.onPathClick(({ checkout, target, path, line, last, ev }) => {
   /* **The file viewer, not the finder.** Opening one file used to take over the
      search overlay, which threw away whatever search was in it and answered a
      question about a single file with the machine built to list many. */
-  void FileView.candidates(at.workspace, at.rel).then((found) => {
-    if (!found.length) return toast(`no ${at.rel} in this workspace`, true);
-    void FileView.open(at.workspace, found, line, last, ev);
+  void FileView.candidates(at.workspace, at.rel).then(async (found) => {
+    if (found.length) return FileView.open(at.workspace, found, line, last, ev);
+    // No file by that name, so it may be a folder, and a click lists what is in it.
+    const dirs = await FileView.foldersOf(at.workspace, at.rel);
+    if (!dirs.length) return toast(`no ${at.rel} in this workspace`, true);
+    FileView.openFolder(at.workspace, dirs, ev);
   });
 });
 
@@ -1029,12 +1032,27 @@ Term.onPathMenu(({ checkout, target, path, line, last, ev }) => {
      while "Open here" on the same menu found the real file. One answer per
      menu. */
   const resolved = () => FileView.candidates(workspace, rel);
+  const manager = IS_MAC ? 'Open with Finder' : 'Open with the file manager';
+  /* **A folder gets its files instead**, and the file manager on the folder itself
+     rather than on its parent. Decided from the list the underline was drawn from,
+     so a right-click on a file waits for no second walk. */
+  if (FileView.isFolder(checkout, workspace, rel)) {
+    void FileView.foldersOf(workspace, rel).then((dirs) => {
+      if (!dirs.length) return toast(`no ${rel} in this workspace`, true);
+      const [first] = dirs;
+      FileView.openFolder(workspace, dirs, ev, dirs.length > 1 || !first ? [] : [
+        [manager, null, () => void callOn(CHECKOUTS.find((c) => c.path === checkout) ?? activeCheckout(),
+          '/api/open/reveal', { workspace, path: first.folder, folder: false })
+          .catch((e) => toast(reason(e), true))],
+      ]);
+    });
+    return;
+  }
   openMenu(ev, [
     ['Open here', null, () => void resolved()
       .then((found) => FileView.open(workspace, found, line, last, ev))],
     ['Open the folder', null, () => void resolved().then((found) => reveal(found, true))],
-    [IS_MAC ? 'Open with Finder' : 'Open with the file manager', null,
-      () => void resolved().then((found) => reveal(found, false))],
+    [manager, null, () => void resolved().then((found) => reveal(found, false))],
   ]);
 });
 

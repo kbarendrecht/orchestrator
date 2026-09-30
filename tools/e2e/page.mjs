@@ -1451,6 +1451,46 @@ try {
     `ordinary output gets the pane's own menu, got ${JSON.stringify(plain)}`,
   )
 
+  /* --- and a folder opens a menu of what is in it ---------------------------- */
+
+  /* **A folder is a link now**, because an agent names one as often as a file and
+     there was nothing to click. The files are the menu, and a subfolder is a level
+     of it, which is what keeps a large folder from being one long list. */
+  await page.keyboard.press('Escape')
+  fs.mkdirSync(path.join(tree, 'app/pages/list'), { recursive: true })
+  fs.writeFileSync(path.join(tree, 'app/pages/home.txt'), 'home\n')
+  fs.writeFileSync(path.join(tree, 'app/pages/list/list.txt'), 'list\n')
+  await focusTerm()
+  await page.keyboard.type("printf 'in app/pa%s/ now\\n' ges")
+  await page.keyboard.press('Enter')
+  const folder = await pointAt('in app/pages/ now', 3, 13)
+  await page.mouse.move(folder.x, folder.y)
+  await page.waitForTimeout(150)
+  await page.mouse.click(folder.x, folder.y)
+  const listed = await page.waitForFunction(
+    () => document.querySelectorAll('#ctxmenu:not([hidden]) > .ctxmenu-group, #ctxmenu:not([hidden]) > .ctxmenu-item').length > 0,
+    null, { timeout: 5000 }).then(() => true).catch(() => false)
+  const inFolder = listed
+    ? await page.$$eval('#ctxmenu > .ctxmenu-item, #ctxmenu > .ctxmenu-group > .ctxmenu-item', (bs) => bs.map((b) => b.textContent))
+    : []
+  check(JSON.stringify(inFolder) === JSON.stringify(['list/', 'home.txt']),
+    `a click on a folder lists it, subfolders first, got ${JSON.stringify(inFolder)}`)
+  await page.$$eval('#ctxmenu > .ctxmenu-item', (bs) => bs.find((b) => b.textContent === 'home.txt')?.click())
+  const fromFolder = await page.waitForFunction(
+    () => document.getElementById('fvpath')?.textContent === 'app/pages/home.txt',
+    null, { timeout: 5000 }).then(() => true).catch(() => false)
+  check(fromFolder, 'and a file picked from it opens')
+
+  await page.keyboard.press('Escape')
+  const folderAgain = await pointAt('in app/pages/ now', 3, 13)
+  await page.mouse.click(folderAgain.x, folderAgain.y, { button: 'right' })
+  await page.waitForSelector('#ctxmenu:not([hidden])', { timeout: 5000 })
+  const onFolder = await page.$$eval('#ctxmenu > .ctxmenu-item, #ctxmenu > .ctxmenu-group > .ctxmenu-item', (bs) => bs.map((b) => b.textContent))
+  check(onFolder.length === 3 && /Finder|file manager/.test(onFolder[2] ?? ''),
+    `the right-click lists the same, with the file manager below, got ${JSON.stringify(onFolder)}`)
+  // Left open: the next block's Escape closes it, and an Escape with nothing to
+  // close reaches the shell, where it is readline's meta key and eats the command.
+
   /* --- and a markdown file opens rendered ------------------------------------ */
 
   /* **The one thing the parser's own test cannot see**: that the tree reaches the

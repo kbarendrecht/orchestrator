@@ -1532,8 +1532,11 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 .dlgbtn.go.danger:hover{background:var(--raised);border-color:var(--bad)}
 .dlgbtn:focus-visible{outline:1px solid var(--focus);outline-offset:1px}
 
+/* A folder's files can be more rows than the window, so the menu scrolls. A level
+   beside it is `position:fixed`, which that scroll does not clip. */
 .ctxmenu{
   position:fixed;z-index:100;min-width:132px;padding:4px;
+  max-height:calc(100vh - 12px);overflow-y:auto;
   background:var(--raised);border:1px solid var(--line);border-radius:2px;
   box-shadow:0 6px 18px rgba(0,0,0,.45);
 }

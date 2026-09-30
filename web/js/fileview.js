@@ -15,7 +15,7 @@ import {
   $, activeWorkspaceId, borrowFocus, get, getOn, openMenu, reason, returnFocus, toast,
 } from './core.js';
 import * as Editor from './editor.js';
-import { matching } from './pathlink.js';
+import { folders, level, matching } from './pathlink.js';
 import * as Viewer from './viewer.js';
 
 /** The open overlay. `ws` is pinned at open for the reason the finder's is:
@@ -98,6 +98,35 @@ export async function open(ws, candidates, line, last, ev) {
     return openMenu(ev, candidates.slice(0, 12).map((p) => [p, null, () => void show(ws, p, line, last)]));
   }
   await show(ws, candidates[0] ?? '', line, last);
+}
+
+/** Put the files under a folder an agent printed under the pointer, one menu level
+ *  per subfolder, so a folder is somewhere you can go and not only a name.
+ *
+ *  A name several folders share gets a level for each, named in full, which is
+ *  the choice [`open`] offers for a file two folders hold.
+ *
+ *  @param {string} ws
+ *  @param {{ folder: string, files: string[] }[]} found as [`foldersOf`] answers
+ *  @param {MouseEvent} ev
+ *  @param {import('./core.js').MenuItem[]} [after] rows to put below the files */
+export function openFolder(ws, found, ev, after = []) {
+  /** @returns {import('./core.js').MenuItem[]} */
+  const rows = (/** @type {string} */ folder, /** @type {string[]} */ files) => {
+    const { dirs, files: here } = level(files);
+    return [
+      ...dirs.map(([d, under]) => /** @type {import('./core.js').MenuItem} */ (
+        [`${d}/`, null, rows(`${folder}/${d}`, under)])),
+      ...here.map((f) => /** @type {import('./core.js').MenuItem} */ (
+        [f, null, () => void show(ws, `${folder}/${f}`, 0, 0)])),
+    ];
+  };
+  const [only] = found;
+  const items = found.length === 1 && only
+    ? rows(only.folder, only.files)
+    : found.map(({ folder, files }) => /** @type {import('./core.js').MenuItem} */ (
+      [`${folder}/`, null, rows(folder, files)]));
+  openMenu(ev, [...items, ...after]);
 }
 
 /** Show a file an `orchestrator://` link named, whatever session is selected.
@@ -218,6 +247,20 @@ export async function candidates(ws, path) {
   return matching(list, path);
 }
 
+/** The folders a printed path could mean, with every file under each, when it
+ *  names no file. Walked fresh, for the reason [`candidates`] is.
+ *
+ *  @param {string} ws
+ *  @param {string} path workspace-relative, as the click resolved it */
+export async function foldersOf(ws, path) {
+  try {
+    return folders((await get(`/api/paths?workspace=${encodeURIComponent(ws)}`)).paths ?? [], path);
+  } catch (e) {
+    toast(reason(e), true);
+    return [];
+  }
+}
+
 /** How long the hover trusts a workspace's file list for a path it *has*.
  *
  *  Long enough to cover one sweep of the mouse down a pane: xterm asks once per
@@ -230,14 +273,16 @@ const HOVER_TTL = 2_000;
  *  in them costs two walks a second at this, not one per line. */
 const MISS_TTL = 500;
 /** `at` is when the answer landed, and `null` while it is still on its way, so a
- *  slow walk is joined rather than started twice.
+ *  slow walk is joined rather than started twice. `got` is the same answer once it
+ *  is in, for a caller that has to decide inside an event.
  *
- *  @type {Map<string, { at: number | null,
+ *  @type {Map<string, { at: number | null, got?: string[],
  *                       list: Promise<{ paths: string[], truncated: boolean }> }>} */
 const hovered = new Map();
 
 /** Whether a click on `path` would find anything, which is what earns it an
- *  underline. The click itself still walks fresh, in [`candidates`].
+ *  underline: a file, or a folder with files under it. The click itself still
+ *  walks fresh, in [`candidates`].
  *
  *  **A list that was cut short says yes to everything.** `/api/paths` stops at
  *  20,000 and the monorepo is 19,043, so the day it crosses, a miss means "not in
@@ -249,9 +294,22 @@ const hovered = new Map();
  *  @param {string} path workspace-relative */
 export async function known(at, ws, path) {
   const has = (/** @type {{ paths: string[], truncated: boolean }} */ l) =>
-    l.truncated || matching(l.paths, path).length > 0;
+    l.truncated || matching(l.paths, path).length > 0 || folders(l.paths, path).length > 0;
   if (has(await listed(at, ws, HOVER_TTL))) return true;
   return has(await listed(at, ws, MISS_TTL));
+}
+
+/** Whether the underline under a right-click was drawn for a folder rather than a
+ *  file, read from the list the hover already has. **No walk**, because the menu
+ *  decides inside the event; with no list in yet it says no, and the file menu
+ *  is what opens, as it did before folders were links.
+ *
+ *  @param {string} checkout the terminal's own checkout, by path
+ *  @param {string} ws
+ *  @param {string} path workspace-relative */
+export function isFolder(checkout, ws, path) {
+  const got = hovered.get(`${checkout}\0${ws}`)?.got;
+  return !!got && !matching(got, path).length && folders(got, path).length > 0;
 }
 
 /** The workspace's file list, if one landed within `ttl`, or the walk already
@@ -265,10 +323,15 @@ function listed(at, ws, ttl) {
   const key = `${at.path}\0${ws}`;
   const entry = hovered.get(key);
   if (entry && (entry.at === null || Date.now() - entry.at <= ttl)) return entry.list;
-  /** @type {{ at: number | null, list: Promise<{ paths: string[], truncated: boolean }> }} */
+  /** @type {{ at: number | null, got?: string[], list: Promise<{ paths: string[], truncated: boolean }> }} */
   const made = { at: null, list: Promise.resolve({ paths: [], truncated: false }) };
   made.list = getOn(at, `/api/paths?workspace=${encodeURIComponent(ws)}`)
-    .then((a) => { made.at = Date.now(); return { paths: a.paths ?? [], truncated: !!a.truncated }; });
+    .then((a) => {
+      made.at = Date.now();
+      const paths = a.paths ?? [];
+      made.got = paths;
+      return { paths, truncated: !!a.truncated };
+    });
   hovered.set(key, made);
   // A failure is not cached: the next hover asks again.
   void made.list.catch(() => { if (hovered.get(key) === made) hovered.delete(key); });

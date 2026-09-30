@@ -12,7 +12,7 @@
 // half of every sentence Claude Code writes, and an affordance that is wrong four
 // times out of five is one people learn to ignore.
 
-import { continues, linksIn, matching, pathsIn } from '../web/js/pathlink.js'
+import { continues, folders, level, linksIn, matching, pathsIn } from '../web/js/pathlink.js'
 
 let failed = false
 const check = (ok, what) => {
@@ -169,6 +169,34 @@ check(continues('● a line that stops short'.padEnd(60), '  and goes on') === -
 check(continues('│ inside a dialog border'.padEnd(59) + '│', '│ next row') === -1,
   'a box border is not a link carrying on')
 check(continues(top, '') === -1, 'nor is a blank row')
+
+// --- and a folder, which opens a menu of what is in it ------------------------
+
+const repo = [
+  'resources/script/angular/apps/editor/pages/home.component.ts',
+  'resources/script/angular/apps/editor/pages/list/list.component.ts',
+  'resources/script/angular/apps/editor/pages/list/list.component.html',
+  'resources/script/angular/apps/viewer/pages/index.ts',
+  'resources/script/angular/apps/editor/pages-old/x.ts',
+  'README.md',
+]
+const at = (path) => folders(repo, path).map((f) => `${f.folder}:${f.files.length}`)
+const editor = 'resources/script/angular/apps/editor/pages'
+check(JSON.stringify(at(`${editor}/`)) === JSON.stringify([`${editor}:3`]),
+  `a folder with its trailing slash finds every file under it, got ${at(`${editor}/`)}`)
+check(JSON.stringify(at(editor)) === JSON.stringify([`${editor}:3`]), 'and so does one without')
+check(JSON.stringify(at('editor/pages/')) === JSON.stringify([`${editor}:3`]),
+  'a partial folder matches on the tail, as a file does')
+check(at('pages/').length === 2, 'and a name two folders share answers with both')
+check(!at('pages/').some((f) => f.includes('pages-old')), 'a folder that only starts the same is not it')
+check(at('README.md').length === 0, 'a file is not a folder')
+check(at('/').length === 0, 'nor is a lone slash')
+
+const oneLevel = level(folders(repo, editor)[0]?.files ?? [])
+check(JSON.stringify(oneLevel) === JSON.stringify({
+  dirs: [['list', ['list.component.html', 'list.component.ts']]],
+  files: ['home.component.ts'],
+}), `one level is its subfolders and its own files, got ${JSON.stringify(oneLevel)}`)
 
 console.log(failed ? '\ncheck-pathlink: FAILED' : '\ncheck-pathlink: ok')
 process.exit(failed ? 1 : 0)
