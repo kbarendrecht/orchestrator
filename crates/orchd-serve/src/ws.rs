@@ -166,6 +166,28 @@ fn is_interrupt(data: &[u8]) -> bool {
     data == [0x1b] || data.contains(&0x03)
 }
 
+/// The keystrokes a pty may have: all of them, except `^Z` for an agent.
+///
+/// **Claude Code suspends itself on `^Z`, and nothing here can bring it back.** It
+/// hands the terminal back and stops, for a shell to `fg` it later. There is no
+/// shell: the daemon owns the pty, so the process group is orphaned and the kernel
+/// drops the stop. What is left is a live process that believes it is suspended,
+/// with a pane that echoes your typing and never draws again. Recorded against
+/// Claude Code in a pty of its own: `SIGCONT` redraws it, and nothing a person
+/// types does. So the byte is not sent. A shell or a process pane keeps it, since
+/// a shell has job control of its own to answer it with.
+///
+/// `0x1a` is not a byte any escape sequence or UTF-8 carries, so dropping it cannot
+/// cut another key in half. The vendored xterm has no extended key mode that
+/// would spell `^Z` any other way.
+fn to_pty(data: &[u8], agent: bool) -> std::borrow::Cow<'_, [u8]> {
+    if agent && data.contains(&0x1a) {
+        data.iter().copied().filter(|b| *b != 0x1a).collect()
+    } else {
+        std::borrow::Cow::Borrowed(data)
+    }
+}
+
 /// Move a session off `Working` because you just cut its turn short.
 ///
 /// **The only signal there is.** Claude Code's `Stop` hook does not fire on a user
@@ -277,7 +299,7 @@ async fn pty_loop(
             },
             incoming = socket.recv() => match incoming {
                 Some(Ok(Message::Binary(data))) => {
-                    let _ = writer.write(&data);
+                    let _ = writer.write(&to_pty(&data, session.is_some()));
                     if let Some(id) = session.filter(|_| is_interrupt(&data)) {
                         note_interrupt(&app, id).await;
                     }
@@ -289,7 +311,7 @@ async fn pty_loop(
                         }
                         // Anything else is keystrokes that arrived as text.
                         Err(_) => {
-                            let _ = writer.write(text.as_bytes());
+                            let _ = writer.write(&to_pty(text.as_bytes(), session.is_some()));
                             if let Some(id) = session.filter(|_| is_interrupt(text.as_bytes())) {
                                 note_interrupt(&app, id).await;
                             }
@@ -319,7 +341,26 @@ async fn pty_loop(
 
 #[cfg(test)]
 mod tests {
-    use super::is_interrupt;
+    use super::{is_interrupt, to_pty};
+
+    /// `^Z` never reaches an agent, and nothing else is touched on the way.
+    #[test]
+    fn an_agent_never_gets_a_suspend() {
+        assert_eq!(to_pty(b"\x1a", true).as_ref(), b"");
+        assert_eq!(to_pty(b"ab\x1acd", true).as_ref(), b"abcd");
+        // A shell has job control, so its `^Z` goes through.
+        assert_eq!(to_pty(b"\x1a", false).as_ref(), b"\x1a");
+        // Every other key goes through as it came, arrows and a paste included.
+        for keys in [
+            &b"hello"[..],
+            b"\x1b[A",
+            b"\x03",
+            b"\x1b[200~x\x1b[201~",
+            "é".as_bytes(),
+        ] {
+            assert_eq!(to_pty(keys, true).as_ref(), keys);
+        }
+    }
 
     /// The distinction the whole detector turns on: `0x1b` leads every escape
     /// sequence a terminal sends, so anything looser than "the chunk *is* an
