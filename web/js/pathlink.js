@@ -188,6 +188,37 @@ export function linksIn(text) {
   return [...urls, ...paths].sort((a, b) => a.start - b.start);
 }
 
+/** Whether a row carries on a link the row above ran out of room for, when the
+ *  break between them is a real line break rather than the terminal's own wrap.
+ *
+ *  **Claude Code never lets the terminal wrap.** It draws each row with a cursor
+ *  move, so a URL that reaches the right edge carries on at the next row's indent
+ *  and xterm has no `isWrapped` to join them by: recorded at 60 columns, the URL
+ *  fills row 12 to the last cell and row 13 goes on after two spaces. Both halves
+ *  then matched nothing, or a shorter URL that is a different page.
+ *
+ *  So the rule is the shape that leaves: the row above is full to its last cell,
+ *  or to the one before it, which is where the echo of your own prompt stops, and
+ *  this one starts, after its indent, with no space. **ASCII on both sides**,
+ *  because that is what a URL or a path is made of and a box border is not;
+ *  without it every row of a `│ … │` dialog is one line. A word that fits the row
+ *  exactly is joined to the next one as well, and nothing in the text tells those
+ *  apart. That costs a link only when it is the word at the edge.
+ *
+ *  @param {string} above that row's cells, untrimmed
+ *  @param {string} row this row's, untrimmed
+ *  @returns {number} how many cells of indent to drop from `row`, or -1 when it
+ *           does not carry on */
+export function continues(above, row) {
+  const indent = row.search(/\S/);
+  const full = above.trimEnd();
+  if (indent < 0 || full.length < above.length - 1) return -1;
+  return EDGE.test(full.slice(-1)) && EDGE.test(row.charAt(indent)) ? indent : -1;
+}
+
+/** Printable ASCII, the space excluded. */
+const EDGE = /[\x21-\x7e]/;
+
 /** The files in `list` that `path` names, best first. `list` is a workspace's
  *  files, relative to its root, as `/api/paths` answers.
  *

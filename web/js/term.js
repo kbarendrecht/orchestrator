@@ -5,7 +5,7 @@
 import { $, CHECKOUTS, CHROME, IS_MAC, callOn, copyText, el, mark, note, reason, reportBoot, selected, terms, termKey, typingElsewhere, uiScale, wheelScale } from './core.js';
 import { fontStack, theme } from './theme.js';
 import { termColours } from './palette.js';
-import { linksIn } from './pathlink.js';
+import { continues, linksIn } from './pathlink.js';
 
 
 const THEME = {
@@ -97,8 +97,9 @@ export function onPathCheck(/** @type {NonNullable<typeof pathCheck>} */ fn) {
  *
  *  @param {any} term
  *  @param {HTMLElement} host
- *  @param {MouseEvent} ev */
-function pathUnder(term, host, ev) {
+ *  @param {MouseEvent} ev
+ *  @param {boolean} agent whether Claude Code draws this pane, as [`logicalLine`] reads it */
+function pathUnder(term, host, ev, agent) {
   /* The screen, not the host: a whole number of cells rarely fills the pane, and
      the few pixels left over would make every column past the first drift. */
   const screen = host.querySelector('.xterm-screen') ?? host;
@@ -112,7 +113,7 @@ function pathUnder(term, host, ev) {
   // `viewportY` is how far the buffer is scrolled, so this is the absolute line
   // the provider would be asked about, 1-based like everything else here.
   const y = term.buffer.active.viewportY + row + 1;
-  const found = logicalLine(term, y);
+  const found = logicalLine(term, y, agent);
   if (!found) return null;
   /* The offset whose cell is the one under the pointer, looked up in the same map
      the links are drawn from — the arithmetic that used to do this drifted on
@@ -199,13 +200,14 @@ function linkPaths(term, checkout, target) {
      mouse reporting and xterm never makes a selection at all. Capture, so this
      is recorded before xterm's own handler sees the press. */
   let down = { x: 0, y: 0 };
+  const agent = target.startsWith('session:');
   term.element?.addEventListener('mousedown', (/** @type {MouseEvent} */ e) => {
     down = { x: e.clientX, y: e.clientY };
   }, true);
   term.registerLinkProvider({
     provideLinks(/** @type {number} */ y, /** @type {(l: any) => void} */ callback) {
       const ask = ++newest;
-      const found = logicalLine(term, y);
+      const found = logicalLine(term, y, agent);
       if (!found) return callback(undefined);
       const { text, from, map } = found;
       /** @param {ReturnType<typeof linksIn>} hits */
@@ -269,17 +271,33 @@ function cell(at, map, from) {
  *  to the row that started it and forward through the continuations is what makes
  *  it one string again.
  *
- *  Every row contributes exactly `cols` characters, untrimmed, so an offset into
- *  the joined text divides straight back into a row and a column. Trimming would
- *  be tidier and would put the underline in the wrong place.
+ *  **In an agent pane a real line break can be a wrap too**, because Claude Code
+ *  draws its rows itself and never sets `isWrapped` ([`continues`] has the
+ *  recording). Those rows are joined without their indent. Agent panes only: a
+ *  shell wraps with `isWrapped`, and a row in one that happens to end at the edge
+ *  would be joined to the next command's output for nothing.
+ *
+ *  Every row contributes its cells untrimmed, so an offset into the joined text
+ *  maps straight back to a row and a column through `map`. Trimming would be
+ *  tidier and would put the underline in the wrong place.
  *
  *  @param {any} term
  *  @param {number} y 1-based, over the whole buffer, which is what a provider is
- *         handed */
-function logicalLine(term, y) {
+ *         handed
+ *  @param {boolean} agent whether Claude Code draws this pane */
+function logicalLine(term, y, agent) {
   const buf = term.buffer.active;
+  /** How many leading cells of row `r` to drop to join it to the row above, or -1
+   *  when it starts a line of its own. */
+  const joins = (/** @type {number} */ r) => {
+    const line = buf.getLine(r - 1);
+    if (!line || r <= 1) return -1;
+    if (line.isWrapped) return 0;
+    const above = agent ? buf.getLine(r - 2) : null;
+    return above ? continues(above.translateToString(false), line.translateToString(false)) : -1;
+  };
   let from = y;
-  while (from > 1 && buf.getLine(from - 1)?.isWrapped) from--;
+  while (joins(from) >= 0) from--;
   let text = '';
   /** Where each character of `text` sits, 1-based, so an offset never has to be
    *  divided back into a row and a column. */
@@ -287,12 +305,13 @@ function logicalLine(term, y) {
   const cellOf = buf.getNullCell ? buf.getNullCell() : null;
   for (let row = from; ; row++) {
     const line = buf.getLine(row - 1);
-    if (!line || (row > from && !line.isWrapped)) break;
+    const skip = row > from ? joins(row) : 0;
+    if (!line || skip < 0) break;
     /* Cell by cell, because the column is the thing being recorded. A cell of
        width 0 is the second half of a wide character and carries no string of its
        own; a cell whose string is several code units contributes several offsets
        at the one column. */
-    for (let x = 0; x < line.length; x++) {
+    for (let x = skip; x < line.length; x++) {
       const c = cellOf ? line.getCell(x, cellOf) : line.getCell(x);
       const got = c ?? cellOf;
       const chars = got ? got.getChars() : '';
@@ -301,6 +320,11 @@ function logicalLine(term, y) {
       const piece = chars || ' ';
       text += piece;
       for (let k = 0; k < piece.length; k++) map.push({ x: x + 1, y: row });
+    }
+    /* A row the next one joins by a real line break gives back its margin, or the
+       one blank cell the prompt echo stops short of the edge by splits the word. */
+    if (!buf.getLine(row)?.isWrapped && joins(row + 1) >= 0) {
+      while (text.endsWith(' ') && map.at(-1)?.y === row) { text = text.slice(0, -1); map.pop(); }
     }
   }
   return text.trim() ? { text, from, map } : null;
@@ -361,7 +385,7 @@ function openTerm(checkout, target, parent) {
   host.addEventListener('contextmenu', (ev) => {
     const e = /** @type {MouseEvent} */ (ev);
     if (!pathMenu) return;
-    const found = pathUnder(term, host, e);
+    const found = pathUnder(term, host, e, agentPane);
     if (!found) return;
     e.preventDefault();
     /* **And stopped, which `preventDefault` alone does not do.** The drawer hangs

@@ -12,7 +12,7 @@
 // half of every sentence Claude Code writes, and an affordance that is wrong four
 // times out of five is one people learn to ignore.
 
-import { linksIn, matching, pathsIn } from '../web/js/pathlink.js'
+import { continues, linksIn, matching, pathsIn } from '../web/js/pathlink.js'
 
 let failed = false
 const check = (ok, what) => {
@@ -151,6 +151,24 @@ check(
 check(linksIn('ftp://nope.example.com/a').length === 0,
   'a scheme `/api/open` refuses is never offered')
 check(linksIn('https:// and nothing').length === 0, 'a scheme with no host is not a link')
+
+// --- and how Claude Code breaks a long one over two rows ----------------------
+
+/* Recorded from Claude Code at 60 columns: the URL fills the row to its last cell
+   and the next row carries on after the message's two-space indent. */
+const top = '● see https://github.com/kbarendrecht/orchestrator/blob/main'
+check(top.length === 60, 'the fixture row is 60 columns wide')
+check(continues(top, '  /crates/orchd-base/src/guard.rs#L120-L140 and') === 2,
+  'a URL at the edge carries on at the indent')
+check(continues('  crates/orchd'.padStart(60), '  -base/src/guard.rs:12') === 2,
+  'and so does a path')
+check(continues('  https://github.com/kbarendrecht/orchestrator/blob/main/cr ', '  ates/x') === 2,
+  'the echo of your prompt stops one cell short, and carries on too')
+check(continues('● a line that stops short'.padEnd(60), '  and goes on') === -1,
+  'a row with room left at the end is its own line')
+check(continues('│ inside a dialog border'.padEnd(59) + '│', '│ next row') === -1,
+  'a box border is not a link carrying on')
+check(continues(top, '') === -1, 'nor is a blank row')
 
 console.log(failed ? '\ncheck-pathlink: FAILED' : '\ncheck-pathlink: ok')
 process.exit(failed ? 1 : 0)
