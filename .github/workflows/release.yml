@@ -393,16 +393,25 @@ jobs:
       # `com.apple.quarantine` attribute, so the approval a downloaded build asks
       # for is a thing only a real download shows — `docs/traps/macos.md` carries
       # that, and it is the reason the cask is the channel that hurts.
+      #
+      # **`hdiutil -quiet` is what cost v2026.10.1 three runs.** The attach failed
+      # and `-quiet` swallowed the only sentence that said why, so the step ended
+      # as `exit 1` with an empty log and the blame fell on the `gh` line above it.
+      # A gate that cannot say what broke is a gate nobody can act on, so the
+      # attach is loud now and `set -x` names whichever command ends the step.
+      # `/tmp/mnt` is made first because `-mountpoint` does not always create it.
       - name: The published app runs
         if: runner.os == 'macOS'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          set -e
+          set -ex
           tag="${GITHUB_REF_NAME}"
           gh release download "$tag" --pattern '*.dmg' --dir /tmp/rel
           dmg=$(ls /tmp/rel/*.dmg | head -1)
-          hdiutil attach "$dmg" -nobrowse -quiet -mountpoint /tmp/mnt
+          mkdir -p /tmp/mnt
+          hdiutil attach "$dmg" -nobrowse -mountpoint /tmp/mnt
+          ls -la /tmp/mnt
           cp -R /tmp/mnt/Orchestrator.app /tmp/Orchestrator.app
           hdiutil detach -quiet /tmp/mnt
           node tools/app-check.mjs /tmp/Orchestrator.app/Contents/MacOS/orchestrator-desktop
