@@ -338,7 +338,7 @@ const ROLES = [
 /** Say why something was refused, under the rows it is about — and out loud.
  *
  *  **Two places, because a sentence nobody hears is not a refusal.** The pane already
- *  had the note; what it never had was `#live`, the polite region the waitbar
+ *  had the note; what it never had was `#live`, the polite region the rail
  *  announces through, so a screen reader was told nothing when a font name was
  *  declined. Passing `''` clears both.
  */

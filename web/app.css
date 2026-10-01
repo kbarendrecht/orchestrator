@@ -54,12 +54,17 @@
      beside them rather than as information of their own — nothing is ever *only*
      a colour here. Chosen to sit clear of `--attn` and `--bad`, which mean
      "needs you" and "failing" everywhere else in this UI; a band the same amber
-     as the waitbar would read as a state. Four, because past that a palette stops
+     as the attention amber would read as a state. Four, because past that a palette stops
      being distinguishable at a glance and the rail draws no band at all instead. */
   --co-1:#7E9CC4;
   --co-2:#8FAE8A;
   --co-3:#B294BB;
   --co-4:#C9A87C;
+  /* Merged, and nothing else. GitHub's own purple, which is the colour this
+     palette had deliberately left unused *because* it reads as merged there — see
+     `--auto` below, where that reasoning is written down. A session row wears it
+     for the few minutes between its PR merging and the worktree going. */
+  --merged:#A371F7;
   --auto:#5B8FC9;        /* a pass's command — azure, parted from --work's teal so
                             the two no longer collide. Still NOT purple: purple
                             reads as merged on GitHub. */
@@ -334,7 +339,7 @@ button.ctx-btn:hover{color:var(--text)}
 .rail-scroll{flex:1;overflow-y:auto;min-height:0}
 .ws{border-bottom:1px solid var(--line-soft)}
 /* **The one place a second layer is deliberate.** A sticky head has to mask the
-   rows passing under it, so it keeps a fill where `.waitbar` and `.prblock` gave
+   rows passing under it, so it keeps a fill where `.prblock` gave
    theirs up — and a fill over the panel's own is two alphas, which reads a little
    more solid than the rail behind it. That is what a sticky head is for. Every
    other band inside a panel painted the panel's own colour and now paints nothing.
@@ -474,36 +479,8 @@ button.ctx-btn:hover{color:var(--text)}
    each other across the middle of it. Same width and colour; only the edge
    differs, which is why it is a second rule rather than a variable. */
 .rv-of-checkout{border-right:3px solid var(--band)}
-/* Where the waitbar will take you, when that is another checkout. Dimmer than the
-   count beside it: it is the qualifier, not the news. */
-.waitwhere{color:var(--faint-solid)}
 .addco{width:100%;text-align:left;color:var(--faint-solid);cursor:pointer;background:none;border:0}
 .addco:hover{color:var(--text)}
-
-/* The one row that says how much you are losing to idle agents. */
-.waitbar{
-  z-index:3;display:none;align-items:center;gap:8px;
-  padding:4px 16px;border-bottom:1px solid var(--line-soft);
-  font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--attn);width:100%;text-align:left;
-}
-/* Sits at the right of the bar it lives in, so the count stays the thing you
-   read and this is the thing you press. */
-/* The same chip a PR row uses for its actions (`.pract`): amber says there is
-   something to press, the outline keeps it from competing with the panes around
-   it. Filled was one step too loud for a bar that is only an offer. */
-.waitall{
-  margin-left:auto;font-family:var(--mono);font-size:calc(9px * var(--fs));
-  color:var(--attn);padding:2px 8px;border:1px solid var(--line);border-radius:2px;
-  flex:0 0 auto;white-space:nowrap;
-}
-.waitall:hover{background:var(--raised);border-color:var(--attn)}
-.waitbar.on{display:flex}
-/* Ready, not waiting: the same bar without the amber, because nothing here is
-   asking for you. */
-/* Ready, not waiting: the bar drops the amber, because nothing here is asking
-   for you. The button keeps it — it is the offer, and the one thing on this bar
-   worth noticing. */
-.waitbar.calm{color:var(--dim)}
 
 .plus{
   font-family:var(--mono);font-size:calc(15px * var(--fs));line-height:1;color:var(--ghost);
@@ -528,14 +505,45 @@ button.ctx-btn:hover{color:var(--text)}
 /* Handed to a PR: the work is elsewhere now, so it wears a ring rather than a
    fill — the same outline an archived session gets, since both mean "not the
    thing in front of you". */
-.dot.pr{background:none;border:1px solid var(--work)}
 .dot.build{background:var(--bad)}
 .dot.working{background:#6A6A6A}
 .dot.idle{background:#6B6B6B}
 .dot.archived{background:transparent;border:1px solid var(--faint-solid)}
 
+/* ---------- a session row's dot: two facts, two properties ----------
+   **The fill is what the session is doing; the ring is whether it has a PR.**
+   Those used to be one class — `dotClass` returned `pr`, a hollow teal, and only
+   while the session was *parked* — so a PR was invisible on every row that was
+   working, asking or failing, and the teal it borrowed was the same teal a
+   working session wore. Now `hasPr` adds `.ring` on top of whatever the state
+   painted, and the two stack.
+
+   Written through `--d` rather than `background` so the ring can take the same
+   colour without a second rule per state, and scoped to `.sess` so the PR pane's
+   own dots (`prDot`) and the review queue's keep the fills they have. */
+.sess .dot{--d:#6B6B6B;background:var(--d);border:0}
+.sess .dot.blocked{--d:var(--attn)}
+.sess .dot.build,.sess .dot.bad{--d:var(--bad)}
+.sess .dot.ok{--d:var(--ok)}
+/* GitHub's purple, and the one place this palette spends it. `--auto` carries a
+   comment saying azure is "still NOT purple: purple reads as merged on GitHub" —
+   which is exactly why it is right here and nowhere else. */
+.sess .dot.merged{--d:var(--merged)}
+/* A PR with nothing to say: a draft, a check still running, or one closed without
+   merging. Grey, because none of those is owed by you. */
+.sess .dot.pr{--d:var(--faint-solid)}
+.sess .dot.working,.sess .dot.idle{--d:#6B6B6B}
+.sess .dot.archived{--d:var(--faint-solid);background:none;border:1px solid var(--d)}
+.sess .dot.ring{background:none;border:1px solid var(--d)}
+
+/* **The name takes the leftover width, and gives way last (#37).** `flex:1` with
+   `min-width:0` is what lets it shrink past its content; everything else on the
+   row — the badges, the fork mark — is `flex:0 0 auto`, so a long name clips and
+   nothing else does. The creation age that used to sit hard right is in the row's
+   tooltip now: two clocks on one row was one too many, and it was taking the
+   width the name was being clipped for. */
 .sess-name{
-  font-family:var(--mono);font-size:calc(11.5px * var(--fs));flex:1;
+  font-family:var(--mono);font-size:calc(11.5px * var(--fs));flex:1 1 auto;min-width:0;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
 }
 /* The rename box, in place of the name. Same metrics as `.sess-name` so the row
@@ -559,7 +567,14 @@ button.ctx-btn:hover{color:var(--text)}
 .sess-cmd{color:var(--auto)}
 .sess-state{color:var(--dim)}
 .sess-state.blocked{color:var(--attn)}
-.sess-state.pr{color:var(--work)}
+/* The PR's own severity, in the words the rest of the window already uses: red is
+   a failure whether a build or a PR reported it, green is clean, purple is merged,
+   grey is a PR with nothing to say. The teal this used to be was the *working*
+   colour, so `#30 conflicted` read exactly as calm as `#41 open`. */
+.sess-state.bad{color:var(--bad)}
+.sess-state.ok{color:var(--ok)}
+.sess-state.merged{color:var(--merged)}
+.sess-state.pr{color:var(--faint-solid)}
 /* A restart waiting on the turn: the work colour, because it is about to act on
    this row, not asking you to. */
 .sess-restart{color:var(--work);margin-left:6px}

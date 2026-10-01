@@ -193,7 +193,7 @@ const askDrawn = { sig: null, name: 'ask' };
  *  Per ask rather than a plain flag, so the next question opens by itself: a box
  *  you shut once must not swallow the one after it. Folded, never dismissed —
  *  the agent is still stopped, so a control that made the question go away would
- *  be this box disagreeing with the rail and the waitbar beside it. */
+ *  be this box disagreeing with the rail beside it. */
 /** @type {string | null} */
 let askFolded = null;
 
@@ -1630,8 +1630,9 @@ function keymap(/** @type {KeyboardEvent} */ e) {
     }
     if (e.code === 'Space') {
       // The first session waiting on you — the one costing you the most, in any
-      // checkout. The waitbar counts across all of them and this is the chord it
-      // advertises, so the two have to answer the same question.
+      // checkout. Attention does not stop at the checkout you are looking at, and
+      // since the attention bar went this chord is the only thing that crosses
+      // them: the rail's amber dots say which rows need you, per checkout.
       e.preventDefault();
       const first = everySession().find((r) => isWaiting(r.session));
       if (first) setSelected(first.session.id);
@@ -1734,7 +1735,7 @@ document.addEventListener('visibilitychange', refreshOnReturn);
 /** @type {Set<string> | null} */
 let waitingKnown = null;
 function announceWaiting() {
-  /* Every checkout, for the reason the waitbar gives — and the transition is
+  /* Every checkout, for the reason `everySession` gives — and the transition is
      measured against one set covering all of them, so a checkout being added
      does not make every session in it look newly waiting. */
   const all = everySession().map((r) => r.session);

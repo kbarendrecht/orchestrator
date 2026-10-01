@@ -1150,6 +1150,9 @@ fn start_pr_poller(app: Arc<AppState>) {
                         repo.1.clone(),
                         t.value,
                     );
+                    // Cloned for the outcome lookups below: the poll moves its own
+                    // copy into the blocking task.
+                    let asker = forge.clone();
                     let result = tokio::task::spawn_blocking(move || forge.poll_prs()).await;
                     let mut inner = app.inner.write().await;
                     inner.token_source = Some(source);
@@ -1182,9 +1185,56 @@ fn start_pr_poller(app: Arc<AppState>) {
                                 }
                                 changed
                             });
+                            /* **What left the open list, and why that is a
+                            question at all.** The search is
+                            `is:pr is:open author:@me`, so a PR that merges or
+                            closes stops being in the answer — and a session row
+                            showing `#41 open` would fall back to the session's
+                            own state with nothing ever saying which happened.
+                            Merged is the one worth saying: it is the moment the
+                            worktree can go.
+
+                            The queue is decided under the lock and the asking
+                            happens after it is dropped, because the question is
+                            a network call and this lock is held across the whole
+                            snapshot. */
+                            let ask = inner.outcomes_to_ask(&prs);
                             inner.prs = prs;
                             inner.pr_error = None;
                             inner.pr_fetched = Some(std::time::SystemTime::now());
+                            drop(inner);
+                            // One request per queued PR per poll, and the queue only
+                            // holds PRs whose worktree is still here. A failure is
+                            // simply no answer: the entry stays queued and the next
+                            // poll asks again.
+                            for number in ask {
+                                let f = asker.clone();
+                                let answer =
+                                    tokio::task::spawn_blocking(move || f.pr_outcome(number)).await;
+                                match answer {
+                                    Ok(Ok(Some(ended))) => {
+                                        tracing::info!(
+                                            pr = number,
+                                            outcome = ?ended.outcome,
+                                            "pr left the open list"
+                                        );
+                                        let mut inner = app.inner.write().await;
+                                        inner.pending_outcome.retain(|(n, _)| *n != number);
+                                        inner.remember_ended(ended);
+                                    }
+                                    // Still open to the forge: the search lagged, or
+                                    // the PR is no longer yours. It stays queued
+                                    // while its worktree is here, so a merge one
+                                    // tick later is still caught.
+                                    Ok(Ok(None)) => {}
+                                    Ok(Err(e)) => {
+                                        tracing::warn!(pr = number, "pr outcome failed: {e:#}");
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(pr = number, "pr outcome task failed: {e}");
+                                    }
+                                }
+                            }
                         }
                         Ok(Err(e)) => {
                             // Keep the last good list: stale is more useful than

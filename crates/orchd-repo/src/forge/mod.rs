@@ -42,7 +42,7 @@ pub use github::{
     warn_if_world_readable, GitHubForge, Token, TokenSource,
 };
 pub use github_write::{ready_to_rerequest, with_footer};
-pub use model::{Checks, Comment, Pr, Thread, ThreadRoot, Threads};
+pub use model::{Checks, Comment, EndedPr, Pr, PrOutcome, Thread, ThreadRoot, Threads};
 
 /// Read + write against one repo on one forge.
 ///
@@ -59,6 +59,14 @@ pub use model::{Checks, Comment, Pr, Thread, ThreadRoot, Threads};
 pub trait Forge: Send + Sync + Clone + 'static {
     /// The open PRs you authored, plus your own login.
     fn poll_prs(&self) -> Result<(String, Vec<Pr>)>;
+
+    /// What became of a PR the poll has stopped reporting: merged, closed, or
+    /// `None` for one the forge still calls open.
+    ///
+    /// Separate from [`Forge::poll_prs`] because the poll asks for *open* PRs and
+    /// this is the question that asking cannot answer. Issued once per
+    /// disappearance, never per tick.
+    fn pr_outcome(&self, pr: u64) -> Result<Option<EndedPr>>;
 
     /// Every review thread on one PR, paged to the end. The only thing that
     /// mints a [`ThreadRoot`], so a reply can only be aimed where a fetch proved
@@ -123,6 +131,11 @@ impl Forge for ForgeImpl {
     fn poll_prs(&self) -> Result<(String, Vec<Pr>)> {
         match self {
             ForgeImpl::GitHub(f) => f.poll_prs(),
+        }
+    }
+    fn pr_outcome(&self, pr: u64) -> Result<Option<EndedPr>> {
+        match self {
+            ForgeImpl::GitHub(f) => f.pr_outcome(pr),
         }
     }
     fn threads(&self, pr: u64) -> Result<Threads> {

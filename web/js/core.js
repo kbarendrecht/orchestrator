@@ -99,6 +99,15 @@ function adopt() {
 
 const sinceSnap = (/** @type {number | null | undefined} */ ms) => (ms == null ? null : ms + (Date.now() - snapAt));
 
+/** A live age, formatted — the same number [`clock`] would tick, said once.
+ *
+ *  For a tooltip rather than a row: the creation age left the rail (#37) because
+ *  two clocks on one row is one too many, and this is where it went. Not ticked,
+ *  because nothing re-renders a tooltip while it is open — and the rail rebuilds
+ *  often enough that the string is never far off.
+ */
+export const ageLabel = (/** @type {number | null | undefined} */ ms) => duration(sinceSnap(ms));
+
 /** The PR whose head ref this workspace holds, if any. */
 export function prForWorkspace(/** @type {string | null} */ wsId) {
   return (snap.prs || []).find((p) => p.workspace === wsId) || null;
@@ -320,11 +329,11 @@ export function enterCheckout(c) {
 
 /** Every checkout's sessions, as `{ checkout, session }` pairs.
  *
- *  **What "everything running" means once there is more than one checkout.** The
- *  waitbar, `MOD+Space` and `Ctrl+Tab` all answer questions about attention, and
- *  attention does not stop at the checkout you happen to be looking at — a bar
- *  reading "2 need you" while the chord it advertises answers "nothing waiting on
- *  you" is the two disagreeing about the same fact.
+ *  **What "everything running" means once there is more than one checkout.**
+ *  `MOD+Space` and `Ctrl+Tab` both answer questions about attention, and attention
+ *  does not stop at the checkout you happen to be looking at. The rail's own rows
+ *  are per checkout and these two are not, which is deliberate: since the
+ *  attention bar went, they are the only things that cross.
  *
  *  @returns {{ checkout: Target, session: any }[]}
  */
@@ -1440,7 +1449,15 @@ export function stateLabel(/** @type {import('../snapshot').SessionView} */ s) {
 export function dotClass(/** @type {import('../snapshot').SessionView} */ s) {
   const k = s.state.state;
   if (k === 'build_failing' || k === 'error') return 'build';
-  if (handedToPr(s)) return 'pr';
+  /* **No `pr` branch any more; the ring says that instead.** This used to return
+     `pr` whenever `handedToPr` answered, which made the hollow dot a *state* — it
+     appeared only while the session was parked and vanished the moment it did
+     anything. `hasPr` is a separate class on the same element now, so the two
+     facts stack rather than overwrite one another. What is left here is severity:
+     a parked PR row takes its colour from the PR, which is the only state it has
+     to show. */
+  const parked = handedToPr(s);
+  if (parked) return prSeverity(parked) || 'pr';
   /* `ready` is not blocked, and this was the one predicate that thought it was.
      `stateClass` below and the daemon's `wants_attention` both read
      `your_turn && reason !== 'ready'`; this read `your_turn`. So a session that
@@ -1460,7 +1477,9 @@ export function dotClass(/** @type {import('../snapshot').SessionView} */ s) {
 export function stateClass(/** @type {import('../snapshot').SessionView} */ s) {
   const k = s.state.state;
   if (k === 'build_failing' || k === 'error') return 'build';
-  if (handedToPr(s)) return 'pr';
+  // The same severity the dot takes, so the words and the dot cannot disagree.
+  const parked = handedToPr(s);
+  if (parked) return prSeverity(parked) || 'pr';
   if (k === 'your_turn' && s.state.reason !== 'ready') return 'blocked';
   return '';
 }
@@ -2005,13 +2024,45 @@ export function inTrouble(p) {
   return p.checks === 'failing' || p.mergeable === 'CONFLICTING';
 }
 
-export function prState(/** @type {import('../snapshot').PrView} */ p) {
-  if (p.awaiting_you) return `${p.awaiting_you} waiting on you`;
+export function prState(/** @type {import('../snapshot').PrView | import('../snapshot').EndedPrView} */ p) {
+  /* **An ended PR answers first, because it has no other state left.** `merged`
+     and `closed` come from `prs_ended`, which the daemon fills by asking what
+     became of a PR that left the open poll. */
+  if ('outcome' in p) return p.outcome;
+  /* **No thread count here (#37).** This used to return `N waiting on you` ahead
+     of everything else, which was wrong twice over: a count of review threads is
+     not a state, and it *won* — so a row stopped saying the PR was conflicted or
+     red the moment somebody commented. The count has two homes that can act on
+     it, the PR pane and the review queue; a session row is neither. */
   if (p.mergeable === 'CONFLICTING') return 'conflicted';
   if (p.checks === 'failing') return 'checks failing';
   if (p.checks === 'pending') return 'checks running';
   if (p.is_draft) return 'draft';
   return 'open';
+}
+
+/** How bad a PR's state is, in the words the rest of the window already uses.
+ *
+ *  **The PR rows have no colour of their own any more, and that is the point.**
+ *  They used to wear `--work` — the same teal a *working* session wears — so
+ *  `#30 conflicted` read exactly as calm as `#41 open`, and the colour was spent
+ *  saying "this is a PR", which the `#` already says and the ring now says
+ *  properly. Red, green and grey mean here what they mean everywhere else: a red
+ *  row is a red row whether a build or a PR said so.
+ *
+ *  Merged is the exception, and it is GitHub's purple — the one colour this
+ *  palette had deliberately left alone *because* it reads as merged there.
+ */
+export function prSeverity(/** @type {any} */ p) {
+  if (!p) return '';
+  if (p.outcome === 'merged') return 'merged';
+  // Closed without merging is not a failure: closing a PR is a decision. The work
+  // is still in the worktree, which is the thing you have to act on.
+  if (p.outcome === 'closed') return '';
+  if (p.mergeable === 'CONFLICTING' || p.checks === 'failing') return 'bad';
+  // A draft is open on purpose and a running check will answer itself.
+  if (p.is_draft || p.checks === 'pending') return '';
+  return 'ok';
 }
 
 /** A stopped session whose work sits on a PR is not waiting on you *here* — the
@@ -2027,6 +2078,36 @@ function prOf(/** @type {import('../snapshot').SessionView} */ s) {
   return prForWorkspace(s.workspace);
 }
 
+/** The PR this session's work ended on, if one did.
+ *
+ *  Looked up the same way the open ones are — by the workspace the head branch
+ *  belongs to, which the daemon resolved — with the pass's own number taking
+ *  precedence, since a pass names its PR outright.
+ *
+ *  Only consulted when there is no *open* PR: a reopened number is in both lists
+ *  for one poll, and the open one is the true answer.
+ */
+function endedOf(/** @type {import('../snapshot').SessionView} */ s) {
+  if (!s) return null;
+  const ended = snap.prs_ended || [];
+  if (s.pass) return ended.find((p) => p.number === s.pass?.pr) || null;
+  return ended.find((p) => p.workspace === s.workspace) || null;
+}
+
+/** Whether this session has a PR at all — open or ended.
+ *
+ *  **This is what the hollow dot means, and it is a different question from
+ *  [`handedToPr`].** The ring used to be drawn by `dotClass` only while the
+ *  session was parked, so a PR was invisible on every row that was doing
+ *  anything: the same session showed a filled teal dot while working, a filled
+ *  amber dot while asking, and the ring only once it stopped. Shape answers "does
+ *  this have a PR", colour answers "what is it doing" — one question each, and
+ *  neither has to be read off the other.
+ */
+export function hasPr(/** @type {import('../snapshot').SessionView} */ s) {
+  return !!(prOf(s) || endedOf(s));
+}
+
 export function handedToPr(/** @type {import('../snapshot').SessionView} */ s) {
   // `renderContext` asks this about `currentSession()`, which is null whenever
   // nothing is selected — the state the app opens in. Without this the context
@@ -2035,7 +2116,7 @@ export function handedToPr(/** @type {import('../snapshot').SessionView} */ s) {
   if (s.state.state !== 'your_turn') return null;
   const r = s.state.reason;
   if (r === 'asked_a_question' || r === 'needs_permission') return null;
-  return prOf(s);
+  return prOf(s) || endedOf(s);
 }
 
 export let drawerTouched = false;

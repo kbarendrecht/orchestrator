@@ -397,6 +397,8 @@ together: same entries, same order, same groups.
 - A dialog borrows the keyboard, and every way out of it has to hand the keyboard back.
 - The add row holds three labels, and at 210px it wraps rather than clips.
 - A pane header may shorten at its floor width, and may not grow.
+- The rail's dot is two facts: the fill is the state, the ring is a PR.
+- A row's paint signature has to name what the row *draws*, not what it is built from.
 
 ### Performance, measured
 

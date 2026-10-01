@@ -29,6 +29,45 @@ pub enum Checks {
     Unknown,
 }
 
+/// How a PR ended, for a session row that still points at one.
+///
+/// **The poll cannot see this, which is the whole reason the type exists.** It
+/// asks GitHub for `is:pr is:open author:@me`, so a PR that merges or closes
+/// simply stops being in the answer — and a row that showed `#41 open` falls back
+/// to the session's own state with nothing ever saying which of the two happened.
+/// Merged is the one worth saying: it is the moment the worktree can go.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(
+    any(test, feature = "test-util"),
+    derive(ts_rs::TS),
+    ts(export, export_to = "repo.d.ts")
+)]
+pub enum PrOutcome {
+    Merged,
+    Closed,
+}
+
+/// A PR the poll used to report and no longer does, with what became of it.
+///
+/// Carries `head_ref` because that is the only thing tying it back to a
+/// workspace — the snapshot resolves the same way it does for an open PR, and the
+/// branch is what both sides match on.
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(
+    any(test, feature = "test-util"),
+    derive(ts_rs::TS),
+    ts(export, export_to = "repo.d.ts")
+)]
+pub struct EndedPr {
+    #[cfg_attr(any(test, feature = "test-util"), ts(type = "number"))]
+    pub number: u64,
+    pub title: String,
+    pub url: String,
+    pub head_ref: String,
+    pub outcome: PrOutcome,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(
     any(test, feature = "test-util"),

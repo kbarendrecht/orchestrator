@@ -480,6 +480,59 @@ try {
     check(name >= 24, `at ${w}px the project name is readable, got ${name}px`)
   }
 
+  /* --- the rail row: one clock, and the PR colours it takes -------------------- */
+
+  /* **The attention bar is gone**, and this is what says it stayed gone. It spent a
+     row on a count the amber dots already carry, and the one thing it owned —
+     continue every paused session — is in the checkout header's menu now. */
+  check(await page.locator('#waitbar').count() === 0,
+    'the attention bar is not in the page')
+
+  /* One clock a row, and it is the waiting one. The creation age used to sit hard
+     right on every row, three characters from the waiting duration and taking the
+     width the name was clipped for; it is in the row's tooltip now. `.sess-id` is
+     still the archive's, which is why this asks about a *live* row. */
+  const liveRow = page.locator('#rail .sess[data-id]').first()
+  check(await liveRow.locator('.sess-id').count() === 0,
+    'a live row draws no creation age')
+  check(/^started .+ ago$/.test(await liveRow.getAttribute('title') ?? ''),
+    `and carries it in the tooltip instead, got ${JSON.stringify(await liveRow.getAttribute('title'))}`)
+
+  /* **The PR words and colours, asserted by calling them.** This sandbox has no
+     forge, so no row in it can ever be a PR row — and these three functions are
+     the whole of what a PR row says. Called in the real page for the reason
+     `safeHref` is: the rendered page has nothing to look at, which is the point.
+
+     The first line is #37's regression: `2 waiting on you` used to be returned
+     ahead of everything else, so a row stopped saying the PR was conflicted or red
+     the moment somebody commented. */
+  const prWords = await page.evaluate(async () => {
+    const core = await import('/js/core.js')
+    return {
+      counted: core.prState({ awaiting_you: 2, checks: 'failing' }),
+      conflicted: core.prState({ mergeable: 'CONFLICTING' }),
+      merged: core.prState({ outcome: 'merged' }),
+      closed: core.prState({ outcome: 'closed' }),
+      sevFailing: core.prSeverity({ checks: 'failing' }),
+      sevConflict: core.prSeverity({ mergeable: 'CONFLICTING' }),
+      sevOpen: core.prSeverity({ checks: 'passing' }),
+      sevDraft: core.prSeverity({ is_draft: true }),
+      sevRunning: core.prSeverity({ checks: 'pending' }),
+      sevMerged: core.prSeverity({ outcome: 'merged' }),
+      sevClosed: core.prSeverity({ outcome: 'closed' }),
+    }
+  })
+  check(prWords.counted === 'checks failing',
+    `a thread count no longer outranks the PR's state, got ${JSON.stringify(prWords.counted)}`)
+  check(prWords.conflicted === 'conflicted' && prWords.merged === 'merged'
+    && prWords.closed === 'closed', 'and the five words it does say are unchanged')
+  check(prWords.sevFailing === 'bad' && prWords.sevConflict === 'bad',
+    'a failing or conflicted PR is red, like every other failure in the window')
+  check(prWords.sevOpen === 'ok', 'a clean open PR is green')
+  check(prWords.sevDraft === '' && prWords.sevRunning === '' && prWords.sevClosed === '',
+    'a draft, a running check and a closed PR are grey — none of them is owed by you')
+  check(prWords.sevMerged === 'merged', 'and merged has its own colour')
+
   /* --- a pane header holds one line at every width ---------------------------- */
 
   /* #37: both heads wrapped at the width their own splitter can be dragged to —

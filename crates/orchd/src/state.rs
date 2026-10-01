@@ -261,6 +261,25 @@ pub struct Inner {
     pub workspaces: HashMap<WorkspaceId, Workspace>,
     pub sessions: HashMap<SessionId, Session>,
     pub prs: Vec<crate::forge::Pr>,
+    /// PRs the poll used to report and no longer does, with what became of each.
+    ///
+    /// **Memory only, and deliberately.** It is a note about the session you are
+    /// looking at right now — "that merged, the worktree can go" — and after a
+    /// restart the PR is simply gone, which is what every build before this did.
+    /// Persisting it would mean deciding when a merged PR stops being news, and
+    /// nothing in the product can answer that.
+    ///
+    /// Newest first, capped: see `remember_ended`.
+    pub prs_ended: Vec<crate::forge::EndedPr>,
+    /// PRs that have left the open poll and have not said what became of them.
+    ///
+    /// `(number, head_ref)`. **Asked again on every poll while the branch is still
+    /// a workspace's**, which is what bounds it: the question only matters for a
+    /// PR that still has a row, and the entry goes when the worktree does. Asking
+    /// exactly once instead was the first shape and it loses the answer — a search
+    /// that lags by one tick, or any poll between the disappearance and the merge,
+    /// spends the only attempt.
+    pub pending_outcome: Vec<(u64, String)>,
     /// What the last triage run proposed, per PR. A run costs a full agent pass,
     /// so this outlives the session that produced it — you can close the overlay
     /// and come back. Its absence after a run exits is how a failed run is
@@ -417,6 +436,68 @@ fn mixed_session_ids(inner: &Inner) -> u64 {
     }
     mixed
 }
+
+impl Inner {
+    /// Record what became of a PR the poll has stopped reporting.
+    ///
+    /// **Replaces rather than appends on a repeat**, because a PR can end twice:
+    /// closed, reopened, merged. The last answer is the true one, and two rows for
+    /// one number would be the rail arguing with itself.
+    ///
+    /// Capped at [`ENDED_MAX`], newest first. The cap is what stops a long-lived
+    /// daemon on a busy repo from carrying every PR it ever saw; the rail only
+    /// ever draws the handful whose worktrees are still here.
+    pub fn remember_ended(&mut self, ended: crate::forge::EndedPr) {
+        self.prs_ended.retain(|p| p.number != ended.number);
+        self.prs_ended.insert(0, ended);
+        self.prs_ended.truncate(ENDED_MAX);
+    }
+
+    /// Forget an ended PR, for the one case that un-ends: a reopened number
+    /// coming back in the poll. Without this the row would keep saying `closed`
+    /// about a PR that is open again, and the open list and the ended list would
+    /// both claim it.
+    pub fn forget_ended(&mut self, number: u64) {
+        self.prs_ended.retain(|p| p.number != number);
+        self.pending_outcome.retain(|(n, _)| *n != number);
+    }
+
+    /// Which vanished PRs are still worth asking about, and queue the new ones.
+    ///
+    /// Called with the poll's fresh list. A PR that left it joins the queue; one
+    /// that came back leaves it, open and ended both. What is returned is every
+    /// queued number whose head branch a workspace still holds — the bound on this
+    /// whole mechanism, since a PR with no worktree left has no row to tell.
+    pub fn outcomes_to_ask(&mut self, fresh: &[crate::forge::Pr]) -> Vec<u64> {
+        for p in fresh {
+            self.forget_ended(p.number);
+        }
+        let gone: Vec<(u64, String)> = self
+            .prs
+            .iter()
+            .filter(|p| !fresh.iter().any(|f| f.number == p.number))
+            .map(|p| (p.number, p.head_ref.clone()))
+            .collect();
+        for entry in gone {
+            if !self.pending_outcome.iter().any(|(n, _)| *n == entry.0) {
+                self.pending_outcome.push(entry);
+            }
+        }
+        // The worktree is what makes this worth a request. Dropped here rather than
+        // when the worktree goes, because this is the one place that walks the list.
+        let held = |branch: &String| {
+            self.workspaces
+                .values()
+                .any(|w| w.branches.contains(branch))
+        };
+        self.pending_outcome.retain(|(_, head)| held(head));
+        self.pending_outcome.iter().map(|(n, _)| *n).collect()
+    }
+}
+
+/// How many ended PRs to carry. Ten is more than the open list ever shows and far
+/// more than have worktrees still on disk.
+const ENDED_MAX: usize = 10;
 
 impl Inner {
     /// Which workspace an absolute path belongs to, without taking the lock.
@@ -688,6 +769,8 @@ impl AppState {
                 workspaces,
                 sessions: HashMap::new(),
                 prs: Vec::new(),
+                prs_ended: Vec::new(),
+                pending_outcome: Vec::new(),
                 proposals: HashMap::new(),
                 proposal_tokens: HashMap::new(),
                 stories: Default::default(),
@@ -1202,6 +1285,21 @@ impl AppState {
             .collect();
         prs.sort_by(|a, b| a.rank.cmp(&b.rank).then(b.pr.number.cmp(&a.pr.number)));
 
+        // The same branch-set lookup the open PRs get, for the same reason: the
+        // head ref is the only thing tying a PR to a workspace.
+        let prs_ended: Vec<EndedPrView> = inner
+            .prs_ended
+            .iter()
+            .map(|p| EndedPrView {
+                pr: p.clone(),
+                workspace: inner
+                    .workspaces
+                    .values()
+                    .find(|w| w.branches.contains(&p.head_ref))
+                    .map(|w| w.id.clone()),
+            })
+            .collect();
+
         // Already newest-first and already capped, by the poller that filled it.
         let external = inner
             .external
@@ -1225,6 +1323,7 @@ impl AppState {
             sessions,
             external,
             prs,
+            prs_ended,
             pr_error: inner.pr_error.clone(),
             agent_error: inner.agent_error.clone(),
             machine: inner.machine.clone(),
@@ -1941,6 +2040,9 @@ pub struct Snapshot {
     /// The rail lists them under the same fold as its own archive.
     pub external: Vec<ExternalView>,
     pub prs: Vec<PrView>,
+    /// PRs that have merged or closed since this daemon started, so a session row
+    /// can say which rather than silently losing its PR.
+    pub prs_ended: Vec<EndedPrView>,
     /// Set when the last poll failed; the pane says so rather than showing an
     /// empty list.
     pub pr_error: Option<String>,
@@ -2068,6 +2170,28 @@ pub struct PrView {
     /// The live session working on this PR's head ([`Inner::session_on`]), so the
     /// row can act as a jump link.
     pub session: Option<Uuid>,
+}
+
+/// An ended PR, resolved to a workspace the same way [`PrView`] is.
+///
+/// A separate view rather than a flag on `PrView`, because the two answer
+/// different questions and nearly every reader of `prs` means "open PRs" — the
+/// pane that lists them, the automation's head reconciliation, the review queue.
+/// Folding ended ones into that list would have made every one of those readers
+/// filter, and the one that forgot would act on a merged PR.
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(
+    any(test, feature = "test-util"),
+    derive(ts_rs::TS),
+    ts(export, export_to = "snapshot.d.ts")
+)]
+pub struct EndedPrView {
+    #[serde(flatten)]
+    pub pr: crate::forge::EndedPr,
+    /// The workspace whose branch set contains this PR's head ref, if it is still
+    /// here. A merged PR whose worktree has already gone resolves to `None` and
+    /// nothing draws it, which is the right answer: there is no row to tell.
+    pub workspace: Option<String>,
 }
 
 /// Work banked out of a rebase's way, as the pane needs it.

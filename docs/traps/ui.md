@@ -438,3 +438,66 @@ that half is read out of the *served* sheet — that the three rules are still
 written — which is the regression that actually happens. **Checked against
 deliberate breakage**: restoring the two-word label and dropping the `nowrap`
 fails both halves.
+
+## The rail's dot is two facts: the fill is the state, the ring is a PR.
+`dotClass` used to answer both at once. It returned `pr` — a hollow ring in
+`--work` — whenever `handedToPr` answered, and that function requires the session
+to be `your_turn` and not asking. So the ring was a *state*: it appeared only
+while the session was parked and vanished the moment the agent started working,
+asked a question or failed a build. **A PR was invisible on every row that was
+doing anything**, which is most of them, and you could not scan the rail for "what
+do I have open" at all.
+
+`hasPr` is a separate class on the same element now. The fill says what the
+session is doing; the ring says it has a PR; they stack. A PR session that is
+working is a grey ring, one that is asking is an amber ring, and one that is
+parked takes its colour from the PR itself. Written through a `--d` custom
+property rather than `background`, so the ring borrows the same colour without a
+second rule per state, and scoped to `.sess` so the PR pane's own dots and the
+review queue's keep the fills they have.
+
+**And the words stopped being teal.** `.sess-state.pr` was `--work`, the colour a
+*working* session wears, so `#30 conflicted` read exactly as calm as `#41 open`
+and the colour was spent saying "this is a PR" — which the `#` already says and
+the ring now says properly. `prSeverity` maps the PR's own state onto the meanings
+this palette already carries: red for `conflicted` and `checks failing`, green for
+`open`, grey for `draft`, `checks running` and `closed`. **Merged is GitHub's
+purple**, `--merged`, and it is the one place this palette spends it — `--auto`
+carries a comment saying azure is "still NOT purple: purple reads as merged on
+GitHub", which is exactly why it is right here and nowhere else.
+
+**Three things left the row with it.** The thread count: `prState` returned
+`N waiting on you` ahead of every other answer, so a row stopped saying the PR was
+conflicted or red the moment somebody commented — and a count of threads is not a
+state. It has two homes that can act on it, the PR pane and the review queue. The
+creation age: two clocks sat at opposite ends of one row, three characters apart,
+and only the waiting one is a number you act on; it is in the row's `title` now,
+and it was taking the width the name was being clipped for. And the waiting clock
+itself, on a parked PR row — the number means "how long it has been waiting for
+*you*", and the next move on that row is the PR's.
+
+**The attention bar went at the same time**, for the same reason: it spent a row
+on a count the amber dots already carry, and they say *which*. What it uniquely
+owned was the cross-checkout jump, which `MOD Space` already does, and *continue
+every paused session*, which is in the checkout header's menu now.
+
+`mise run page-check` holds the half this sandbox can see — no bar in the page, no
+creation age on a live row, the tooltip that replaced it — and calls `prState` and
+`prSeverity` directly for the half it cannot, since a forgeless checkout has no PR
+row to look at. `tools/e2e/flows/36-pr-merges.mjs` is the daemon's half.
+
+## A row's paint signature has to name what the row *draws*, not what it is built from.
+`rowSig` listed the session, the workspace, the selection and the checkout — and
+every one of those is an *input*. A session row's words and its dot come from
+`stateLabel`, `stateClass` and `dotClass`, and all three read that session's PR out
+of the snapshot. So a PR that merged while its session sat still changed
+everything on the row and nothing in the signature: the row kept saying
+`#41 open`, in green, against a snapshot that already knew it was merged. Measured
+in the real page — the daemon's state said `merged`, `core.stateLabel` said
+`merged`, and the pixels said `open`.
+
+The signature names the three derived values now, plus `hasPr`. That is
+deliberately not "the PR object": the derived values are exactly what is on
+screen, so the guard cannot drift from the drawing the next time one of them
+learns to read something new. It is the same lesson as the entry on paint
+signatures in `docs/traps/spa.md`, arriving from the other direction.

@@ -457,8 +457,11 @@ export async function sandbox({
     },
 
     /** What the next GitHub poll sees. See `fake-curl.mjs` for the fields. */
-    setPrs: (prs, viewer) =>
-      fs.writeFileSync(path.join(root, 'prs.json'), JSON.stringify({ viewer, prs }, null, 2)),
+    setPrs: (prs, viewer, extra = {}) =>
+      fs.writeFileSync(
+        path.join(root, 'prs.json'),
+        JSON.stringify({ viewer, prs, ...extra }, null, 2),
+      ),
 
     /** Force a poll and wait for the fetch to land, not merely to be asked for.
      *

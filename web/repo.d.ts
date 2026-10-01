@@ -28,6 +28,15 @@ viewer_thumbed: boolean, };
 
 export type DiffSummary = { base: string, files: Array<DiffFile>, added: number, deleted: number, };
 
+/**
+ * A PR the poll used to report and no longer does, with what became of it.
+ *
+ * Carries `head_ref` because that is the only thing tying it back to a
+ * workspace — the snapshot resolves the same way it does for an open PR, and the
+ * branch is what both sides match on.
+ */
+export type EndedPr = { number: number, title: string, url: string, head_ref: string, outcome: PrOutcome, };
+
 export type FileDiff = { path: string, hunks: Array<Hunk>, binary: boolean, truncated: boolean, };
 
 /**
@@ -132,6 +141,17 @@ needs_you: boolean,
  * PRs stacked directly on this one.
  */
 children: Array<number>, };
+
+/**
+ * How a PR ended, for a session row that still points at one.
+ *
+ * **The poll cannot see this, which is the whole reason the type exists.** It
+ * asks GitHub for `is:pr is:open author:@me`, so a PR that merges or closes
+ * simply stops being in the answer — and a row that showed `#41 open` falls back
+ * to the session's own state with nothing ever saying which of the two happened.
+ * Merged is the one worth saying: it is the moment the worktree can go.
+ */
+export type PrOutcome = "merged" | "closed";
 
 /**
  * PRs where your review is requested — other people's work (§6b).

@@ -98,6 +98,28 @@ function graphql(query) {
      selects neither, which is why it falls through to the bare envelope. Keyed on
      a field rather than on a phrase, because the field is what the parser reads. */
   if (query.includes('headRefOid')) return threads(query, canned, viewer)
+  /* What became of a PR that left the open list. The daemon asks this once per
+     disappearance, so a flow cans the answer under `ended` — `{ "41": "MERGED" }`
+     — and anything not named there comes back as still open, which is the daemon's
+     "say nothing" case. Keyed on the `state` selection, which nothing else asks
+     for. */
+  if (query.includes('pullRequest(number:') && query.includes('state')) {
+    const pr = Number(query.match(/pullRequest\(number: (\d+)\)/)?.[1] ?? 0)
+    const state = (canned.ended ?? {})[String(pr)] ?? 'OPEN'
+    return {
+      data: {
+        repository: {
+          pullRequest: {
+            number: pr,
+            title: `fixture pr ${pr}`,
+            url: `https://github.com/acme/monorepo/pull/${pr}`,
+            headRefName: (canned.heads ?? {})[String(pr)] ?? `worktree-pr-${pr}`,
+            state,
+          },
+        },
+      },
+    }
+  }
   if (!query.includes('search(query:')) return { data: { viewer: { login: viewer } } }
 
   const slug = query.match(/repo:(\S+)/)?.[1] ?? 'acme/monorepo'

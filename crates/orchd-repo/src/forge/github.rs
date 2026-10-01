@@ -6,7 +6,7 @@ use std::path::Path;
 use std::process::Command;
 
 use super::github_write::Target;
-use super::model::{Checks, Comment, Pr, Thread, ThreadRoot, Threads};
+use super::model::{Checks, Comment, EndedPr, Pr, PrOutcome, Thread, ThreadRoot, Threads};
 use super::Forge;
 
 /// Where the daemon's GitHub token came from.
@@ -298,6 +298,10 @@ impl Forge for GitHubForge {
         poll(&self.token, &self.owner, &self.name)
     }
 
+    fn pr_outcome(&self, pr: u64) -> Result<Option<EndedPr>> {
+        outcome(&self.token, &self.owner, &self.name, pr)
+    }
+
     fn threads(&self, pr: u64) -> Result<Threads> {
         fetch_threads(&self.token, &self.owner, &self.name, pr)
     }
@@ -444,6 +448,58 @@ pub fn poll(token: &str, owner: &str, name: &str) -> Result<(String, Vec<Pr>)> {
     }
     link_stacks(&mut prs);
     Ok((viewer, prs))
+}
+
+/// What became of one PR: merged, closed, or still open.
+///
+/// **Issued only when a PR the daemon was tracking stops appearing in the poll**,
+/// never per tick — the poll asks for open PRs, so "it is gone" is the only signal
+/// there is, and this is the one question that signal cannot answer on its own.
+/// One PR, four fields; it costs a request per disappearance.
+///
+/// `Ok(None)` means GitHub still calls it open, which is the answer when a PR left
+/// the search for some other reason — the author changed, or the search itself was
+/// briefly wrong. Nothing is recorded in that case, so a flapping search cannot
+/// mark a live PR as ended.
+pub fn outcome(token: &str, owner: &str, name: &str, pr: u64) -> Result<Option<EndedPr>> {
+    let q = format!(
+        r#"{{
+  repository(owner: "{owner}", name: "{name}") {{
+    pullRequest(number: {pr}) {{ number title url headRefName state }}
+  }}
+}}"#
+    );
+    let v = graphql(token, &q)?;
+    let Some(n) = v.pointer("/data/repository/pullRequest") else {
+        return Ok(None);
+    };
+    let state = n.get("state").and_then(|s| s.as_str()).unwrap_or_default();
+    let outcome = match state {
+        "MERGED" => PrOutcome::Merged,
+        "CLOSED" => PrOutcome::Closed,
+        // `OPEN`, or a state this build does not know: say nothing rather than
+        // guess, and ask again when it disappears again.
+        _ => return Ok(None),
+    };
+    Ok(Some(EndedPr {
+        number: n.get("number").and_then(|x| x.as_u64()).unwrap_or(pr),
+        title: n
+            .get("title")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        url: n
+            .get("url")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        head_ref: n
+            .get("headRefName")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        outcome,
+    }))
 }
 
 /// One PR's remaining review-thread pages, with the poll's slim per-thread fields

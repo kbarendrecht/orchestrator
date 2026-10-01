@@ -1,7 +1,7 @@
 // The rail: what is running, what is waiting on you, and the PRs beside it.
 // Twenty-four names, three out; the rest is how a row decides what it says.
 
-import { $, activeCheckout, bandOf, byNewest, call, callFor, callHost, callOn, caret, checkoutOf, CHECKOUTS, chooseBox, clock, confirmBox, copyText, creating, creatingIn, creatingIntoMain, dotClass, el, enterCheckout, everySession, getHost, getOn, inTrouble, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, QUEUE_MAX, reason, refreshButton, repoSummary, safeHref, selected, sessionsOf, sessionOrder, setPendingSelect, setSelected, setSessionOrder, snap, snapshotFor, snapshotOf, startingShown, stateClass, stateLabel, terms, toast, paintSig, reconcile, unchanged, watchStarting } from './core.js';
+import { $, activeCheckout, ageLabel, bandOf, byNewest, call, callFor, callHost, callOn, caret, checkoutOf, CHECKOUTS, chooseBox, clock, confirmBox, copyText, creating, creatingIn, creatingIntoMain, dotClass, el, enterCheckout, everySession, getHost, getOn, handedToPr, hasPr, inTrouble, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, QUEUE_MAX, reason, refreshButton, repoSummary, safeHref, selected, sessionsOf, sessionOrder, setPendingSelect, setSelected, setSessionOrder, snap, snapshotFor, snapshotOf, startingShown, stateClass, stateLabel, terms, toast, paintSig, reconcile, unchanged, watchStarting } from './core.js';
 import * as Open from './open.js';
 import * as Review from './review.js';
 import * as Term from './term.js';
@@ -81,7 +81,6 @@ function renderRail() {
      guard, and being skipped by any of the rail's would leave it saying "2 need
      you" after they stopped. It sat after the first of the three, so a rename or a
      row drag froze it for the length of the gesture. */
-  renderWaitbar();
   // A gesture is on a node this function replaces: rebuilding mid-drag drops the
   // header out from under the pointer and the drop never lands.
   /* A rename whose box is gone is over, however it ended. This return is the rail's
@@ -573,6 +572,11 @@ function checkoutHead(c) {
 
   head.oncontextmenu = (ev) => openMenu(ev, [
     [shut ? 'show' : 'fold away', null, () => setFolded(c.path, !shut)],
+    /* The one thing the attention bar owned that nothing else offered: type
+       "continue" into every session a restart left parked mid-turn. Greyed when
+       there is none, so the item still says what it would do. */
+    ['continue every paused session', null,
+      everySession().some((r) => isNudgeable(r.session)) ? () => void nudgeAll() : null],
     // A dead checkout's row exists so this can be pressed; a live one has nothing
     // to reopen.
     ['reopen', null, c.live ? null : () => reopenCheckout(c)],
@@ -1181,9 +1185,19 @@ function fillSessions(/** @type {HTMLElement} */ group, /** @type {import('./cor
   /* One signature per row, over the session and the workspace it takes its name
      from, with `NOT_DRAWN` taking out the same fields the rail as a whole ignores
      — `changed` and the counts beside it ride every snapshot and no row shows
-     them. Everything a row reads from outside itself is named here too. */
+     them. Everything a row reads from outside itself is named here too.
+
+     **Including the PR, through the three derived values the row actually
+     draws.** A row's words and its dot come from `stateLabel`, `stateClass` and
+     `dotClass`, and all three read the session's PR out of the snapshot — so a PR
+     that merged while the session sat still changed everything on the row and
+     nothing in this signature. The row kept saying `#41 open`, in green, against a
+     snapshot that knew better. Naming the derived values rather than the PR object
+     is deliberate: they are exactly what is on screen, so the guard cannot drift
+     from the drawing again. */
   const rowSig = (/** @type {import('../snapshot').SessionView} */ s, /** @type {any} */ w, /** @type {boolean} */ fromMain) =>
-    paintSig([s, w, s.id === selected, startingShown(), fromMain, order, c.path], NOT_DRAWN);
+    paintSig([s, w, s.id === selected, startingShown(), fromMain, order, c.path,
+      stateLabel(s), stateClass(s), dotClass(s), hasPr(s)], NOT_DRAWN);
 
   for (const s of mainRows) {
     items.push({
@@ -1763,9 +1777,15 @@ function sessionRow(/** @type {import('../snapshot').SessionView} */ s, /** @typ
   btn.dataset.id = s.id;
 
   const row = el('div', 'sess-row');
-  row.appendChild(el('span', 'dot ' + dotClass(s)));
+  /* **The ring is a second class, not a colour.** `hasPr` is "does this session
+     have a PR", which is true whatever the session is doing; `dotClass` is what it
+     is doing. Stacking them is what lets you scan the rail for PRs at all — the
+     ring used to be drawn only while the session was parked, so it disappeared the
+     moment the agent started working. */
+  row.appendChild(el('span', 'dot ' + dotClass(s) + (hasPr(s) ? ' ring' : '')));
   const liveName = railName(s, w);
-  row.appendChild(el('span', 'sess-name' + (pending(s) ? ' pending' : ''), liveName, liveName));
+  row.appendChild(el('span', 'sess-name' + (pending(s) ? ' pending' : ''), liveName,
+    `${liveName}\nstarted ${ageLabel(s.created_ms)} ago`));
   const forked = forkBadge(s);
   if (forked) row.appendChild(forked);
   /* **Only the exception is marked.** This row is in the main checkout, which is
@@ -1777,10 +1797,15 @@ function sessionRow(/** @type {import('../snapshot').SessionView} */ s, /** @typ
     row.appendChild(el('span', 'sess-main', 'main',
       'In the main checkout · every other session is in a worktree'));
   }
-  // The session's age, not its id. A hex slice told worktree-sharing rows apart
-  // but was unreadable — a value you never recognise — and age is worth reading on
-  // every row and moves as the session does. Same token the archive rows show.
-  row.appendChild(clock('sess-id', s.created_ms, ' ago'));
+  /* **The creation age is in the tooltip now, not on the row (#37).** Two clocks
+     sat at opposite ends of one row — this one and the waiting duration below —
+     three characters apart, and only one of them is a number you act on. This one
+     also took the width the name was being clipped for, which is the wrong way
+     round: the name is what you scan.
+
+     `title` rather than nothing, because "when did I start this" is a real
+     question, just not one worth a column. */
+  btn.title = `started ${ageLabel(s.created_ms)} ago`;
   btn.appendChild(row);
 
   const sub = el('div', 'sess-sub');
@@ -1800,7 +1825,12 @@ function sessionRow(/** @type {import('../snapshot').SessionView} */ s, /** @typ
   // repo's create and link hooks before the agent says anything, which is ten
   // seconds of nothing. A number that moves is the difference between slow and
   // hung.
-  if (isWaiting(s) && s.waiting_ms != null) {
+  /* **Not on a row whose words are the PR's.** The number says "how long it has
+     been waiting for *you*", and a parked session whose work sits on a PR is not
+     waiting on you here — the next move is on the PR, which is why `stateLabel`
+     shows the PR's state rather than `turn complete`. Drawing it anyway put a
+     duration against a sentence it did not belong to. */
+  if (isWaiting(s) && s.waiting_ms != null && !handedToPr(s)) {
     sub.appendChild(clock('', s.waiting_ms));
   } else if (s.state.state === 'starting') {
     sub.appendChild(clock('', s.created_ms));
@@ -2271,7 +2301,6 @@ function closeSession(/** @type {string} */ id) {
     .catch((e) => toast(e.message, true));
 }
 
-/** The rail exists to surface idle agents, so the count sits at the top of it. */
 /** Sessions a nudge would reach: parked at a prompt, and not mid-question.
  *
  *  Wider than `isWaiting`, on purpose. A session that has only just resumed is
@@ -2288,88 +2317,19 @@ const isNudgeable = (/** @type {import('../snapshot').SessionView} */ s) =>
   && s.has_transcript
   // And it has to have been cut off mid-turn. `ready` alone cannot tell that
   // from a conversation that had finished before the restart — they come back
-  // at the same empty prompt — so the bar was calling finished work "paused".
+  // at the same empty prompt, and calling finished work "paused" was what the
+  // old bar did.
   && s.interrupted;
 
-/** What the bar was last built from — see `unchanged`. */
-const barDrawn = { sig: null, name: 'waitbar' };
-
-function renderWaitbar() {
-  // Across every checkout, which is what makes the bar and the chord it
-  // advertises answer the same question.
-  const all = everySession().map((r) => r.session);
-  const waiting = all.filter(isWaiting);
-  const ready = all.filter(isNudgeable);
-  const bar = $('waitbar');
-  /* Which sessions, not how long they have waited: the duration is a
-     `data-clock` node that `tick` rewrites in place, and the longest of a fixed
-     set cannot change while the set does not. Without this the `continue` button
-     was rebuilt under the pointer several times a second and its border strobed
-     as `:hover` was re-targeted on each one. */
-  /* The active checkout is an input in its own right: the destination below is
-     named only when it is *not* where you are, so walking into that checkout has
-     to redraw the bar even though the waiting set did not move. */
-  if (unchanged(barDrawn, [waiting.map((s) => s.id), ready.map((s) => s.id),
-    activeCheckout().path])) return;
-  if (!waiting.length && ready.length < 2) {
-    bar.className = 'waitbar';
-    bar.replaceChildren();
-    return;
-  }
-  bar.replaceChildren();
-
-  if (waiting.length) {
-    const longest = waiting.reduce(
-      (a, b) => ((a.waiting_ms ?? 0) >= (b.waiting_ms ?? 0) ? a : b));
-    bar.className = 'waitbar on';
-    /* "need you", not "waiting". The count is `wants_attention` — any `your_turn`
-       but `ready`, plus a red build — so it covers a finished turn as well as a
-       permission prompt, and the rows name those separately. "Waiting" promised
-       somebody was blocked, and reading "2 waiting" over a rail with one obviously
-       blocked row is the bar arguing with the list under it.
-
-       Two nodes, because only the second half moves: the count changes with a
-       snapshot, the duration changes every second. */
-    bar.appendChild(el('span', null, `${waiting.length} need you · longest `));
-    bar.appendChild(clock('', longest.waiting_ms ?? 0));
-    /* **Where it will take you, when that is not where you are.** The bar counts
-       across every checkout, so pressing it can move you out of the one you are
-       looking at — and the rail scrolling to a row under a different header is the
-       only other sign. Named only when it is somewhere else, because the usual
-       case is the checkout in front of you and saying so every time is noise. */
-    const away = CHECKOUTS.length > 1 && checkoutOf(longest.id)?.path !== activeCheckout().path
-      ? checkoutOf(longest.id)?.name
-      : null;
-    if (away) bar.appendChild(el('span', 'waitwhere', ` in ${away}`));
-    bar.title = away
-      ? `Go to the one that has needed you longest, in ${away} · ${MOD_LABEL} Space`
-      : `Go to the one that has needed you longest · ${MOD_LABEL} Space`;
-    bar.onclick = () => setSelected(longest.id);
-  } else {
-    /* Nobody is asking for you; a restart has just put several agents back at an
-       empty prompt. Quieter than the waiting bar, because this is an offer rather
-       than a queue: the whole point of `ready` not counting as attention. */
-    bar.className = 'waitbar on calm';
-    bar.appendChild(el('span', null,
-      `${ready.length} session${ready.length === 1 ? '' : 's'} paused mid-work`));
-    bar.onclick = () => setSelected(ready[0].id);
-  }
-
-  /* One poke for the lot. Typing the same word into each of them is the tax on
-     auto-resume being worth having. */
-  if (ready.length > 1) {
-    const all = el('button', 'waitall', 'continue');
-    all.title = 'Type "continue" into every session paused mid-work';
-    all.onclick = (ev) => { ev.stopPropagation(); void nudgeAll(); };
-    bar.appendChild(all);
-  }
-}
-
-/** Send them all on, in every checkout the bar counted.
+/** Send them all on, in every checkout that has one paused.
  *
  *  One call per daemon, because `/api/sessions/nudge` is a daemon route and a
- *  daemon only knows its own sessions. The bar counts across all of them, so
- *  nudging only the one you are in would leave the count where it was.
+ *  daemon only knows its own sessions. This counts across all of them, so nudging
+ *  only the one you are in would leave the rest sitting there.
+ *
+ *  **In the checkout header's menu since the bar went.** The bar was the only way
+ *  to reach it, and the bar is gone — see `docs/traps/ui.md`. The header is where
+ *  it belongs anyway: it is a thing you do to a whole checkout.
  */
 async function nudgeAll() {
   const holding = new Set(everySession().filter((r) => isNudgeable(r.session))
