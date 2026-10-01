@@ -1,7 +1,7 @@
 // The rail: what is running, what is waiting on you, and the PRs beside it.
 // Twenty-four names, three out; the rest is how a row decides what it says.
 
-import { $, activeCheckout, ageLabel, bandOf, byNewest, call, callFor, callHost, callOn, caret, checkoutOf, CHECKOUTS, chooseBox, clock, confirmBox, copyText, creating, creatingIn, creatingIntoMain, dotClass, el, enterCheckout, everySession, getHost, getOn, handedToPr, hasPr, inTrouble, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, QUEUE_MAX, reason, refreshButton, repoSummary, safeHref, selected, sessionsOf, sessionOrder, setPendingSelect, setSelected, setSessionOrder, snap, snapshotFor, snapshotOf, startingShown, stateClass, stateLabel, terms, toast, paintSig, reconcile, unchanged, watchStarting } from './core.js';
+import { $, activeCheckout, ageLabel, bandOf, byNewest, call, callFor, callHost, callOn, caret, checkoutOf, CHECKOUTS, chooseBox, clock, confirmBox, copyText, creating, creatingIn, creatingIntoMain, dotClass, el, enterCheckout, everySession, getHost, getOn, handedToPr, hasPr, inTrouble, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, QUEUE_MAX, reason, refreshButton, repoSummary, safeHref, selected, sessionDot, sessionsOf, sessionOrder, setPendingSelect, setSelected, setSessionOrder, snap, snapshotFor, snapshotOf, startingShown, stateClass, stateLabel, terms, toast, paintSig, reconcile, unchanged, watchStarting } from './core.js';
 import * as Open from './open.js';
 import * as Review from './review.js';
 import * as Term from './term.js';
@@ -574,9 +574,10 @@ function checkoutHead(c) {
     [shut ? 'show' : 'fold away', null, () => setFolded(c.path, !shut)],
     /* The one thing the attention bar owned that nothing else offered: type
        "continue" into every session a restart left parked mid-turn. Greyed when
-       there is none, so the item still says what it would do. */
+       this checkout has none, so the item still says what it would do — and asked
+       of *this* checkout's sessions, because that is the one the menu names. */
     ['continue every paused session', null,
-      everySession().some((r) => isNudgeable(r.session)) ? () => void nudgeAll() : null],
+      (snapshotOf(c.path)?.sessions ?? []).some(isNudgeable) ? () => void nudgeAll(c) : null],
     // A dead checkout's row exists so this can be pressed; a live one has nothing
     // to reopen.
     ['reopen', null, c.live ? null : () => reopenCheckout(c)],
@@ -1782,7 +1783,7 @@ function sessionRow(/** @type {import('../snapshot').SessionView} */ s, /** @typ
      is doing. Stacking them is what lets you scan the rail for PRs at all — the
      ring used to be drawn only while the session was parked, so it disappeared the
      moment the agent started working. */
-  row.appendChild(el('span', 'dot ' + dotClass(s) + (hasPr(s) ? ' ring' : '')));
+  row.appendChild(el('span', sessionDot(s)));
   const liveName = railName(s, w);
   row.appendChild(el('span', 'sess-name' + (pending(s) ? ' pending' : ''), liveName,
     `${liveName}\nstarted ${ageLabel(s.created_ms)} ago`));
@@ -2321,25 +2322,23 @@ const isNudgeable = (/** @type {import('../snapshot').SessionView} */ s) =>
   // old bar did.
   && s.interrupted;
 
-/** Send them all on, in every checkout that has one paused.
+/** Send on every session a restart left parked mid-turn, in one checkout.
  *
- *  One call per daemon, because `/api/sessions/nudge` is a daemon route and a
- *  daemon only knows its own sessions. This counts across all of them, so nudging
- *  only the one you are in would leave the rest sitting there.
+ *  **One checkout, because the item lives in one checkout's header.** The
+ *  attention bar it came from spanned them all, which was right for a bar at the
+ *  top of the rail and wrong for an item under a project name: the menu says which
+ *  project it is about, so acting on another one is the menu lying. The other
+ *  checkouts' headers each have the same item.
  *
- *  **In the checkout header's menu since the bar went.** The bar was the only way
- *  to reach it, and the bar is gone — see `docs/traps/ui.md`. The header is where
- *  it belongs anyway: it is a thing you do to a whole checkout.
+ *  `/api/sessions/nudge` is a daemon route and a daemon only knows its own
+ *  sessions, so this is one call either way — `callOn` aims it.
  */
-async function nudgeAll() {
-  const holding = new Set(everySession().filter((r) => isNudgeable(r.session))
-    .map((r) => r.checkout.path));
+async function nudgeAll(/** @type {any} */ c) {
   try {
-    const answers = await Promise.all(
-      CHECKOUTS.filter((c) => holding.has(c.path)).map((c) => callOn(c, '/api/sessions/nudge')));
+    const a = await callOn(c, '/api/sessions/nudge');
     const r = {
-      nudged: answers.flatMap((a) => a.nudged || []),
-      held: answers.flatMap((a) => a.held || []),
+      nudged: a.nudged || [],
+      held: a.held || [],
     };
     const n = (r.nudged || []).length;
     toast(n ? `nudged ${n}` : 'nothing to nudge');

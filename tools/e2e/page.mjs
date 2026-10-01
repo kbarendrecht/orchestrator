@@ -498,6 +498,18 @@ try {
   check(/^started .+ ago$/.test(await liveRow.getAttribute('title') ?? ''),
     `and carries it in the tooltip instead, got ${JSON.stringify(await liveRow.getAttribute('title'))}`)
 
+  /* **The context bar's dot and the rail row's are one spelling.** They are
+     painted from the same `dotClass`, and the CSS that colours those states was
+     scoped to the rail for one commit — so a session parked on a failing PR went
+     grey in the bar while its row went red. `sessionDot` is what both ask for now,
+     and `.sdot` is the class that carries the colours. */
+  const dots = await page.evaluate(() => ({
+    bar: document.getElementById('ctxdot')?.className ?? '',
+    row: document.querySelector('#rail .sess[data-id] .dot')?.className ?? '',
+  }))
+  check(/\bsdot\b/.test(dots.bar), `the context bar's dot carries .sdot, got ${JSON.stringify(dots.bar)}`)
+  check(/\bsdot\b/.test(dots.row), `and so does the rail row's, got ${JSON.stringify(dots.row)}`)
+
   /* **The PR words and colours, asserted by calling them.** This sandbox has no
      forge, so no row in it can ever be a PR row — and these three functions are
      the whole of what a PR row says. Called in the real page for the reason

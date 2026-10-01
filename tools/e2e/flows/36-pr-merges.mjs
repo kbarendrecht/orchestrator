@@ -32,9 +32,15 @@ export async function run(t) {
   const HEAD = 'worktree-merge-me'
   const { session } = await t.api('POST', '/api/worktree', { name: 'merge-me' })
   await t.settled(session)
-  assert.equal(
-    (await t.state()).workspaces.find((w) => w.id === 'merge-me')?.branch, HEAD,
-    'the worktree has to be on the branch the canned PR names',
+  /* **`branches`, not `branch`.** `branch` is what the tree has checked out *as
+     last measured*, and it is null until a reconcile has run — so asserting on it
+     here failed five runs in eight, on timing rather than on anything this flow is
+     about. `branches` is the set the daemon's own lookup uses
+     (`w.branches.contains(&p.head_ref)` in `state.rs`), written when the worktree
+     is cut, which makes it both stable and the thing under test. */
+  assert.ok(
+    (await t.state()).workspaces.find((w) => w.id === 'merge-me')?.branches.includes(HEAD),
+    'the worktree has to carry the branch the canned PR names',
   )
   t.setPrs([{ number: 4100, head_ref: HEAD, checks: 'SUCCESS' }], 'e2e-viewer')
   await t.pollPrs()

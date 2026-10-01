@@ -510,7 +510,7 @@ button.ctx-btn:hover{color:var(--text)}
 .dot.idle{background:#6B6B6B}
 .dot.archived{background:transparent;border:1px solid var(--faint-solid)}
 
-/* ---------- a session row's dot: two facts, two properties ----------
+/* ---------- a session's dot: two facts, two properties ----------
    **The fill is what the session is doing; the ring is whether it has a PR.**
    Those used to be one class — `dotClass` returned `pr`, a hollow teal, and only
    while the session was *parked* — so a PR was invisible on every row that was
@@ -519,22 +519,30 @@ button.ctx-btn:hover{color:var(--text)}
    painted, and the two stack.
 
    Written through `--d` rather than `background` so the ring can take the same
-   colour without a second rule per state, and scoped to `.sess` so the PR pane's
-   own dots (`prDot`) and the review queue's keep the fills they have. */
-.sess .dot{--d:#6B6B6B;background:var(--d);border:0}
-.sess .dot.blocked{--d:var(--attn)}
-.sess .dot.build,.sess .dot.bad{--d:var(--bad)}
-.sess .dot.ok{--d:var(--ok)}
+   colour without a second rule per state.
+
+   **`.sdot` rather than a `.sess` ancestor, which is the fix for a dot that went
+   grey.** These were scoped to the rail row so the PR pane's own dots (`prDot`)
+   and the review queue's — same class names, different vocabulary — kept the fills
+   they have. But `#ctxdot` in the context bar is painted by the *same*
+   `dotClass`, outside any row, so every colour here missed it: a session parked on
+   a failing PR went grey in the bar above the pane you were looking at. A class on
+   the element says which vocabulary a dot speaks, and the bar can ask for it too.
+   Doubled with `.dot` so each rule outranks the review queue's `.dot.ok`. */
+.dot.sdot{--d:#6B6B6B;background:var(--d);border:0}
+.dot.sdot.blocked{--d:var(--attn)}
+.dot.sdot.build,.dot.sdot.bad{--d:var(--bad)}
+.dot.sdot.ok{--d:var(--ok);background:var(--d)}
 /* GitHub's purple, and the one place this palette spends it. `--auto` carries a
    comment saying azure is "still NOT purple: purple reads as merged on GitHub" —
    which is exactly why it is right here and nowhere else. */
-.sess .dot.merged{--d:var(--merged)}
+.dot.sdot.merged{--d:var(--merged)}
 /* A PR with nothing to say: a draft, a check still running, or one closed without
    merging. Grey, because none of those is owed by you. */
-.sess .dot.pr{--d:var(--faint-solid)}
-.sess .dot.working,.sess .dot.idle{--d:#6B6B6B}
-.sess .dot.archived{--d:var(--faint-solid);background:none;border:1px solid var(--d)}
-.sess .dot.ring{background:none;border:1px solid var(--d)}
+.dot.sdot.pr{--d:var(--faint-solid)}
+.dot.sdot.working,.dot.sdot.idle{--d:#6B6B6B}
+.dot.sdot.archived{--d:var(--faint-solid);background:none;border:1px solid var(--d)}
+.dot.sdot.ring{background:none;border:1px solid var(--d)}
 
 /* **The name takes the leftover width, and gives way last (#37).** `flex:1` with
    `min-width:0` is what lets it shrink past its content; everything else on the

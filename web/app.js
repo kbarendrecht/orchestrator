@@ -3,7 +3,7 @@
 // The SPA is a module now, so what it reaches for is written down. `core.js` holds
 // the primitives every part needs; `queue.js` is the first seam extracted whole.
 import {
-$, el, toast, reason, safeHref, call, callHost, get, activeCheckout, CHECKOUTS, setCheckouts, HOST, snapshotOf, repoSummary, everySession, enterCheckout, snap, receive, keyActivate, setZoom, setUiPx, uiPx, saveZoom, onScaleChange, ZOOM, selected, setSelected, onSelection, prForWorkspace, terms, CHROME, stateLabel, dotClass, isWaiting, isArchived, byNewest, currentSession, activeWorkspaceId, currentWorkspaceId, closeMenu, menuOpen, openMenu, callOn, newSession, newWorktree, newShell, mainWorkspace, workspaceById, prState, handedToPr, drawerCollapsed, setDrawerCollapsed, pendingSelect, setPendingSelect, onDrawerChange, onCreatingChange, creating, creatingIn, startingShown, appMod, IS_MAC, MOD_LABEL, closeLegend, toggleLegend, typingElsewhere, mark, reportBoot, dialogOpen, dismissDialog, unchanged, tick,
+$, el, toast, reason, safeHref, call, callHost, get, activeCheckout, CHECKOUTS, setCheckouts, HOST, snapshotOf, repoSummary, everySession, enterCheckout, snap, receive, keyActivate, setZoom, setUiPx, uiPx, saveZoom, onScaleChange, ZOOM, selected, setSelected, onSelection, prForWorkspace, terms, CHROME, stateLabel, sessionDot, isWaiting, isArchived, byNewest, currentSession, activeWorkspaceId, currentWorkspaceId, closeMenu, menuOpen, openMenu, callOn, newSession, newWorktree, newShell, mainWorkspace, workspaceById, prState, handedToPr, drawerCollapsed, setDrawerCollapsed, pendingSelect, setPendingSelect, onDrawerChange, onCreatingChange, creating, creatingIn, startingShown, appMod, IS_MAC, MOD_LABEL, closeLegend, toggleLegend, typingElsewhere, mark, reportBoot, dialogOpen, dismissDialog, unchanged, tick,
 } from './js/core.js';
 import { onThemeChange } from './js/theme.js';
 import { detailEl, symbolAt } from './js/source.js';
@@ -779,7 +779,9 @@ function renderContext() {
   $('brand').title = CHECKOUTS.length === 1
     ? `orchd ${snap.version || ''}\n\n${repoSummary(activeCheckout())}`.trim()
     : `orchd ${snap.version || ''}`.trim();
-  $('ctxdot').className = 'dot ' + (s ? dotClass(s) : 'idle');
+  // The same class list the rail row draws, so the two cannot disagree about what
+  // this session is — see `sessionDot`.
+  $('ctxdot').className = s ? sessionDot(s) : 'dot sdot idle';
   $('ctxname').textContent = s ? Rail.rowName(s, { id: wsId }) : (wsId || 'no session');
   $('ctxforked').hidden = !(s && s.forked_from);
   /* **`branch`, not `branches[0]`.** `branches` is every branch this workspace has

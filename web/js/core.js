@@ -2072,10 +2072,17 @@ export function prSeverity(/** @type {any} */ p) {
 /** The PR a session's work belongs to, whether by branch or by its pass. */
 function prOf(/** @type {import('../snapshot').SessionView} */ s) {
   if (!s) return null;
+  /* **The session's own checkout, not the one you are looking at.** `snap` is the
+     active checkout and the rail draws rows for every open one, so reading it here
+     meant a workspace id that exists in two checkouts — `main` does, always — took
+     the other checkout's PR. It was wrong before this too, through
+     `prForWorkspace`; the ring makes it visible on far more rows, so it is fixed
+     rather than inherited. `railName` already resolved its pass this way. */
+  const state = snapshotFor(s.id);
   if (s.pass) {
-    return (snap.prs || []).find((p) => p.number === s.pass?.pr) || null;
+    return (state.prs || []).find((p) => p.number === s.pass?.pr) || null;
   }
-  return prForWorkspace(s.workspace);
+  return (state.prs || []).find((p) => p.workspace === s.workspace) || null;
 }
 
 /** The PR this session's work ended on, if one did.
@@ -2089,7 +2096,8 @@ function prOf(/** @type {import('../snapshot').SessionView} */ s) {
  */
 function endedOf(/** @type {import('../snapshot').SessionView} */ s) {
   if (!s) return null;
-  const ended = snap.prs_ended || [];
+  // The session's own checkout, for the reason `prOf` gives.
+  const ended = snapshotFor(s.id).prs_ended || [];
   if (s.pass) return ended.find((p) => p.number === s.pass?.pr) || null;
   return ended.find((p) => p.workspace === s.workspace) || null;
 }
@@ -2106,6 +2114,19 @@ function endedOf(/** @type {import('../snapshot').SessionView} */ s) {
  */
 export function hasPr(/** @type {import('../snapshot').SessionView} */ s) {
   return !!(prOf(s) || endedOf(s));
+}
+
+/** The whole class list for a session's dot, wherever it is drawn.
+ *
+ *  **One function rather than a spelling each.** The rail row and the context bar
+ *  both paint a dot from `dotClass`, and the two had drifted: the bar wrote
+ *  `'dot ' + dotClass(s)` and so missed the ring entirely, while the CSS that
+ *  colours these states was scoped to the rail and so missed the bar. `.sdot` is
+ *  what says "this dot speaks `dotClass`'s vocabulary" — the PR pane and the
+ *  review queue use the same class names for different things.
+ */
+export function sessionDot(/** @type {import('../snapshot').SessionView} */ s) {
+  return `dot sdot ${dotClass(s)}${hasPr(s) ? ' ring' : ''}`;
 }
 
 export function handedToPr(/** @type {import('../snapshot').SessionView} */ s) {

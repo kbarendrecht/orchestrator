@@ -453,8 +453,16 @@ session is doing; the ring says it has a PR; they stack. A PR session that is
 working is a grey ring, one that is asking is an amber ring, and one that is
 parked takes its colour from the PR itself. Written through a `--d` custom
 property rather than `background`, so the ring borrows the same colour without a
-second rule per state, and scoped to `.sess` so the PR pane's own dots and the
-review queue's keep the fills they have.
+second rule per state.
+
+**And on a class, not on an ancestor — which is a bug this already caused once.**
+The rules were scoped to `.sess` so the PR pane's own dots (`prDot`) and the review
+queue's — same class names, different vocabulary — kept the fills they have. But
+`#ctxdot`, the dot in the context bar above the pane, is painted by the *same*
+`dotClass` and sits in no row, so every one of those colours missed it: a session
+parked on a failing PR went grey there while its rail row went red. `sessionDot`
+is the one spelling now, `.sdot` says which vocabulary a dot speaks, and both
+callers ask for it.
 
 **And the words stopped being teal.** `.sess-state.pr` was `--work`, the colour a
 *working* session wears, so `#30 conflicted` read exactly as calm as `#41 open`
@@ -479,7 +487,19 @@ itself, on a parked PR row — the number means "how long it has been waiting fo
 **The attention bar went at the same time**, for the same reason: it spent a row
 on a count the amber dots already carry, and they say *which*. What it uniquely
 owned was the cross-checkout jump, which `MOD Space` already does, and *continue
-every paused session*, which is in the checkout header's menu now.
+every paused session*, which is in the checkout header's menu now — **and is one
+checkout's business there, not every checkout's**. The bar spanned them all, which
+is right for a bar at the top of the rail and wrong for an item under a project
+name: the menu says which project it is about, so acting on another one is the
+menu lying.
+
+**One more thing the PR lookups had wrong, and it predates this.** `prOf` read
+`snap` — the checkout you are *looking at* — while the rail draws rows for every
+open checkout, so a workspace id that exists in two of them (`main` always does)
+took the other checkout's PR. `snapshotFor(s.id)` is the session's own, which is
+what `railName` had been using for its pass all along. Inherited rather than
+introduced, but the ring draws on far more rows than the old one did, so it is
+fixed here.
 
 `mise run page-check` holds the half this sandbox can see — no bar in the page, no
 creation age on a live row, the tooltip that replaced it — and calls `prState` and
