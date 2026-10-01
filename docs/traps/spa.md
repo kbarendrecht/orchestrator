@@ -513,3 +513,37 @@ flow cannot see. **What neither holds is the badge itself**: driving it needs a
 pane attached at the moment its pty dies, and by the end of a run the board has
 moved on — every attempt read whichever pane the drawer or the centre pane had
 fallen back to. That is left to the two halves above, deliberately.
+
+## A press that rebuilds its own row delivers no `mousedown` in WebKit.
+The context menu is dismissed by a captured listener on `document`, and for the
+life of that listener the event was `mousedown` alone. It worked everywhere but
+the one place the menu is opened most: a session row in the rail (#39). Open a
+menu on one session, click another, and the menu stayed up over the pane while
+the click selected the other session.
+
+The row is what makes it different. A session row picks on `pointerdown` rather
+than on `click`, because selecting rebuilds the rail and a click whose press and
+release land on different nodes is never dispatched — the entry above on
+`picked` is that story. So the pick runs `renderRail` synchronously inside the
+`pointerdown` handler, and the node the press landed on is detached before the
+compatibility `mousedown` is sent.
+
+**Measured, because the two engines disagree.** A page with one button that
+replaces itself on `pointerdown`, clicked once, with both events logged on
+`document` in the capture phase:
+
+    chromium  [ 'pointerdown', 'mousedown' ]
+    webkit    [ 'pointerdown' ]
+
+Chrome re-targets the compatibility event onto the replacement and the document
+sees it. WebKit dispatches it to the detached node, where no listener on
+`document` is in the path. The app is WebKitGTK and WKWebView, so the app had
+the fault and every gate here — all of them Chrome — had the pass.
+
+`core.js` listens for both events now. `pointerdown` runs first and cannot be
+outrun that way; `mousedown` stays for a press that arrives without one.
+
+**The gate is in `mise run page-check`, and it dispatches a bare `pointerdown`.**
+A real click there passes either way, because page-check drives Chrome — so the
+line would hold nothing. Dispatching the press the page must actually listen for
+is what gives it power: it fails when the `pointerdown` listener is taken out.

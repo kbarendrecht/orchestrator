@@ -689,6 +689,21 @@ try {
     check(gone, `${key} on an unchanged rename puts the row back`)
   }
 
+  /* --- a press outside the menu puts it away (#39) ---------------------------- */
+
+  /* **A bare `pointerdown`, which is the whole of what this asserts.** The menu
+     used to be dismissed on `mousedown` alone, and a session row picks on
+     `pointerdown` and rebuilds the rail inside that handler — so WebKit, the
+     engine the app ships, dispatched the compatibility `mousedown` to a node that
+     was already detached and the document never saw it. The menu stayed up over
+     the pane. Chrome re-targets and fires, so a real click here passes either way
+     and would hold nothing; dispatching the press the page must actually listen
+     for is what gives this line power. */
+  await rowMenu('rename')
+  await page.dispatchEvent('#rail', 'pointerdown')
+  const shut = await page.$eval('#ctxmenu', (n) => n.hidden)
+  check(shut === true, 'a press outside the menu closes it')
+
   const move = await rowMenu('move to main')
   check(!!move, 'the row offers a move')
   await move?.click()

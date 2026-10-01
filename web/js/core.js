@@ -1935,13 +1935,22 @@ export const appMod = (e) => (IS_MAC ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e
 
 export const menuOpen = () => !$('ctxmenu').hidden;
 
-// Anything that moves what the menu is pointing at dismisses it. On mousedown
-// rather than click, and captured, so the row underneath still gets its own
+// Anything that moves what the menu is pointing at dismisses it. On the press
+// rather than the click, and captured, so the row underneath still gets its own
 // click; a rail that rebuilds every second would otherwise leave the menu
 // hanging over a row that no longer exists.
-document.addEventListener('mousedown', (e) => {
+/* **Both events, because `mousedown` alone missed the rail (#39).** A session row
+   picks on `pointerdown` and that pick rebuilds the rail synchronously, so the
+   node the press landed on is gone before the compatibility `mousedown` is
+   dispatched. WebKit then dispatches it to a detached node and the document never
+   sees it — the engine the app ships, while Chrome re-targets and fires, which is
+   why no gate here caught it. `pointerdown` runs first and cannot be outrun that
+   way; `mousedown` stays for a press that arrives without one. */
+const dismissMenu = (/** @type {Event} */ e) => {
   if (menuOpen() && !/** @type {HTMLElement} */ (e.target).closest('#ctxmenu')) closeMenu();
-}, true);
+};
+document.addEventListener('pointerdown', dismissMenu, true);
+document.addEventListener('mousedown', dismissMenu, true);
 /* Only a scroller the menu's own row sits in has actually moved it. This used to
    be `closeMenu` on any scroll at all, and `capture` catches scroll — which does
    not bubble — from every element on the page: a terminal printing a line, or a
