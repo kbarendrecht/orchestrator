@@ -1779,6 +1779,34 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 .rvhead[aria-expanded="true"] .caretr{transform:rotate(90deg)}
 .prcount{font-family:var(--mono);font-size:calc(9px * var(--fs));color:var(--faint-solid);margin-left:auto}
 .prcount b{font-weight:400}
+
+/* **A pane header holds one line at every width it can be dragged to (#37).**
+   Both heads are a flex row, and neither said anything about wrapping — so at
+   `COLS.*.min` the count broke mid-phrase and the two-word label broke between
+   its words: `PRs` over three lines, `REVIEW QUEUE` over two, in a pane 210px
+   wide. The rows underneath were already right, which is what made it read as a
+   fault rather than as a width.
+
+   Three declarations, applied to both heads. The label may not wrap and may not
+   shrink — it is the one word that says which pane this is. The count may not
+   wrap and *may* shrink, so a phrase too long for the pane ends in an ellipsis
+   instead of a second line. */
+.prgroup-head .eyebrow,.rvhead .eyebrow{flex:0 0 auto;white-space:nowrap}
+.prcount,.rvcount{white-space:nowrap;min-width:0;overflow:hidden;text-overflow:ellipsis}
+
+/* **And the one thing worth dropping rather than clipping.** The poll age is the
+   least of the three facts in either head — every row carries its own age, and
+   this one is about the *poll* — so below the width where the rest stops fitting
+   it leaves entirely, which is better than `7s a…`.
+
+   A container query rather than a media query, because what has run out of room
+   is the pane and the pane's width is dragged independently of the window's.
+   Measured as supported in the WebKitGTK port the app ships; an engine too old
+   for it simply ignores this block, and the ellipsis above is then what happens
+   instead. That is the order these two rules are written in: the floor first,
+   the improvement second. */
+.prblock,.rvblock{container-type:inline-size}
+@container (max-width:265px){ .prage{display:none} }
 .prcount .n{color:var(--attn)}
 .prcount .f{color:var(--bad)}
 .prage{color:var(--dim)}

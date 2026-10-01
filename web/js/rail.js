@@ -900,6 +900,11 @@ function prHead(/** @type {any[]} */ prs) {
     if (needs) bits.push(`${needs} needs you`);
     if (failing) bits.push(`${failing} failing`);
     count.appendChild(el('b', null, bits.join(' · ')));
+    /* The count ellipsizes at the narrowest rail (#37) — `3 · 2 faili…` — and a
+       hover is then the only way back to the word. The age is deliberately not in
+       here: below 265px it is gone rather than shortened, so promising it in a
+       tooltip would name a number that is not on screen. */
+    count.title = bits.join(' · ');
     // The `<b>` was appended two lines above, so it is there.
     if (needs) count.querySelector('b')?.classList.add('n');
     // How long since a poll actually landed. Live-ticked off the snapshot clock

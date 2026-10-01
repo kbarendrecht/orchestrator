@@ -157,7 +157,11 @@ function renderReviews() {
   head.setAttribute('aria-expanded', String(showReviews));
   if (drawHead) {
     head.appendChild(caret());
-    head.appendChild(el('span', 'eyebrow', 'Review queue'));
+    /* One word, because two of them wrapped (#37). `REVIEW QUEUE` is uppercase
+       and tracked at .16em, which made it the widest fixed thing in a pane that
+       can be dragged to 230px — and `PRs` in the mirroring pane bottom-left is
+       already one word. The pane is still the review queue everywhere else. */
+    head.appendChild(el('span', 'eyebrow', 'Reviews'));
   }
   const count = el('span', 'rvcount');
 

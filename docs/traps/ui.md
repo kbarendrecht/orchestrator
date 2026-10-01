@@ -396,3 +396,45 @@ label of the three, and the number is better said inside the box — as `3 of 24
 against the query it is answering. `co-count` on the project header is untouched:
 it turns amber for a session that needs you, and a folded checkout draws no rows
 to say that otherwise.
+
+## A pane header may shorten at its floor width, and may not grow.
+The two bottom panes — your PRs bottom-left, the review queue bottom-right —
+each draw a head of caret, label, count and refresh. Neither head said anything
+about wrapping, so at the width its own splitter drags to, each broke (#37):
+`PRs · 3 · 2 failing · 7s ago` over three lines at `COLS.rail.min`, and
+`REVIEW QUEUE` over two at `COLS.files.min`. The rows underneath were already
+right — they ellipsize — which is what made it read as a fault rather than as a
+narrow pane.
+
+Three parts, in the order they have to be applied. The **label** may not wrap and
+may not shrink: it is the word that says which pane this is, so it is
+`flex:0 0 auto` and `white-space:nowrap`. The **count** may not wrap and may
+shrink, so a phrase too long ends in an ellipsis rather than on a second line —
+and `prHead` now carries the same phrase in a `title`, because a hover is
+otherwise the only way back to a clipped word. The **poll age** leaves entirely
+below 265px: every row carries its own age and the head's is about the *poll*, so
+`7s a…` is worse than nothing.
+
+**A container query, not a media query**, because what has run out of room is the
+pane and the pane's width is dragged independently of the window's. Supported in
+the WebKitGTK port the app ships — measured, not assumed — and an engine too old
+for it simply ignores the block and takes the ellipsis instead. That is the order
+the two rules are written in: the floor first, the improvement second.
+
+**And the label is one word now.** `REVIEW QUEUE` is uppercase and tracked at
+.16em, which made it the widest fixed thing in a pane that drags to 230px, while
+`PRs` in the mirroring pane was already one word. The pane is still the review
+queue everywhere else.
+
+**The gate is in `mise run page-check`, and it is two halves because this sandbox
+is deliberately forgeless.** The live half measures the review head's height at
+its floor **against its own height at the default width** — a wrapped head here
+is 51px and an unwrapped one 48px, three pixels, because the caret's line box
+hides most of the second line, and a literal threshold between those two numbers
+is one `--fs` change from being wrong in the direction that passes. The PR head
+cannot be measured at all here: `#prpane` is empty without a forge, and the
+assertion two screens up is the reason this sandbox has none. What is left for
+that half is read out of the *served* sheet — that the three rules are still
+written — which is the regression that actually happens. **Checked against
+deliberate breakage**: restoring the two-word label and dropping the `nowrap`
+fails both halves.

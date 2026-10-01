@@ -396,6 +396,7 @@ together: same entries, same order, same groups.
 - A path an agent printed is clickable, and three modules each own one third of that.
 - A dialog borrows the keyboard, and every way out of it has to hand the keyboard back.
 - The add row holds three labels, and at 210px it wraps rather than clips.
+- A pane header may shorten at its floor width, and may not grow.
 
 ### Performance, measured
 

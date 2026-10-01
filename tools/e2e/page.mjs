@@ -480,6 +480,60 @@ try {
     check(name >= 24, `at ${w}px the project name is readable, got ${name}px`)
   }
 
+  /* --- a pane header holds one line at every width ---------------------------- */
+
+  /* #37: both heads wrapped at the width their own splitter can be dragged to —
+     `PRs · 3 · 2 failing · 7s ago` over three lines at 210px, `REVIEW QUEUE` over
+     two at 230px. Measured as a height rather than by reading the text, because
+     the fault is the line count and nothing else: the words are correct either
+     way. One line is the head's padding (12 + 8) plus one line box, and anything
+     taller is a second line.
+
+     The floors are `COLS.rail.min` and `COLS.files.min` in `app.js`. A header is
+     allowed to ellipsize here; it is not allowed to grow. */
+  const headHeight = (prop, px, sel) => page.evaluate(async ([p, w, s]) => {
+    const root = document.documentElement
+    const had = root.style.getPropertyValue(p)
+    root.style.setProperty(p, `${w}px`)
+    // Two frames: the container query resolves after layout, and the first frame
+    // still reports the height the old width had.
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))
+    const head = document.querySelector(s)
+    const h = head ? Math.round(head.getBoundingClientRect().height) : -1
+    root.style.setProperty(p, had)
+    return h
+  }, [prop, px, sel])
+
+  /* **Against its own height at the default width, not against a constant.** A
+     wrapped head here is 51px and an unwrapped one 48px — three pixels, because
+     the caret's line box is taller than the 9px label and hides most of the
+     second line. A literal threshold between those two numbers is one `--fs`
+     change away from being wrong in either direction, and wrong in the direction
+     that passes is a gate that has quietly stopped asking. The contract is what
+     the comparison says: narrowing a pane may shorten its header's text and may
+     not grow its header. */
+  const headWide = await headHeight('--files', 326, '#rvhead')
+  const headNarrow = await headHeight('--files', 230, '#rvhead')
+  check(headWide > 0 && headNarrow === headWide,
+    `the review head is no taller at its floor than at its default, got ${headNarrow}px against ${headWide}px`)
+
+  /* **The PR head is the other half, and this sandbox has no forge to draw it
+     with.** It is deliberately forgeless — the assertion above about saying so
+     once is the reason — so `#prpane` is empty here and a layout measurement on it
+     would be a check that never runs. The two heads share every rule this is
+     about, and the measurement above runs them in the live page; what is left to
+     read out of the source is that the rules are still written, which is the
+     regression that actually happens (a tidy-up deleting a `white-space`).
+     Read from the served sheet rather than from disk, for the reason the
+     `PTY_EXITED` check gives: the page under test is the one the daemon packed. */
+  const css = await page.evaluate(() => fetch('/app.css').then((r) => r.text()))
+  check(/\.prgroup-head \.eyebrow,\.rvhead \.eyebrow\{[^}]*white-space:nowrap/.test(css),
+    'both pane labels are still told not to wrap')
+  check(/\.prcount,\.rvcount\{[^}]*white-space:nowrap[^}]*text-overflow:ellipsis/.test(css),
+    'and both counts shorten rather than wrap')
+  check(/@container \(max-width:265px\)\{\s*\.prage\{display:none\}/.test(css),
+    'and the poll age leaves below 265px rather than clipping')
+
   /* --- the archive filters what is in it -------------------------------------- */
 
   /* The filter is inside the box the caret opens, and it answers in two waves:
