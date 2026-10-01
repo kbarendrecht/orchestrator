@@ -15,6 +15,10 @@ caf = "caf"
 Wil = "Wil"
 # A label as it looks when clipped, quoted in the CSS that stops it clipping.
 archiv = "archiv"
+# The tail of `pages`, split by a `%s` so the flow types a path the shell builds
+# rather than one the source already contains — the assertion then proves the
+# terminal rendered it. See `tools/e2e/page.mjs`.
+ges = "ges"
 
 [default.extend-identifiers]
 # `PN` is the start of `PNGs`.
