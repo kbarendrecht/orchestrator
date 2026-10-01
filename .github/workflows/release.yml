@@ -17,6 +17,13 @@ permissions:
 jobs:
   build:
     runs-on: ${{ matrix.os }}
+    # **A stalled step used to run for six hours.** `apt-get` in `System
+    # libraries` hung on 2026-10-01 and nothing stopped it: a job with no
+    # `timeout-minutes` runs to GitHub's 360-minute default, so v2026.10.1 sat
+    # blocked on a runner waiting for a mirror. Both legs build in about ten
+    # minutes, so this is wide enough for a cold cache and narrow enough that a
+    # hang is a failure you can act on the same hour.
+    timeout-minutes: 45
     strategy:
       # Not cancelled on a failure, because "Linux built, macOS did not" is the
       # answer worth having — and it is safe to let the other finish now that
@@ -262,6 +269,8 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-22.04
+    # Downloading the artifacts and attaching them takes seconds.
+    timeout-minutes: 15
     # The one place that may write, and it does nothing else.
     permissions:
       contents: write
@@ -424,6 +433,8 @@ jobs:
   publish:
     needs: verify
     runs-on: ubuntu-22.04
+    # One API call that takes the release out of draft.
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:

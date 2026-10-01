@@ -27,6 +27,9 @@ permissions:
 jobs:
   build:
     runs-on: ${{ matrix.os }}
+    # The same `apt-get` that hung a release build is in this job too, and the
+    # default is six hours. Linux runs 17 minutes with the suite in it.
+    timeout-minutes: 45
     strategy:
       # Never fail-fast: "Linux is fine, macOS is broken" is the answer being
       # asked for, and cancelling the other job hides half of it.
