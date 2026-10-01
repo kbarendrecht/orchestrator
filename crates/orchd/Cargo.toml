@@ -41,6 +41,10 @@ serde_json = "1"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "net", "sync", "signal", "process", "io-util"] }
 tracing = { workspace = true }
 uuid = { version = "1", features = ["v4", "serde"] }
+aes-gcm = "0.10"
+crypto_box = "0.9"
+crypto_secretbox = "0.1"
+base64 = "0.23"
 
 [features]
 # The `AppState` fixtures, and the `TS` derives that go with them. The same shape

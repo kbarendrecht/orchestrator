@@ -28,6 +28,7 @@ pub mod api;
 pub mod bank;
 pub mod carry;
 pub mod fix_pr;
+pub mod happy;
 pub mod health;
 pub mod managed;
 pub mod model;
