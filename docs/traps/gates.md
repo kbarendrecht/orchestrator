@@ -30,7 +30,7 @@ and `--no-verify` is still the way past a mid-refactor commit.
 **`check.yml` runs them too now, and the hook is no longer the only thing that
 does.** It was: no workflow ran `tools/e2e/run.mjs` at all, so a fresh clone, a
 `--no-verify` habit or anybody who never said `git config core.hooksPath
-.githooks` skipped all 41 flows, and the class of fault they exist for reached
+.githooks` skipped all 43 flows, and the class of fault they exist for reached
 nobody. The bar this entry set was to measure the flake rate first, because the
 flows had flaked twice and a flaky gate is worse than no gate: **seven
 consecutive clean runs, 168 flow executions**, and both known flakes have a fix
@@ -355,7 +355,7 @@ Three tests now cover it, and each one is where the thing it covers is reachable
   running process's own, which is the whole reason five of the six kinds can be
   tested at all: a test binary lives under `target/`, so it *is* a checkout, and
   nothing else could ever be asserted from one.
-- **The chain** — `tools/e2e/flows/35-upgrade-button.mjs`, through the HTTP route,
+- **The chain** — `tools/e2e/flows/42-upgrade-button.mjs`, through the HTTP route,
   with a `mise` on PATH that records what it was asked to do. It asserts the nudge,
   the pair the route answers with, the argv that ran, the empty tail of a success,
   the refusal of a second press mid-run, and the reason surviving a failure.

@@ -504,7 +504,7 @@ fixed here.
 `mise run page-check` holds the half this sandbox can see — no bar in the page, no
 creation age on a live row, the tooltip that replaced it — and calls `prState` and
 `prSeverity` directly for the half it cannot, since a forgeless checkout has no PR
-row to look at. `tools/e2e/flows/36-pr-merges.mjs` is the daemon's half.
+row to look at. `tools/e2e/flows/43-pr-merges.mjs` is the daemon's half.
 
 ## A row's paint signature has to name what the row *draws*, not what it is built from.
 `rowSig` listed the session, the workspace, the selection and the checkout — and

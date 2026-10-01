@@ -51,7 +51,13 @@ pub async fn open(State(app): State<Arc<AppState>>, Json(b): Json<OpenBody>) -> 
     let Some(root) = app.workspace_path(&b.workspace).await else {
         refuse!("unknown workspace {}", b.workspace);
     };
-    let (page, shared) = (b.path.clone(), app.cfg.shared_worktree_paths.clone());
+    /* **The checkout, not a list of shared directories.** This took
+    `shared_worktree_paths` — the per-repo exception list that let a symlink out
+    of a worktree stay writable — and that setting is gone: `resolve_in_workspace`
+    bounds at the *checkout* now, so a path shared in from main resolves inside
+    the bound without anybody naming it (#34). Preview reads rather than writes,
+    and the bound it wants is the same one. */
+    let (page, shared) = (b.path.clone(), app.cfg.main_checkout.clone());
     let page_ignored = crate::proc::run_blocking("checking a page to preview", move || {
         let at = crate::edit::resolve_in_workspace(&root, &page, &shared)?;
         if !at.is_file() {
@@ -98,7 +104,8 @@ pub async fn serve(
     let Some(root) = app.workspace_path(&grant.workspace).await else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let shared = app.cfg.shared_worktree_paths.clone();
+    // The checkout is the bound; see `open` above.
+    let shared = app.cfg.main_checkout.clone();
     let path = rel.clone();
     let read = crate::proc::run_blocking("serving a preview file", move || {
         if !servable(&path, &grant, |p| crate::search::is_ignored(&root, p)) {
@@ -170,7 +177,8 @@ pub async fn image(State(app): State<Arc<AppState>>, Query(q): Query<ImageQuery>
     let Some(root) = app.workspace_path(&q.workspace).await else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let shared = app.cfg.shared_worktree_paths.clone();
+    // The checkout is the bound; see `open` above.
+    let shared = app.cfg.main_checkout.clone();
     let read = crate::proc::run_blocking("reading an image", move || {
         let at = crate::edit::resolve_in_workspace(&root, &q.path, &shared).ok()?;
         let md = std::fs::metadata(&at).ok()?;
