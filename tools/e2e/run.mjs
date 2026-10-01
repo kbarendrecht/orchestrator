@@ -36,6 +36,21 @@ const build = spawnSync('cargo', ['build', '-p', 'orchd-serve', '--bin', 'orchd'
   cwd: repoRoot,
   stdio: 'inherit',
 })
+/* **A spawn that never ran is not a build that failed, and it used to read as
+   one.** `spawnSync` reports an unfindable command in `error` and leaves `status`
+   null, so the line below exited 1 having printed nothing at all — `stdio:
+   inherit` has no output to inherit from a process that does not exist. The
+   pre-commit hook then said "an e2e flow failed" above an empty log, which is a
+   sentence that sends you reading flows for a toolchain fault.
+   `mise` carries `cargo` here, so the environment this bites in is the one with
+   no shell profile: a git hook, a launcher, CI without the setup step. Hence the
+   second line — the fix is `mise exec -- <command>`, and naming it is the
+   difference between a minute and an hour. */
+if (build.error) {
+  console.error(`e2e: cannot run cargo — ${build.error.message}`)
+  console.error('e2e: mise carries the toolchain; try `mise exec -- node tools/e2e/run.mjs`')
+  process.exit(1)
+}
 if (build.status !== 0) process.exit(build.status ?? 1)
 
 const files = fs.readdirSync(path.join(here, 'flows'))
