@@ -721,8 +721,14 @@ try {
 
   /* The pair is the point. Without the first line the second proves only that
      *some* key went unclaimed, which a closed overlay also satisfies. */
-  check(await withDiffOpen({ key: 'ArrowLeft', ctrlKey: true }) === true,
-    'Ctrl+Left still steps the changeset')
+  /* The app modifier, so `--mac` presses ⌘. It pressed Ctrl in both runs, and
+     the Mac run passed on a chord macOS keeps for switching Spaces. */
+  check(await withDiffOpen({ key: 'ArrowLeft', ctrlKey: !asMac, metaKey: asMac }) === true,
+    `${asMac ? 'Cmd' : 'Ctrl'}+Left still steps the changeset`)
+  if (asMac) {
+    check(await withDiffOpen({ key: 'ArrowLeft', ctrlKey: true }) === false,
+      'Ctrl+Left is left to macOS, which switches Spaces with it')
+  }
   check(await withDiffOpen({ key: 'ArrowLeft', ctrlKey: true, altKey: true, metaKey: true }) === false,
     'Ctrl+Option+Cmd+Left is left to the window manager')
 

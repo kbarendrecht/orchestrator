@@ -1529,7 +1529,7 @@ function keymap(/** @type {KeyboardEvent} */ e) {
     if (e.key === 'Escape') { e.preventDefault(); void Diff.close(); return; }
     // j/k steps through the changeset, matching the review overlay's motion so
     // "next/previous in a list" is one idiom everywhere. Guarded on not-typing
-    // because the diff hosts an editor. Ctrl+←/→ stays as an alias — it was the
+    // because the diff hosts an editor. The modifier plus ←/→ stays as an alias — it was the
     // only binding before, so muscle memory keeps working; it was itself once
     // F7/⇧F7, one key doing two jobs by modifier.
     const typingInDiff = !!/** @type {HTMLElement} */ (e.target).closest?.('textarea, input, [contenteditable="true"]');
@@ -1544,7 +1544,11 @@ function keymap(/** @type {KeyboardEvent} */ e) {
        (`Ctrl+Option+Cmd+←/→`) — claimed, defaulted and stopped by a diff overlay
        that had no business with it (#20). A binding is the exact set of
        modifiers, never a subset. */
-    if (e.ctrlKey && !e.altKey && !e.metaKey
+    /* **The app modifier, not Ctrl.** Ctrl+←/→ is how macOS switches Spaces, so
+       the OS took it before the page ever saw it and the chord did nothing on a
+       Mac. ⌘ there, Ctrl elsewhere, like every other app chord. In the editor ⌘←/→
+       is line start and end on a Mac, so it stays the editor's. */
+    if (appMod(e) && !(IS_MAC && typingInDiff)
         && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
       e.preventDefault();
       void Diff.step(e.key === 'ArrowLeft' ? -1 : 1);
