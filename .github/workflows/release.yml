@@ -398,6 +398,13 @@ jobs:
       # The `.dmg` is what a Mac user opens, so this opens it: mount, copy the app
       # out the way a person drags it, and drive that copy.
       #
+      # **It lands in `~/Applications`, and `/tmp` does not work.** `app-check`
+      # registers the bundle with `lsregister -f` itself, but LaunchServices will
+      # not honour a registration under `/private/tmp`: the deep link then comes
+      # back as `kLSApplicationNotFoundErr` from an app that is plainly there.
+      # `check.yml` drives the bundle from `~/Applications` for the same reason,
+      # and it is also where a person without admin rights drags one.
+      #
       # **Quarantine is still not covered here and cannot be.** `gh` writes no
       # `com.apple.quarantine` attribute, so the approval a downloaded build asks
       # for is a thing only a real download shows — `docs/traps/macos.md` carries
@@ -427,9 +434,11 @@ jobs:
           mkdir -p /tmp/mnt
           printf 'Y\n' | hdiutil attach "$dmg" -nobrowse -mountpoint /tmp/mnt
           ls -la /tmp/mnt
-          cp -R /tmp/mnt/Orchestrator.app /tmp/Orchestrator.app
+          mkdir -p "$HOME/Applications"
+          rm -rf "$HOME/Applications/Orchestrator.app"
+          cp -R /tmp/mnt/Orchestrator.app "$HOME/Applications/Orchestrator.app"
           hdiutil detach -quiet /tmp/mnt
-          node tools/app-check.mjs /tmp/Orchestrator.app/Contents/MacOS/orchestrator-desktop
+          node tools/app-check.mjs "$HOME/Applications/Orchestrator.app/Contents/MacOS/orchestrator-desktop"
 
 
   # **The last step of a release is making it visible**, and it runs only when both
