@@ -402,6 +402,29 @@ this file, which churned it from every build; that feature is gone.
   Worth doing when a screenshot is the thing being reviewed. Recorded now because
   the file pane landed today and this is the first thing it cannot show.
 
+- **Setup can fail and say nothing.** `worktree_init` and `worktree_setup` are
+  non-fatal, the second runs even after the first failed, and `env_source` failures
+  are silent by design — a degraded session beats a lost one, and that stays. What
+  is missing is the *report*: a session whose setup did not finish then misbehaves
+  with nothing on screen to explain it. `get-bb/bb` splits the two
+  (`docs/environment-provisioning.md`): creation failure is terminal and loud, setup
+  failure leaves a usable workspace and is shown as retryable, with no automatic
+  retry ladder. That split is the part worth copying — the policy, not the state
+  machine.
+
+  **Promoted on evidence from another subsystem, because the shape is the same.**
+  The trigger this entry waited for — a session traced back to a setup step that
+  failed quietly — has still not fired. What has fired is the same failure shape in
+  the release gate: `hdiutil -quiet` swallowed the one sentence saying why an attach
+  failed, and three release runs ended as `exit 1` with an empty log before anybody
+  could act on one. Roughly two hours, for a missing error message. The cost of a
+  silent failure is measured now, so waiting for it to be measured a second time in
+  a session is waiting for nothing.
+
+  Checked while promoting, so the gap is not assumed: `degraded` (`spawn.rs`) is the
+  only report of this kind the page renders, and it means a relocation that forked
+  instead of resuming. Nothing surfaces a setup failure at all.
+
 - **Deferred: a restart of the daemon does not have to kill the terminals.**
   `mise run app-check` asserts that a session survives a restart, and it survives
   by being *resumed* — the pty dies with the daemon, `spawn::Carried` rebuilds the
@@ -415,12 +438,21 @@ this file, which churned it from every build; that feature is gone.
   That is a real architectural difference and a large change, so it is recorded
   rather than proposed. What makes it worth recording is that orchd's update path
   wants exactly this property — an update today interrupts every running agent, and
-  resume is the compensation. Two smaller things from the same document need no
-  such change and may be worth taking on their own: orcad distinguishes **exit code
-  78, a configuration fault, do not restart** from exit 1, retry with backoff —
-  orchd's host restarts a dead child exactly once, and a config fault spends that
-  one restart achieving nothing; and orcad bounds respawning at five launches in a
-  rolling 60 seconds rather than trusting a single-shot rule.
+  resume is the compensation. One smaller thing from the same document needs no
+  such change and may be worth taking on its own: orcad distinguishes **exit code
+  78, a configuration fault, do not restart** from exit 1, retry with backoff.
+  orchd's host restarts a dead child once, so a config fault spends that restart
+  achieving nothing — about 1.3 s, after which `retried` stops further attempts and
+  the row stays for `reopen`. Small, and that is the honest size of it.
+
+  **The second one is already here, by another route.** This used to also ask for
+  orcad's bound of five launches in a rolling 60 seconds. `host::HEALTHY_UPTIME` is
+  that guard: 60 seconds of life is what clears `retried`, so a daemon dying *of
+  starting* gets one retry and no more, while one that ran and then died gets its
+  retry back. The comment there records the version that cleared `retried` on every
+  successful start instead, which meant the bound never bit and a daemon dying on
+  boot restarted forever. Leaving the ask in invited somebody to build a guard that
+  exists.
 
 - **Say which git the daemon needs, and stop exceeding it by accident.** There is
   no stated minimum git version, no `git --version` read and no capability probe,
@@ -470,15 +502,3 @@ this file, which churned it from every build; that feature is gone.
   (`guard.rs`); and the editor's bound is the checkout so it follows such a link
   (§34). So copy is a second mode beside this one, for the per-worktree `.env`
   case, and never a migration away from it.
-
-- **Deferred: setup can fail and say nothing.** `worktree_init` and `worktree_setup`
-  are non-fatal, the second runs even after the first failed, and `env_source`
-  failures are silent by design — a degraded session beats a lost one, and that
-  stays. What is missing is the *report*: a session whose setup did not finish then
-  misbehaves with nothing on screen to explain it. `get-bb/bb` splits the two
-  (`docs/environment-provisioning.md`): creation failure is terminal and loud, setup
-  failure leaves a usable workspace and is shown as retryable, with no automatic
-  retry ladder. That split is the part worth copying — the policy, not the state
-  machine. Justified the first time a session's odd behaviour is traced back to a
-  setup step that failed quietly.
-
