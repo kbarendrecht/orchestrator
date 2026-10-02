@@ -670,7 +670,9 @@ function prDot(/** @type {import('../snapshot').PrView} */ p) {
   // whoever happens to be sitting in it, and the teal "a session holds this" used
   // to hide exactly that: you opened a session on a red PR and the row went calm.
   if (inTrouble(p)) return 'build';
-  if (p.session) return 'auto';           // a session is holding it
+  /* **The PR's state and nothing else.** A session holding it gave the row an
+     `auto` class after `.dot.auto` was gone, so a green PR with a session in it
+     drew the grey default. The row's `session` button already says one is there. */
   if (p.is_draft) return 'idle';
   if (p.needs_you) return 'blocked';
   if (p.checks === 'passing') return 'ok';
