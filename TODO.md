@@ -459,6 +459,18 @@ this file, which churned it from every build; that feature is gone.
   script. Nothing has gone wrong, so this is recorded, not planned. It becomes real
   the first time a shared file has to differ per worktree.
 
+  **The symlink is the deliberate half, and copy would not replace it.** A worktree
+  is volatile — cut for a session, reaped when the session leaves — so a folder that
+  must outlive it belongs in main with a link pointing at it, and copying would lose
+  the writes when the tree goes. Three places are already built around that: hook
+  paths are resolved through realpath before attribution, or an edit through a
+  shared folder lands in the wrong pane (`hooks.rs`); the isolation guard is
+  **git-only** rather than refusing writes, because the wider version made a
+  `../../../.plan` symlink unwritable from the tree it was linked into
+  (`guard.rs`); and the editor's bound is the checkout so it follows such a link
+  (§34). So copy is a second mode beside this one, for the per-worktree `.env`
+  case, and never a migration away from it.
+
 - **Deferred: setup can fail and say nothing.** `worktree_init` and `worktree_setup`
   are non-fatal, the second runs even after the first failed, and `env_source`
   failures are silent by design — a degraded session beats a lost one, and that
