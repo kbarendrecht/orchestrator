@@ -403,12 +403,18 @@ jobs:
       # for is a thing only a real download shows — `docs/traps/macos.md` carries
       # that, and it is the reason the cask is the channel that hurts.
       #
-      # **`hdiutil -quiet` is what cost v2026.10.1 three runs.** The attach failed
-      # and `-quiet` swallowed the only sentence that said why, so the step ended
-      # as `exit 1` with an empty log and the blame fell on the `gh` line above it.
-      # A gate that cannot say what broke is a gate nobody can act on, so the
-      # attach is loud now and `set -x` names whichever command ends the step.
-      # `/tmp/mnt` is made first because `-mountpoint` does not always create it.
+      # **The dmg carries a licence agreement, and a runner cannot click it.**
+      # The bundler embeds the AGPL as an SLA, so `hdiutil attach` prints the whole
+      # licence and waits; unanswered it ends as `hdiutil: attach canceled`. `Y` on
+      # stdin is the agreement, and `printf` rather than `yes` so hdiutil sees EOF
+      # instead of an endless stream if it ever stops asking.
+      #
+      # **`-quiet` is why that took three runs to find.** It swallowed the only
+      # sentence that said why, so the step ended as `exit 1` with an empty log and
+      # the blame fell on the `gh` line above it. A gate that cannot say what broke
+      # is a gate nobody can act on, so the attach is loud now and `set -x` names
+      # whichever command ends the step. `/tmp/mnt` is made first because
+      # `-mountpoint` does not always create it.
       - name: The published app runs
         if: runner.os == 'macOS'
         env:
@@ -419,7 +425,7 @@ jobs:
           gh release download "$tag" --pattern '*.dmg' --dir /tmp/rel
           dmg=$(ls /tmp/rel/*.dmg | head -1)
           mkdir -p /tmp/mnt
-          hdiutil attach "$dmg" -nobrowse -mountpoint /tmp/mnt
+          printf 'Y\n' | hdiutil attach "$dmg" -nobrowse -mountpoint /tmp/mnt
           ls -la /tmp/mnt
           cp -R /tmp/mnt/Orchestrator.app /tmp/Orchestrator.app
           hdiutil detach -quiet /tmp/mnt
