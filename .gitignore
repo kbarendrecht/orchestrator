@@ -9,3 +9,5 @@ target/
 # Per-machine Claude Code state (permission grants, MCP approvals). Not the
 # daemon's — the agent's own, written into any checkout it runs in.
 .claude/settings.local.json
+# Pages the research and plan skills write into the repo they run in.
+.plan/
