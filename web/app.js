@@ -1364,28 +1364,51 @@ window.addEventListener('keydown', (e) => {
  *  range a double click lives in, and a gesture people borrowed from JetBrains is
  *  one they already perform at double-click speed. */
 const TAP = 170;
+/** How long one press may be held and still be a tap. Longer is a Shift held for
+ *  a reason, a scroll or a click, that happened to touch nothing else. */
+const HOLD = 300;
 let armedAt = 0;      // when a clean tap ended, 0 if there is none
 let holding = false;  // a Shift is down, and started clean
 let dirty = false;    // something else was pressed while it was down
+let downAt = 0;       // when this press started
+let second = false;   // this press began inside the window after a clean tap
+/* **It opens on the second release, not the second press.** On the press it is not
+   known yet what that Shift is for: a clean tap and then `Shift B` inside the
+   window opened the search before the B arrived, and a clean tap is what fast
+   typing leaves when Shift lifts a hair before the letter. So both taps have to
+   come out clean, the second as much as the first. */
 window.addEventListener('keydown', (e) => {
   if (e.key !== 'Shift') { dirty = true; armedAt = 0; return; }
   if (e.repeat) return;
   // A Shift with another modifier held is part of a chord, not a tap.
   if (e.ctrlKey || e.altKey || e.metaKey) { armedAt = 0; holding = false; return; }
-  if (armedAt && Date.now() - armedAt <= TAP) {
-    armedAt = 0;
-    holding = false;
-    void Find.open('names');
-    return;
-  }
+  downAt = Date.now();
+  second = !!armedAt && downAt - armedAt <= TAP;
+  armedAt = 0;
   holding = true;
   dirty = false;
 }, true);
 window.addEventListener('keyup', (e) => {
   if (e.key !== 'Shift') return;
-  armedAt = holding && !dirty ? Date.now() : 0;
+  const clean = holding && !dirty && Date.now() - downAt <= HOLD;
   holding = false;
+  if (clean && second) {
+    second = false;
+    void Find.open('names');
+    return;
+  }
+  armedAt = clean ? Date.now() : 0;
 }, true);
+/* **The mouse is "something else" too.** Shift with the wheel scrolls the
+   terminal's own scrollback, and Shift-click names a worktree: neither presses a
+   key, so two of them in a row read as two clean taps. A press or a wheel while
+   Shift is down spoils that tap, and one between the taps spoils the pair. */
+for (const ev of /** @type {const} */ (['pointerdown', 'wheel'])) {
+  window.addEventListener(ev, () => {
+    if (holding) dirty = true;
+    armedAt = 0;
+  }, { capture: true, passive: true });
+}
 
 function keymap(/** @type {KeyboardEvent} */ e) {
   /* **A bare `Backspace` outside a text field is a navigation key, and this app

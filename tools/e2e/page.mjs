@@ -938,6 +938,33 @@ try {
   await page.waitForTimeout(150)
   check(await findUp() === false, 'typing two capitals does not open it')
 
+  /* **And the three it still opened on.** A clean tap followed by a capital: the
+     second Shift is a modifier, and it used to fire on its press before the
+     letter came. Shift with the wheel, twice: the mouse pressed no key, so both
+     taps read clean. And a Shift held, then a tap: a hold is not a tap. */
+  await tapShift()
+  await page.keyboard.down('Shift')
+  await page.keyboard.press('KeyB')
+  await page.keyboard.up('Shift')
+  await page.waitForTimeout(150)
+  check(await findUp() === false, 'a tap and then a capital does not open it')
+
+  await page.mouse.move(400, 300)
+  for (let i = 0; i < 2; i++) {
+    await page.keyboard.down('Shift')
+    await page.mouse.wheel(0, 120)
+    await page.keyboard.up('Shift')
+  }
+  await page.waitForTimeout(150)
+  check(await findUp() === false, 'Shift and the wheel, twice, does not open it')
+
+  await page.keyboard.down('Shift')
+  await page.waitForTimeout(400)
+  await page.keyboard.up('Shift')
+  await tapShift()
+  await page.waitForTimeout(150)
+  check(await findUp() === false, 'a held Shift and then a tap does not open it')
+
   /* --- and a dialog hands the keyboard back when it closes -------------------- */
 
   /* **The keystrokes after `Escape` went nowhere** (#27): the finder took focus

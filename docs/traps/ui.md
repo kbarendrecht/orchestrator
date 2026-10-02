@@ -133,6 +133,18 @@ asked for it. A deliberate double
 tap is quicker: it is a borrowed gesture, performed at the speed of the double
 click it looks like.
 
+**And at 170 it still opened, because the window was never the only gap.** Three
+shapes went past `dirty`. It fired on the second Shift's *press*, before anyone
+knew what that Shift was for, so a clean tap and then `Shift B` opened it; fast
+typing leaves a clean tap whenever Shift lifts a hair before the letter. The
+mouse was not "something else", so Shift with the wheel (the terminal's
+scrollback) or Shift-click, twice, read as two clean taps. And a tap had no
+length, so a Shift held for a second still armed. It opens on the second
+*release* now, only when both taps were clean; a pointer press or a wheel spoils
+a tap and disarms a pending one; and a press held past `HOLD` (300ms) is a hold.
+Each of the three has its own refusal in `page-check`, and each fails against
+the old detector.
+
 `mise run page-check` holds both halves, and **the refusal is the half with
 power**: `Shift Shift opens the file search` passes on a broken detector too, and
 `typing two capitals does not open it` is what fails when the guard goes. Checked
