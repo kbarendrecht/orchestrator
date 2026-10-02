@@ -409,21 +409,33 @@ main() {
       # connection would otherwise abort the wait rather than retrying on the next
       # tick, and the empty answer already has an arm below.
       run=$(gh run list --workflow="$1" $3 --limit 1 \\
-              --json status,conclusion,url --jq '.[] | .status + " " + (.conclusion // "") + " " + .url' || true)
-      status=$(echo "$run" | cut -d' ' -f1)
-      case $status in
-        completed)
-          [ "$(echo "$run" | cut -d' ' -f2)" = success ] \\
-            || die "$2 is $(echo "$run" | cut -d' ' -f2) for this commit — $5
-  $(echo "$run" | cut -d' ' -f3)"
-          printf '  %s succeeded — %s\\n' "$2" "$(echo "$run" | cut -d' ' -f3)"
-          return 0
-          ;;
-        # No run yet is the normal answer for a push made seconds ago, which is also
-        # why this polls rather than `gh run watch`: that needs an id to watch.
-        "") printf '  no %s run for this commit yet…\\n' "$2" ;;
-        *) printf '  %s is %s…\\n' "$2" "$status" ;;
-      esac
+              --json databaseId,status,conclusion,url \\
+              --jq '.[] | (.databaseId|tostring) + " " + .status + " " + (.conclusion // "") + " " + .url' || true)
+      id=$(echo "$run" | cut -d' ' -f1)
+      status=$(echo "$run" | cut -d' ' -f2)
+      # **`$6` is a run to disregard, and it is the whole of the retry fix.** A
+      # `--retry` deletes and re-pushes the same tag, so for a few seconds the
+      # newest run under that name is the *previous*, failed one — and this loop
+      # read it as the answer and died, three times while v2026.10.1 was cut, each
+      # time naming a run that was not the one it had just asked for.
+      if [ -n "$6" ] && [ "$id" = "$6" ]; then
+        printf '  the previous %s run is still the newest…\\n' "$2"
+      else
+        case $status in
+          completed)
+            [ "$(echo "$run" | cut -d' ' -f3)" = success ] \\
+              || die "$2 is $(echo "$run" | cut -d' ' -f3) for this commit — $5
+  $(echo "$run" | cut -d' ' -f4)"
+            printf '  %s succeeded — %s\\n' "$2" "$(echo "$run" | cut -d' ' -f4)"
+            return 0
+            ;;
+          # No run yet is the normal answer for a push made seconds ago, which is
+          # also why this polls rather than `gh run watch`: that needs an id to
+          # watch.
+          "") printf '  no %s run for this commit yet…\\n' "$2" ;;
+          *) printf '  %s is %s…\\n' "$2" "$status" ;;
+        esac
+      fi
       [ "$(date +%s)" -lt "$deadline" ] || die "$2 has not finished in time — $5"
       sleep 15
     done
@@ -554,6 +566,10 @@ main() {
   else
     git tag "$tag"
   fi
+  # Read before the push, because after it there is no way to tell this release's
+  # run from the one a `--retry` is replacing: both carry the tag as their branch.
+  prev_run=$(gh run list --workflow=release.yml --branch "$tag" --limit 1 \\
+               --json databaseId --jq '.[].databaseId' || true)
   git push origin "$tag"
   printf '  %s pushed\\n' "$tag"
 
@@ -563,11 +579,14 @@ main() {
   # was found only by somebody going to look: v2026.9.20 sat dead for hours that
   # way. Waiting is what turns a silently spent version number into one `--retry`
   # can reclaim.
-  # `--branch` takes the tag: a tag push reports the tag as `headBranch`, so this
-  # names *this* release's run and not whatever ran last. An hour, because the macOS
-  # leg builds a bundle, drives it, and then `verify` drives what was published.
+  # `--branch` takes the tag, because a tag push reports the tag as `headBranch`.
+  # That alone used to be the whole filter, on the reasoning that a tag names one
+  # run — which is true until `--retry` reuses the name, and then the newest run
+  # under it is the failed one being replaced. `$prev_run` is that run, and the
+  # wait disregards it until the new one registers. An hour, because the macOS leg
+  # builds a bundle, drives it, and then `verify` drives what was published.
   wait_for release.yml "the release workflow" "--branch $tag" 3600 \\
-    "fix it, then: mise run release --retry"
+    "fix it, then: mise run release --retry" "$prev_run"
 
   # **A green workflow is still not an installable release.** mise and ubi resolve a
   # version from its assets, so a release carrying none exists and cannot be
