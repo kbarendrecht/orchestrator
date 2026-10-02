@@ -216,9 +216,10 @@ this file, which churned it from every build; that feature is gone.
   already proved the shape by dropping `gh` for a `curl` on the resolved token.
 
   Reads already go out over curl with
-  a resolved token (`forge/github.rs`); only three places shell `gh` at all:
-  `gh auth token` for the credential (`forge/github.rs:60`), every write
-  (`forge/github_write.rs:156`). The review queue used to be a third and is not:
+  a resolved token (`forge/github.rs`); two places shell `gh` at all:
+  `gh auth token` for the credential (`forge/github.rs`, in `Source::Gh`) and every
+  write (`forge/github_write.rs`, which shells it throughout — the module banner
+  says so). The review queue used to be a third and is not:
   it is a `curl` on the resolved token like every other read. So the plan is to
   move the writes onto the same curl transport, keep
   `gh auth token` as *discovery* when gh happens to be installed, and prompt for a
@@ -239,23 +240,25 @@ this file, which churned it from every build; that feature is gone.
   installed at all.
 
 - **The archive is a list you cannot find anything in.** 91 rows behind one caret,
-  each carrying a name and an age, with no search, no grouping by date and no PR
-  number. `archivedRow` says out loud that this is the list you scan weeks later,
-  and scanning is the one thing it does not support. Group by week, and put the PR
-  number on the row where there is one.
+  each carrying a name and an age, with no grouping by date and no PR number —
+  search landed, and the paragraph below is what it is. `archivedRow` says out loud
+  that this is the list you scan weeks later, and scanning is the one thing it does
+  not support. Group by week, and put the PR number on the row where there is one.
 
-  **And the thing worth finding is not on the row at all.** Every archived session
-  leaves its transcript at `<config dir>/transcripts/<session id>.jsonl`, so what
-  the session actually *did* is already on disk and nothing reads it back.
-  `stablyai/orca` indexes exactly that (`docs/reference/agent-session-search-contract.md`)
-  and its contract is worth copying where it is cheap: index user and assistant
-  text in full, **cap tool output** (it uses 3,072 characters a row) so a build log
-  does not drown the index, filter by agent, path and date, and tie a pagination
-  cursor to the query so a rebuild answers `stale-cursor` rather than a silently
-  different page. Grouping by week makes 91 rows scannable; searching the
-  transcripts makes them answerable — "which session touched the pty ring buffer"
-  is the question people actually arrive with. The redaction half of Orca's
-  contract does not apply: orchd's archive never leaves the machine.
+  ~~**And the thing worth finding is not on the row at all.**~~ **Done, and it
+  reads what was *said* rather than what a tool printed.** Every archived session
+  leaves its transcript at `<config dir>/transcripts/<session id>.jsonl`, and
+  `store::first_spoken_match` now reads them back: only `user` and `assistant`
+  records count and only `text` blocks inside them, so a `tool_result` is skipped
+  by shape and an oversized record by size before it is parsed. That selectivity
+  *is* the feature — measured at 286 transcripts and 363MB, `rebase` matched 215 of
+  them when tool output counted, and a filter answering "almost all of them" is not
+  a filter. The matched line is what the row then shows, in place of its state.
+  `tools/e2e/flows/33-archive-search.mjs` drives it.
+
+  The reading half stays open: there is still no grouping by week and no PR number
+  on the row, so a search answers "which session touched the pty ring buffer" while
+  scanning the 91 rows is what it always was.
 
 - ~~**A repo with nothing configured still pays for every pane.**~~ **Done, and it
   found a snapshot that disagreed with the daemon.** A checkout with no forge drew
@@ -330,16 +333,19 @@ this file, which churned it from every build; that feature is gone.
   own** `base_ref`, now sent by the daemon, which is also the right answer for a
   stacked PR whose base is another PR's head.
 
-- **Two review verbs on every PR row until the beta gate closes.** `resolve` and
-  `resolve in UI [beta]` sit next to each other in `prMenu`, which asks the reader
-  to pick between two implementations of one intent. The gate is the overlay entry
-  above and is blocked on a real drive; until it closes, the beta item could sit
-  behind a setting rather than in the menu everybody uses.
+- **Two review verbs on every PR row.** `handle review` and `handle review in UI`
+  sit next to each other in `prMenu`, which asks the reader to pick between two
+  implementations of one intent. They were `resolve` and `resolve in UI [beta]`
+  when this was written; the rename to the job rather than the machinery landed and
+  **the `[beta]` label went with it**, so the gate this entry was named after no
+  longer exists and the choice it leaves the reader does. The overlay entry above
+  is still blocked on a real drive, and until that answers, the second verb could
+  sit behind a setting rather than in the menu everybody uses.
 
 - **Record real agent screens, before there is a second agent to record.** orchd
   parses agent pty bytes in three places already — `agent_complaint` reads the ring
-  buffer to turn a fast non-zero exit into a sentence (`spawn.rs:1767`),
-  `is_interrupt` classifies keystrokes (`ws.rs:296`), and `health.rs` strips ANSI to
+  buffer to turn a fast non-zero exit into a sentence (`spawn.rs`), `is_interrupt`
+  classifies keystrokes (`ws.rs`), and `health.rs` strips ANSI to
   reach a verdict — and every fixture behind them is a byte string **typed by hand
   into a test**. That is affordable for one agent whose screens are known. It stops
   being affordable at the second, and the roadmap has more.
