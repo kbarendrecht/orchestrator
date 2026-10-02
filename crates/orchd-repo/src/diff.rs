@@ -23,6 +23,10 @@ pub enum Base {
     Upstream,
     /// Uncommitted work only.
     Head,
+    /// The pushed branch: what the next push would send, uncommitted work
+    /// included. The merge-base when the branch was never pushed, because then
+    /// all of it goes out.
+    Pushed,
     /// The PR's own base branch.
     PrBase,
 }
@@ -44,6 +48,21 @@ pub fn resolve_base(
             .trim()
             .to_string()),
         Base::Head => Ok("HEAD".to_string()),
+        /* The ref's name, not its sha, so the pane can say which branch it is
+        measured against; a sha comes back only for the never-pushed case, and
+        that difference is how the pane tells the two apart. */
+        Base::Pushed => {
+            // Detached, `--abbrev-ref` answers `HEAD`, and `origin/HEAD` is the
+            // remote's default branch rather than anything this tree pushed.
+            let branch = orchd_base::git::current_branch(cwd)?;
+            let pushed = (branch != "HEAD")
+                .then(|| orchd_base::git::pushed_ref(cwd, &branch))
+                .flatten();
+            match pushed {
+                Some(pushed) => Ok(pushed),
+                None => resolve_base(cwd, Base::Upstream, upstream, pr_base),
+            }
+        }
         Base::PrBase => {
             let r = pr_base.unwrap_or(upstream);
             // The PR base lives on the remote PRs are opened against, which is the
@@ -600,6 +619,44 @@ mod tests {
 
         let sha = resolve_base(&dir, Base::PrBase, "origin/main", Some("dev")).unwrap();
         assert_eq!(sha, head);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The pushed base is `origin/<branch>` once origin has the branch, and the
+    /// merge-base before that, since an unpushed branch sends everything.
+    #[test]
+    fn the_pushed_base_is_the_remote_branch_once_there_is_one() {
+        let dir = crate::testutil::scratch_repo("diff-pushed");
+        let g = |args: &[&str]| crate::testutil::git(&dir, args);
+        let commit = |file: &str| {
+            std::fs::write(dir.join(file), "x\n").unwrap();
+            g(&["add", "-A"]);
+            g(&["commit", "-q", "-m", file]);
+        };
+        g(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        let root = g(&["rev-parse", "HEAD"]);
+        g(&["checkout", "-q", "-b", "feature"]);
+        commit("pushed.txt");
+
+        let never = resolve_base(&dir, Base::Pushed, "origin/main", None).unwrap();
+        assert_eq!(never, root, "never pushed: all of it goes out");
+
+        g(&["update-ref", "refs/remotes/origin/feature", "HEAD"]);
+        commit("unpushed.txt");
+        let pushed = resolve_base(&dir, Base::Pushed, "origin/main", None).unwrap();
+        assert_eq!(pushed, "origin/feature");
+        let paths: Vec<_> = summary(&dir, &pushed)
+            .unwrap()
+            .files
+            .into_iter()
+            .map(|f| f.path)
+            .collect();
+        assert_eq!(paths, ["unpushed.txt"], "what went out is not listed again");
+
+        g(&["update-ref", "refs/remotes/origin/HEAD", "HEAD"]);
+        g(&["checkout", "-q", "--detach"]);
+        let detached = resolve_base(&dir, Base::Pushed, "origin/main", None).unwrap();
+        assert_eq!(detached, root, "detached is not `origin/HEAD`");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

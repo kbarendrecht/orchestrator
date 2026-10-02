@@ -221,6 +221,10 @@ body[data-chrome="custom"] .top-r{padding-right:0}
   max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
   line-height:1.25;
 }
+/* A button since it switches the list, so it gives up the button's own padding
+   and centring, and says it can be pressed by lighting the title on hover. */
+button.fhead-txt{padding:0;text-align:left;align-self:stretch}
+button.fhead-txt:hover>.eyebrow{color:var(--text)}
 .top-r>.refresh{flex:0 0 auto}
 
 .wctl-btn{

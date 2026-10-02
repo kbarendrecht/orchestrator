@@ -681,7 +681,12 @@ changed_since: string | null,
  * Commits on `upstream/develop` this branch does not have. Drives the
  * rebase affordance.
  */
-behind: number, ahead: number, rebasing: boolean, 
+behind: number, ahead: number, 
+/**
+ * Commits its own remote does not have yet. The changes pane's pushed view
+ * fetches again when this moves, since a push changes nothing else here.
+ */
+unpushed: number, rebasing: boolean, 
 /**
  * Whether the four fields above have ever been measured for this workspace
  * — see [`crate::model::Tree::measured`].

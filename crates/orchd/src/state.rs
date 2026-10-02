@@ -1255,6 +1255,7 @@ impl AppState {
                 changed_since: w.tree.base.clone(),
                 behind: w.tree.divergence.0,
                 ahead: w.tree.divergence.1,
+                unpushed: w.tree.unpushed,
                 rebasing: w.tree.rebasing,
                 measured: w.tree.measured,
             })
@@ -2261,6 +2262,9 @@ pub struct WorkspaceView {
     /// rebase affordance.
     pub behind: u32,
     pub ahead: u32,
+    /// Commits its own remote does not have yet. The changes pane's pushed view
+    /// fetches again when this moves, since a push changes nothing else here.
+    pub unpushed: u32,
     pub rebasing: bool,
     /// Whether the four fields above have ever been measured for this workspace
     /// — see [`crate::model::Tree::measured`].

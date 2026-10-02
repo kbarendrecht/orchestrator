@@ -87,11 +87,12 @@
          space the title needed and `Changes` came back as `Chang…`, because both
          can shrink and the base is the longer string. Stacked, each gets the whole
          column and neither has to give way. -->
-    <span class="fhead-txt">
+    <!-- A button: pressing it switches the list between everything since the
+         workspace branched and what the next push would send. -->
+    <button class="fhead-txt" id="fileshead">
       <span class="eyebrow" id="filestitle">Changes</span>
-      <span class="ctx-btn" id="filesbase"
-            title="Everything changed since this workspace branched"></span>
-    </span>
+      <span class="ctx-btn" id="filesbase"></span>
+    </button>
     <!-- Drawn, not typed: the reload glyph (U+21BB) is exactly the kind the font
          stack cannot be trusted for at this size — the same reason the gear and
          window controls are drawn. 1em so it still tracks the font-size setting. -->

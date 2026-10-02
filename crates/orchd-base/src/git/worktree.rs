@@ -424,12 +424,20 @@ pub fn unpushed_count(cwd: &Path, branch: &str, upstream: &str) -> u32 {
 /// upstream base, which is exactly the set of commits that exist nowhere but
 /// here. The one place that decides it, for [`unpushed()`] and [`unpushed_count`].
 pub(super) fn unpushed_range(cwd: &Path, branch: &str, upstream: &str) -> (String, bool) {
-    let remote_ref = format!("refs/remotes/origin/{branch}");
-    if git_ok(cwd, &["rev-parse", "--verify", "--quiet", &remote_ref]) {
-        (format!("origin/{branch}..HEAD"), true)
-    } else {
-        (format!("{upstream}..HEAD"), false)
+    match pushed_ref(cwd, branch) {
+        Some(pushed) => (format!("{pushed}..HEAD"), true),
+        None => (format!("{upstream}..HEAD"), false),
     }
+}
+
+/// `origin/<branch>` when origin has this branch, the ref a push updates.
+///
+/// One rule for every reader of "what is pushed": the unpushed count and the
+/// changes pane's pushed view have to agree on which commits went out.
+pub fn pushed_ref(cwd: &Path, branch: &str) -> Option<String> {
+    let remote_ref = format!("refs/remotes/origin/{branch}");
+    git_ok(cwd, &["rev-parse", "--verify", "--quiet", &remote_ref])
+        .then(|| format!("origin/{branch}"))
 }
 
 /// Whether a rebase is stopped part-way in this worktree.

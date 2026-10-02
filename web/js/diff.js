@@ -325,12 +325,16 @@ function renderFiles() {
      moves every time the agent does. The id is there so switching sessions still
      redraws — `wsId` alone would not, for two sessions in one workspace. */
   const cur = currentSession();
+  const listSum = w && pushedMode && !diffState.open ? pushedSummary(w) : null;
   if (unchanged(drawn, [wsId, w, cur?.id ?? null, !!(cur && pending(cur)),
-    diffState.open, diffState.path, diffState.summary], NOT_SHOWN)) return;
+    diffState.open, diffState.path, diffState.summary, pushedMode, listSum], NOT_SHOWN)) return;
   if (w) renderDivergence(w);
   const panes = $('filepanes');
 
-  $('filestitle').textContent = diffState.open ? 'Changeset' : 'Changes';
+  $('filestitle').textContent = diffState.open ? 'Changeset' : pushedMode ? 'Unpushed' : 'Changes';
+  $('fileshead').title = pushedMode
+    ? 'What the next push would send · click for everything since this workspace branched'
+    : 'Everything changed since this workspace branched · click for what is not pushed yet';
 
   if (!w) {
     const s = currentSession();
@@ -356,8 +360,15 @@ function renderFiles() {
    * With the diff open the same question is asked of the diff's own summary,
    * which carries line counts per file and a cursor. */
   const sum = diffState.open ? diffState.summary : null;
-  const files = sum ? sum.files : (w.changed || []);
-  const since = sum ? sum.base : w.changed_since;
+  /* Pushed, the list is the fetched summary plus the snapshot's untracked rows: a
+     diff never sees an untracked file, and an untracked file is not pushed. */
+  const files = sum ? sum.files
+    : listSum ? [...listSum.files, ...(w.changed || []).filter((f) => f.status === '?')]
+      .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
+    : pushedMode ? []
+    : (w.changed || []);
+  const since = sum ? sum.base : listSum ? listSum.base : pushedMode ? null : w.changed_since;
+  const counted = !!(sum || listSum);
 
   /* **Keyed on the path, and the container is kept**, because this pane draws up
      to five hundred buttons and a rebuild destroys the one under the pointer.
@@ -373,11 +384,13 @@ function renderFiles() {
   if (!files.length) {
     items.push({
       key: 'empty',
-      sig: paintSig([!!sum, w.measured, w.is_main]),
-      build: () => (sum || w.measured
-        ? el('div', 'fempty',
-          w.is_main ? 'Nothing changed in the main checkout.' : 'Nothing changed in this worktree yet.')
-        : counting()),
+      sig: paintSig([!!sum, w.measured, w.is_main, pushedMode, !!listSum]),
+      build: () => (pushedMode && !sum
+        ? (listSum ? el('div', 'fempty', 'Nothing to push.') : counting())
+        : sum || w.measured
+          ? el('div', 'fempty',
+            w.is_main ? 'Nothing changed in the main checkout.' : 'Nothing changed in this worktree yet.')
+          : counting()),
     });
   }
   reconcile(panes, items);
@@ -399,16 +412,20 @@ function renderFiles() {
   //
   // A count of something not yet counted is the same fault with a different
   // cause, so the footer says so instead of showing a confident nothing.
-  const total = sum ? files.length : (w.changed_total ?? files.length);
+  const total = counted ? files.length : (w.changed_total ?? files.length);
   const bits = [total > files.length
     ? `${files.length} of ${total.toLocaleString()} files`
     : `${files.length} file${files.length === 1 ? '' : 's'}`];
-  if (sum) bits.push(`+${sum.added} \u2212${sum.deleted}`);
+  const lines = sum ?? listSum;
+  if (lines) bits.push(`+${lines.added} \u2212${lines.deleted}`);
   if (w.is_main) bits.push('worktrees excluded');
-  $('filesfoot').textContent = sum || w.measured ? bits.join(' \u00b7 ') : 'counting\u2026';
+  $('filesfoot').textContent = counted || (!pushedMode && w.measured) ? bits.join(' \u00b7 ') : 'counting\u2026';
   // The base belongs in the header, where the toggle used to be: it is the one
   // thing you need to know to read the list, and it is not a choice.
-  $('filesbase').textContent = since ? `since ${since.slice(0, 7)}` : '';
+  $('filesbase').textContent = !since ? ''
+    : !pushedMode ? `since ${since.slice(0, 7)}`
+    : neverPushed(since) ? `not pushed yet \u00b7 since ${since.slice(0, 7)}`
+    : `vs ${since}`;
 }
 
 // Kept short: the right header also carries the title and the refresh control,
@@ -445,6 +462,78 @@ const diffState = {
   pendingCursor: null,
   context: 3,
 };
+
+/* **Two questions, and the header is the switch between them.** `Changes` is
+   everything since the workspace branched, which is what the pane has always
+   listed. `Unpushed` is what the next push would send: a diff against
+   `origin/<branch>`, uncommitted work and untracked files included. The overlay
+   follows the same mode, so a row opens the diff the list counted. Remembered per
+   browser, like the pane sizes. */
+const BASE_KEY = 'orch.changesBase';
+let pushedMode = false;
+try {
+  pushedMode = localStorage.getItem(BASE_KEY) === 'pushed';
+} catch (err) { /* no storage: the pane opens on `Changes` */ }
+diffState.base = pushedMode ? 'pushed' : 'upstream';
+
+/** The pushed list, which the snapshot does not carry: fetched, and fetched again
+ *  whenever this workspace's own measurements move. `unpushed` is in the key
+ *  because a push changes nothing else the snapshot says about the tree.
+ *
+ *  @type {{ key: string | null, ws: string | null, summary: import('../repo').DiffSummary | null }} */
+const pushed = { key: null, ws: null, summary: null };
+
+/** The pushed summary for `w`, or `null` while the first one is in the air. The
+ *  previous answer stays up while a newer one loads, so an edit does not blank
+ *  the list. */
+function pushedSummary(/** @type {import('../snapshot').WorkspaceView} */ w) {
+  const key = paintSig([w.id, w.changed, w.changed_since, w.unpushed, w.branch]);
+  if (pushed.key !== key) {
+    pushed.key = key;
+    if (pushed.ws !== w.id) pushed.summary = null;
+    const q = new URLSearchParams({ workspace: w.id, base: 'pushed' });
+    get(`/api/diff?${q}`).then((sum) => {
+      if (pushed.key !== key) return;
+      pushed.ws = w.id;
+      pushed.summary = sum;
+      renderFiles();
+    }, (e) => {
+      if (pushed.key !== key) return;
+      toast(reason(e), true);
+    });
+  }
+  return pushed.ws === w.id ? pushed.summary : null;
+}
+
+/** A pushed base came back as a sha only when the branch was never pushed: the
+ *  daemon names the ref when there is one. */
+const neverPushed = (/** @type {string} */ base) => /^[0-9a-f]{40,64}$/.test(base);
+
+/** Switch the pane between `Changes` and `Unpushed`. */
+async function toggleBase() {
+  pushedMode = !pushedMode;
+  diffState.base = pushedMode ? 'pushed' : 'upstream';
+  try {
+    localStorage.setItem(BASE_KEY, diffState.base);
+  } catch (err) { /* private mode: it still switched for this session */ }
+  pushed.key = null;
+  if (!diffState.open) {
+    renderFiles();
+    return;
+  }
+  // The open file stays open when the other list still has it.
+  await loadSummary();
+  const files = diffState.summary?.files || [];
+  const keep = files.find((f) => f.path === diffState.path)?.path ?? files[0]?.path;
+  if (keep) {
+    diffState.cursor = 0;
+    await loadFile(keep);
+  } else {
+    diffState.file = null;
+    diffState.path = null;
+    renderDiff();
+  }
+}
 
 function lineEl(/** @type {import('../repo').Row} */ row, /** @type {'old' | 'new'} */ side) {
   // side: 'old' | 'new'. In split view each pane shows only its own side.
@@ -756,6 +845,7 @@ function openEditor() {
       await loadSummary();
       const q = new URLSearchParams({
         workspace: ws,
+        base: diffState.base,
         path: diffState.path ?? '',
         context: String(diffState.context),
       });
@@ -770,4 +860,4 @@ function openEditor() {
   });
 }
 
-export { diffState as state, openDiff as open, closeDiff as close, renderDiff as render, stepChange as step, loadFile, renderFiles, openEditor };
+export { toggleBase, diffState as state, openDiff as open, closeDiff as close, renderDiff as render, stepChange as step, loadFile, renderFiles, openEditor };
