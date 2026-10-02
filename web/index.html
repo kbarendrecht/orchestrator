@@ -64,7 +64,7 @@
          shortcut you cannot look up. Deliberately smaller than the gear: it is a
          thing you need twice and then never again, so it earns a glyph, not a
          button's worth of space. -->
-    <button class="helpbtn" id="keysbtn" title="Keyboard shortcuts" aria-expanded="false">?</button>
+    <button class="helpbtn" id="keysbtn" title="Help" aria-label="Help" aria-expanded="false">?</button>
   </div>
 
   <div class="top top-c">
@@ -814,11 +814,12 @@
 
 <div class="settings keyhelp" id="keyhelp" hidden>
   <div class="settings-title">
-    Keyboard
+    Help
     <button class="settings-x" id="keyhelpx" type="button"
-            title="Close · Esc" aria-label="Close shortcuts">&#10005;</button>
+            title="Close · Esc" aria-label="Close help">&#10005;</button>
   </div>
   <div class="settings-card">
+    <h2 class="help-section">Keyboard shortcuts</h2>
     <!-- One list, not one per group: the chord column is sized by the widest chord
          in the *whole* legend, so every description starts at the same x. Four
          separate `dl`s each measured their own, and the four columns landed 90px
@@ -856,7 +857,45 @@
            because it is the only way to read back past what the agent shows. -->
       <dt>Shift&nbsp;scroll</dt><dd>the terminal's own scrollback, past the agent</dd>
       <dt data-mod>MOD&nbsp;S</dt><dd>save the file being edited</dd>
-      <dt data-mod>MOD&nbsp;Shift&nbsp;?</dt><dd>show or hide this list</dd>
+      <dt data-mod>MOD&nbsp;Shift&nbsp;?</dt><dd>show or hide this help</dd>
+    </dl>
+
+    <!-- What each dot means, written out a second time: `dotClass` and
+         `sessionDot` in core.js, `prDot` in rail.js and the review row in
+         queue.js are the rules, and a change there has to be made here too.
+         Its own list rather than more rows of the one above: a grid sizes its
+         first column by the widest chord, which pushed every description here
+         a chord's width away from its dot.
+         The session rows use the real `sdot` classes, so a colour change in the
+         stylesheet shows up here. The review pane styles its own class names
+         only inside `.rvrow`, so its rows borrow plain dot classes of the same
+         colour. -->
+    <h2 class="help-section">Status dots</h2>
+    <dl class="keys dots">
+
+      <div class="settings-group">Sessions</div>
+      <dt><span class="dot sdot blocked"></span></dt><dd>needs you: a question, a permission, an interrupted turn, or its turn is done</dd>
+      <dt><span class="dot sdot working"></span></dt><dd>working, starting, or ready for a prompt</dd>
+      <dt><span class="dot sdot build"></span></dt><dd>build failing or an agent error, or its PR is failing</dd>
+      <dt><span class="dot sdot archived"></span></dt><dd>archived, or its process ended</dd>
+      <dt><span class="dot sdot working ring"></span></dt><dd>a ring: the session has a PR, in the colour of what it is doing</dd>
+
+      <div class="settings-group">A session whose turn is done, coloured by its PR</div>
+      <dt><span class="dot sdot ok ring"></span></dt><dd>checks passing</dd>
+      <dt><span class="dot sdot bad ring"></span></dt><dd>checks failing, or a merge conflict</dd>
+      <dt><span class="dot sdot merged ring"></span></dt><dd>merged</dd>
+      <dt><span class="dot sdot pr ring"></span></dt><dd>a draft, checks still running, or closed without merging</dd>
+
+      <div class="settings-group">PRs</div>
+      <dt><span class="dot build"></span></dt><dd>checks failing, or a merge conflict</dd>
+      <dt><span class="dot blocked"></span></dt><dd>needs you</dd>
+      <dt><span class="dot ok"></span></dt><dd>checks passing</dd>
+      <dt><span class="dot idle"></span></dt><dd>a draft, checks still running, or no checks</dd>
+
+      <div class="settings-group">Reviews</div>
+      <dt><span class="dot build"></span></dt><dd>a prio label, or blocked by a conflict or failing checks</dd>
+      <dt><span class="dot blocked"></span></dt><dd>asked of you by name, or a re-review</dd>
+      <dt><span class="dot idle"></span></dt><dd>asked of a team you are in</dd>
     </dl>
   </div>
   <!-- Below the list rather than in settings: it is the one other thing somebody

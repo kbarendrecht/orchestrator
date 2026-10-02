@@ -1237,6 +1237,16 @@ body.row-resizing{cursor:row-resize;user-select:none}
 .keys dd{
   margin:0;font-size:calc(11.5px * var(--fs));color:var(--dim);align-self:center;
 }
+/* A dot in the legend sits in a text cell rather than a flex row, so it needs a
+   box of its own to have a size. */
+.keys dt .dot{display:inline-block;vertical-align:middle}
+/* The two halves of the help pane. Bigger and in the text colour, so they read
+   as a level above the uppercase group labels under them. */
+.help-section{
+  font-family:var(--label);font-size:calc(16px * var(--fs));font-weight:600;
+  color:var(--text);margin:44px 0 0;padding-bottom:10px;border-bottom:1px solid var(--line);
+}
+.help-section:first-child{margin-top:8px}
 /* The licence notice, a fixed foot to the legend rather than its last row.
    `flex:0 0 auto` beside the card's `flex:1` is what keeps it on screen while the
    shortcuts scroll under it — it is a legal notice, so being reachable only by
