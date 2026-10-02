@@ -1799,6 +1799,20 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
    which is what left it stopping short of the bottom of the window. */
 .prlist{padding-bottom:12px}
 .prblock .ws{border-bottom:0}
+/* **Dragged taller than its rows, the space goes under them.** `sized` is a height
+   somebody chose, so the ten-row cap on the list comes off and the list takes the
+   block's height instead; without the class the block fits its rows as before.
+   A folded pane is a head whatever was dragged. `85%` rather than the 46% cap,
+   because a pane you made tall on purpose should not stop at half. */
+.prblock.sized,.rvblock.sized{height:var(--foot-h);max-height:85%}
+.prblock.sized.closed,.rvblock.sized.closed{height:auto}
+.prblock.sized .ws{flex:1 1 auto}
+.prblock.sized .prlist,.rvblock.sized .rvlist{max-height:none}
+/* The pane's handle lives beside it rather than in it, so it needs a box with no
+   height to be positioned against. */
+.footsplit{position:relative;height:0;flex:0 0 auto}
+.rvblock{position:relative}
+.rvblock.closed > .rowsplit{display:none}
 .prgroup-head{
   display:flex;align-items:center;gap:8px;padding:12px 16px 8px;
   width:100%;position:sticky;top:0;background:var(--panel-ground,var(--surface));z-index:2;

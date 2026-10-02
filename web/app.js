@@ -2261,6 +2261,81 @@ function dragDrawer(/** @type {HTMLElement} */ handle) {
   });
 }
 
+/** The two panes at the foot of the side columns, and where each one's dragged
+ *  height is remembered. No stored height means the pane fits its rows, which is
+ *  what it did before it had a handle. */
+const FOOT = { min: 60, snap: 24 };
+
+/** Give a foot pane a height, or hand it back to its rows with `null`. */
+function setFoot(/** @type {HTMLElement} */ block, /** @type {number | null} */ px) {
+  if (px === null) {
+    block.classList.remove('sized');
+    block.style.removeProperty('--foot-h');
+    return;
+  }
+  block.style.setProperty('--foot-h', `${Math.round(Math.max(FOOT.min, px))}px`);
+  block.classList.add('sized');
+}
+
+/** Drag a foot pane taller than its rows, with a detent at the height that fits
+ *  them.
+ *
+ *  **The detent is the way back.** Pixel-matching the old height by hand is not a
+ *  thing anybody can do, so within `FOOT.snap` of it the pane lets go of the drag
+ *  and fits its rows again — and keeps fitting them as rows come and go, which a
+ *  stored number that happened to match would not.
+ *
+ *  The fit is measured at the press with the dragged height taken off, because
+ *  it moves with the rows and is only true for the moment it is read.
+ */
+function dragFoot(/** @type {HTMLElement} */ handle, /** @type {HTMLElement} */ block, /** @type {string} */ key) {
+  handle.addEventListener('mousedown', (ev) => {
+    const e = /** @type {MouseEvent} */ (ev);
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    handle.classList.add('dragging');
+    document.body.classList.add('row-resizing');
+
+    const was = block.style.getPropertyValue('--foot-h');
+    setFoot(block, null);
+    const fit = block.getBoundingClientRect().height;
+    if (was) setFoot(block, parseInt(was, 10));
+    const bottom = block.getBoundingClientRect().bottom;
+    const move = (/** @type {MouseEvent} */ ev) => {
+      const h = bottom - ev.clientY;
+      setFoot(block, Math.abs(h - fit) < FOOT.snap ? null : h);
+    };
+    const done = () => {
+      window.removeEventListener('mousemove', move);
+      handle.classList.remove('dragging');
+      document.body.classList.remove('row-resizing');
+      try {
+        if (block.classList.contains('sized')) {
+          localStorage.setItem(key, String(block.getBoundingClientRect().height));
+        } else {
+          localStorage.removeItem(key);
+        }
+      } catch (err) { /* private mode: the drag still worked for this session */ }
+    };
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', done, { once: true });
+  });
+
+  handle.addEventListener('dblclick', () => {
+    setFoot(block, null);
+    try {
+      localStorage.removeItem(key);
+    } catch (err) { /* nothing to forget */ }
+  });
+
+  let saved = 0;
+  try {
+    saved = Number(localStorage.getItem(key));
+  } catch (err) { /* no storage: the pane fits its rows */ }
+  if (saved) setFoot(block, saved);
+}
+
 function setupColumns() {
   for (const col of Object.values(COLS)) {
     const saved = Number(localStorage.getItem(col.key));
@@ -2271,6 +2346,8 @@ function setupColumns() {
   dragColumn($('splitl'), COLS.rail, true);
   dragColumn($('splitr'), COLS.files, false);
   dragDrawer($('splitd'));
+  dragFoot($('splitpr'), $('prpane'), 'orch.prPaneHeight');
+  dragFoot($('splitrv'), $('rvblock'), 'orch.reviewPaneHeight');
   // A window that got smaller can leave a stored size with no room for it.
   window.addEventListener('resize', () => {
     for (const col of Object.values(COLS)) setCol(col, colWidth(col));

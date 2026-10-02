@@ -203,6 +203,11 @@ function renderRail() {
      `reviews_command` has a queue and no forge — so see `queue.js` rather than
      assuming this decides both. */
   const prpane = $('prpane');
+  /* Folded, or the one-line no-forge note: either way a head and nothing to give a
+     dragged height to, so the height lets go and the handle goes with it. */
+  const prsClosed = !snap.repos?.upstream || !showPrs;
+  prpane.classList.toggle('closed', prsClosed);
+  $('splitpr').hidden = prsClosed;
   if (snap.repos?.upstream) {
     // Reconciled like the rail above it, and for the same reason: a `.prrow` is
     // hovered and clicked, and this pane is rebuilt by the rail's guard — so it
