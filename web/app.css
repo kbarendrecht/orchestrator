@@ -507,12 +507,13 @@ button.ctx-btn:hover{color:var(--text)}
 .dot{width:6px;height:6px;border-radius:50%;flex:0 0 auto;background:#6B6B6B}
 .dot.blocked{background:var(--attn)}
 /* Handed to a PR: the work is elsewhere now, so it wears a ring rather than a
-   fill — the same outline an archived session gets, since both mean "not the
-   thing in front of you". */
+   fill. */
 .dot.build{background:var(--bad)}
 .dot.working{background:#6A6A6A}
 .dot.idle{background:#6B6B6B}
-.dot.archived{background:transparent;border:1px solid var(--faint-solid)}
+/* A dash, not a ring: the ring is the PR mark and nothing else, so "not running"
+   needs a different shape rather than a different grey. */
+.dot.archived{height:2px;border-radius:1px;background:var(--faint-solid)}
 
 /* ---------- a session's dot: two facts, two properties ----------
    **The fill is what the session is doing; the ring is whether it has a PR.**
@@ -545,8 +546,10 @@ button.ctx-btn:hover{color:var(--text)}
    merging. Grey, because none of those is owed by you. */
 .dot.sdot.pr{--d:var(--faint-solid)}
 .dot.sdot.working,.dot.sdot.idle{--d:#6B6B6B}
-.dot.sdot.archived{--d:var(--faint-solid);background:none;border:1px solid var(--d)}
+.dot.sdot.archived{--d:var(--faint-solid);height:2px;border-radius:1px}
 .dot.sdot.ring{background:none;border:1px solid var(--d)}
+/* An archived session with a PR still says so, so the ring takes back its shape. */
+.dot.sdot.archived.ring{height:6px;border-radius:50%}
 
 /* **The name takes the leftover width, and gives way last (#37).** `flex:1` with
    `min-width:0` is what lets it shrink past its content; everything else on the

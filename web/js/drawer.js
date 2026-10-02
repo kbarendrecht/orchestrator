@@ -344,7 +344,7 @@ export function renderDrawer() {
   for (const name of w ? w.stopped_processes : []) {
     const tab = el('button', 'dtab stopped');
     tab.title = `${name} is declared and not running`;
-    // The same hollow dot an archived session uses: declared, not running.
+    // The same dash an archived session uses: declared, not running.
     tab.appendChild(el('span', 'dot archived'));
     tab.appendChild(el('span', null, name));
     /* Starting is the ⟳, not the tab. Every other tab in this strip selects on
