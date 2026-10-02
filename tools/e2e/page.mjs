@@ -390,6 +390,52 @@ try {
   await page.waitForTimeout(2000)
   check((await railNames()).join('|') === after.join('|'), 'the order survives a reload and the snapshots after it')
 
+  /* **A drag shows where it will land, and a stray move does not end it.** Driven
+     with dispatched events, because the order is the point: `dragover`, then a
+     `pointermove` with no button held, then `drop`. That move used to clear the
+     drag, so `drop` found nothing and the rail did not change. Whether WebKitGTK
+     sends it during a real drag cannot be seen from here; the sequence can. */
+  const dragOrder = await page.evaluate(() => {
+    const rowsNow = [...document.querySelectorAll('#rail .sess[data-id]')]
+    const from = rowsNow[rowsNow.length - 1]
+    const onto = rowsNow[0]
+    const box = onto.getBoundingClientRect()
+    const fire = (/** @type {Element} */ node, /** @type {string} */ type) => node.dispatchEvent(new DragEvent(type, {
+      bubbles: true, cancelable: true, clientY: box.top + 2, dataTransfer: new DataTransfer(),
+    }))
+    fire(from, 'dragstart')
+    fire(onto, 'dragover')
+    const line = onto.classList.contains('drop-before')
+    document.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, buttons: 0 }))
+    fire(onto, 'drop')
+    fire(from, 'dragend')
+    return { line, id: from.getAttribute('data-id') }
+  })
+  check(dragOrder.line, 'a drag over a row draws the line where it will land')
+  const landed = await page.waitForFunction(
+    (id) => document.querySelector('#rail .sess[data-id]')?.getAttribute('data-id') === id,
+    dragOrder.id, { timeout: 5000 },
+  ).then(() => true, () => false)
+  check(landed, 'a pointer move during a drag does not end it, and the drop lands')
+  check(await page.$$eval('#rail .drop-before, #rail .drop-after', (n) => n.length) === 0,
+    'and the line is gone once it has')
+  /* Put it back, below the last row, so everything after this sees the rail it
+     saw before: the next check clicks the last row, and the find checks further
+     down search whatever that selected. */
+  await page.evaluate((id) => {
+    const from = document.querySelector(`#rail .sess[data-id="${id}"]`)
+    const rowsNow = [...document.querySelectorAll('#rail .sess[data-id]')]
+    const onto = rowsNow[rowsNow.length - 1]
+    const box = onto.getBoundingClientRect()
+    for (const [node, type] of [[from, 'dragstart'], [onto, 'dragover'], [onto, 'drop'], [from, 'dragend']]) {
+      node?.dispatchEvent(new DragEvent(type, {
+        bubbles: true, cancelable: true, clientY: box.bottom - 2, dataTransfer: new DataTransfer(),
+      }))
+    }
+  }, dragOrder.id)
+  await page.waitForFunction((want) => [...document.querySelectorAll('#rail .sess[data-id] .sess-name')]
+    .map((n) => n.textContent).join('|') === want, after.join('|'), { timeout: 5000 })
+
   /* A drag whose `dragend` never reached the page left the rail frozen: it stands
      still while a drag is in flight, so the highlight stayed on one row while a
      click selected another and the terminal followed. A `dragstart` with no end is

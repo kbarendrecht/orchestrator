@@ -422,14 +422,44 @@ let rowDrag = null;
    go outside the window, can leave the flag set, and the rail stands still for as
    long as it is — which read as the highlight stuck on one row while clicks
    selected others. */
+/* **But not one that is still alive.** A live drag keeps firing `dragover`, and a
+   button-less `pointermove` inside one cleared `rowDrag` mid-gesture: `dragover`
+   then stopped accepting, and the drop did nothing. Whether WebKitGTK sends that
+   `pointermove` during a real GTK drag is not something a synthesized drag can
+   show, so the guard holds either way: a move within a second of a `dragover`
+   is part of the drag. A press still ends it at once, since nothing presses
+   mid-drag. */
+let lastDragOver = 0;
+document.addEventListener('dragover', () => { lastDragOver = performance.now(); }, true);
 for (const ev of /** @type {const} */ (['pointermove', 'pointerdown'])) {
   document.addEventListener(ev, (e) => {
-    if ((rowDrag || dragging) && (e.type === 'pointerdown' || e.buttons === 0)) {
+    if (!(rowDrag || dragging)) return;
+    const ended = e.type === 'pointerdown'
+      || (e.buttons === 0 && performance.now() - lastDragOver > 1000);
+    if (ended) {
       rowDrag = null;
       dragging = null;
+      markDrop(null, false);
       renderRail();
     }
   }, true);
+}
+
+/** The row the drop line is on, while a drag is over one. */
+/** @type {HTMLElement | null} */
+let dropMark = null;
+
+/** Draw the drop line above or below `row`, or take it away with `null`.
+ *
+ *  A class rather than a node, so a rail rebuild cannot leave a stray one behind:
+ *  a rebuilt row is a fresh node without it, and the next `dragover`, a few
+ *  hundred milliseconds later at most, puts it back. */
+function markDrop(/** @type {HTMLElement | null} */ row, /** @type {boolean} */ after) {
+  if (dropMark && dropMark !== row) dropMark.classList.remove('drop-before', 'drop-after');
+  dropMark = row;
+  if (!row) return;
+  row.classList.toggle('drop-before', !after);
+  row.classList.toggle('drop-after', after);
 }
 
 /** The rail's own order for one checkout, with anything the order has never seen
@@ -1165,7 +1195,7 @@ function fillSessions(/** @type {HTMLElement} */ group, /** @type {import('./cor
       // Firefox starts no drag at all without a payload, even one nothing reads.
       ev.dataTransfer.setData('text/plain', s.id);
     };
-    row.ondragend = () => { rowDrag = null; renderRail(); };
+    row.ondragend = () => { rowDrag = null; markDrop(null, false); renderRail(); };
     // No `preventDefault` is the refusal: the pointer keeps the no-drop cursor
     // over a row in another checkout or the other run, so the gesture says so
     // before it is let go.
@@ -1174,15 +1204,25 @@ function fillSessions(/** @type {HTMLElement} */ group, /** @type {import('./cor
        when a third run or a third refusal arrives, and a drop the two disagree
        about would write another checkout's ids into this one's order. */
     const accepts = (/** @type {typeof rowDrag} */ d) => !!d && d.path === c.path && d.list === list;
-    row.ondragover = (ev) => { if (accepts(rowDrag)) ev.preventDefault(); };
+    /* Past the middle means after, which is the only way to reach the bottom. The
+       line says which, so the drop lands where you can see it will. The row being
+       dragged gets no line: dropping it on itself moves nothing. */
+    const below = (/** @type {DragEvent} */ ev) => {
+      const box = row.getBoundingClientRect();
+      return ev.clientY > box.top + box.height / 2;
+    };
+    row.ondragover = (ev) => {
+      if (!accepts(rowDrag)) return;
+      ev.preventDefault();
+      markDrop(rowDrag?.id === s.id ? null : row, below(ev));
+    };
     row.ondrop = (ev) => {
       ev.preventDefault();
       const moved = rowDrag;
       rowDrag = null;
+      markDrop(null, false);
       if (moved && accepts(moved) && moved.id !== s.id) {
-        // Past the middle means after, which is the only way to reach the bottom.
-        const box = row.getBoundingClientRect();
-        dropSessionRow(c.path, moved.id, s.id, ev.clientY > box.top + box.height / 2, shown);
+        dropSessionRow(c.path, moved.id, s.id, below(ev), shown);
       } else {
         renderRail();
       }
