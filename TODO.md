@@ -333,14 +333,30 @@ this file, which churned it from every build; that feature is gone.
   own** `base_ref`, now sent by the daemon, which is also the right answer for a
   stacked PR whose base is another PR's head.
 
-- **Two review verbs on every PR row.** `handle review` and `handle review in UI`
-  sit next to each other in `prMenu`, which asks the reader to pick between two
-  implementations of one intent. They were `resolve` and `resolve in UI [beta]`
-  when this was written; the rename to the job rather than the machinery landed and
-  **the `[beta]` label went with it**, so the gate this entry was named after no
-  longer exists and the choice it leaves the reader does. The overlay entry above
-  is still blocked on a real drive, and until that answers, the second verb could
-  sit behind a setting rather than in the menu everybody uses.
+- **`handle review in UI` becomes `handle review`, with the diff and the comments
+  on the question.** The two verbs in `prMenu` are one intent with two answering
+  surfaces, and the decision is which surface wins: the pane does, and the cards
+  are to be rebuilt into it rather than gated or deleted.
+
+  **`handle review` does not change.** The pane pass works, and it stays exactly as
+  it is until something better exists. Nothing in this entry is licence to
+  restructure it.
+
+  **The second verb loses its screens and keeps its job.** Today it reads
+  everything, then hands the whole set over on cards with their own state machine.
+  What is wanted is the same single flow the pane already runs, with **the diff and
+  the thread's comments drawn above each question** — so the context arrives with
+  the question being asked rather than in a surface you switch to.
+
+  The seam is `renderInteraction` in `web/app.js`, which draws the `.oq` box for a
+  session's ask. Two things there are already the right shape: the box **can carry
+  a diff** — its own notes say so, and a `ResizeObserver` keeps the review bar clear
+  of it at any height — and `review-diff.js` is four pure functions over diff text
+  with no `reviewState`, split out of the overlay precisely because it owns no
+  screens. So the rendering half exists; what has to go is the state machine around
+  it. The ask already carries the value the overlay claims on (`decisions`), which
+  is what says which question is a review decision and which is the session asking
+  something of its own.
 
 - **Record real agent screens, before there is a second agent to record.** orchd
   parses agent pty bytes in three places already — `agent_complaint` reads the ring
