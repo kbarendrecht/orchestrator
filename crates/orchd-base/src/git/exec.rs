@@ -189,3 +189,53 @@ pub(super) fn git_net_ok(cwd: &Path, args: &[&str], label: &str) -> Result<Strin
 pub(super) fn git_ok(cwd: &Path, args: &[&str]) -> bool {
     run(cwd, args).map(|o| o.status.success()).unwrap_or(false)
 }
+
+/// This machine's git, as `(major, minor)`.
+///
+/// **The floor is 2.23**, which is what `switch`/`restore` need and the oldest
+/// flag the daemon uses. Nothing enforces that; this exists for the narrower job
+/// of refusing to *write* a setting the reader's git would misread, which is a
+/// different failure from a flag it would reject. A rejected flag errors. A
+/// misread setting is obeyed, as something else.
+///
+/// Read once: it cannot change under a running daemon, and every caller is on a
+/// path that already spawns git. `None` when git will not say, and every caller
+/// then takes the conservative branch rather than guessing a number.
+pub fn git_version() -> Option<(u32, u32)> {
+    static VERSION: std::sync::OnceLock<Option<(u32, u32)>> = std::sync::OnceLock::new();
+    *VERSION.get_or_init(|| {
+        let out = Command::new("git").arg("--version").output().ok()?;
+        parse_git_version(&String::from_utf8_lossy(&out.stdout))
+    })
+}
+
+/// `git version 2.34.1` and `git version 2.39.5 (Apple Git-154)` both answer
+/// here, which is why this is split out and tested rather than inlined.
+fn parse_git_version(said: &str) -> Option<(u32, u32)> {
+    let rest = said.split("git version ").nth(1)?;
+    let mut parts = rest.split(['.', ' ', '\n']);
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    Some((major, minor))
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::parse_git_version;
+
+    #[test]
+    fn every_shape_git_prints_its_version_in() {
+        assert_eq!(parse_git_version("git version 2.34.1\n"), Some((2, 34)));
+        // Apple ships its own suffix, and it is what a Mac reports.
+        assert_eq!(
+            parse_git_version("git version 2.39.5 (Apple Git-154)\n"),
+            Some((2, 39))
+        );
+        // Two components only, which git itself prints for some builds.
+        assert_eq!(parse_git_version("git version 2.50\n"), Some((2, 50)));
+        // Not git, or not answering: the caller takes the conservative branch.
+        assert_eq!(parse_git_version(""), None);
+        assert_eq!(parse_git_version("hg version 2.3"), None);
+        assert_eq!(parse_git_version("git version x.y"), None);
+    }
+}

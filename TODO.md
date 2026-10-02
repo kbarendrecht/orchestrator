@@ -476,7 +476,29 @@ this file, which churned it from every build; that feature is gone.
   boot restarted forever. Leaving the ask in invited somebody to build a guard that
   exists.
 
-- **Say which git the daemon needs, and stop exceeding it by accident.** There is
+- ~~**Say which git the daemon needs, and stop exceeding it by accident.**~~ **Done,
+  and the open question was a live bug in this very checkout.** The floor is stated
+  in the README as **2.23**, and the `core.fsmonitor` question is answered: on git
+  below 2.37 the value is a **hook path**, so `core.fsmonitor true` made every
+  `git status` run a program called `true` and then warn `Empty last update token`.
+  Measured here on git 2.34.1 — `trace: run_command: …; true 2 ''` — and confirmed
+  clean on 2.39.5 in a `debian:bookworm` container. Nothing broke: the empty token
+  sends git back to the full scan it would have done anyway, so the cost was a
+  process and a warning per command and the speed-up the line exists for was never
+  there. `let _ =` is why it went unseen.
+
+  `configure_repo` now writes it only at 2.37 and above, and **clears the exact
+  value `true` below that** — a repair rather than a migration, because that
+  function already runs on every daemon start for every checkout, so an older
+  build's config is fixed when its daemon next comes up. Only that literal is
+  touched: a *path* there is somebody's real fsmonitor and survives, which is its
+  own test. `git_version` is the capability read the entry asked for.
+
+  What the entry asked for and this did not do: a probe cache in Orca's shape. One
+  machine, one git, read once — the version is the whole of it here. The notes
+  below are kept for the reasoning.
+
+  There is
   no stated minimum git version, no `git --version` read and no capability probe,
   so a flag newer than the reader's git fails silently in whatever way that call
   site happens to fail. One was found by reading `stablyai/orca`'s

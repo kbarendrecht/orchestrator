@@ -41,7 +41,7 @@ agent. [`docs/architecture.md`](docs/architecture.md) is how the pieces fit.
 | What | Why |
 | --- | --- |
 | **Claude Code** (`claude` on `PATH`, signed in) | The daemon spawns it for every session. Without it a session exits the instant it starts, so the daemon says so at boot rather than letting you find out that way. |
-| **git** | Worktrees, branch moves, diffs — all of it. |
+| **git 2.23 or newer** | Worktrees, branch moves, diffs — all of it. 2.23 is `switch`/`restore`, the oldest thing the daemon spells. One repo setting needs more and is written only where it works: `core.fsmonitor` is a boolean from 2.37 and a *hook path* before it, so on an older git the daemon leaves it alone and clears one an older build wrote. |
 | **WebKitGTK 4.1** (Linux only) | The desktop window. Ubuntu 22.04 / Debian 12 or newer; 20.04 ships 4.0 and will not work. macOS uses the system WebView. |
 | **`gh`**, signed in | Reads go out with `curl`, and for those `github_token_file` replaces it. Every write (a thread reply, a 👍, a re-requested review) shells `gh` and uses its credential, so the resolve flow wants it. |
 

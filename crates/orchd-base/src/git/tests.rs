@@ -2033,3 +2033,61 @@ fn branch_delete_takes_a_merged_branch_and_refuses_one_with_commits() {
     let still = git(&repo, &["branch", "--list", "spare-worked-in"]).unwrap();
     assert!(!still.trim().is_empty(), "and it is still there");
 }
+
+/// `configure_repo` leaves a repo whose git cannot read `core.fsmonitor` as a
+/// boolean without one, and takes away the one an older build wrote.
+///
+/// **Asserted against this machine's git rather than a mocked version**, because
+/// the bug was never in the branching — it was in believing a value means the same
+/// thing to every git. So the test asks the same question the code does and holds
+/// the two halves to it: above 2.37 the setting is there, below it is gone, and on
+/// a git that will not say its version nothing is written.
+#[test]
+fn fsmonitor_is_written_only_where_it_is_a_boolean() {
+    let repo = scratch_repo();
+    let boolean = git_version().is_some_and(|v| v >= (2, 37));
+
+    // An older build's doing: the literal this daemon used to write unconditionally.
+    git(&repo, &["config", "core.fsmonitor", "true"]).unwrap();
+    configure_repo(&repo).unwrap();
+
+    let after = git(&repo, &["config", "--get", "core.fsmonitor"]).map(|v| v.trim().to_string());
+    if boolean {
+        assert_eq!(
+            after.ok().as_deref(),
+            Some("true"),
+            "a git that reads it as a boolean keeps it"
+        );
+    } else {
+        assert!(
+            after.is_err(),
+            "a git that would run it as a hook must not carry it: {after:?}"
+        );
+    }
+
+    // The two that are older than the floor are set either way.
+    for key in ["core.untrackedCache", "fetch.writeCommitGraph"] {
+        let got = git(&repo, &["config", "--get", key]).unwrap();
+        assert_eq!(got.trim(), "true", "{key} is set on every git this runs on");
+    }
+}
+
+/// Somebody else's fsmonitor hook is not this daemon's to remove.
+///
+/// The repair keys on the exact string `true` for this reason: a path there is a
+/// person's own choice, and on an old git it is also the *correct* spelling.
+#[test]
+fn a_real_fsmonitor_hook_survives_the_repair() {
+    let repo = scratch_repo();
+    let theirs = "/usr/local/bin/rs-git-fsmonitor";
+    git(&repo, &["config", "core.fsmonitor", theirs]).unwrap();
+
+    configure_repo(&repo).unwrap();
+
+    let after = git(&repo, &["config", "--get", "core.fsmonitor"]).unwrap();
+    assert_eq!(
+        after.trim(),
+        theirs,
+        "a hook path is left exactly as it was found"
+    );
+}
