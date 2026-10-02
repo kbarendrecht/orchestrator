@@ -1371,6 +1371,11 @@ try {
   await page.waitForSelector('#overlay.on', { timeout: 5000 })
   await page.waitForFunction(
     () => !!document.querySelector('#diffbody .ln'), null, { timeout: 10_000 })
+  /* The stepper reasons from the right pane, the file as it is now: its cursor is
+     the cell after the gutter, not the one before it. */
+  check(await page.evaluate(() => document.querySelector('#diffbody .ln.cur')
+    ?.previousElementSibling?.classList.contains('gutter') === true),
+  'the change stepper marks the right pane')
   await press('#ovedit')
   await page.waitForSelector('#diffbody.editing .editarea', { timeout: 5000 })
   check(

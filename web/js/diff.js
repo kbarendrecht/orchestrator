@@ -657,7 +657,10 @@ function renderDiff() {
         const ro = lineEl(n, 'new');
         const changed = o?.kind === 'del' || n?.kind === 'add';
         if (changed) {
-          if (!splitInBlock) { block += 1; anchors.push(lo); splitInBlock = true; }
+          /* The right cell, because the right pane is the file as it is now and
+             the one you edit, so that is where a change is. A block that only
+             deletes still marks its filler row there, where the lines went. */
+          if (!splitInBlock) { block += 1; anchors.push(ro); splitInBlock = true; }
           lo.dataset.blk = ro.dataset.blk = String(block);
         } else {
           splitInBlock = false;
