@@ -469,6 +469,41 @@ if (has('--panes')) {
   await page.locator('#dtabs span[title="Restart"]').first().click().catch(() => {});
   await beat(5000);
   await beat(2500);
+} else if (has('--skill')) {
+  /* **One claim: the skills the daemon ships reach the session.** They arrive by
+     `--plugin-dir` on every spawn, so the proof is Claude Code's own menu naming
+     them — not this repo's `skills/` directory, which proves only that the files
+     exist. The menu is the agent's, which is why the take types into the pty
+     rather than clicking anything the SPA owns. */
+  const wt = await sessionWhere((w) => w !== 'main');
+  await row(wt ?? ids[0]).click();
+  await beat(1800);
+  await page.locator('#termwrap').click();
+  await beat(500);
+  /* The composer is durable, so a draft from an earlier run is still in it and a
+     slash typed into that filters nothing. Same `Ctrl+U` the seeding uses. */
+  await page.keyboard.press('Control+u');
+  await beat(400);
+  /* Typed one character at a time, and the delay is the TUI's rather than a
+     reader's: the menu re-filters per keystroke, and the narrowing is the half of
+     this that says these came from somewhere. `ask()` is not reusable here
+     because it ends in Enter, and this take must never run the skill. */
+  await page.keyboard.type('/orchd:', { delay: 150 });
+  await beat(3600);
+  /* Down the whole list, because the menu is two rows tall in a 40-row pane and
+     "six skills" is therefore never one frame. Six presses so every name passes
+     the camera, and the hold is a reading speed rather than a keystroke one. */
+  for (let i = 0; i < 6; i += 1) {
+    await page.keyboard.press('ArrowDown');
+    await beat(1100);
+  }
+  await beat(1600);
+  /* Left as it was found. Escape closes the menu and `Ctrl+U` drops the text, so
+     the next take does not open on a composer holding half a command. */
+  await page.keyboard.press('Escape');
+  await beat(900);
+  await page.keyboard.press('Control+u');
+  await beat(600);
 } else if (has('--multi')) {
   const blocks = await page.$$eval('#rail .co-block', (els) =>
     els.map((e) => e.getAttribute('aria-label')),

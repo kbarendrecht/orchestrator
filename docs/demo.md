@@ -14,6 +14,8 @@
   made editable in place (`--diff`).
 - [`demo-find.gif`](demo-find.gif) — a workspace searched, the hits narrowing per
   keystroke, one opened as its own file pane (`--find`).
+- [`demo-skill.gif`](demo-skill.gif) — the skills the daemon ships, listed by
+  Claude Code's own menu inside a session (`--skill`).
 - [`demo-procs.gif`](demo-procs.gif) — a managed process in the drawer, restarted
   on camera so its own output decides the health dot (`--procs`).
 
