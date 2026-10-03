@@ -11,8 +11,8 @@ answer.
 
 ![orchestrator](docs/demo.gif)
 
-Under it: a Rust daemon plus a small vanilla-JS web app, shipped as one desktop
-application and also runnable headless in a browser tab. It hosts
+A Rust daemon and a small vanilla-JS web app, shipped as one desktop application
+and runnable headless in a browser tab. It hosts
 [Claude Code](https://www.anthropic.com/claude-code) sessions; it is not itself an
 agent. [`docs/architecture.md`](docs/architecture.md) is how the pieces fit.
 
@@ -21,13 +21,28 @@ agent. [`docs/architecture.md`](docs/architecture.md) is how the pieces fit.
 Each row is real: the agents are Claude Code, the diffs are what they wrote.
 [`docs/demo.md`](docs/demo.md) says how the recordings are made.
 
-| | |
-| --- | --- |
-| **01 · Sessions — several projects, several agents, and nothing dies with the window.** Open more than one checkout in the same window; the panes follow the row you click. Each session gets its own git worktree and its own terminal. The rail says which are working and which wait on you. The daemon owns every pty, so closing the window — or killing the daemon — loses nothing. | ![two checkouts in one window](docs/demo-repos.gif) ![sessions surviving a daemon restart](docs/demo-revive.gif) |
-| **02 · Git and forge aware — see what changed, and who is waiting on it.** Two panes watch the working tree: changed files with git's own verbs, and a word-level diff against the merge-base that you can edit in. Two more watch GitHub: your open PRs with the threads still owed a reply, and other people's PRs ranked by who is blocked. The queue rows are demo data — [why](docs/demo.md). | ![the diff viewer](docs/demo-diff.gif) ![the PR pane and the review queue](docs/demo-panes.gif) |
-| **03 · Skills — the agent already knows the job.** Six skills ship with the app and reach every session. `/orchd:fix-pr` takes a red PR green and never comments. `/orchd:handle-review` works the threads, and posts nothing without a separate go. Through `orch`, a session reaches the daemon itself: it asks you a blocking question, starts a second session, or checks what is running before it touches a branch. | ![the skills a session is given](docs/demo-skill.gif) |
-| **04 · Read and edit — find it, open it, change it.** Search a workspace with ripgrep's engine. Open a hit in its own file pane. Modifier-click a path or a symbol to go there. The pane is editable, and the agent is told when you change a file under it. | ![find in a workspace, and the file viewer](docs/demo-find.gif) |
-| **05 · Processes — a terminal and a build watcher, beside the agents.** `+` in the drawer opens a shell in the workspace. Declared processes — a build watcher, a container stack — run beside it, and their health folds into the rail next to the session that broke it. | ![a managed process in the drawer](docs/demo-procs.gif) |
+<table>
+<tr>
+<td><b>01 &middot; Sessions &mdash; several projects, several agents, and nothing dies with the window.</b> Open more than one checkout in the same window; the panes follow the row you click. Each session gets its own git worktree and its own terminal. The rail says which are working and which wait on you. The daemon owns every pty, so closing the window &mdash; or killing the daemon &mdash; loses nothing.</td>
+<td><img src="docs/demo-repos.gif" alt="two checkouts in one window"><img src="docs/demo-revive.gif" alt="sessions surviving a daemon restart"></td>
+</tr>
+<tr>
+<td><b>02 &middot; Git and forge aware &mdash; see what changed, and who is waiting on it.</b> Two panes watch the working tree: changed files with git's own verbs, and a word-level diff against the merge-base that you can edit in. Two more watch GitHub: your open PRs with the threads still owed a reply, and other people's PRs ranked by who is blocked. The queue rows are demo data &mdash; <a href="docs/demo.md">why</a>.</td>
+<td><img src="docs/demo-diff.gif" alt="the diff viewer"><img src="docs/demo-panes.gif" alt="the PR pane and the review queue"></td>
+</tr>
+<tr>
+<td><b>03 &middot; Skills &mdash; the agent already knows the job.</b> Six skills ship with the app and reach every session. <code>/orchd:fix-pr</code> takes a red PR green and never comments. <code>/orchd:handle-review</code> works the threads, and posts nothing without a separate go. Through <code>orch</code>, a session reaches the daemon itself: it asks you a blocking question, starts a second session, or checks what is running before it touches a branch.</td>
+<td><img src="docs/demo-skill.gif" alt="the skills a session is given"></td>
+</tr>
+<tr>
+<td><b>04 &middot; Read and edit &mdash; find it, open it, change it.</b> Search a workspace with ripgrep's engine. Open a hit in its own file pane. Modifier-click a path or a symbol to go there. The pane is editable, and the agent is told when you change a file under it.</td>
+<td><img src="docs/demo-find.gif" alt="find in a workspace, and the file viewer"></td>
+</tr>
+<tr>
+<td><b>05 &middot; Processes &mdash; a terminal and a build watcher, beside the agents.</b> <code>+</code> in the drawer opens a shell in the workspace. Declared processes &mdash; a build watcher, a container stack &mdash; run beside it, and their health folds into the rail next to the session that broke it.</td>
+<td><img src="docs/demo-procs.gif" alt="a managed process in the drawer"></td>
+</tr>
+</table>
 
 ## What you need
 

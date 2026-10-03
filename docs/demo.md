@@ -133,6 +133,15 @@ node tools/demo.mjs --port $PORT --no-seed --multi --out docs/demo-repos.gif
 It prints the size. Over about 8 MB is too much for a README, and `--scale 900` or
 `--fps 8` is the lever.
 
+**Two things the takes need that nothing in them says.** `--panes` is cropped, and
+the value is not a default: `--crop 1440:230:0:670` is the band that holds the PR
+pane and the review queue at a 1440x900 capture, derived by recording once
+uncropped and measuring. And `--procs` wants a **live** session in main, which the
+daemon does not guarantee: auto-resume brings back the sessions it has, so a main
+whose session is dormant leaves the rail without the row the take clicks, and the
+take dies on a 30-second selector timeout naming a session id that the API happily
+reports. `POST /api/session/<id>/resume` is the fix, before recording.
+
 ## The one fabricated thing
 
 **The review queue is demo data, and nothing else in any of the four is.** The
