@@ -2072,6 +2072,28 @@ fn fsmonitor_is_written_only_where_it_is_a_boolean() {
     }
 }
 
+/// The repair's decision, on every git rather than on this machine's.
+///
+/// **The case that matters is `(2.37+, a path)`.** It is the one that shipped
+/// wrong, and the one a development machine on 2.34 cannot reach: the arm is
+/// behind the version check, so the repo-level test beside this exercised
+/// nothing locally and was red only on a runner.
+#[test]
+fn the_fsmonitor_repair_never_writes_over_somebody_elses_hook() {
+    use super::refs::{fsmonitor_plan, Fsmonitor};
+    let theirs = Some("/usr/local/bin/rs-git-fsmonitor");
+
+    // A boolean git: ours is rewritten, an empty key is claimed, a path is not.
+    assert_eq!(fsmonitor_plan(Some("true"), true), Fsmonitor::Write);
+    assert_eq!(fsmonitor_plan(None, true), Fsmonitor::Write);
+    assert_eq!(fsmonitor_plan(theirs, true), Fsmonitor::Leave);
+
+    // An older git, where `true` would be run as a hook path and must go.
+    assert_eq!(fsmonitor_plan(Some("true"), false), Fsmonitor::Unset);
+    assert_eq!(fsmonitor_plan(None, false), Fsmonitor::Leave);
+    assert_eq!(fsmonitor_plan(theirs, false), Fsmonitor::Leave);
+}
+
 /// Somebody else's fsmonitor hook is not this daemon's to remove.
 ///
 /// The repair keys on the exact string `true` for this reason: a path there is a

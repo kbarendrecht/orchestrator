@@ -87,20 +87,58 @@ pub fn configure_repo(main: &Path) -> Result<()> {
     and no list of things to carry. Only the exact value `true` is touched: that
     string is this daemon's own signature, and somebody running a real fsmonitor
     has a *path* there that must survive. */
-    let ours = git_version().is_some_and(|v| v >= FSMONITOR_BOOL);
-    if ours {
-        let _ = git(main, &["config", "core.fsmonitor", "true"]);
-    } else if fsmonitor_is_ours(main) {
-        let _ = git(main, &["config", "--unset", "core.fsmonitor"]);
+    /* **Read before either branch writes.** The boolean arm used to set `true`
+    unconditionally, which took somebody's real `rs-git-fsmonitor` path out on
+    every daemon start — the paragraph above had always said that path must
+    survive, and `a_real_fsmonitor_hook_survives_the_repair` had always asserted
+    it. It went unseen because the arm is only reached on 2.37 or newer: a
+    development machine on 2.34 skips the write and the test passes having
+    exercised nothing. CI's git is newer and it was red for two commits. */
+    let current = git(main, &["config", "--get", "core.fsmonitor"])
+        .map(|v| v.trim().to_string())
+        .ok();
+    match fsmonitor_plan(
+        current.as_deref(),
+        git_version().is_some_and(|v| v >= FSMONITOR_BOOL),
+    ) {
+        Fsmonitor::Write => {
+            let _ = git(main, &["config", "core.fsmonitor", "true"]);
+        }
+        Fsmonitor::Unset => {
+            let _ = git(main, &["config", "--unset", "core.fsmonitor"]);
+        }
+        Fsmonitor::Leave => {}
     }
     Ok(())
 }
 
-/// Is `core.fsmonitor` the literal `true` this daemon writes, rather than a hook
-/// somebody chose? Unset answers false, which is the same answer as somebody
-/// else's hook: in both cases there is nothing of ours to take away.
-fn fsmonitor_is_ours(main: &Path) -> bool {
-    git(main, &["config", "--get", "core.fsmonitor"])
-        .map(|v| v.trim() == "true")
-        .unwrap_or(false)
+/// What the repair does to `core.fsmonitor`.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Fsmonitor {
+    Write,
+    Unset,
+    Leave,
+}
+
+/// The repair's whole decision, as a function of the value found and whether this
+/// git reads the key as a boolean.
+///
+/// **Separated from the writing so it can be tested on any git.** The bug this
+/// replaces lived in the boolean arm, which a machine on 2.34 never reaches — so
+/// `a_real_fsmonitor_hook_survives_the_repair` passed locally for as long as the
+/// bug existed and only ever went red on a runner. The six cases below are
+/// checked without asking what git is installed.
+pub(super) fn fsmonitor_plan(current: Option<&str>, boolean_git: bool) -> Fsmonitor {
+    // Unset is neither ours nor theirs, which is the right answer twice over:
+    // nothing of ours to take away, and nothing of theirs to write over.
+    let ours = current == Some("true");
+    let theirs = current.is_some() && !ours;
+    match (boolean_git, theirs) {
+        // A path is a person's own choice, and on an old git it is also the
+        // correct spelling. It survives either way.
+        (_, true) => Fsmonitor::Leave,
+        (true, false) => Fsmonitor::Write,
+        (false, false) if ours => Fsmonitor::Unset,
+        (false, false) => Fsmonitor::Leave,
+    }
 }
