@@ -1149,9 +1149,22 @@ $('checkupdate').onclick = async () => {
     const r = await call('/api/update/check');
     // An answer with no version is not "up to date" — it is not an answer.
     if (typeof r.latest !== 'string') throw new Error('the update check gave no answer');
-    say.textContent = r.newer
-      ? `${r.latest} is out — the bar at the top can install it`
-      : `up to date (${r.current})`;
+    /* **Said the way the bar will say it.** This promised that the bar could
+       install it on every build, and the bar has an Upgrade button only when the
+       daemon has an installer to run: a checkout, an AppImage or a `.dmg` gets a
+       link and nothing to press. `offer` is the same answer the bar reads. */
+    const offer = r.offer || {};
+    say.textContent = !r.newer ? `up to date (${r.current})`
+      : offer.kind === 'button' ? `${r.latest} is out — the bar at the top can install it`
+        : offer.kind === 'advice' ? `${r.latest} is out — run \`${offer.command}\` to install it`
+          : `${r.latest} is out — this install cannot upgrade itself, the bar at the top links to the release`;
+    /* You asked, so a bar you waved away earlier comes back. ✕ hides one version
+       until the next launch, and a check was the only way back to it and did not
+       undo that. */
+    if (r.newer) {
+      updateDismissed = null;
+      renderUpdate();
+    }
   } catch (e) {
     say.textContent = reason(e);
   } finally {

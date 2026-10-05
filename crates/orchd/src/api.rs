@@ -2095,6 +2095,7 @@ pub async fn check_for_update(State(app): State<Arc<AppState>>) -> ApiResult<ser
         "current": env!("CARGO_PKG_VERSION"),
         "latest": found.latest,
         "newer": found.newer,
+        "offer": found.offer,
     })))
 }
 

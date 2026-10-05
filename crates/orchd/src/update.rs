@@ -985,6 +985,9 @@ pub struct Checked {
     pub latest: String,
     /// Whether it is newer than the running build, which is when the bar shows.
     pub newer: bool,
+    /// What the bar will offer for it, so the button that asked can say the same
+    /// thing as the bar instead of promising an Upgrade button the bar does not have.
+    pub offer: Offer,
 }
 
 /// Look at the releases once, and record what was found where the bar reads it.
@@ -1053,7 +1056,7 @@ pub async fn check_release(app: &Arc<AppState>) -> Result<Checked> {
         latest: tag.trim_start_matches('v').to_string(),
         url,
         tool,
-        offer,
+        offer: offer.clone(),
     });
     let mut inner = app.inner.write().await;
     if inner.update != next {
@@ -1064,6 +1067,7 @@ pub async fn check_release(app: &Arc<AppState>) -> Result<Checked> {
     Ok(Checked {
         latest: tag.trim_start_matches('v').to_string(),
         newer,
+        offer,
     })
 }
 

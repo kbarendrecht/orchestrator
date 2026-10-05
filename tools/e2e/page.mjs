@@ -137,6 +137,29 @@ try {
   await page.keyboard.press(chord('Shift+?'))
   await page.waitForSelector('#keyhelp:not([hidden])', { timeout: 5000 })
 
+  /* **"Check for updates" says what the bar will offer.** It promised the bar
+     could install it on every build, and on a checkout the bar has a link and
+     nothing to press. Answered here rather than by the daemon, which asks GitHub:
+     the thing under test is the sentence for each kind of offer. */
+  for (const [offer, want] of /** @type {const} */ ([
+    [{ kind: 'button', command: 'brew upgrade' }, 'the bar at the top can install it'],
+    [{ kind: 'advice', command: 'sudo apt install orchestrator' }, 'run `sudo apt install orchestrator` to install it'],
+    [{ kind: 'link_only' }, 'this install cannot upgrade itself'],
+  ])) {
+    await page.route('**/api/update/check', (r) => r.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ current: '1.0.0', latest: '9.9.9', newer: true, offer }),
+    }))
+    await page.click('#checkupdate')
+    const said = await page.waitForFunction(
+      (w) => document.getElementById('checkupdatesay')?.textContent?.includes(w) ? true : null,
+      want, { timeout: 5000 },
+    ).then(() => true, () => false)
+    check(said, `a ${offer.kind} offer says "${want}", got ${JSON.stringify(
+      await page.$eval('#checkupdatesay', (n) => n.textContent))}`)
+    await page.unroute('**/api/update/check')
+  }
+
   const seen = await page.evaluate(() => {
     const text = []
     const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT)
