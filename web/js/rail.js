@@ -1073,6 +1073,8 @@ function prRow(/** @type {any} */ p) {
     // guard table a gate you read rather than one that trips behind you. A run can
     // also arrive here already going, from a review handing on the CI it is not
     // allowed to fix — still something a person set off, by sending the decisions.
+    // The review pass on this PR, if one is running: drawn as `handling`.
+    const handler = needsResolve ? handling(p) : null;
     if (auto && auto.state === 'running') {
       const b = el('span', 'pract running', 'fixing');
       b.title = 'Go to the run';
@@ -1093,7 +1095,6 @@ function prRow(/** @type {any} */ p) {
          It hands the job to that session now (`triage::hand_to_live_session`):
          `/orchd:handle-review` or `/orchd:fix-pr` typed as your turn, or the
          refusal said if it is mid-turn or asking you something. */
-      const handler = needsResolve ? handling(p) : null;
       if (handler) {
         const b = el('span', 'pract running', 'handling');
         b.title = 'Go to the session handling the review';
@@ -1114,7 +1115,10 @@ function prRow(/** @type {any} */ p) {
        workspace", and a running `fix-pr` is exactly that, so the row drew two
        chips onto the same uuid: `fixing`, which says what is happening, and this,
        which only says that something is. */
-    if (p.session && !(auto && auto.state === 'running')) {
+    /* **Not while a run is showing, `fixing` or `handling`.** Each already goes to
+       the session doing it, so a `session` chip beside it was a second button to
+       the same place. */
+    if (p.session && !(auto && auto.state === 'running') && !handler) {
       /* Marked when it points at the session you are already in, because pressing
          it then is a no-op and a chip that answers before you press it is better
          than one that answers by doing nothing. `setSelected` is instant and
