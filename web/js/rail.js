@@ -64,7 +64,7 @@ let editingName = null;
    `measured` or `ahead` would be dropped here too, and the rail would go stale on
    it rather than churn. */
 const NOT_DRAWN = [
-  'changed', 'changed_total', 'changed_since', 'behind', 'ahead', 'rebasing',
+  'changed', 'changed_omitted', 'changed_total', 'changed_since', 'behind', 'ahead', 'rebasing',
   'measured', 'dirty_count',
   /* `branches` is the workspace's whole branch history and no pane draws it —
      the context header used to take `[0]` from it and now reads `branch`, which

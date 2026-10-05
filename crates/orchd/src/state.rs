@@ -1226,6 +1226,15 @@ impl AppState {
                 .then(a.created_ms.cmp(&b.created_ms))
         });
 
+        /* Asked once per workspace: the predicate walks every session, and it
+        was asked twice per workspace on every push. */
+        let active_ids: std::collections::HashSet<&str> = inner
+            .workspaces
+            .keys()
+            .filter(|id| inner.is_active_workspace(id))
+            .map(String::as_str)
+            .collect();
+        let active = |id: &str| active_ids.contains(id);
         let mut workspaces: Vec<WorkspaceView> = inner
             .workspaces
             .values()
@@ -1279,12 +1288,12 @@ impl AppState {
                 them to a page that draws one. An idle workspace's list is held
                 here unchanged and handed over by `/api/workspace/:id/changed`
                 when its pane asks; `changed_omitted` says to ask. */
-                changed: if inner.is_active_workspace(&w.id) {
+                changed: if active(&w.id) {
                     w.tree.changed.clone()
                 } else {
                     Vec::new()
                 },
-                changed_omitted: !inner.is_active_workspace(&w.id) && !w.tree.changed.is_empty(),
+                changed_omitted: !active(&w.id) && !w.tree.changed.is_empty(),
                 changed_total: w.tree.changed_total,
                 changed_since: w.tree.base.clone(),
                 behind: w.tree.divergence.0,

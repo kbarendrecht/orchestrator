@@ -574,7 +574,9 @@ shared resources, tracked as `locks_held` — is the only part still standing, a
 `state.rs` cites it.
 
 `fix-pr` now keeps only the guards that protect the machine and the repo:
-authorship (can you push to the head repo), one run per PR, and branch-busy.
+authorship (can you push to the head repo), one run per PR, and branch-busy. A
+press of `fix` on a busy branch hands the job to the session already there
+instead; anything that starts a run on its own is still refused.
 
 **The concurrency cap is gone.** `MAX_AUTOMATION = 2` guarded two things that no
 longer exist — automation that fired on its own, and the shared resources this

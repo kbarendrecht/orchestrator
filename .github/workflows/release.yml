@@ -376,12 +376,13 @@ jobs:
       # The Linux leg is bash and docker; only the app drive needs node.
       - name: Set up node
         if: runner.os == 'macOS'
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        # setup-node v4 caches only when `cache:` is set, and this step sets none,
+        # so nothing is restored into the job that writes the release. zizmor
+        # 1.30 reads the v5 default; v4 has no `package-manager-cache` input to
+        # say so, and passing it logged a warning on every run.
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4 # zizmor: ignore[cache-poisoning]
         with:
           node-version: '22'
-          # Said out loud: a cache restored into the job that can write the release
-          # is a way to poison what it publishes, and this step needs none.
-          package-manager-cache: false
 
       # The package, in a container that has never seen this project: dependencies
       # resolved the way `apt-get install` resolves them, the three binaries where

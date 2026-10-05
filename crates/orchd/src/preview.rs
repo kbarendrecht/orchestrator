@@ -191,6 +191,17 @@ pub async fn image(State(app): State<Arc<AppState>>, Query(q): Query<ImageQuery>
     let Ok(Some(bytes)) = read else {
         return StatusCode::NOT_FOUND.into_response();
     };
+    let mut response = image_response(kind, bytes);
+    let headers = response.headers_mut();
+    // A screenshot an agent just rewrote is the one you are opening it to see.
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
+/// An image answer, sandboxed: a CSP that forbids scripts (an SVG opened in a tab
+/// of its own runs them) and no type sniffing. Shared by both image routes, so
+/// the two cannot drift apart on the one thing that makes serving them safe.
+fn image_response(kind: &'static str, bytes: Vec<u8>) -> Response {
     let mut response = bytes.into_response();
     let headers = response.headers_mut();
     headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(kind));
@@ -202,8 +213,6 @@ pub async fn image(State(app): State<Arc<AppState>>, Query(q): Query<ImageQuery>
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
     );
-    // A screenshot an agent just rewrote is the one you are opening it to see.
-    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     response
 }
 
@@ -264,17 +273,8 @@ pub async fn scratchpad_image(
     let Ok(Some(bytes)) = read else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let mut response = bytes.into_response();
+    let mut response = image_response(kind, bytes);
     let headers = response.headers_mut();
-    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(kind));
-    headers.insert(
-        header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static("default-src 'none'; style-src 'unsafe-inline'; sandbox"),
-    );
-    headers.insert(
-        header::X_CONTENT_TYPE_OPTIONS,
-        HeaderValue::from_static("nosniff"),
-    );
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     response
 }
