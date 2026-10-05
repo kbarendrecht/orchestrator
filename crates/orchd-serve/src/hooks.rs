@@ -726,6 +726,7 @@ pub async fn pre_edit(
     let Some(id) = session_of(&headers, &payload) else {
         return ok();
     };
+    lift_interrupt_on_a_new_tool(&app, id).await;
 
     // Said before anything about the file, and said here rather than at the prompt.
     //
@@ -755,6 +756,45 @@ pub async fn pre_edit(
         None => ok(),
     }
 }
+
+/// A tool *starting* after you interrupted is a new turn, so the session is
+/// working again.
+///
+/// **Only `UserPromptSubmit` cleared `Interrupted`, and a queued prompt sends
+/// none.** Type a prompt while the agent works and Claude Code queues it, firing
+/// `UserPromptSubmit` then; press escape and it interrupts and runs the queued
+/// one at once, with no second hook. The new turn's tools were all ignored by the
+/// guard in `post_tool_use`, and the rail said "interrupted" through a whole web
+/// search. A tool from the interrupted turn can only *finish* after the escape,
+/// never start, so a start is the trustworthy half.
+///
+/// **Not within a second of the escape**: `PreToolUse` blocks the tool until the
+/// daemon answers, so one already on its way when you pressed escape can land just
+/// after the interrupt and belong to the turn you stopped. Nobody types and sends a
+/// prompt in under a second.
+async fn lift_interrupt_on_a_new_tool(app: &Arc<AppState>, id: uuid::Uuid) {
+    {
+        let mut inner = app.inner.write().await;
+        let Some(s) = inner.sessions.get_mut(&id) else {
+            return;
+        };
+        let State::YourTurn {
+            reason: TurnReason::Interrupted,
+            since,
+        } = s.state
+        else {
+            return;
+        };
+        if since.elapsed().unwrap_or_default() < INTERRUPT_SETTLE {
+            return;
+        }
+        s.set_state(State::Working);
+    }
+    app.notify().await;
+}
+
+/// How long after an interrupt a tool start may still belong to the stopped turn.
+const INTERRUPT_SETTLE: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Refuse one tool call and tell the model why.
 ///
@@ -1433,6 +1473,55 @@ mod tests {
             "a tool call left the session claiming the turn was complete"
         );
         drop(inner);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A tool *starting* well after an interrupt is a new turn: a prompt queued
+    /// while the agent worked runs after the escape without a second
+    /// `UserPromptSubmit`. One starting at once still belongs to the stopped turn.
+    #[tokio::test]
+    async fn a_tool_starting_after_an_interrupt_is_a_new_turn() {
+        let dir = std::env::temp_dir().join(format!("orchd-hooks-int2-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let app = orchd::testutil::app_at(&dir, "");
+        let state_of = |app: &Arc<AppState>, id| {
+            let app = app.clone();
+            async move {
+                app.inner
+                    .read()
+                    .await
+                    .sessions
+                    .get(&id)
+                    .unwrap()
+                    .state
+                    .clone()
+            }
+        };
+        let mut headers = HeaderMap::new();
+        let id = uuid::Uuid::new_v4();
+        headers.insert("x-orch-session", id.to_string().parse().unwrap());
+        for (ago, working) in [(0u64, false), (5, true)] {
+            {
+                let mut inner = app.inner.write().await;
+                let mut s = Session::new(id, MAIN.to_string(), dir.clone(), None);
+                s.set_state(State::YourTurn {
+                    since: SystemTime::now() - std::time::Duration::from_secs(ago),
+                    reason: TurnReason::Interrupted,
+                });
+                inner.sessions.insert(id, s);
+            }
+            let _ = pre_edit(
+                AxState(app.clone()),
+                headers.clone(),
+                Json(HookPayload::default()),
+            )
+            .await;
+            assert_eq!(
+                matches!(state_of(&app, id).await, State::Working),
+                working,
+                "a tool starting {ago}s after the interrupt"
+            );
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
