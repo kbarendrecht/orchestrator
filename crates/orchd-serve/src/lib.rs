@@ -1097,7 +1097,7 @@ fn settle_run(
         "applying" for good — the fault this whole hand-off was built to fix. */
         if exit.hand_off {
             let pr = exit.pass.pr;
-            match fix_pr::start(&app, pr).await {
+            match fix_pr::start(&app, pr, fix_pr::Asked::Automatically).await {
                 Ok(session) => {
                     tracing::info!(pr, %session, "review handed the checks to a fix-pr run")
                 }

@@ -147,9 +147,27 @@ pub fn wants_watching(pr: &Pr) -> bool {
 ///
 /// The refusal comes back as the error, verbatim: `fix-pr` refusals are written to
 /// be read by whoever asked.
+/// Who is starting a fix run, which decides what a session already on the branch
+/// means.
+///
+/// **A press may hand the job to that session; nothing else may.** The `fix`
+/// button is you choosing the session you have open, so typing `/orchd:fix-pr`
+/// into it is what you asked. A review handing its CI on when it exits is not: it
+/// typed the command into your own idle conversation with nobody pressing
+/// anything. That path is refused as it always was, and the review takes its
+/// hand-off back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Asked {
+    /// The rail's `fix` button, through `POST /api/pr/:n/fix-pr`.
+    ByPress,
+    /// A finished review handing on the checks it may not fix.
+    Automatically,
+}
+
 pub async fn start(
     app: &std::sync::Arc<crate::state::AppState>,
     number: u64,
+    asked: Asked,
 ) -> anyhow::Result<SessionId> {
     /* **Claimed before anything is read, because the guard cannot close this
     window on its own.** `Running` is only recorded *after*
@@ -193,10 +211,11 @@ pub async fn start(
             // there — but an empty one still fails the guard closed, so this must
             // stay the real viewer rather than anything derived from the PR.
             viewer: inner.viewer.as_deref().unwrap_or_default(),
-            /* A session on the branch is not a refusal any more, it is where
-            the job goes: see below. Every other rule still answers first, so a
-            PR you cannot push to is refused before any session is asked to try. */
-            branch_busy: false,
+            /* A session on the branch is where a *press* sends the job: see
+            below. Every other rule still answers first, so a PR you cannot push
+            to is refused before any session is asked to try. Anything else that
+            starts a run still treats that session as yours, and is refused. */
+            branch_busy: branch_busy && asked == Asked::Automatically,
         })
     };
 
@@ -212,7 +231,7 @@ pub async fn start(
     typed the skill a fresh run gets, which works in any session because each
     variable it reads has a fallback, and no automation record is written: no
     unattended run started, the session you were in did. */
-    if branch_busy {
+    if branch_busy && asked == Asked::ByPress {
         if let Some(id) = crate::triage::hand_to_live_session(
             app,
             number,
@@ -353,6 +372,43 @@ mod tests {
             viewer: "kbarendrecht",
             branch_busy: false,
         }
+    }
+
+    /// A review handing its CI on must never type into a session you have open on
+    /// the branch: only a press may. The automatic start is refused, as it was
+    /// before a press could hand off, and nothing is recorded as running.
+    #[tokio::test]
+    async fn an_automatic_start_never_types_into_your_open_session() {
+        let (app, dir) = crate::testutil::app("fix-auto");
+        let p = pr(7);
+        app.register_worktree("pr-7", dir.clone(), Some(p.head_ref.clone()))
+            .await;
+        {
+            let mut inner = app.inner.write().await;
+            inner.prs = vec![p.clone()];
+            inner.viewer = Some("kbarendrecht".into());
+            if let Some(w) = inner.workspaces.get_mut("pr-7") {
+                w.tree.branch = Some(p.head_ref.clone());
+            }
+            let mut s =
+                crate::model::Session::new(uuid::Uuid::new_v4(), "pr-7".into(), dir.clone(), None);
+            s.state = crate::model::State::Working;
+            // A pid that is alive, which is what `live_sessions_in` asks.
+            s.pid = Some(std::process::id());
+            inner.sessions.insert(s.id, s);
+        }
+        let err = format!(
+            "{:#}",
+            start(&app, 7, Asked::Automatically)
+                .await
+                .expect_err("an automatic start must not take a session you have open")
+        );
+        assert!(err.contains("would fight it"), "{err}");
+        assert!(
+            app.inner.read().await.automation.get(7).is_none(),
+            "a refused start records no run"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -2987,7 +2987,7 @@ pub async fn fix_pr(
     State(app): State<Arc<AppState>>,
     Path(number): Path<u64>,
 ) -> ApiResult<serde_json::Value> {
-    let session = crate::fix_pr::start(&app, number).await?;
+    let session = crate::fix_pr::start(&app, number, crate::fix_pr::Asked::ByPress).await?;
     Ok(Json(json!({ "session": session })))
 }
 
