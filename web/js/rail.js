@@ -445,6 +445,37 @@ for (const ev of /** @type {const} */ (['pointermove', 'pointerdown'])) {
   }, true);
 }
 
+/* **Under the last row is where "to the bottom" is let go**, and only a row took a
+   drop: the space below it, the add row and the rail's empty end did nothing, so
+   the drop was lost and dragging there again showed no line. A drag anywhere in
+   the rail that is not over a row is handed to the nearest row of its own run,
+   whose handlers already decide the side from the pointer's height — below the
+   last row is after it. */
+function nearestRow(/** @type {DragEvent} */ ev) {
+  if (!rowDrag) return null;
+  const target = /** @type {HTMLElement} */ (ev.target);
+  if (!target.closest?.('#rail') || target.closest('.sess[data-list]')) return null;
+  const drag = rowDrag;
+  const rows = /** @type {HTMLElement[]} */ ([...document.querySelectorAll('#rail .sess[data-list]')])
+    .filter((r) => r.dataset.list === drag.list && r.dataset.checkout === drag.path);
+  let best = null;
+  let gap = Infinity;
+  for (const r of rows) {
+    const box = r.getBoundingClientRect();
+    const d = ev.clientY < box.top ? box.top - ev.clientY : ev.clientY > box.bottom ? ev.clientY - box.bottom : 0;
+    if (d < gap) { gap = d; best = r; }
+  }
+  return best;
+}
+for (const type of /** @type {const} */ (['dragover', 'drop'])) {
+  document.addEventListener(type, (ev) => {
+    const row = nearestRow(ev);
+    if (!row) return;
+    if (type === 'dragover') row.ondragover?.(ev);
+    else row.ondrop?.(ev);
+  }, true);
+}
+
 /** The row the drop line is on, while a drag is over one. */
 /** @type {HTMLElement | null} */
 let dropMark = null;
@@ -1198,6 +1229,10 @@ function fillSessions(/** @type {HTMLElement} */ group, /** @type {import('./cor
 
   const draggable = (/** @type {HTMLElement} */ row, /** @type {import('../snapshot').SessionView} */ s, /** @type {string} */ list) => {
     row.draggable = true;
+    // Which run this row is in, so a drag over the rail's empty space can find
+    // the nearest row that would take it (see `nearestRow`).
+    row.dataset.list = list;
+    row.dataset.checkout = c.path;
     row.ondragstart = (ev) => {
       rowDrag = { id: s.id, path: c.path, list };
       // Absent only for a synthetic event nothing here dispatches.

@@ -442,6 +442,46 @@ try {
   check(landed, 'a pointer move during a drag does not end it, and the drop lands')
   check(await page.$$eval('#rail .drop-before, #rail .drop-after', (n) => n.length) === 0,
     'and the line is gone once it has')
+  /* **Let go under the last row, and it goes last.** Only a row took a drop, so the
+     space below the list did nothing and showed no line: the report was a session
+     dragged "to the bottom of my rail" that did not move. Dispatched on the rail
+     itself, below every row, which is where that hand let go. */
+  const toBottom = await page.evaluate(() => {
+    const rowsNow = [...document.querySelectorAll('#rail .sess[data-id]')]
+    const from = rowsNow[0]
+    const last = rowsNow[rowsNow.length - 1]
+    const rail = /** @type {HTMLElement} */ (document.getElementById('rail'))
+    const y = Math.min(rail.getBoundingClientRect().bottom - 2, last.getBoundingClientRect().bottom + 40)
+    const at = document.elementFromPoint(last.getBoundingClientRect().left + 20, y) ?? rail
+    const fire = (/** @type {Element} */ node, /** @type {string} */ type) => node.dispatchEvent(new DragEvent(type, {
+      bubbles: true, cancelable: true, clientY: y, dataTransfer: new DataTransfer(),
+    }))
+    fire(from, 'dragstart')
+    fire(at, 'dragover')
+    const line = last.classList.contains('drop-after')
+    fire(at, 'drop')
+    fire(from, 'dragend')
+    return { line, id: from.getAttribute('data-id'), under: at.closest('.sess') ? 'a row' : at.id || at.className }
+  })
+  check(toBottom.line, `a drag below the last row draws the line under it (over ${toBottom.under})`)
+  const wentLast = await page.waitForFunction((id) => {
+    const r = [...document.querySelectorAll('#rail .sess[data-id]')]
+    return r[r.length - 1]?.getAttribute('data-id') === id
+  }, toBottom.id, { timeout: 5000 }).then(() => true, () => false)
+  check(wentLast, 'and letting go there puts the row last')
+  // And back to the top, so the step below finds the order it restores.
+  await page.evaluate((id) => {
+    const rowsNow = [...document.querySelectorAll('#rail .sess[data-id]')]
+    const from = rowsNow.find((r) => r.getAttribute('data-id') === id)
+    const first = rowsNow[0]
+    const y = first.getBoundingClientRect().top + 2
+    for (const [node, type] of [[from, 'dragstart'], [first, 'dragover'], [first, 'drop'], [from, 'dragend']]) {
+      node?.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, clientY: y, dataTransfer: new DataTransfer() }))
+    }
+  }, toBottom.id)
+  await page.waitForFunction((id) => document.querySelector('#rail .sess[data-id]')?.getAttribute('data-id') === id,
+    toBottom.id, { timeout: 5000 })
+
   /* Put it back, below the last row, so everything after this sees the rail it
      saw before: the next check clicks the last row, and the find checks further
      down search whatever that selected. */
