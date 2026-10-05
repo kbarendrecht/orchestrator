@@ -993,9 +993,18 @@ function prRowItems(/** @type {any[]} */ prs) {
      pointing at the wrong place. */
   return prs.slice(0, QUEUE_MAX).map((/** @type {any} */ p) => ({
     key: `pr:${p.number}`,
-    sig: paintSig([p, (snap.automation || {})[p.number], p.session === selected]),
+    sig: paintSig([p, (snap.automation || {})[p.number], p.session === selected, handling(p)]),
     build: () => prRow(p),
   }));
+}
+
+/** The live session handling this PR's review, if one is: a pass started by the
+ *  `handle` button. **Read off the session, because a pass has no automation
+ *  record**, which is what `fixing` reads, so the button went on saying `handle`
+ *  while the pane it started worked. */
+function handling(/** @type {any} */ p) {
+  return (snap.sessions || []).find((/** @type {import('../snapshot').SessionView} */ s) =>
+    s.alive && s.pass?.pr === p.number && s.pass?.command === 'handle-review')?.id ?? null;
 }
 
 /** One PR: what it is, what it wants, and the one chip that moves you. */
@@ -1047,20 +1056,22 @@ function prRow(/** @type {any} */ p) {
          record written at the last shutdown, so that is where a run's state
          belongs. What is left here is the `fix` button, which is the thing to
          press either way. */
-      /* **Neither button while a session holds the branch**, because a button whose
-         only outcome is an error toast is worse than no button, and the `session`
-         chip beside them is the thing to press.
-
-         `fix`: `spawn_fix_pr_session` bails with "already has a live session for
-         #<n>" the moment `branch_busy` answers, and `PrView.session` is that same
-         live session.
-
-         `resolve`: it starts a pass in the PR's worktree, and a live session there
-         is exactly what `triage::spawn_posting_run`'s gate refuses. The `session`
-         chip beside it is where you were going anyway. The menu stays on a
-         right-click for anyone who wants to read the refusal. */
-      if (needsResolve && !p.session) row.appendChild(reviewButtons(p));
-      if (needsFix && !p.session) row.appendChild(actionButton(p, 'fix-pr', 'fix'));
+      /* **Both buttons stay while a session holds the branch**, beside the
+         `session` chip. They used to hide, because the daemon refused both runs
+         then and a button whose only outcome is an error toast is worse than none.
+         It hands the job to that session now (`triage::hand_to_live_session`):
+         `/orchd:handle-review` or `/orchd:fix-pr` typed as your turn, or the
+         refusal said if it is mid-turn or asking you something. */
+      const handler = needsResolve ? handling(p) : null;
+      if (handler) {
+        const b = el('span', 'pract running', 'handling');
+        b.title = 'Go to the session handling the review';
+        b.onclick = (ev) => { ev.preventDefault(); ev.stopPropagation(); setSelected(handler); };
+        row.appendChild(b);
+      } else if (needsResolve) {
+        row.appendChild(reviewButtons(p));
+      }
+      if (needsFix) row.appendChild(actionButton(p, 'fix-pr', 'fix'));
     }
 
     /* The row opens the PR; going to its session is the explicit chip, so one does

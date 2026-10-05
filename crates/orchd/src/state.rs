@@ -2407,6 +2407,63 @@ impl SessionView {
     }
 }
 
+impl AppState {
+    /// Type text at a session as an ordinary user turn, or say why a keystroke there
+    /// would mean something else.
+    ///
+    /// The three refusals are the states where the pty is listening for an answer
+    /// rather than for a prompt: mid-turn (Claude Code submits whatever is half
+    /// typed), a permission prompt (consent) and an open question (the highlighted
+    /// choice). `nudge_sessions` learned them first, the drawer's hand-off second, and
+    /// the rebase button's is the third caller — which is what made this one function
+    /// instead of three copies of the table.
+    ///
+    /// **On the state, not in `api`, because it is about a session and its pty
+    /// and nothing else.** It lived in `api` while only routes called it; the
+    /// review hand-off in `triage` then made `api -> fix_pr -> triage -> api` a
+    /// cycle the module ratchet refuses.
+    pub(crate) async fn type_user_turn(&self, id: SessionId, text: &str) -> anyhow::Result<()> {
+        let pty = {
+            let inner = self.inner.read().await;
+            let s = inner
+                .sessions
+                .get(&id)
+                .ok_or_else(|| crate::state::no_such_session(id))?;
+            let name = s.label().unwrap_or(&s.workspace).to_string();
+            let Some(pty) = s.pty.clone().filter(|p| p.is_alive()) else {
+                anyhow::bail!("{name} is not running — resume it first");
+            };
+            match &s.state {
+                crate::model::State::Starting => {
+                    anyhow::bail!("{name} is still starting")
+                }
+                crate::model::State::YourTurn { reason, .. } => match reason {
+                    // Both take a keystroke as an answer rather than as a prompt.
+                    crate::model::TurnReason::NeedsPermission => {
+                        anyhow::bail!("{name} is waiting on a permission prompt; answer that first")
+                    }
+                    crate::model::TurnReason::AskedAQuestion => {
+                        anyhow::bail!("{name} is asking you something; answer that first")
+                    }
+                    _ => {}
+                },
+                // Working, and everything else that is not a prompt: mid-turn.
+                other => {
+                    if other.is_busy() {
+                        anyhow::bail!("{name} is mid-turn; wait for it to finish")
+                    }
+                }
+            }
+            pty
+        };
+
+        // The same two-step every typed line uses: write, wait, then send. Claude
+        // Code's prompt box drops a `\r` that arrives in the same breath as the text.
+        pty.type_and_send(text.as_bytes(), std::time::Duration::from_millis(500));
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -193,12 +193,37 @@ pub async fn start(
             // there — but an empty one still fails the guard closed, so this must
             // stay the real viewer rather than anything derived from the PR.
             viewer: inner.viewer.as_deref().unwrap_or_default(),
-            branch_busy,
+            /* A session on the branch is not a refusal any more, it is where
+            the job goes: see below. Every other rule still answers first, so a
+            PR you cannot push to is refused before any session is asked to try. */
+            branch_busy: false,
         })
     };
 
     if let Verdict::No { reason } = verdict {
         anyhow::bail!("{reason}");
+    }
+
+    /* **A session already on the branch is asked, not refused.** The run used to
+    bail here ("fix-pr would fight it"), so the row hid `fix` whenever a session
+    was open, and the one PR you were working on was the one you could not press
+    it for. You pressing the button is the answer the old comment said the
+    daemon could not give on its own: that session is to fix the build. It is
+    typed the skill a fresh run gets, which works in any session because each
+    variable it reads has a fallback, and no automation record is written: no
+    unattended run started, the session you were in did. */
+    if branch_busy {
+        if let Some(id) = crate::triage::hand_to_live_session(
+            app,
+            number,
+            &pr.head_ref,
+            crate::model::Pass::FIX_PR,
+        )
+        .await?
+        {
+            app.notify().await;
+            return Ok(id);
+        }
     }
 
     // Recorded *before* the process can exist, under the id it will spawn with:

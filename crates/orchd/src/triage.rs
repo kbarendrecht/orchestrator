@@ -185,6 +185,66 @@ async fn spawn_posting_run(
     Ok(id)
 }
 
+/// Hand `/orchd:<command> <pr>` to the live session on `head_ref`'s worktree, if
+/// there is one, and say which session that was.
+///
+/// `None` is "nobody is there", and the caller starts its own run. Shared by the
+/// review pass and by `fix-pr`, because a button pressed on a PR whose branch
+/// already has a session open means the same thing for both: ask that session.
+pub(crate) async fn hand_to_live_session(
+    app: &Arc<AppState>,
+    pr: u64,
+    head_ref: &str,
+    command: &str,
+) -> Result<Option<SessionId>> {
+    let Some(ws) = app.worktree_holding(head_ref).await else {
+        return Ok(None);
+    };
+    let live = app.live_sessions_in(&ws).await;
+    let Some(id) = live.first() else {
+        return Ok(None);
+    };
+    /* **Landing on it is half the press, and it used to be all of it.** This
+    returned the id alone: the rail selected the session you already had,
+    the toast said "handling #<n>", and nothing whatever had been asked of
+    that agent. A button that navigates and then claims to have worked is
+    worse than one that refuses, because there is nothing to notice.
+
+    So the command is typed at it, as the ordinary user turn it is — you
+    pressed a button, and the transcript should read as though you asked.
+    `type_user_turn` carries the three refusals with it (mid-turn, a
+    permission prompt, an open question), which is exactly right here: each
+    is a keystroke that would mean something other than a prompt. */
+    let run = {
+        let inner = app.inner.read().await;
+        inner
+            .sessions
+            .get(id)
+            .ok_or_else(|| crate::state::no_such_session(*id))?
+            .pass
+            .as_ref()
+            .map(|p| p.command.clone())
+    };
+    match run.as_deref() {
+        // Already doing this, so the press is "show me" and nothing else.
+        // Typing it again would queue a second pass over the same threads.
+        Some(c) if c == command => Ok(Some(*id)),
+        /* Another run owns the tree. `gate` refuses a live `fix-pr` for
+        this reason and never sees it, because the branch above wins first —
+        and typing a slash command into an unattended run that is rewriting
+        this history is how you derail it. Refused by name, like the gate. */
+        Some(c) => {
+            bail!("a {c} run is working in {ws}; wait for it to finish or stop it first")
+        }
+        // An ordinary conversation, which is the case the button is for.
+        None => {
+            app.type_user_turn(*id, &format!("/orchd:{command} {pr}"))
+                .await?;
+            Ok(Some(*id))
+        }
+    }
+}
+
 /// Spawn an interactive session pinned to a PR's head branch, and type a slash
 /// command into it once it is ready.
 ///
@@ -210,46 +270,8 @@ pub async fn spawn_command_session(
     // If the branch already has a worktree with a live session, take you there
     // rather than spawning a second one (§8).
     if let Some(ws) = app.worktree_holding(head_ref).await {
-        let live = app.live_sessions_in(&ws).await;
-        if let Some(id) = live.first() {
-            /* **Landing on it is half the press, and it used to be all of it.** This
-            returned the id alone: the rail selected the session you already had,
-            the toast said "handling #<n>", and nothing whatever had been asked of
-            that agent. A button that navigates and then claims to have worked is
-            worse than one that refuses, because there is nothing to notice.
-
-            So the command is typed at it, as the ordinary user turn it is — you
-            pressed a button, and the transcript should read as though you asked.
-            `type_user_turn` carries the three refusals with it (mid-turn, a
-            permission prompt, an open question), which is exactly right here: each
-            is a keystroke that would mean something other than a prompt. */
-            let run = {
-                let inner = app.inner.read().await;
-                inner
-                    .sessions
-                    .get(id)
-                    .ok_or_else(|| crate::state::no_such_session(*id))?
-                    .pass
-                    .as_ref()
-                    .map(|p| p.command.clone())
-            };
-            match run.as_deref() {
-                // Already doing this, so the press is "show me" and nothing else.
-                // Typing it again would queue a second pass over the same threads.
-                Some(c) if c == command => return Ok(*id),
-                /* Another run owns the tree. `gate` refuses a live `fix-pr` for
-                this reason and never sees it, because the branch above wins first —
-                and typing a slash command into an unattended run that is rewriting
-                this history is how you derail it. Refused by name, like the gate. */
-                Some(c) => {
-                    bail!("a {c} run is working in {ws}; wait for it to finish or stop it first")
-                }
-                // An ordinary conversation, which is the case the button is for.
-                None => {
-                    crate::api::type_user_turn(app, *id, &format!("/orchd:{command} {pr}")).await?;
-                    return Ok(*id);
-                }
-            }
+        if let Some(id) = hand_to_live_session(app, pr, head_ref, command).await? {
+            return Ok(id);
         }
         /* **The same worktree gates as the other review verb**, because the pass
         writes into that tree: a rebase stopped part-way cannot take a commit, a
