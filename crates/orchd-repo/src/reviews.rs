@@ -106,8 +106,10 @@ pub enum ReviewState {
 /// absence is accepted; a *different* one is not.
 const KNOWN_VERSION: u64 = 1;
 
-/// One page of requests. Fifty was what the shipped script asked for and it was
-/// never reached: a review queue that long is not one anybody works from.
+/// One page of each search. The queue lists every open PR somebody else wrote,
+/// so on a busy repo this cap *is* reached: the `all` search asks oldest first so
+/// the cut falls on the newest, and every PR that asked for you is merged in from
+/// `asked` whatever its age, so the cap never costs a request.
 const PAGE: usize = 50;
 
 /// The queue, built by the daemon with no external process at all.
@@ -149,26 +151,26 @@ pub fn builtin(token: &str, owner: &str, name: &str) -> Result<ReviewQueue> {
     numbers, so a row can say whether it was requested. `review-requested:` is
     the filter that already includes team requests, and letting GitHub answer "am
     I asked" is what keeps this out of the business of knowing your teams. */
-    let all = format!("repo:{owner}/{name} is:open is:pr -author:@me");
+    // Oldest first, the order the queue ranks in, so a cut drops the newest.
+    let all = format!("repo:{owner}/{name} is:open is:pr -author:@me sort:created-asc");
     let asked = format!("repo:{owner}/{name} is:open is:pr review-requested:@me");
     let query = format!(
         r#"{{
   viewer {{ login }}
-  asked: search(query: "{asked}", type: ISSUE, first: 100) {{
-    nodes {{ ... on PullRequest {{ number }} }}
+  asked: search(query: "{asked}", type: ISSUE, first: {PAGE}) {{
+    nodes {{ ...Row }}
   }}
   all: search(query: "{all}", type: ISSUE, first: {PAGE}) {{
     issueCount
-    nodes {{
-      ... on PullRequest {{
-        number title url isDraft createdAt mergeable
-        author {{ login }}
-        reviewRequests(first: 20) {{ nodes {{ requestedReviewer {{ ... on User {{ login }} }} }} }}
-        latestReviews(first: 20) {{ nodes {{ author {{ login }} }} }}
-        commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ state }} }} }} }}
-      }}
-    }}
+    nodes {{ ...Row }}
   }}
+}}
+fragment Row on PullRequest {{
+  number title url isDraft createdAt mergeable
+  author {{ login }}
+  reviewRequests(first: 20) {{ nodes {{ requestedReviewer {{ ... on User {{ login }} }} }} }}
+  latestReviews(first: 20) {{ nodes {{ author {{ login }} }} }}
+  commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ state }} }} }} }}
 }}"#
     );
     from_graphql(&crate::forge::graphql(token, &query)?)
@@ -205,17 +207,24 @@ fn from_graphql(v: &Value) -> Result<ReviewQueue> {
         .and_then(Value::as_u64)
         .unwrap_or(0) as u32;
 
+    let nodes = |key: &str| {
+        data.pointer(&format!("/{key}/nodes"))
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    };
     let mut actionable = Vec::new();
     let mut blocked = Vec::new();
-    for n in search
-        .get("nodes")
-        .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or_default()
-    {
+    let mut seen = std::collections::HashSet::new();
+    /* `asked` first and merged in whole: `all` is capped at a page, and a PR that
+    asked for you must not be the one the cap drops. */
+    for n in nodes("asked").iter().chain(nodes("all")) {
         // A search over issues answers `{}` for anything that is not a pull
         // request, and `null` for a node it could not read at all.
-        if n.get("number").is_none() {
+        let Some(number) = n.get("number").and_then(Value::as_u64) else {
+            continue;
+        };
+        if !seen.insert(number) {
             continue;
         }
         let r = row(n, &viewer, &asked);
@@ -242,7 +251,12 @@ fn from_graphql(v: &Value) -> Result<ReviewQueue> {
         login: viewer,
         // What the page could not carry, so a queue longer than one page says so
         // rather than quietly being the first fifty.
-        skipped: total.saturating_sub((actionable.len() + blocked.len()) as u32),
+        skipped: total.saturating_sub(
+            nodes("all")
+                .iter()
+                .filter(|n| n.get("number").is_some())
+                .count() as u32,
+        ),
         total,
         actionable,
         blocked,
@@ -333,7 +347,11 @@ fn row(n: &Value, viewer: &str, asked: &std::collections::HashSet<u64>) -> Revie
         } else {
             5
         },
-        needs_re_review: reviewers.contains(viewer),
+        /* Asked again *after* you reviewed: GitHub drops a reviewer from the
+        requested set once they review, so being in it now with a review of
+        yours behind it is a re-request. Every PR is listed now, and without the
+        first half every one you ever reviewed said "re-requested". */
+        needs_re_review: (requested || requested_of_you) && reviewers.contains(viewer),
         is_draft,
         blockers,
         reviewers: reviewers.len() as u32,
@@ -800,11 +818,9 @@ mod tests {
     /// request, a draft, a conflict, a failing check, a re-review, and a PR
     /// nobody asked you about.
     fn answer() -> Value {
-        v(r#"{"data":{
-          "viewer":{"login":"me"},
-          "asked":{"nodes":[{"number":10},{"number":11},{"number":12},{"number":13}]},
-          "all":{"issueCount":8,"nodes":[
-            {"number":14,"title":"oldest of all, nobody asked you","url":"u14","isDraft":false,
+        // The rows `all` and `asked` share, written once: GitHub answers both
+        // searches with the same fragment.
+        let rows = r#"{"number":14,"title":"oldest of all, nobody asked you","url":"u14","isDraft":false,
              "createdAt":"2026-08-20T12:00:00Z","mergeable":"MERGEABLE",
              "author":{"login":"ola"},
              "reviewRequests":{"nodes":[]},
@@ -833,8 +849,27 @@ mod tests {
              "reviewRequests":{"nodes":[{"requestedReviewer":{"login":"me"}}]},
              "latestReviews":{"nodes":[]},
              "commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"FAILURE"}}}]}},
-            {}
-          ]}}}"#)
+            {}"#;
+        let asked: Vec<Value> = serde_json::from_str::<Vec<Value>>(&format!("[{rows}]"))
+            .unwrap()
+            .into_iter()
+            .filter(|n| matches!(n.get("number").and_then(Value::as_u64), Some(10..=13)))
+            .collect();
+        // #15 asked for you and is older than the page `all` returned, so only
+        // `asked` carries it.
+        let mut asked = asked;
+        asked.push(
+            serde_json::json!({"number":15,"title":"asked, beyond the page","url":"u15",
+            "isDraft":false,"createdAt":"2026-08-01T12:00:00Z","mergeable":"MERGEABLE",
+            "author":{"login":"dana"},
+            "reviewRequests":{"nodes":[{"requestedReviewer":{"login":"me"}}]},
+            "latestReviews":{"nodes":[]},
+            "commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"SUCCESS"}}}]}}),
+        );
+        v(&format!(
+            r#"{{"data":{{"viewer":{{"login":"me"}},"asked":{{"nodes":{}}},"all":{{"issueCount":8,"nodes":[{rows}]}}}}}}"#,
+            serde_json::to_string(&asked).unwrap()
+        ))
     }
 
     #[test]
@@ -842,10 +877,39 @@ mod tests {
         let q = from_graphql(&answer()).expect("a captured answer parses");
         assert_eq!(
             q.actionable.iter().map(|r| r.number).collect::<Vec<_>>(),
-            vec![11, 10, 14],
-            "requested first, oldest first within it — #11 is the team request and \
-             leads #10; #14 is older than both and still last, nobody asked you"
+            vec![15, 11, 10, 14],
+            "requested first, oldest first within it: #15 only `asked` carried and is \
+             the oldest request; #14 is older than #10 and #11 and still last, nobody \
+             asked you"
         );
+    }
+
+    /// "Re-requested" is a request with your review behind it, not any PR you
+    /// once reviewed: GitHub drops you from the requested set when you review.
+    #[test]
+    fn a_pr_you_reviewed_and_nobody_re_requested_is_not_a_re_review() {
+        let row = |requested: bool| {
+            let mut reviewed = serde_json::json!({"number":30,"title":"t","url":"u",
+                "isDraft":false,"createdAt":"2026-09-01T12:00:00Z","mergeable":"MERGEABLE",
+                "author":{"login":"ola"},"reviewRequests":{"nodes":[]},
+                "latestReviews":{"nodes":[{"author":{"login":"me"}}]},
+                "commits":{"nodes":[]}});
+            if requested {
+                reviewed["reviewRequests"]["nodes"] =
+                    serde_json::json!([{"requestedReviewer":{"login":"me"}}]);
+            }
+            let asked = if requested {
+                vec![reviewed.clone()]
+            } else {
+                vec![]
+            };
+            let q = from_graphql(&serde_json::json!({"data":{"viewer":{"login":"me"},
+                "asked":{"nodes":asked},"all":{"issueCount":1,"nodes":[reviewed]}}}))
+            .expect("parse");
+            q.actionable[0].needs_re_review
+        };
+        assert!(!row(false), "reviewed once, not asked again");
+        assert!(row(true), "asked again after your review");
     }
 
     /// Every open PR is listed, and the ones nobody asked you about say so: the
@@ -925,8 +989,8 @@ mod tests {
         let q = from_graphql(&answer()).expect("parse");
         assert_eq!(
             q.actionable.len() + q.blocked.len(),
-            5,
-            "the node that is not a pull request is dropped"
+            6,
+            "the node that is not a pull request is dropped, and #15 from `asked` is in"
         );
         assert_eq!(q.total, 8, "what GitHub said the search holds");
         assert_eq!(q.skipped, 3, "what this page could not carry");

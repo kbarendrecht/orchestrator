@@ -37,6 +37,11 @@ pub struct HookPayload {
     pub cwd: Option<String>,
     #[serde(default)]
     pub tool_name: Option<String>,
+    /// Set when the hook comes from a subagent rather than the session's own
+    /// agent. A subagent's tool says nothing about whether *you* are being
+    /// answered, so it may not lift an interrupt (`lift_interrupt_on_a_new_tool`).
+    #[serde(default)]
+    pub agent_id: Option<String>,
     #[serde(default)]
     pub tool_input: Option<serde_json::Value>,
     #[serde(default)]
@@ -726,7 +731,11 @@ pub async fn pre_edit(
     let Some(id) = session_of(&headers, &payload) else {
         return ok();
     };
-    lift_interrupt_on_a_new_tool(&app, id).await;
+    // A subagent outliving your escape is still working for the turn you
+    // stopped; only the session's own agent starting a tool is a new turn.
+    if payload.agent_id.is_none() {
+        lift_interrupt_on_a_new_tool(&app, id).await;
+    }
 
     // Said before anything about the file, and said here rather than at the prompt.
     //
@@ -1522,6 +1531,40 @@ mod tests {
                 "a tool starting {ago}s after the interrupt"
             );
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A subagent's tool start, carrying `agent_id`, does not lift an interrupt:
+    /// a background agent outliving your escape is not a new turn.
+    #[tokio::test]
+    async fn a_subagent_tool_does_not_lift_an_interrupt() {
+        let dir = std::env::temp_dir().join(format!("orchd-hooks-int3-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let app = orchd::testutil::app_at(&dir, "");
+        let id = uuid::Uuid::new_v4();
+        {
+            let mut inner = app.inner.write().await;
+            let mut s = Session::new(id, MAIN.to_string(), dir.clone(), None);
+            s.set_state(State::YourTurn {
+                since: SystemTime::now() - std::time::Duration::from_secs(5),
+                reason: TurnReason::Interrupted,
+            });
+            inner.sessions.insert(id, s);
+        }
+        let mut headers = HeaderMap::new();
+        headers.insert("x-orch-session", id.to_string().parse().unwrap());
+        let payload = HookPayload {
+            agent_id: Some("a-sub".into()),
+            ..HookPayload::default()
+        };
+        let _ = pre_edit(AxState(app.clone()), headers, Json(payload)).await;
+        assert!(matches!(
+            app.inner.read().await.sessions.get(&id).unwrap().state,
+            State::YourTurn {
+                reason: TurnReason::Interrupted,
+                ..
+            }
+        ));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

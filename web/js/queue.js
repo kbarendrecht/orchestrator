@@ -14,21 +14,6 @@ import { $, activeCheckout, bandOf, call, caret, CHECKOUTS, CHROME, clock, compa
  */
 const ASK_ABOVE = 8;
 
-/** Open every actionable review, one press.
- *
- *  **Grey, like the refresh beside it.** Nothing in this header is coloured, and
- *  amber means "needs you" everywhere else in this UI (§9) — a control wearing it
- *  would be claiming a state. The count is not on the glyph either: it is in the
- *  tooltip, the same way the refresh says "Refresh now", and the head spells it
- *  out in words two elements to the left.
- *
- *  **Absent in a browser tab**, and that is the whole of the popup-blocker answer.
- *  A tab returns before `app.js`'s external-link handler, so the rows open
- *  natively and this button would mean one `window.open` per row: the first lands
- *  inside the gesture and the browser drops the rest *without telling the page*.
- *  One press, one tab, four reviews lost. A button that cannot work is worse than
- *  no button, and ⌘-clicking the rows still does the job there.
- */
 /** The word in the head that switches between every PR and the ones that asked
  *  for you. A word rather than a glyph, because what it says is the state. */
 function requestedToggle() {
@@ -50,6 +35,21 @@ function requestedToggle() {
   return t;
 }
 
+/** Open every actionable review, one press.
+ *
+ *  **Grey, like the refresh beside it.** Nothing in this header is coloured, and
+ *  amber means "needs you" everywhere else in this UI (§9) — a control wearing it
+ *  would be claiming a state. The count is not on the glyph either: it is in the
+ *  tooltip, the same way the refresh says "Refresh now", and the head spells it
+ *  out in words two elements to the left.
+ *
+ *  **Absent in a browser tab**, and that is the whole of the popup-blocker answer.
+ *  A tab returns before `app.js`'s external-link handler, so the rows open
+ *  natively and this button would mean one `window.open` per row: the first lands
+ *  inside the gesture and the browser drops the rest *without telling the page*.
+ *  One press, one tab, four reviews lost. A button that cannot work is worse than
+ *  no button, and ⌘-clicking the rows still does the job there.
+ */
 function openAllButton(/** @type {import('../repo').Review[]} */ rows) {
   // Drawn, not typed — the same reason the refresh glyph beside it is an SVG.
   const btn = icon('openall', 1.5, 'M6.2 2.5h7.3v7.3', 'M13.5 2.5 7 9', 'M11 9.6v3.9H2.5V5h3.9');

@@ -1630,11 +1630,11 @@ export function returnFocus(/** @type {string} */ who, /** @type {HTMLElement | 
   } catch (e) { /* disposed while the dialog was up */ }
 }
 
-/** One row of a menu, or a row that opens a second level beside it. */
 /** Each submenu row's "close now", so opening one level can shut its siblings.
  *  @type {WeakMap<Element, () => void>} */
 const closeLevel = new WeakMap();
 
+/** One row of a menu, or a row that opens a second level beside it. */
 function menuRow(/** @type {MenuItem} */ [label, cls, handler]) {
   const item = el('button', 'ctxmenu-item' + (cls ? ` ${cls}` : ''), label);
   item.setAttribute('role', 'menuitem');

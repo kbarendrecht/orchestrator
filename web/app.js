@@ -3,7 +3,7 @@
 // The SPA is a module now, so what it reaches for is written down. `core.js` holds
 // the primitives every part needs; `queue.js` is the first seam extracted whole.
 import {
-$, el, toast, reason, safeHref, call, callHost, get, activeCheckout, CHECKOUTS, setCheckouts, HOST, snapshotOf, repoSummary, everySession, enterCheckout, snap, receive, keyActivate, setZoom, setUiPx, uiPx, saveZoom, onScaleChange, ZOOM, selected, setSelected, onSelection, prForWorkspace, terms, CHROME, stateLabel, sessionDot, isWaiting, isArchived, byNewest, currentSession, activeWorkspaceId, currentWorkspaceId, closeMenu, menuOpen, openMenu, callOn, newSession, newWorktree, newShell, mainWorkspace, workspaceById, prState, handedToPr, drawerCollapsed, setDrawerCollapsed, pendingSelect, setPendingSelect, onDrawerChange, onCreatingChange, creating, creatingIn, startingShown, appMod, IS_MAC, MOD_LABEL, closeLegend, toggleLegend, typingElsewhere, mark, reportBoot, dialogOpen, dismissDialog, unchanged, tick,
+$, el, toast, reason, safeHref, copyText, call, callHost, get, activeCheckout, CHECKOUTS, setCheckouts, HOST, snapshotOf, repoSummary, everySession, enterCheckout, snap, receive, keyActivate, setZoom, setUiPx, uiPx, saveZoom, onScaleChange, ZOOM, selected, setSelected, onSelection, prForWorkspace, terms, CHROME, stateLabel, sessionDot, isWaiting, isArchived, byNewest, currentSession, activeWorkspaceId, currentWorkspaceId, closeMenu, menuOpen, openMenu, callOn, newSession, newWorktree, newShell, mainWorkspace, workspaceById, prState, handedToPr, drawerCollapsed, setDrawerCollapsed, pendingSelect, setPendingSelect, onDrawerChange, onCreatingChange, creating, creatingIn, startingShown, appMod, IS_MAC, MOD_LABEL, closeLegend, toggleLegend, typingElsewhere, mark, reportBoot, dialogOpen, dismissDialog, unchanged, tick,
 } from './js/core.js';
 import { onThemeChange } from './js/theme.js';
 import { detailEl, symbolAt } from './js/source.js';
@@ -843,24 +843,6 @@ import * as FileView from './js/fileview.js';
 // What picking a session means: open its terminal, redraw, and put the cursor
 // where you are about to type. Registered rather than called by the rail, so the
 // rail does not have to know about rendering.
-/* **An idle workspace is measured when you look at it.** The timer sweep skips a
-   workspace with nothing live in it once it has been measured (`sweep_order` in
-   `orchd-serve`), so opening an old session's pane asks for its tree once: the
-   changes and the behind count are then current for the pane you are reading.
-   At most once a minute per workspace, which is the same walk the refresh
-   button does. */
-/** @type {Map<string, number>} */
-const measuredOnOpen = new Map();
-onSelection((id) => {
-  const s = id ? everySession().find(({ session }) => session.id === id) : null;
-  if (!s || s.session.alive) return;
-  const key = `${s.checkout.path}\u0000${s.session.workspace}`;
-  if (Date.now() - (measuredOnOpen.get(key) ?? 0) < 60_000) return;
-  measuredOnOpen.set(key, Date.now());
-  callOn(s.checkout, `/api/workspace/${encodeURIComponent(s.session.workspace)}/reconcile`)
-    .catch(() => {});
-});
-
 onSelection((id, auto) => {
   // Picking a session is going back to work: the legend was an aside, and leaving
   // it up over the pane you just chose is the app arguing with you.
@@ -990,7 +972,10 @@ Term.onPathClick(({ checkout, target, path, line, last, ev }) => {
   const at = locate(state, where, path);
   if (!at) {
     const scratch = scratchpadOf(state, target, path);
-    if (scratch) return void FileView.openScratch(scratch.workspace, scratch.session, scratch.abs);
+    if (scratch) {
+      const own = CHECKOUTS.find((c) => c.path === checkout) ?? activeCheckout();
+      return void FileView.openScratch(scratch.workspace, scratch.session, scratch.abs, own.base);
+    }
     // Refused rather than opened and failed: `/etc/hosts` is a real file and not
     // this workspace's, and a viewer that answers "no such file" would be lying
     // about which of the two went wrong.
@@ -1020,7 +1005,13 @@ Term.onPathCheck(({ checkout, target, paths }) => {
   return Promise.all(paths.map((path) => {
     const hit = locate(state, where, path);
     if (hit) return FileView.known(at, hit.workspace, hit.rel);
-    return Promise.resolve(!!scratchpadOf(state, target, path));
+    /* A scratchpad image is underlined only if it is there: a HEAD to the route
+       that serves it, which reads no body and refuses anything outside the
+       session's own scratchpad. */
+    const scratch = scratchpadOf(state, target, path);
+    if (!scratch) return Promise.resolve(false);
+    return fetch(FileView.scratchUrl(at.base, scratch.session, scratch.abs), { method: 'HEAD' })
+      .then((r) => r.ok, () => false);
   }));
 });
 
@@ -1036,7 +1027,16 @@ Term.onPathMenu(({ checkout, target, path, line, last, ev }) => {
   const where = ptyRoot(state, target);
   if (!where) return;
   const hit = locate(state, where, path);
-  if (!hit) return toast(`${path} is outside this workspace`, true);
+  if (!hit) {
+    // The scratchpad image the click opens has the same two items here.
+    const scratch = scratchpadOf(state, target, path);
+    if (!scratch) return toast(`${path} is outside this workspace`, true);
+    const own = CHECKOUTS.find((c) => c.path === checkout) ?? activeCheckout();
+    return openMenu(ev, [
+      ['Open here', null, () => void FileView.openScratch(scratch.workspace, scratch.session, scratch.abs, own.base)],
+      ['Copy path', null, () => void copyText(scratch.abs)],
+    ]);
+  }
   const { workspace, rel } = hit;
   /* `callOn` with the terminal's own checkout, not `call`: the pane you
      right-clicked is not always the one the selection is in. **Looked up by path
@@ -1200,9 +1200,9 @@ $('checkupdate').onclick = async () => {
        link and nothing to press. `offer` is the same answer the bar reads. */
     const offer = r.offer || {};
     say.textContent = !r.newer ? `up to date (${r.current})`
-      : offer.kind === 'button' ? `${r.latest} is out — the bar at the top can install it`
-        : offer.kind === 'advice' ? `${r.latest} is out — run \`${offer.command}\` to install it`
-          : `${r.latest} is out — this install cannot upgrade itself, the bar at the top links to the release`;
+      : offer.kind === 'button' ? `${r.latest} is out, the bar at the top can install it`
+        : offer.kind === 'advice' ? `${r.latest} is out: run \`${offer.command}\` to install it`
+          : `${r.latest} is out, but this install cannot upgrade itself: the bar at the top links to the release`;
     /* You asked, so a bar you waved away earlier comes back. ✕ hides one version
        until the next launch, and a check was the only way back to it and did not
        undo that. */

@@ -23,9 +23,7 @@ pub enum Base {
     Upstream,
     /// Uncommitted work only.
     Head,
-    /// The pushed branch: what the next push would send, uncommitted work
-    /// included. The merge-base when the branch was never pushed, because then
-    /// all of it goes out.
+    /// What exists only here: commits on no remote, and the working tree.
     Pushed,
     /// The PR's own base branch.
     PrBase,
@@ -48,19 +46,33 @@ pub fn resolve_base(
             .trim()
             .to_string()),
         Base::Head => Ok("HEAD".to_string()),
-        /* The ref's name, not its sha, so the pane can say which branch it is
-        measured against; a sha comes back only for the never-pushed case, and
-        that difference is how the pane tells the two apart. */
+        /* **What exists only here**: the commits on no remote at all, and the
+        working tree on top. The diff is against the parent of the oldest of
+        them, or `HEAD` when there are none, so it is always an ancestor and
+        nothing ever shows as a revert.
+
+        Asked of git directly rather than through a rule about which ref a
+        branch tracks. That rule was tried: measured against a ref's *tip*, a
+        base branch whose remote had moved ahead listed the new upstream commits
+        as reverts, and a same-name tracking rule missed a fork cloned the usual
+        way. `--remotes` holds every remote's refs, so a commit that reached any
+        of them has gone out. */
         Base::Pushed => {
-            // Detached, `--abbrev-ref` answers `HEAD`, and `origin/HEAD` is the
-            // remote's default branch rather than anything this tree pushed.
-            let branch = orchd_base::git::current_branch(cwd)?;
-            let pushed = (branch != "HEAD")
-                .then(|| orchd_base::git::pushed_ref(cwd, &branch))
-                .flatten();
-            match pushed {
-                Some(pushed) => Ok(pushed),
-                None => resolve_base(cwd, Base::Upstream, upstream, pr_base),
+            let only_here = git(
+                cwd,
+                &["rev-list", "--reverse", "HEAD", "--not", "--remotes"],
+            )?;
+            match only_here.lines().next() {
+                None => Ok(git(cwd, &["rev-parse", "HEAD"])?.trim().to_string()),
+                Some(oldest) => match git(
+                    cwd,
+                    &["rev-parse", "--verify", "--quiet", &format!("{oldest}^")],
+                ) {
+                    Ok(parent) => Ok(parent.trim().to_string()),
+                    // A root commit has no parent: everything is unpushed, so the
+                    // base is the same one "since it branched" uses.
+                    Err(_) => resolve_base(cwd, Base::Upstream, upstream, pr_base),
+                },
             }
         }
         Base::PrBase => {
@@ -622,10 +634,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The pushed base is `origin/<branch>` once origin has the branch, and the
-    /// merge-base before that, since an unpushed branch sends everything.
+    /// The pushed view diffs against the newest commit some remote has: the
+    /// parent of the oldest commit on no remote, or `HEAD` when every commit has
+    /// gone out. Never a remote tip ahead of you, which would read as reverts.
     #[test]
-    fn the_pushed_base_is_the_remote_branch_once_there_is_one() {
+    fn the_pushed_base_is_where_the_commits_only_here_start() {
         let dir = crate::testutil::scratch_repo("diff-pushed");
         let g = |args: &[&str]| crate::testutil::git(&dir, args);
         let commit = |file: &str| {
@@ -636,65 +649,38 @@ mod tests {
         g(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
         let root = g(&["rev-parse", "HEAD"]);
         g(&["checkout", "-q", "-b", "feature"]);
-        commit("pushed.txt");
-
-        let never = resolve_base(&dir, Base::Pushed, "origin/main", None).unwrap();
-        assert_eq!(never, root, "never pushed: all of it goes out");
+        commit("first.txt");
+        let base = |_: ()| resolve_base(&dir, Base::Pushed, "origin/main", None).unwrap();
+        assert_eq!(
+            base(()),
+            root,
+            "nothing pushed: everything since the remote's copy"
+        );
 
         g(&["update-ref", "refs/remotes/origin/feature", "HEAD"]);
-        commit("unpushed.txt");
-        let pushed = resolve_base(&dir, Base::Pushed, "origin/main", None).unwrap();
-        assert_eq!(pushed, "origin/feature");
-        let paths: Vec<_> = summary(&dir, &pushed)
+        let pushed = g(&["rev-parse", "HEAD"]);
+        commit("second.txt");
+        assert_eq!(base(()), pushed, "from the last commit a remote has");
+        let paths: Vec<_> = summary(&dir, &base(()))
             .unwrap()
             .files
             .into_iter()
             .map(|f| f.path)
             .collect();
-        assert_eq!(paths, ["unpushed.txt"], "what went out is not listed again");
+        assert_eq!(paths, ["second.txt"], "what went out is not listed again");
 
-        g(&["update-ref", "refs/remotes/origin/HEAD", "HEAD"]);
-        g(&["checkout", "-q", "--detach"]);
-        let detached = resolve_base(&dir, Base::Pushed, "origin/main", None).unwrap();
-        assert_eq!(detached, root, "detached is not `origin/HEAD`");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// A base branch is measured against the branch it tracks, not the fork's copy:
-    /// `develop` tracking `upstream/develop` with `origin/develop` far behind. A
-    /// feature branch tracking the base still falls back to `origin/<branch>`.
-    #[test]
-    fn a_tracked_branch_of_the_same_name_is_what_is_pushed() {
-        let dir = crate::testutil::scratch_repo("diff-tracked");
-        let g = |args: &[&str]| crate::testutil::git(&dir, args);
-        g(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
-        std::fs::write(dir.join("a.txt"), "x\n").unwrap();
-        g(&["add", "-A"]);
-        g(&["commit", "-q", "-m", "landed upstream"]);
-        g(&["update-ref", "refs/remotes/upstream/main", "HEAD"]);
-        // A tracked branch is mapped through its remote's fetch refspec, so the
-        // remote has to exist, as it does in any real checkout.
-        g(&["remote", "add", "upstream", "."]);
-        g(&["config", "branch.main.remote", "upstream"]);
-        g(&["config", "branch.main.merge", "refs/heads/main"]);
-        assert_eq!(
-            orchd_base::git::pushed_ref(&dir, "main").as_deref(),
-            Some("upstream/main"),
-            "the tracked copy, not the fork's lagging origin/main"
-        );
-
-        g(&["checkout", "-q", "-b", "feature"]);
-        g(&["config", "branch.feature.remote", "upstream"]);
-        g(&["config", "branch.feature.merge", "refs/heads/main"]);
-        assert_eq!(
-            orchd_base::git::pushed_ref(&dir, "feature"),
-            None,
-            "tracking the base is not a copy of this branch"
-        );
+        // A remote that moved ahead of you, as `upstream/develop` does between
+        // rebases: its new commits are not yours and must not read as reverts.
+        g(&["checkout", "-q", "-b", "ahead"]);
+        commit("upstream-only.txt");
+        g(&["update-ref", "refs/remotes/upstream/feature", "HEAD"]);
+        g(&["checkout", "-q", "feature"]);
         g(&["update-ref", "refs/remotes/origin/feature", "HEAD"]);
-        assert_eq!(
-            orchd_base::git::pushed_ref(&dir, "feature").as_deref(),
-            Some("origin/feature")
+        let at = g(&["rev-parse", "HEAD"]);
+        assert_eq!(base(()), at, "all pushed: only the working tree is left");
+        assert!(
+            summary(&dir, &base(())).unwrap().files.is_empty(),
+            "no reverts of the ref ahead"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

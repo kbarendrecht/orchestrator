@@ -33,8 +33,15 @@ export async function run(t) {
 
   const r = await t.api('POST', `/api/pr/${PR}/fix-pr`)
   assert.equal(r.session, session, 'the press goes to the session already there')
+  // A second press straight after is refused: the session is working on the
+  // first, and a double click must not type the command twice.
+  const again = await t.api('POST', `/api/pr/${PR}/fix-pr`).then(() => null, (e) => String(e))
+  assert.ok(again && /mid-turn|working/.test(again), `a second press is refused, got ${again}`)
   await until('the session to be typed the fix', async () =>
     t.agentLog().includes(`turn: /orchd:fix-pr ${PR}`))
+  await new Promise((r) => setTimeout(r, 1000))
+  const typed = t.agentLog().split(`turn: /orchd:fix-pr ${PR}`).length - 1
+  assert.equal(typed, 1, 'the command reached the session once')
 
   // No run was recorded: the session you were in took the job, nothing unattended
   // started, so nothing may claim a run is going.

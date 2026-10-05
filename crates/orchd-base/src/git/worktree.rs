@@ -430,51 +430,15 @@ pub(super) fn unpushed_range(cwd: &Path, branch: &str, upstream: &str) -> (Strin
     }
 }
 
-/// The remote copy of this branch that its commits are measured against: what
-/// is "pushed" for it.
+/// `origin/<branch>` when origin has this branch: where this layout pushes one.
 ///
-/// One rule for every reader of "what is pushed": the unpushed count and the
-/// changes pane's pushed view have to agree on which commits went out.
-///
-/// **The branch git says it tracks, when that has the branch's own name.** A
-/// base branch in a fork layout tracks the real remote (`develop` tracks
-/// `upstream/develop`), and `origin/develop` there is the fork's copy, which can
-/// lag by thousands of commits: measured against it, a main checkout on
-/// `develop` listed 9,764 changed files nobody had written, and was slow to.
-/// **Only the same name**, because a feature branch cut from the base often
-/// tracks the base itself (`feature/x` tracking `upstream/develop`), and the
-/// base's tip is not this branch's copy anywhere. That case, and a branch that
-/// tracks nothing, fall back to `origin/<branch>`, where a feature branch is
-/// pushed in this layout.
+/// The unpushed count and teardown's "unpushed work" check read this. It is not
+/// what the changes pane's pushed view diffs against any more: that asks which
+/// commits are on no remote at all (`diff::resolve_base`), which needs no rule
+/// about tracking. A same-name tracking rule was tried here and reverted: it
+/// missed a fork cloned the usual way and made teardown refuse over commits that
+/// were on origin.
 pub fn pushed_ref(cwd: &Path, branch: &str) -> Option<String> {
-    let upstream_of = format!("{branch}@{{upstream}}");
-    if let Ok(out) = git(
-        cwd,
-        &[
-            "rev-parse",
-            "--abbrev-ref",
-            "--symbolic-full-name",
-            &upstream_of,
-        ],
-    ) {
-        let tracked = out.trim();
-        let same_name = tracked
-            .split_once('/')
-            .is_some_and(|(_, name)| name == branch);
-        if same_name
-            && git_ok(
-                cwd,
-                &[
-                    "rev-parse",
-                    "--verify",
-                    "--quiet",
-                    &format!("refs/remotes/{tracked}"),
-                ],
-            )
-        {
-            return Some(tracked.to_string());
-        }
-    }
     let remote_ref = format!("refs/remotes/origin/{branch}");
     git_ok(cwd, &["rev-parse", "--verify", "--quiet", &remote_ref])
         .then(|| format!("origin/{branch}"))

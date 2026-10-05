@@ -240,6 +240,15 @@ pub(crate) async fn hand_to_live_session(
         None => {
             app.type_user_turn(*id, &format!("/orchd:{command} {pr}"))
                 .await?;
+            /* Working from the moment it is typed, not from when Claude Code's
+            prompt hook says so. A double press otherwise typed the command twice:
+            the button re-enables in milliseconds, and the session was still at
+            its prompt as far as `type_user_turn` could tell. Now the second press
+            is refused as mid-turn, and `UserPromptSubmit` agrees a moment later. */
+            if let Some(s) = app.inner.write().await.sessions.get_mut(id) {
+                s.set_state(crate::model::State::Working);
+            }
+            app.notify().await;
             Ok(Some(*id))
         }
     }

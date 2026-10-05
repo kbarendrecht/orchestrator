@@ -779,6 +779,7 @@ fn daemon_router(app: Arc<AppState>) -> Router {
             "/api/scratchpad/image",
             get(orchd::preview::scratchpad_image),
         )
+        .route("/api/workspace/:id/changed", get(api::workspace_changed))
         // Outside `/api/`: a sandboxed frame reads it, on a token of its own.
         .route("/preview/:token/*path", get(orchd::preview::serve))
         .route("/ws/events", get(ws::events))
@@ -856,7 +857,7 @@ fn sweep_order(inner: &state::Inner, scope: Scope) -> Vec<String> {
     if scope == Scope::Live {
         /* **Only what can have changed since it was last measured**
         (`Inner::is_active_workspace`). Measuring the rest again was a walk for
-        an answer already given — 194 of 200 workspaces and 11 to 61 seconds of
+        an answer already given: 194 of 200 workspaces and 11 to 61 seconds of
         `git status` a sweep on the monorepo this is developed against. */
         ids.retain(|id| inner.is_active_workspace(id));
     }
@@ -969,18 +970,31 @@ async fn reconcile_all(app: &Arc<AppState>, scope: Scope) {
             let app = app.clone();
             running.spawn(async move { sweep_one(&app, &id).await });
         }
-        match running.join_next().await {
+        /* **Batched, not one push per workspace, and never held.** Each
+        `notify` sends the whole snapshot to every page, and 200 of them in a
+        sweep was the page parsing several hundred kilobytes about fifteen
+        times a second. So answers are pushed at most every `SWEEP_PUSH_EVERY`,
+        and one waiting for that slot is pushed when the slot comes even if no
+        other tree has finished: the pane being looked at still fills in as
+        its answer lands, not when a slow tree elsewhere finishes. */
+        let next = if pending {
+            let due = tokio::time::Instant::from_std(last_push + SWEEP_PUSH_EVERY);
+            tokio::select! {
+                r = running.join_next() => Some(r),
+                _ = tokio::time::sleep_until(due) => None,
+            }
+        } else {
+            Some(running.join_next().await)
+        };
+        let Some(joined) = next else {
+            app.notify().await;
+            last_push = std::time::Instant::now();
+            pending = false;
+            continue;
+        };
+        match joined {
             None => break,
             Some(Ok(Swept::Skipped)) => skipped += 1,
-            // Per workspace, not per sweep. The pane is on screen while this runs,
-            // so each answer has to reach it as it lands rather than 64 of them at
-            // the end, which would be the loader sitting there for the whole sweep
-            // and then everything appearing at once.
-            /* **Batched, not one push per workspace.** Each `notify` sends the
-            whole snapshot to every page, and 200 of them in a sweep was the
-            page parsing several hundred kilobytes about fifteen times a
-            second. The panes still fill in as the sweep walks, a few times a
-            second rather than per tree. */
             Some(Ok(Swept::Measured)) => {
                 pending = true;
                 if last_push.elapsed() >= SWEEP_PUSH_EVERY {
@@ -1310,7 +1324,18 @@ fn start_pr_poller(app: Arc<AppState>) {
                 inner.pr_polling = false;
             }
             app.notify().await;
-            next_tick(interval, &app.pr_refresh).await;
+            /* Woken in time for the sweep as well as the poll. A refresh restarts
+            the poll period, so one landing just before the sweep was due put it
+            off by almost a whole interval more; waiting only until it is due
+            costs at most one extra PR poll, which is one GraphQL query. */
+            let until_sweep = interval.saturating_sub(last_sweep.elapsed());
+            next_tick(
+                interval
+                    .min(until_sweep)
+                    .max(std::time::Duration::from_secs(1)),
+                &app.pr_refresh,
+            )
+            .await;
         }
     });
 }

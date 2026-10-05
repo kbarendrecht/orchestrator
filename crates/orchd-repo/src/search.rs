@@ -314,13 +314,16 @@ fn loose_ignored_files(root: &Path, exclude: Option<&str>) -> Vec<std::path::Pat
             .map(|l| root.join(l))
             /* **A link to a directory is a directory**, and git cannot say so. It
             marks a directory with a slash, but a symlink is a file to git, so a
-            worktree's linked `node_modules` came back as a loose ignored file.
-            Each one then got a walk with every ignore rule off, and a walk always
-            follows its root: 730,000 files past `MAX_PATHS`, a truncated list,
-            and every word that looked like a file name drawn as a link.
-            `is_dir` follows the link, which is the question here: a directory is
-            `small_ignored_dirs`'s to weigh, with its own cap. */
-            .filter(|p| !p.is_dir())
+            worktree's linked `node_modules` came back here as a loose ignored
+            file, got a walk with every ignore rule off, and a walk always follows
+            its root: 730,000 files past `MAX_PATHS`, a truncated list, and every
+            word that looked like a file name drawn as a link.
+            **Weighed, not dropped.** A small linked folder is what this list is
+            for: scienta links `.plan` into every worktree, 36 files, and dropping
+            every link lost it from search and from the terminal's links. So a
+            linked folder stays when it fits under `IGNORED_CAP`, the same weight
+            `small_ignored_dirs` puts on a real one, and only a big one goes. */
+            .filter(|p| !p.is_dir() || subtree_fits(p, IGNORED_CAP))
             .collect();
         /* **A cap, because 15 is this monorepo's number and not a contract.** The
         repo in front of you is the only live test there is, and a tree that
@@ -1134,6 +1137,24 @@ mod tests {
         let got: Vec<&str> = found.hits.iter().map(|h| h.path.as_str()).collect();
         assert_eq!(got, vec![".env"], "the content search agrees");
         let _ = fs::remove_dir_all(&shared);
+
+        // A small linked folder is what the loose list is for, and stays: the
+        // shape of scienta's `.plan`, linked into every worktree.
+        // Its own repository: the ignored-path answer is remembered per folder for
+        // half a minute, so asking `dir` again would read the answer from above.
+        let small = orchd_base::testutil::scratch_repo("search-linked-small");
+        let notes = orchd_base::testutil::scratch("search-linked-small-target");
+        fs::write(notes.join("plan.md"), "the plan\n").unwrap();
+        std::os::unix::fs::symlink(&notes, small.join(".plan")).unwrap();
+        fs::write(small.join(".gitignore"), ".plan\n").unwrap();
+        let listed = paths(&small, None).unwrap();
+        assert!(
+            listed.paths.iter().any(|p| p == ".plan/plan.md"),
+            "a small linked folder is still listed: {:?}",
+            listed.paths
+        );
+        let _ = fs::remove_dir_all(&notes);
+        let _ = fs::remove_dir_all(&small);
     }
 
     /// A path filter is the caller's question, and it has to reach these too.

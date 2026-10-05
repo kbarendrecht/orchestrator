@@ -3181,10 +3181,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Worktree ids are deterministic and reused (`pr-<n>`), so the measurements
-    /// have to die with the workspace. They used to live in maps keyed by id
-    /// beside it, and teardown removed only the workspace — so recreating the
-    /// same id served the previous incarnation's file list and counts.
     /// An idle workspace's changed list stays out of the snapshot and is flagged,
     /// so the pane fetches it; a workspace with a live session keeps its list.
     /// The lists were 486 KB of a 775 KB snapshot pushed on every change.
@@ -3222,6 +3218,10 @@ mod tests {
         assert!(!by("busy").changed_omitted);
     }
 
+    /// Worktree ids are deterministic and reused (`pr-<n>`), so the measurements
+    /// have to die with the workspace. They used to live in maps keyed by id
+    /// beside it, and teardown removed only the workspace — so recreating the
+    /// same id served the previous incarnation's file list and counts.
     #[tokio::test]
     async fn a_recreated_workspace_does_not_inherit_the_old_ones_measurements() {
         let app = app().await;

@@ -303,7 +303,11 @@ pub async fn guard(
     given. Found by driving a real run, invisible to every unit test. */
     let is_ask = is_agent_route(&path);
 
-    let is_get = req.method() == axum::http::Method::GET;
+    // HEAD is a read too: the scratchpad underline asks with one.
+    let is_get = matches!(
+        *req.method(),
+        axum::http::Method::GET | axum::http::Method::HEAD
+    );
     /* A preview frame's own reads. Its origin is opaque, so a module script or a
     `fetch` arrives as `Origin: null`, which no rule below admits — and a page
     whose module could not load is a blank preview. The token in the path is the
@@ -343,8 +347,7 @@ pub async fn guard(
     const SPENDS_GITHUB_TOKEN: [&str; 1] = ["/review"];
     let spends_github_token =
         path.starts_with("/api/pr/") && SPENDS_GITHUB_TOKEN.iter().any(|s| path.ends_with(s));
-    let needs_token =
-        !is_hook && !is_ask && (req.method() != axum::http::Method::GET || spends_github_token);
+    let needs_token = !is_hook && !is_ask && (!is_get || spends_github_token);
     if needs_token && !token_ok {
         tracing::warn!(%path, "refused: no app token, or the wrong one");
         return (StatusCode::UNAUTHORIZED, "bad token").into_response();

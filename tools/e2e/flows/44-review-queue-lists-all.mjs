@@ -4,7 +4,7 @@
 // It used to list only the asked ones (`review-requested:@me`), and on a repo
 // where reviews are picked up rather than assigned that was two rows out of
 // thirty. The pane's `asked` filter narrows it back, from the `requested` field
-// each row carries, so that field is what this holds — the filter itself is a
+// each row carries, so that field is what this holds; the filter itself is a
 // page-side `filter` over it.
 
 import assert from 'node:assert/strict'

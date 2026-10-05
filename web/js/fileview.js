@@ -100,6 +100,11 @@ export async function open(ws, candidates, line, last, ev) {
   await show(ws, candidates[0] ?? '', line, last);
 }
 
+/** Where a session's scratchpad image is served, on the daemon at `base`.
+ *  @param {string} base @param {string} session @param {string} abs */
+export const scratchUrl = (base, session, abs) =>
+  `${base}/api/scratchpad/image?session=${encodeURIComponent(session)}&path=${encodeURIComponent(abs)}`;
+
 /** Open an image from a session's Claude Code scratchpad, which is outside every
  *  workspace and so has its own route (`preview::scratchpad_image`). Shown in the
  *  same pane, held to the session's own workspace so switching away closes it the
@@ -107,8 +112,9 @@ export async function open(ws, candidates, line, last, ev) {
  *
  *  @param {string} ws the session's workspace
  *  @param {string} session
- *  @param {string} abs the path as the agent printed it */
-export async function openScratch(ws, session, abs) {
+ *  @param {string} abs the path as the agent printed it
+ *  @param {string} [base] the daemon of the terminal it was printed in */
+export async function openScratch(ws, session, abs, base = activeCheckout().base) {
   if (Editor.isOpen() && !await Editor.close()) return;
   if (state.open && state.ws !== ws && !await close()) return;
   state.trail = [];
@@ -118,8 +124,7 @@ export async function openScratch(ws, session, abs) {
   state.path = abs;
   borrowFocus('fileview');
   $('fvoverlay').classList.add('on');
-  viewer().image(abs, `${activeCheckout().base}/api/scratchpad/image?session=${encodeURIComponent(session)}`
-    + `&path=${encodeURIComponent(abs)}`);
+  viewer().image(abs, scratchUrl(base, session, abs));
   renderHead(true);
 }
 

@@ -246,7 +246,7 @@ pub async fn scratchpad_image(
         let at = std::fs::canonicalize(&q.path).ok()?;
         /* Both bases resolved the way the file was. On macOS `/tmp` is a link to
         `/private/tmp`, so a resolved file never started with the plain `/tmp`
-        and its own image answered 404 — caught by `check` on macos-14. */
+        and its own image answered 404, caught by `check` on macos-14. */
         let bases: Vec<std::path::PathBuf> = [std::env::temp_dir(), "/tmp".into()]
             .iter()
             .filter_map(|b| std::fs::canonicalize(b).ok())

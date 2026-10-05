@@ -130,28 +130,27 @@ function graphql(query) {
   if (query.includes('all: search(')) {
     const slug = query.match(/repo:(\S+)/)?.[1] ?? 'acme/monorepo'
     const rows = canned.reviews ?? []
+    const row = (r) => ({
+      number: r.number,
+      title: r.title ?? `review ${r.number}`,
+      url: `https://github.com/${slug}/pull/${r.number}`,
+      isDraft: false,
+      createdAt: r.created_at ?? '2026-01-01T00:00:00Z',
+      mergeable: 'MERGEABLE',
+      author: { login: r.author ?? 'colleague' },
+      reviewRequests: {
+        nodes: r.asked === 'me' ? [{ requestedReviewer: { login: viewer } }]
+          : r.asked === 'team' ? [{ requestedReviewer: {} }] : [],
+      },
+      latestReviews: { nodes: [] },
+      commits: { nodes: [{ commit: { statusCheckRollup: { state: 'SUCCESS' } } }] },
+    })
+    // Both searches answer with the same fragment, as GitHub does.
     return {
       data: {
         viewer: { login: viewer },
-        asked: { nodes: rows.filter((r) => r.asked).map((r) => ({ number: r.number })) },
-        all: {
-          issueCount: rows.length,
-          nodes: rows.map((r) => ({
-            number: r.number,
-            title: r.title ?? `review ${r.number}`,
-            url: `https://github.com/${slug}/pull/${r.number}`,
-            isDraft: false,
-            createdAt: r.created_at ?? '2026-01-01T00:00:00Z',
-            mergeable: 'MERGEABLE',
-            author: { login: r.author ?? 'colleague' },
-            reviewRequests: {
-              nodes: r.asked === 'me' ? [{ requestedReviewer: { login: viewer } }]
-                : r.asked === 'team' ? [{ requestedReviewer: {} }] : [],
-            },
-            latestReviews: { nodes: [] },
-            commits: { nodes: [{ commit: { statusCheckRollup: { state: 'SUCCESS' } } }] },
-          })),
-        },
+        asked: { nodes: rows.filter((r) => r.asked).map(row) },
+        all: { issueCount: rows.length, nodes: rows.map(row) },
       },
     }
   }

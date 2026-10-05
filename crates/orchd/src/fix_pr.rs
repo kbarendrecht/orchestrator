@@ -138,15 +138,6 @@ pub fn wants_watching(pr: &Pr) -> bool {
     ended_red(pr) || pr.checks == Checks::Pending
 }
 
-/// Start a run: the guard table, the spawn, and the record, in that order.
-///
-/// One function because there are two callers now — the rail's button and a review
-/// handing on what it is not allowed to finish — and the guard table is the whole
-/// of what makes starting one safe. A second call site carrying its own copy of the
-/// checks is how one of them ends up a version behind, quietly.
-///
-/// The refusal comes back as the error, verbatim: `fix-pr` refusals are written to
-/// be read by whoever asked.
 /// Who is starting a fix run, which decides what a session already on the branch
 /// means.
 ///
@@ -164,6 +155,15 @@ pub enum Asked {
     Automatically,
 }
 
+/// Start a run: the guard table, the spawn, and the record, in that order.
+///
+/// One function because there are two callers now — the rail's button and a review
+/// handing on what it is not allowed to finish — and the guard table is the whole
+/// of what makes starting one safe. A second call site carrying its own copy of the
+/// checks is how one of them ends up a version behind, quietly.
+///
+/// The refusal comes back as the error, verbatim: `fix-pr` refusals are written to
+/// be read by whoever asked.
 pub async fn start(
     app: &std::sync::Arc<crate::state::AppState>,
     number: u64,

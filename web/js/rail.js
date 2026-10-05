@@ -449,7 +449,7 @@ for (const ev of /** @type {const} */ (['pointermove', 'pointerdown'])) {
    drop: the space below it, the add row and the rail's empty end did nothing, so
    the drop was lost and dragging there again showed no line. A drag anywhere in
    the rail that is not over a row is handed to the nearest row of its own run,
-   whose handlers already decide the side from the pointer's height — below the
+   whose handlers already decide the side from the pointer's height: below the
    last row is after it. */
 function nearestRow(/** @type {DragEvent} */ ev) {
   if (!rowDrag) return null;
@@ -458,6 +458,18 @@ function nearestRow(/** @type {DragEvent} */ ev) {
   const drag = rowDrag;
   const rows = /** @type {HTMLElement[]} */ ([...document.querySelectorAll('#rail .sess[data-list]')])
     .filter((r) => r.dataset.list === drag.list && r.dataset.checkout === drag.path);
+  /* **Only space that belongs to the dragged row's own checkout.** Its block (the
+     add row is in it), or the rail's bare end when that checkout is the last
+     block. Another checkout's header or block is refused as it always was: with
+     two open, dropping a row of one on the other's header reordered the first. */
+  const block = target.closest('.ws');
+  if (block) {
+    if (!rows.some((r) => block.contains(r))) return null;
+  } else {
+    if (target.id !== 'rail') return null;
+    const last = [...document.querySelectorAll('#rail .ws')].at(-1);
+    if (!last || !rows.some((r) => last.contains(r))) return null;
+  }
   let best = null;
   let gap = Infinity;
   for (const r of rows) {
@@ -1095,15 +1107,25 @@ function prRow(/** @type {any} */ p) {
          It hands the job to that session now (`triage::hand_to_live_session`):
          `/orchd:handle-review` or `/orchd:fix-pr` typed as your turn, or the
          refusal said if it is mid-turn or asking you something. */
+      /* **Only where a press can do what it says.** The daemon hands the job to
+         an ordinary conversation in the PR's worktree. Beside a pass (a `handle`
+         pane or a review in the overlay, whose `pass` stays set) it refuses by
+         name, and a session in main is not one it looks for: both were buttons
+         whose only outcome was an error toast. */
+      const holder = p.session
+        ? (snap.sessions || []).find((/** @type {import('../snapshot').SessionView} */ s) => s.id === p.session)
+        : null;
+      const canPress = !p.session
+        || (!!holder && !holder.pass && holder.workspace !== mainWorkspace(snap)?.id);
       if (handler) {
         const b = el('span', 'pract running', 'handling');
         b.title = 'Go to the session handling the review';
         b.onclick = (ev) => { ev.preventDefault(); ev.stopPropagation(); setSelected(handler); };
         row.appendChild(b);
-      } else if (needsResolve) {
+      } else if (needsResolve && canPress) {
         row.appendChild(reviewButtons(p));
       }
-      if (needsFix) row.appendChild(actionButton(p, 'fix-pr', 'fix'));
+      if (needsFix && canPress) row.appendChild(actionButton(p, 'fix-pr', 'fix'));
     }
 
     /* The row opens the PR; going to its session is the explicit chip, so one does

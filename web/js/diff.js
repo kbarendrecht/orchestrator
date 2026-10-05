@@ -426,8 +426,7 @@ function renderFiles() {
   // thing you need to know to read the list, and it is not a choice.
   $('filesbase').textContent = !since ? ''
     : !pushedMode ? `since ${since.slice(0, 7)}`
-    : neverPushed(since) ? `not pushed yet \u00b7 since ${since.slice(0, 7)}`
-    : `vs ${since}`;
+    : `unpushed since ${since.slice(0, 7)}`;
 }
 
 // Kept short: the right header also carries the title and the refresh control,
@@ -530,10 +529,6 @@ function changedOf(/** @type {import('../snapshot').WorkspaceView} */ w) {
   }
   return omitted.ws === w.id ? omitted.files : null;
 }
-
-/** A pushed base came back as a sha only when the branch was never pushed: the
- *  daemon names the ref when there is one. */
-const neverPushed = (/** @type {string} */ base) => /^[0-9a-f]{40,64}$/.test(base);
 
 /** Switch the pane between `Changes` and `Unpushed`. */
 async function toggleBase() {

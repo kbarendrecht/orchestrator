@@ -38,10 +38,15 @@ export async function run(t) {
     assert.equal(ok.status, 200, 'its own scratchpad image is served')
     assert.equal(ok.headers.get('content-type'), 'image/png')
     assert.deepEqual(Buffer.from(await ok.arrayBuffer()), PNG)
+    // The underline asks with HEAD before it draws a link, so HEAD has to answer.
+    const head = await fetch(`http://127.0.0.1:${t.port}/api/scratchpad/image?`
+      + new URLSearchParams({ session: a, path: shot }), { method: 'HEAD' })
+    assert.equal(head.status, 200, 'HEAD answers for the underline')
     assert.equal((await get(b, shot)).status, 404, "another session's scratchpad is not")
     assert.equal((await get(a, outside)).status, 404, 'a file outside the scratchpad is not')
   } finally {
-    fs.rmSync(path.join('/tmp', `claude-${process.getuid()}`, slug, a), { recursive: true, force: true })
+    // The slug folder too: it is this flow's, and an empty one was left per run.
+    fs.rmSync(path.join('/tmp', `claude-${process.getuid()}`, slug), { recursive: true, force: true })
     fs.rmSync(outside, { force: true })
   }
 }

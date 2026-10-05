@@ -979,12 +979,26 @@ try {
   await page.keyboard.press('Escape')
   const findUp = () => page.$eval('#fnoverlay', (o) => o.classList.contains('on')).catch(() => null)
   const tapShift = async () => { await page.keyboard.down('Shift'); await page.keyboard.up('Shift') }
+  /* **The opening half may try again; the refusals may not.** The gesture is two
+     taps inside 170ms and each under 300ms, and on a loaded runner Playwright's
+     separate down/up calls can land further apart than that: CI failed "Shift
+     Shift opens the finder over the pane" once, where the same commit passed on a
+     rerun. A person whose double tap was slow just taps again, and so does this.
+     The refusals stay at one attempt each, because a slow runner only ever makes
+     a refusal easier to pass. */
+  const doubleShift = async () => {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await tapShift()
+      await tapShift()
+      await page.waitForTimeout(150)
+      if (await findUp() === true) return true
+      await page.waitForTimeout(400)
+    }
+    return false
+  }
 
   await page.click('#rail')
-  await tapShift()
-  await tapShift()
-  await page.waitForTimeout(150)
-  check(await findUp() === true, 'Shift Shift opens the file search')
+  check(await doubleShift(), 'Shift Shift opens the file search')
 
   await page.keyboard.press('Escape')
   await page.waitForTimeout(100)
@@ -1072,10 +1086,7 @@ try {
   const hadIt = await focusedNow()
   check(/xterm-helper-textarea/.test(hadIt ?? ''), `the pane has the keyboard, got ${hadIt}`)
 
-  await tapShift()
-  await tapShift()
-  await page.waitForTimeout(150)
-  check(await findUp() === true, 'Shift Shift opens the finder over the pane')
+  check(await doubleShift(), 'Shift Shift opens the finder over the pane')
   await page.keyboard.press('Escape')
   await page.waitForTimeout(150)
   const gotBack = await focusedNow()
