@@ -269,9 +269,21 @@ body[data-chrome="custom"] .resizers{display:block}
    when the bar is short, since the rail and the changes pane both name it too. */
 .ctx-ws{font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--dim);white-space:nowrap;flex:0 0 auto}
 .ctx-ws[hidden]{display:none}
-/* A slash between the two, only when both are there: side by side they read as
-   one phrase, `page worktree-page`. */
-.ctx-ws:not([hidden]) + .ctx-branch:not(:empty)::before{content:'/';margin-right:8px;color:var(--ghost)}
+/* An icon before each name: a folder for the worktree, a branch for what it has
+   checked out. They are also what separates the two: side by side with nothing
+   between, they read as one phrase, `page worktree-page`. That was a slash, drawn
+   only when both were there; an icon says what each name is, so each is drawn
+   whenever its name is.
+   A mask over `currentColor`, so each takes its own name's grey in every theme;
+   WebKit still wants the prefixed property. */
+.ctx-ws:not(:empty)::before,.ctx-branch:not(:empty)::before{
+  content:'';display:inline-block;width:1.1em;height:1.1em;margin-right:5px;
+  vertical-align:-0.2em;background:currentColor;
+  -webkit-mask:var(--icon) center/contain no-repeat;mask:var(--icon) center/contain no-repeat;
+}
+.ctx-ws{--icon:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.4' stroke-linejoin='round'%3E%3Cpath d='M1.75 3.5h4.5l1.5 1.75h6.5v7.25h-12.5z'/%3E%3C/svg%3E")}
+.ctx-branch{--icon:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.5' stroke-linecap='round'%3E%3Ccircle cx='4.5' cy='3.5' r='1.5'/%3E%3Ccircle cx='4.5' cy='12.5' r='1.5'/%3E%3Ccircle cx='11.5' cy='4.5' r='1.5'/%3E%3Cpath d='M4.5 5v6M11.5 6v.5c0 2.5-7 2-7 4.5'/%3E%3C/svg%3E")}
+.ctx-ws:not([hidden]) + .ctx-branch:not(:empty){margin-left:3px}
 .ctx-branch{font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ctx-pr{font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--dim);white-space:nowrap;flex:0 1 auto;overflow:hidden;text-overflow:ellipsis}
 .ctx-sep{color:var(--ghost);font-size:calc(10.5px * var(--fs))}
