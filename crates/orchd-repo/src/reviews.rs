@@ -48,6 +48,13 @@ pub struct Review {
     /// itself.
     pub changed_files: Option<u32>,
     pub checks: Option<String>,
+    /// Whether your review was asked for, by name or through a team.
+    ///
+    /// **[`builtin`] lists every open PR now and says which ones asked**, so the
+    /// pane can narrow to those without a second fetch. `None` from a configured
+    /// command: its rows are its own ranking, and the pane offers no filter it
+    /// cannot honour.
+    pub requested: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -121,10 +128,14 @@ const PAGE: usize = 50;
 /// are not used — which is every repository but the one they were written for.
 /// What is left holds anywhere on GitHub:
 ///
-/// - the queue is what GitHub itself says is **requested of you**
-///   (`review-requested:@me`, which includes a team you are in);
-/// - **age orders it**, oldest first, because how long somebody has waited is true
-///   regardless of how their team labels work;
+/// - the queue is **every open PR somebody else wrote**, and each row says whether
+///   GitHub has your review **requested** (`review-requested:@me`, which includes
+///   a team you are in), so the pane can narrow to those. It used to be those
+///   alone, and a repo where reviews are picked up rather than assigned showed two
+///   rows out of thirty;
+/// - **requested first, then age**, oldest first within each, because how long
+///   somebody has waited is true regardless of how their team labels work, and a
+///   PR that asked for you should not sit under thirty that did not;
 /// - a row is **amber when you were named yourself** and grey when the request
 ///   went to a team — the difference between somebody asking you and somebody
 ///   asking a group you happen to be in;
@@ -134,14 +145,19 @@ const PAGE: usize = 50;
 /// A repo that wants its own opinion sets `reviews_command` and this never runs —
 /// the contract for that is `docs/reviews-json.md`, unchanged.
 pub fn builtin(token: &str, owner: &str, name: &str) -> Result<ReviewQueue> {
-    // `review-requested:` is the filter that already includes team requests;
-    // `user-review-requested:` is the narrower one. Letting GitHub answer "am I
-    // asked" is what keeps this out of the business of knowing your teams.
-    let search = format!("repo:{owner}/{name} is:open is:pr review-requested:@me");
+    /* Two searches in one round trip. `all` is the queue; `asked` is only its
+    numbers, so a row can say whether it was requested. `review-requested:` is
+    the filter that already includes team requests, and letting GitHub answer "am
+    I asked" is what keeps this out of the business of knowing your teams. */
+    let all = format!("repo:{owner}/{name} is:open is:pr -author:@me");
+    let asked = format!("repo:{owner}/{name} is:open is:pr review-requested:@me");
     let query = format!(
         r#"{{
   viewer {{ login }}
-  search(query: "{search}", type: ISSUE, first: {PAGE}) {{
+  asked: search(query: "{asked}", type: ISSUE, first: 100) {{
+    nodes {{ ... on PullRequest {{ number }} }}
+  }}
+  all: search(query: "{all}", type: ISSUE, first: {PAGE}) {{
     issueCount
     nodes {{
       ... on PullRequest {{
@@ -173,8 +189,17 @@ fn from_graphql(v: &Value) -> Result<ReviewQueue> {
         .unwrap_or_default()
         .to_string();
     let search = data
-        .get("search")
+        .get("all")
         .context("the GraphQL answer carried no search")?;
+    let asked: std::collections::HashSet<u64> = data
+        .pointer("/asked/nodes")
+        .and_then(Value::as_array)
+        .map(|ns| {
+            ns.iter()
+                .filter_map(|n| n.get("number").and_then(Value::as_u64))
+                .collect()
+        })
+        .unwrap_or_default();
     let total = search
         .get("issueCount")
         .and_then(Value::as_u64)
@@ -193,18 +218,23 @@ fn from_graphql(v: &Value) -> Result<ReviewQueue> {
         if n.get("number").is_none() {
             continue;
         }
-        let r = row(n, &viewer);
+        let r = row(n, &viewer, &asked);
         if r.blockers.is_empty() {
             actionable.push(r);
         } else {
             blocked.push(r);
         }
     }
-    /* **Age, and nothing else.** Oldest first, which is the whole ordering: the
-    thing it replaced sorted on label names first and used age only to break a
-    tie, so on a repo with no such labels every row tied and the age was doing all
-    the work anyway — with four ranks of machinery in front of it. */
-    let oldest_first = |a: &Review, b: &Review| b.age_hours.total_cmp(&a.age_hours);
+    /* **Requested, then age.** Oldest first within each, which is the rest of the
+    ordering: the thing it replaced sorted on label names first and used age only
+    to break a tie, so on a repo with no such labels every row tied and the age
+    was doing all the work anyway. Requested leads because the queue now holds
+    PRs nobody asked you about, and one that did ask must not sit under them. */
+    let oldest_first = |a: &Review, b: &Review| {
+        b.requested
+            .cmp(&a.requested)
+            .then(b.age_hours.total_cmp(&a.age_hours))
+    };
     actionable.sort_by(oldest_first);
     blocked.sort_by(oldest_first);
 
@@ -220,7 +250,9 @@ fn from_graphql(v: &Value) -> Result<ReviewQueue> {
 }
 
 /// One PR, as the pane reads it.
-fn row(n: &Value, viewer: &str) -> Review {
+fn row(n: &Value, viewer: &str, asked: &std::collections::HashSet<u64>) -> Review {
+    let number = n.get("number").and_then(Value::as_u64).unwrap_or(0);
+    let requested = asked.contains(&number);
     let text = |key: &str| {
         n.get(key)
             .and_then(Value::as_str)
@@ -279,7 +311,7 @@ fn row(n: &Value, viewer: &str) -> Review {
     }
 
     Review {
-        number: n.get("number").and_then(Value::as_u64).unwrap_or(0),
+        number,
         title: text("title"),
         url: text("url"),
         author: n
@@ -292,7 +324,15 @@ fn row(n: &Value, viewer: &str) -> Review {
         team", kept rather than renamed because a configured command still emits
         that scale and the pane reads one field for both sources. The built-in
         never emits 0 or 1 — those are the label ranks, and they are gone. */
-        prio: if requested_of_you { 2 } else { 3 },
+        /* 5 is the contract's "other": nobody asked you. Named yourself is
+        always a request, so only the request decides between 3 and 5. */
+        prio: if requested_of_you {
+            2
+        } else if requested {
+            3
+        } else {
+            5
+        },
         needs_re_review: reviewers.contains(viewer),
         is_draft,
         blockers,
@@ -301,6 +341,7 @@ fn row(n: &Value, viewer: &str) -> Review {
         // something provides it. Not worth a second round trip per poll.
         changed_files: None,
         checks,
+        requested: Some(requested || requested_of_you),
     }
 }
 
@@ -545,6 +586,8 @@ fn review_of(e: EntryDoc, repo: Option<&str>) -> Review {
         },
         changed_files: e.pr.changed_files,
         checks: e.pr.checks,
+        // A command's rows are its own ranking; see `Review::requested`.
+        requested: None,
     }
 }
 
@@ -754,11 +797,19 @@ mod tests {
     }
 
     /// One captured answer, carrying every rule at once: two people, a team
-    /// request, a draft, a conflict, a failing check and a re-review.
+    /// request, a draft, a conflict, a failing check, a re-review, and a PR
+    /// nobody asked you about.
     fn answer() -> Value {
         v(r#"{"data":{
           "viewer":{"login":"me"},
-          "search":{"issueCount":7,"nodes":[
+          "asked":{"nodes":[{"number":10},{"number":11},{"number":12},{"number":13}]},
+          "all":{"issueCount":8,"nodes":[
+            {"number":14,"title":"oldest of all, nobody asked you","url":"u14","isDraft":false,
+             "createdAt":"2026-08-20T12:00:00Z","mergeable":"MERGEABLE",
+             "author":{"login":"ola"},
+             "reviewRequests":{"nodes":[]},
+             "latestReviews":{"nodes":[]},
+             "commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"SUCCESS"}}}]}},
             {"number":10,"title":"newest, you by name","url":"u10","isDraft":false,
              "createdAt":"2026-09-12T12:00:00Z","mergeable":"MERGEABLE",
              "author":{"login":"dana"},
@@ -787,14 +838,34 @@ mod tests {
     }
 
     #[test]
-    fn age_orders_the_queue_and_nothing_else_does() {
+    fn requested_then_age_orders_the_queue() {
         let q = from_graphql(&answer()).expect("a captured answer parses");
         assert_eq!(
             q.actionable.iter().map(|r| r.number).collect::<Vec<_>>(),
-            vec![11, 10],
-            "oldest first, whoever it was asked of — #11 is the team request and \
-             still leads, because age is the whole ordering"
+            vec![11, 10, 14],
+            "requested first, oldest first within it — #11 is the team request and \
+             leads #10; #14 is older than both and still last, nobody asked you"
         );
+    }
+
+    /// Every open PR is listed, and the ones nobody asked you about say so: the
+    /// pane's "requested only" filter reads that field and nothing else.
+    #[test]
+    fn a_pr_nobody_asked_you_about_is_listed_and_says_so() {
+        let q = from_graphql(&answer()).expect("parse");
+        let other = q
+            .actionable
+            .iter()
+            .find(|r| r.number == 14)
+            .expect("#14 is listed");
+        assert_eq!(other.requested, Some(false));
+        assert_eq!(other.prio, 5, "the contract's other");
+        assert!(q
+            .actionable
+            .iter()
+            .chain(q.blocked.iter())
+            .filter(|r| r.number != 14)
+            .all(|r| r.requested == Some(true)));
     }
 
     #[test]
@@ -854,10 +925,10 @@ mod tests {
         let q = from_graphql(&answer()).expect("parse");
         assert_eq!(
             q.actionable.len() + q.blocked.len(),
-            4,
+            5,
             "the node that is not a pull request is dropped"
         );
-        assert_eq!(q.total, 7, "what GitHub said the search holds");
+        assert_eq!(q.total, 8, "what GitHub said the search holds");
         assert_eq!(q.skipped, 3, "what this page could not carry");
         assert_eq!(q.login, "me");
     }

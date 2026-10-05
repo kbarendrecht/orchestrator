@@ -122,6 +122,40 @@ function graphql(query) {
   }
   if (!query.includes('search(query:')) return { data: { viewer: { login: viewer } } }
 
+  /* The built-in review queue: two aliased searches in one document, `asked` for
+     the numbers GitHub has your review requested on and `all` for every open PR
+     somebody else wrote. Canned under `reviews`, apart from the PR poll's `prs`,
+     because the two answer different questions about different PRs. A row names
+     who asked with `asked: 'me' | 'team'` and is not requested without it. */
+  if (query.includes('all: search(')) {
+    const slug = query.match(/repo:(\S+)/)?.[1] ?? 'acme/monorepo'
+    const rows = canned.reviews ?? []
+    return {
+      data: {
+        viewer: { login: viewer },
+        asked: { nodes: rows.filter((r) => r.asked).map((r) => ({ number: r.number })) },
+        all: {
+          issueCount: rows.length,
+          nodes: rows.map((r) => ({
+            number: r.number,
+            title: r.title ?? `review ${r.number}`,
+            url: `https://github.com/${slug}/pull/${r.number}`,
+            isDraft: false,
+            createdAt: r.created_at ?? '2026-01-01T00:00:00Z',
+            mergeable: 'MERGEABLE',
+            author: { login: r.author ?? 'colleague' },
+            reviewRequests: {
+              nodes: r.asked === 'me' ? [{ requestedReviewer: { login: viewer } }]
+                : r.asked === 'team' ? [{ requestedReviewer: {} }] : [],
+            },
+            latestReviews: { nodes: [] },
+            commits: { nodes: [{ commit: { statusCheckRollup: { state: 'SUCCESS' } } }] },
+          })),
+        },
+      },
+    }
+  }
+
   const slug = query.match(/repo:(\S+)/)?.[1] ?? 'acme/monorepo'
   return {
     data: {

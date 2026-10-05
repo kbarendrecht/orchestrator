@@ -29,6 +29,27 @@ const ASK_ABOVE = 8;
  *  One press, one tab, four reviews lost. A button that cannot work is worse than
  *  no button, and ⌘-clicking the rows still does the job there.
  */
+/** The word in the head that switches between every PR and the ones that asked
+ *  for you. A word rather than a glyph, because what it says is the state. */
+function requestedToggle() {
+  const t = el('span', 'rvfilter', requestedOnly ? 'asked' : 'all');
+  t.setAttribute('role', 'button');
+  t.title = requestedOnly
+    ? 'Only PRs that asked for your review · click for every open PR'
+    : 'Every open PR · click for only the ones that asked for your review';
+  t.setAttribute('aria-pressed', String(requestedOnly));
+  keyActivate(t);
+  t.onclick = (e) => {
+    e.stopPropagation();               // the header's own click folds the pane
+    requestedOnly = !requestedOnly;
+    try {
+      localStorage.setItem(REQUESTED_KEY, requestedOnly ? '1' : '0');
+    } catch (err) { /* private mode: it still switched for this session */ }
+    renderReviews();
+  };
+  return t;
+}
+
 function openAllButton(/** @type {import('../repo').Review[]} */ rows) {
   // Drawn, not typed — the same reason the refresh glyph beside it is an SVG.
   const btn = icon('openall', 1.5, 'M6.2 2.5h7.3v7.3', 'M13.5 2.5 7 9', 'M11 9.6v3.9H2.5V5h3.9');
@@ -62,6 +83,14 @@ function openAllButton(/** @type {import('../repo').Review[]} */ rows) {
 
 let showReviews = true;
 let showBlockedReviews = false;
+/* **Every open PR, or only those that asked for you.** The built-in queue lists
+   them all and marks each one `requested`, so this is a filter over rows already
+   here rather than a second fetch. Remembered per browser, like the pane sizes. */
+const REQUESTED_KEY = 'orch.reviewsRequestedOnly';
+let requestedOnly = false;
+try {
+  requestedOnly = localStorage.getItem(REQUESTED_KEY) === '1';
+} catch (e) { /* no storage: the queue opens on every PR */ }
 
 /* **The pane is rebuilt only when it would come out different.**
  *
@@ -149,8 +178,8 @@ function renderReviews() {
      started when that counter moves, and it can only do that when it is built. */
   const hasAge = snap.reviews_age_ms != null && !snap.reviews_polling;
   const drawHead = !unchanged(headDrawn, [showReviews, rv,
-    snap.reviews_poll ?? 0, !!snap.reviews_polling, hasAge]);
-  const drawList = !unchanged(listDrawn, [showReviews, showBlockedReviews, rv]);
+    snap.reviews_poll ?? 0, !!snap.reviews_polling, hasAge, requestedOnly]);
+  const drawList = !unchanged(listDrawn, [showReviews, showBlockedReviews, rv, requestedOnly]);
   if (!drawHead && !drawList) return;
   if (drawHead) head.replaceChildren();
   if (drawList) list.replaceChildren();
@@ -197,8 +226,14 @@ function renderReviews() {
     return;
   }
 
-  const rows = rv.actionable || [];
-  const blocked = rv.blocked || [];
+  /* Only where the source says which rows asked: the built-in queue does, a
+     configured command does not, and a filter that cannot be honoured is not
+     offered at all. */
+  const filterable = [...(rv.actionable || []), ...(rv.blocked || [])]
+    .some((r) => r.requested != null);
+  const narrow = filterable && requestedOnly;
+  const rows = (rv.actionable || []).filter((r) => !narrow || r.requested);
+  const blocked = (rv.blocked || []).filter((r) => !narrow || r.requested);
   if (drawHead) {
     /* The number alone. `waiting` named what the rows under it already are, and
        the dot that joins it to the age was doing the joining either way — so the
@@ -210,6 +245,7 @@ function renderReviews() {
     // does not flicker to "0s ago" and back.
     if (hasAge) count.appendChild(clock('prage', snap.reviews_age_ms, ' ago', ' · '));
     head.appendChild(count);
+    if (filterable) head.appendChild(requestedToggle());
     if (CHROME !== 'none') head.appendChild(openAllButton(rows));
     head.appendChild(refresh);
     head.onclick = () => { showReviews = !showReviews; renderReviews(); };
@@ -276,7 +312,9 @@ function renderReviews() {
   // Bounded like the PR pane's, and for the same reason `QUEUE_MAX` gives: the
   // head above still counts every one.
   for (const r of rows.slice(0, QUEUE_MAX)) list.appendChild(rowFor(r, false));
-  if (!rows.length) list.appendChild(el('div', 'fempty', 'Nothing waiting on you.'));
+  if (!rows.length) {
+    list.appendChild(el('div', 'fempty', narrow ? 'Nothing asked of you.' : 'Nothing waiting on you.'));
+  }
 
   // Blocked on conflicts or red checks: waiting on their author, not on you.
   // Sunk rather than dropped, because sometimes you still want to look — but

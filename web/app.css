@@ -1935,6 +1935,15 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 /* margin-left:auto claims the free space, so the count and the refresh after it
    both sit hard right. */
 .rvcount{font-family:var(--mono);font-size:calc(9px * var(--fs));color:var(--faint-solid);margin-left:auto}
+/* `all` or `asked`: the queue's filter, said as its state. Outlined like the PR
+   rows' chips, so a word in a header still reads as something to press. */
+.rvfilter{
+  font-family:var(--mono);font-size:calc(9px * var(--fs));color:var(--faint-solid);
+  padding:1px 6px;border:1px solid var(--line);border-radius:2px;flex:0 0 auto;
+  white-space:nowrap;cursor:pointer;
+}
+.rvfilter:hover{color:var(--text);border-color:var(--dim)}
+.rvfilter[aria-pressed="true"]{color:var(--text)}
 .rvcount .n{color:var(--dim)}
 .rvcount .f{color:var(--bad)}
 /* One look for every glyph button in a pane header: the refresh in three of them,

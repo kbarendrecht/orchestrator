@@ -192,7 +192,16 @@ blockers: Array<string>, reviewers: number,
  * unset: it is another page of the search per poll, for a column that hides
  * itself.
  */
-changed_files: number | null, checks: string | null, };
+changed_files: number | null, checks: string | null, 
+/**
+ * Whether your review was asked for, by name or through a team.
+ *
+ * **[`builtin`] lists every open PR now and says which ones asked**, so the
+ * pane can narrow to those without a second fetch. `None` from a configured
+ * command: its rows are its own ranking, and the pane offers no filter it
+ * cannot honour.
+ */
+requested: boolean | null, };
 
 export type ReviewQueue = { login: string, actionable: Array<Review>, blocked: Array<Review>, total: number, skipped: number, };
 

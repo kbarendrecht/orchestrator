@@ -148,9 +148,10 @@ reports. `POST /api/session/<id>/resume` is the fix, before recording.
 daemons are real, the worktrees are real, and a real Claude Code wrote the diffs
 the changed-files pane shows.
 
-It has to be. The built-in queue asks GitHub for
-`repo:<owner>/<name> is:open is:pr review-requested:@me`; GitHub will not let you
-request a review from yourself, and the fixture's second identity is
+It has to be. The built-in queue lists open PRs somebody else wrote and marks the
+ones that ask for your review (`review-requested:@me`), which is what colours a row
+and what the `asked` filter keeps; GitHub will not let you request a review from
+yourself, and the fixture's second identity is
 `github-actions[bot]`, which [cannot be a requested reviewer](fixture-pr.md) — the
 same wall that leaves `rerequest()` unverified. A genuinely populated queue wants a
 second human account.

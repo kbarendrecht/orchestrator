@@ -148,11 +148,14 @@ rejects costs you the daemon, and an old file with a stale key must still load.
 ### The review queue
 
 The daemon builds one itself, so the pane works on a fresh install with nothing
-configured: it asks GitHub for `review-requested:@me`, using the same token and
+configured: it lists every open PR somebody else wrote, using the same token and
 the same `curl` the PR pane already uses. No script, no `node`, no `gh`.
 
-- **Age orders it**, oldest first. How long somebody has waited is true whatever a
-  team's labels mean.
+- **The `all` / `asked` word in its header narrows it** to the PRs GitHub has your
+  review requested on (`review-requested:@me`, a team you are in included).
+  Remembered per browser.
+- **Requested first, then age**, oldest first within each. How long somebody has
+  waited is true whatever a team's labels mean.
 - **Amber means you were named.** A request to a team you belong to stays grey and
   says `team`.
 - **Draft, conflicting and failing rows sink** below a "not reviewable" fold. They

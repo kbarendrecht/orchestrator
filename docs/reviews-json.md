@@ -161,8 +161,11 @@ built with config-driven ranking and reverted for being more machinery than anyo
 wanted to own; the script that replaced it could not be a default either, because
 it needed a `node` the daemon's PATH does not promise. The daemon builds its own
 queue again now, and the difference from the reverted one is that it has **four
-rules and no configuration**: `review-requested:@me`, oldest first, amber when you
+rules and no configuration**: every open PR not yours, marked `requested` where
+`review-requested:@me` holds it and ordered requested-then-oldest, amber when you
 were named rather than a team, and draft/conflicting/failing sunk below the fold.
+`requested` is the built-in's own field and not part of this contract: a command's
+rows leave it unset, and the pane then offers no `asked` filter.
 
 **This file is still the contract for replacing it.** Set `reviews_command` and
 the built-in never runs; everything below is unchanged, and it carries more than
