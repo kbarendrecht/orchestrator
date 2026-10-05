@@ -259,6 +259,17 @@ export function create(on) {
    *
    *  @param {string} ws @param {string} path */
   function paintImage(ws, path) {
+    paintImageFrom(path, `${activeCheckout().base}/api/file/image?workspace=${encodeURIComponent(ws)}`
+      + `&path=${encodeURIComponent(path)}`);
+  }
+
+  /** Show an image from any route that serves one, under `label`. A scratchpad
+   *  image is not in a workspace, so it has a route of its own; everything a
+   *  picture needs on screen is the same.
+   *
+   *  @param {string} label @param {string} src */
+  function paintImageFrom(label, src) {
+    const path = label;
     const mine = ++view.seq;
     view.file = null;
     view.spot = null;
@@ -274,8 +285,7 @@ export function create(on) {
     img.onerror = () => {
       if (mine === view.seq) on.mount.replaceChildren(el('div', 'fnsay', `${path} could not be shown as an image`));
     };
-    img.src = `${activeCheckout().base}/api/file/image?workspace=${encodeURIComponent(ws)}`
-      + `&path=${encodeURIComponent(path)}`;
+    img.src = src;
     const box = el('div', 'fvimagebox');
     box.appendChild(img);
     on.mount.replaceChildren(box);
@@ -296,6 +306,9 @@ export function create(on) {
 
     /** `'markdown'`, `'html'` or `null`, for the button that says which. */
     kind,
+
+    /** Show an image from its own route; see [`paintImageFrom`]. */
+    image: paintImageFrom,
 
     /** Whether a picture is on screen, which has no source to edit. */
     isImage: () => view.mode === 'image',

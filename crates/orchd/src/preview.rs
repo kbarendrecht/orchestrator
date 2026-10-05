@@ -207,6 +207,98 @@ pub async fn image(State(app): State<Arc<AppState>>, Query(q): Query<ImageQuery>
     response
 }
 
+#[derive(Deserialize)]
+pub struct ScratchpadQuery {
+    pub session: uuid::Uuid,
+    /// Absolute, as the agent printed it.
+    pub path: String,
+}
+
+/// One image out of a session's Claude Code scratchpad, for the file pane.
+///
+/// **Outside every workspace, so the workspace bound cannot answer for it.** An
+/// agent writes its screenshots to `<tmp>/claude-<uid>/<slug>/<session>/scratchpad`,
+/// prints that path, and the path was refused before it was ever underlined. This
+/// serves that one folder for the session it belongs to and nothing else: the
+/// file is resolved first, links and all, and only then checked against
+/// [`in_scratchpad`], so a link inside the scratchpad pointing out of it is a 404.
+///
+/// The layout is Claude Code's, not a contract. If it moves, these links stop
+/// working; they cannot start reading anything else. Images only, with the CSP
+/// [`image`] sends, for the reasons given there.
+pub async fn scratchpad_image(
+    State(app): State<Arc<AppState>>,
+    Query(q): Query<ScratchpadQuery>,
+) -> Response {
+    let kind = content_type(&q.path);
+    if !kind.starts_with("image/") {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let cwd = {
+        let inner = app.inner.read().await;
+        inner.sessions.get(&q.session).map(|s| s.cwd.clone())
+    };
+    let Some(cwd) = cwd else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let session = q.session;
+    let read = crate::proc::run_blocking("reading a scratchpad image", move || {
+        let at = std::fs::canonicalize(&q.path).ok()?;
+        let tmp = std::fs::canonicalize(std::env::temp_dir()).ok()?;
+        if !in_scratchpad(&at, &tmp, &cwd, session) {
+            return None;
+        }
+        let md = std::fs::metadata(&at).ok()?;
+        if !md.is_file() || md.len() > MAX_BYTES {
+            return None;
+        }
+        std::fs::read(&at).ok()
+    })
+    .await;
+    let Ok(Some(bytes)) = read else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let mut response = bytes.into_response();
+    let headers = response.headers_mut();
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(kind));
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("default-src 'none'; style-src 'unsafe-inline'; sandbox"),
+    );
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
+/// Whether `at`, already resolved, is inside this session's scratchpad:
+/// `<tmp>/claude-<digits>/<slug of cwd>/<session>/scratchpad/…`.
+///
+/// Pure, so the shape is tested rather than trusted. `tmp` is the resolved temp
+/// folder; `/tmp` is accepted as well, because that is where Claude Code puts it
+/// even on a machine whose `TMPDIR` points elsewhere.
+pub fn in_scratchpad(at: &Path, tmp: &Path, cwd: &Path, session: uuid::Uuid) -> bool {
+    let slug = crate::config::transcript_slug(cwd);
+    [tmp, Path::new("/tmp")].iter().any(|base| {
+        let Ok(rest) = at.strip_prefix(base) else {
+            return false;
+        };
+        let mut parts = rest.components().map(|c| c.as_os_str().to_string_lossy());
+        let user = parts.next();
+        let ok_user = user
+            .as_deref()
+            .and_then(|u| u.strip_prefix("claude-"))
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+        ok_user
+            && parts.next().as_deref() == Some(slug.as_str())
+            && parts.next().as_deref() == Some(session.to_string().as_str())
+            && parts.next().as_deref() == Some("scratchpad")
+            && parts.next().is_some()
+    })
+}
+
 /// Whether a preview may read `rel`, before it is resolved on disk.
 ///
 /// **Not the whole workspace**, because the frame runs the page's scripts and a
@@ -264,6 +356,50 @@ fn content_type(rel: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The one folder a scratchpad link may read: this session's, under the temp
+    /// folder, below `scratchpad/`. Each refusal is a path an agent could print.
+    #[test]
+    fn only_the_sessions_own_scratchpad_is_readable() {
+        let id = uuid::Uuid::parse_str("f8452082-4dc5-4a96-836f-02f7ee3a2250").unwrap();
+        let other = uuid::Uuid::parse_str("2b0cf0c7-dc0a-4dac-832d-ee69ac9b0478").unwrap();
+        let cwd = Path::new("/home/k/dev/scienta/.claude/worktrees/story-53860");
+        let tmp = Path::new("/var/tmp-elsewhere");
+        let slug = "-home-k-dev-scienta--claude-worktrees-story-53860";
+        let at = |s: &str| std::path::PathBuf::from(s);
+        let mine = format!("/tmp/claude-1000/{slug}/{id}/scratchpad/kanban.png");
+        assert!(
+            in_scratchpad(&at(&mine), tmp, cwd, id),
+            "its own file, under /tmp"
+        );
+        let via_tmpdir = format!("/var/tmp-elsewhere/claude-1000/{slug}/{id}/scratchpad/a.png");
+        assert!(
+            in_scratchpad(&at(&via_tmpdir), tmp, cwd, id),
+            "under TMPDIR too"
+        );
+        assert!(
+            !in_scratchpad(&at(&mine), tmp, cwd, other),
+            "another session's scratchpad"
+        );
+        let wrong_slug = format!("/tmp/claude-1000/-home-k-other/{id}/scratchpad/a.png");
+        assert!(
+            !in_scratchpad(&at(&wrong_slug), tmp, cwd, id),
+            "another project"
+        );
+        let not_scratch = format!("/tmp/claude-1000/{slug}/{id}/tasks/out.png");
+        assert!(
+            !in_scratchpad(&at(&not_scratch), tmp, cwd, id),
+            "beside the scratchpad"
+        );
+        let bare = format!("/tmp/claude-1000/{slug}/{id}/scratchpad");
+        assert!(
+            !in_scratchpad(&at(&bare), tmp, cwd, id),
+            "the folder itself is no file"
+        );
+        let user = format!("/tmp/claude-x/{slug}/{id}/scratchpad/a.png");
+        assert!(!in_scratchpad(&at(&user), tmp, cwd, id), "not a uid");
+        assert!(!in_scratchpad(&at("/etc/passwd"), tmp, cwd, id));
+    }
 
     fn grant(page: &str, page_ignored: bool) -> PreviewGrant {
         PreviewGrant {

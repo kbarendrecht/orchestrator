@@ -970,10 +970,14 @@ Term.onPathClick(({ checkout, target, path, line, last, ev }) => {
   const where = ptyRoot(state, target);
   if (!where) return;
   const at = locate(state, where, path);
-  // Refused rather than opened and failed: `/etc/hosts` is a real file and not
-  // this workspace's, and a viewer that answers "no such file" would be lying
-  // about which of the two went wrong.
-  if (!at) return toast(`${path} is outside this workspace`, true);
+  if (!at) {
+    const scratch = scratchpadOf(state, target, path);
+    if (scratch) return void FileView.openScratch(scratch.workspace, scratch.session, scratch.abs);
+    // Refused rather than opened and failed: `/etc/hosts` is a real file and not
+    // this workspace's, and a viewer that answers "no such file" would be lying
+    // about which of the two went wrong.
+    return toast(`${path} is outside this workspace`, true);
+  }
   /* **The file viewer, not the finder.** Opening one file used to take over the
      search overlay, which threw away whatever search was in it and answered a
      question about a single file with the machine built to list many. */
@@ -997,7 +1001,8 @@ Term.onPathCheck(({ checkout, target, paths }) => {
   const at = CHECKOUTS.find((c) => c.path === checkout) ?? activeCheckout();
   return Promise.all(paths.map((path) => {
     const hit = locate(state, where, path);
-    return hit ? FileView.known(at, hit.workspace, hit.rel) : Promise.resolve(false);
+    if (hit) return FileView.known(at, hit.workspace, hit.rel);
+    return Promise.resolve(!!scratchpadOf(state, target, path));
   }));
 });
 
@@ -1110,6 +1115,28 @@ function locate(state, where, path) {
     if (rel && (!best || rel.length < best.rel.length)) best = { workspace: w.id, rel };
   }
   return best;
+}
+
+/** The image an agent printed from its own Claude Code scratchpad, if that is
+ *  what `path` is: `<tmp>/claude-<uid>/<slug of its cwd>/<id>/scratchpad/…`.
+ *
+ *  **Outside every workspace, so `locate` refuses it, and that was the whole
+ *  answer**: the screenshots an agent takes land there and could not be clicked.
+ *  Only a session's own pane, only its own scratchpad, only an image; the daemon
+ *  checks the same shape again on the resolved file (`preview::in_scratchpad`).
+ *
+ *  @param {any} state @param {string} target @param {string} path */
+function scratchpadOf(state, target, path) {
+  if (!target.startsWith('session:') || !path.startsWith('/')) return null;
+  const id = target.slice('session:'.length);
+  const s = state.sessions.find((/** @type {any} */ x) => x.id === id);
+  if (!s?.cwd || !/\.(png|jpe?g|gif|webp|svg|avif|bmp|ico)$/i.test(path)) return null;
+  const abs = resolvePath(path);
+  const slug = s.cwd.replace(/[/.]/g, '-');
+  const at = abs.indexOf(`/${slug}/${id}/scratchpad/`);
+  // The folder above the slug is `claude-<uid>`, which is the rest of the shape.
+  if (at < 0 || !/\/claude-\d+$/.test(abs.slice(0, at))) return null;
+  return { session: id, workspace: s.workspace, abs };
 }
 
 /** An absolute path with its `.` and `..` segments taken out. */

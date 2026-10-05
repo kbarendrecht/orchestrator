@@ -1263,7 +1263,10 @@ pub fn transcript_dir_for(cwd: &Path) -> Result<PathBuf> {
 
 /// The slug half of [`transcript_dir_for`], so the rule can be tested without a
 /// test reaching into `HOME` and changing it under every other test.
-fn transcript_slug(cwd: &Path) -> String {
+///
+/// Public because Claude Code names a session's scratchpad folder with the same
+/// slug, and one rule for both is what keeps them from drifting apart.
+pub fn transcript_slug(cwd: &Path) -> String {
     cwd.to_string_lossy().replace(['/', '.'], "-")
 }
 

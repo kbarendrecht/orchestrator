@@ -12,7 +12,7 @@
 // is drawn is a fix in both places rather than a copy that drifts.
 
 import {
-  $, activeWorkspaceId, borrowFocus, get, getOn, openMenu, reason, returnFocus, toast,
+  $, activeCheckout, activeWorkspaceId, borrowFocus, get, getOn, openMenu, reason, returnFocus, toast,
 } from './core.js';
 import * as Editor from './editor.js';
 import { folders, level, matching } from './pathlink.js';
@@ -98,6 +98,29 @@ export async function open(ws, candidates, line, last, ev) {
     return openMenu(ev, candidates.slice(0, 12).map((p) => [p, null, () => void show(ws, p, line, last)]));
   }
   await show(ws, candidates[0] ?? '', line, last);
+}
+
+/** Open an image from a session's Claude Code scratchpad, which is outside every
+ *  workspace and so has its own route (`preview::scratchpad_image`). Shown in the
+ *  same pane, held to the session's own workspace so switching away closes it the
+ *  way it closes any file.
+ *
+ *  @param {string} ws the session's workspace
+ *  @param {string} session
+ *  @param {string} abs the path as the agent printed it */
+export async function openScratch(ws, session, abs) {
+  if (Editor.isOpen() && !await Editor.close()) return;
+  if (state.open && state.ws !== ws && !await close()) return;
+  state.trail = [];
+  state.open = true;
+  state.pinned = false;
+  state.ws = ws;
+  state.path = abs;
+  borrowFocus('fileview');
+  $('fvoverlay').classList.add('on');
+  viewer().image(abs, `${activeCheckout().base}/api/scratchpad/image?session=${encodeURIComponent(session)}`
+    + `&path=${encodeURIComponent(abs)}`);
+  renderHead(true);
 }
 
 /** Put the files under a folder an agent printed under the pointer, one menu level
