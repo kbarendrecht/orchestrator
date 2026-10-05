@@ -1147,17 +1147,23 @@ fn start_pr_poller(app: Arc<AppState>) {
         the genuinely concurrent cases (a manual reconcile, the workspace
         watcher, a later tick that overruns). */
         let mut boot_already_did_this = true;
-        let mut woke = Woke::Timer;
+        // Boot's sweep is the first one, so the clock starts there.
+        let mut last_sweep = std::time::Instant::now();
         loop {
             if boot_already_did_this {
                 boot_already_did_this = false;
-            } else if woke == Woke::Timer {
-                /* **Only on the timer, never on a refresh.** A refresh is the PR
-                pane's button and the page coming back into focus, which it does
-                every time you return from GitHub: each one ran the base fetch
+            } else if last_sweep.elapsed() >= interval {
+                /* **On its own clock, never because of a refresh.** A refresh is
+                the PR pane's button and the page coming back into focus, which it
+                does every time you return from GitHub: each one ran the base fetch
                 and the whole sweep as well, so a sweep landed every one to three
-                minutes instead of every five. A refresh is a question about the
-                PRs, and that is all it now asks. */
+                minutes instead of every five.
+                **And not on "the timer fired" either**, which was the first
+                version of this: a refresh restarts `next_tick`'s period, and focus
+                refreshes come more often than five minutes while you work in the
+                app, so the timer never ran out and nothing was swept at all. Due
+                is due, whichever wake notices it. */
+                last_sweep = std::time::Instant::now();
                 // Piggyback the upstream fetch on this timer (§5): the merge-base
                 // and the behind count are both answered from that ref.
                 let main = app.cfg.main_checkout.clone();
@@ -1304,7 +1310,7 @@ fn start_pr_poller(app: Arc<AppState>) {
                 inner.pr_polling = false;
             }
             app.notify().await;
-            woke = next_tick(interval, &app.pr_refresh).await;
+            next_tick(interval, &app.pr_refresh).await;
         }
     });
 }
@@ -1314,19 +1320,11 @@ fn start_pr_poller(app: Arc<AppState>) {
 /// **A refresh cuts the wait short *and* restarts the period**, so a button press
 /// and the next scheduled poll never land back to back. Both pollers with a
 /// button spelled this out; a third would have had to know to.
-async fn next_tick(interval: std::time::Duration, refresh: &tokio::sync::Notify) -> Woke {
+async fn next_tick(interval: std::time::Duration, refresh: &tokio::sync::Notify) {
     tokio::select! {
-        _ = tokio::time::sleep(interval) => Woke::Timer,
-        _ = refresh.notified() => Woke::Asked,
+        _ = tokio::time::sleep(interval) => {}
+        _ = refresh.notified() => {}
     }
-}
-
-/// What ended a wait in [`next_tick`], for the poller that does more on a timer
-/// than on a press.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Woke {
-    Timer,
-    Asked,
 }
 
 /// Of several resumable records, the ones to actually bring back: at most one per
@@ -1528,7 +1526,7 @@ fn start_review_poller(app: Arc<AppState>) {
             }
             app.notify().await;
 
-            let _ = next_tick(interval, &app.review_refresh).await;
+            next_tick(interval, &app.review_refresh).await;
         }
     });
 }
