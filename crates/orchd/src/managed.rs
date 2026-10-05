@@ -181,17 +181,28 @@ pub async fn spawn_shell(app: &Arc<AppState>, workspace: &str) -> Result<String>
     bare `exit` leaves with the status of the last command, so `exit` after
     anything that failed kept the tab too, and that is the common case. The code
     cannot tell the two apart: portable-pty reports a shell killed by a signal as
-    1, the same as `false; exit`. So the rule is the one you typed, and the cost
-    is that a shell killed from outside loses its scrollback. */
+    1, the same as `false; exit`. So the tab stays only on a signal nobody here
+    sent, which `killed_by_signal` reads from the exit text; a shell an OOM kill
+    took keeps its scrollback, and the × that killed it on purpose does not. */
     let app2 = app.clone();
     let ws = workspace.to_string();
     let pid2 = proc_id.clone();
     tokio::spawn(async move {
-        spawned.handle.wait().await;
+        let code = spawned.handle.wait().await;
+        let killed = spawned.handle.killed_by_signal() && !spawned.handle.stopped_deliberately();
         {
             let mut inner = app2.inner.write().await;
             if let Some(w) = inner.workspaces.get_mut(&ws) {
-                w.processes.retain(|p| p.id != pid2);
+                if killed {
+                    if let Some(p) = w.processes.iter_mut().find(|p| p.id == pid2) {
+                        p.kind = ProcKind::Shell {
+                            exit_code: Some(code),
+                        };
+                        p.health = Health::Dead;
+                    }
+                } else {
+                    w.processes.retain(|p| p.id != pid2);
+                }
             }
         }
         app2.notify().await;

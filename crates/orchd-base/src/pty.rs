@@ -189,6 +189,14 @@ pub struct PtyHandle {
     /// "the agent fell over" — and we `SIGKILL` on the kill path, which produces a
     /// failure code of its own. Set before the signal, read after `wait` returns.
     stopping: std::sync::atomic::AtomicBool,
+    /// Whether the child was ended by a signal, set by the waiter.
+    ///
+    /// **The code alone cannot say it**: a shell killed with `SIGKILL` reports 1,
+    /// the same as `false; exit`. portable-pty 0.8 keeps the signal private and
+    /// shows it only in `Display` (`Terminated by <signal>`), so that text is what
+    /// is read; `exit_text_names_a_signal` pins it, and 0.9's `signal()` is the
+    /// clean replacement when the crate is upgraded.
+    signaled: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// How long a child gets to honour `SIGHUP` before it is `SIGKILL`ed.
@@ -294,6 +302,7 @@ impl PtyHandle {
         let buffer = Arc::new(Mutex::new(RingBuffer::new(BUFFER_BYTES)));
         let (tx, _) = broadcast::channel(BROADCAST_CHUNKS);
         let (exit_tx, exit_rx) = watch::channel(None);
+        let signaled = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
         // The child's input goes through a queue and a thread of its own, because
         // writing to a pty blocks when the child is not reading — see
@@ -333,6 +342,7 @@ impl PtyHandle {
             size: Mutex::new((rows, cols)),
             pid,
             stopping: std::sync::atomic::AtomicBool::new(false),
+            signaled: signaled.clone(),
         });
 
         // The pty reader is blocking, so it gets a dedicated blocking thread
@@ -355,8 +365,16 @@ impl PtyHandle {
             }
         });
 
+        let waiter_signaled = signaled.clone();
         std::thread::spawn(move || {
-            let code = child.wait().ok().map(|s| s.exit_code() as i32);
+            let status = child.wait().ok();
+            if status
+                .as_ref()
+                .is_some_and(|s| exit_text_names_a_signal(&s.to_string()))
+            {
+                waiter_signaled.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            let code = status.map(|s| s.exit_code() as i32);
             let _ = exit_tx.send(Some(code.unwrap_or(-1)));
             // Nothing will read the fd again, so the writer can go. `Session::pty`
             // is kept after the exit on purpose — it is what replays scrollback —
@@ -619,6 +637,12 @@ impl PtyHandle {
     /// See the `stopping` field. The exit code of a session we `SIGKILL`ed is a
     /// failure code like any other, so a watcher that reported a bad code as a
     /// fault would turn every kill button into a fault report.
+    /// Whether the child was ended by a signal rather than exiting on its own.
+    /// See the field.
+    pub fn killed_by_signal(&self) -> bool {
+        self.signaled.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     pub fn stopped_deliberately(&self) -> bool {
         self.stopping.load(std::sync::atomic::Ordering::SeqCst)
     }
@@ -696,6 +720,11 @@ pub fn pid_alive(pid: u32) -> bool {
     std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
+/// Whether portable-pty's `ExitStatus` text says a signal ended the child.
+fn exit_text_names_a_signal(text: &str) -> bool {
+    text.starts_with("Terminated by ")
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use crate::testutil::TRUE_BIN;
@@ -746,6 +775,31 @@ pub(crate) mod tests {
             err.to_string().contains(&gone.display().to_string()),
             "the refusal has to name the path: {err}"
         );
+    }
+
+    /// A child ended by a signal says so, and one that exits does not. Real
+    /// processes, so this also pins the `Display` text the flag is read from.
+    #[test]
+    fn a_signal_death_is_told_apart_from_an_exit() {
+        let run = |script: &str| {
+            let spawned = PtyHandle::spawn(
+                &["sh".to_string(), "-c".to_string(), script.to_string()],
+                Path::new("/tmp"),
+                &[],
+                &[],
+                (24, 80),
+            )
+            .expect("spawn");
+            for _ in 0..200 {
+                if spawned.handle.exit_code().is_some() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            spawned.handle.killed_by_signal()
+        };
+        assert!(run("kill -9 $$"), "a SIGKILL is a signal death");
+        assert!(!run("exit 1"), "exit 1 is an exit");
     }
 
     #[test]
