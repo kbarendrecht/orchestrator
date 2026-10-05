@@ -1631,6 +1631,10 @@ export function returnFocus(/** @type {string} */ who, /** @type {HTMLElement | 
 }
 
 /** One row of a menu, or a row that opens a second level beside it. */
+/** Each submenu row's "close now", so opening one level can shut its siblings.
+ *  @type {WeakMap<Element, () => void>} */
+const closeLevel = new WeakMap();
+
 function menuRow(/** @type {MenuItem} */ [label, cls, handler]) {
   const item = el('button', 'ctxmenu-item' + (cls ? ` ${cls}` : ''), label);
   item.setAttribute('role', 'menuitem');
@@ -1655,6 +1659,13 @@ function menuRow(/** @type {MenuItem} */ [label, cls, handler]) {
     sub.hidden = !on;
     item.setAttribute('aria-expanded', String(on));
     if (!on) return;
+    /* **One level open per menu.** Leaving a row closes its level after a grace,
+       so a pointer moving down the list opened the next level while the last one
+       was still up, and two sat side by side. The grace is for the way *into*
+       a level; reaching a sibling means you left, so that one goes at once. */
+    for (const other of group.parentElement?.children ?? []) {
+      if (other !== group) closeLevel.get(other)?.();
+    }
     /* Beside the row, or on its other side when there is no room; never off-screen.
        Overlapping the row by a couple of pixels rather than leaving a gap: the
        pointer on its way across would otherwise leave the row, over the menu's own
@@ -1670,6 +1681,7 @@ function menuRow(/** @type {MenuItem} */ [label, cls, handler]) {
   // level does not shut it; coming back inside cancels the close.
   /** @type {ReturnType<typeof setTimeout> | undefined} */
   let leaving;
+  closeLevel.set(group, () => { clearTimeout(leaving); show(false); });
   group.onmouseenter = () => { clearTimeout(leaving); show(true); };
   group.onmouseleave = () => { leaving = setTimeout(() => show(false), 200); };
   // Opens, never toggles: a mouse has already hovered it open by the time it

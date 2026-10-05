@@ -1028,6 +1028,31 @@ try {
   await page.waitForTimeout(150)
   check(await findUp() === false, 'a held Shift and then a tap does not open it')
 
+  /* --- one submenu open at a time ----------------------------------------------- */
+
+  /* Leaving a row closes its level after a grace, so the pointer can cut a corner
+     on its way in; moving down to the next row with a level opened that one while
+     the first was still up, and two sat side by side. Driven with a real pointer,
+     because the grace is a timer and the fault was the gap between two moves. */
+  await page.evaluate(async () => {
+    const { openMenu } = await import('/js/core.js')
+    const noop = () => {}
+    openMenu(/** @type {any} */ ({ preventDefault: noop, clientX: 300, clientY: 200,
+      currentTarget: document.body, target: document.body }), [
+      ['first/', null, [['a.txt', null, noop], ['b.txt', null, noop]]],
+      ['second/', null, [['c.txt', null, noop]]],
+      ['plain.txt', null, noop],
+    ])
+  })
+  const parents = page.locator('#ctxmenu > .ctxmenu-group > .ctxmenu-parent')
+  await parents.nth(0).hover()
+  await page.waitForTimeout(50)
+  await parents.nth(1).hover()
+  await page.waitForTimeout(50)
+  const open = await page.$$eval('#ctxmenu .ctxmenu-sub', (subs) => subs.filter((s) => !s.hidden).length)
+  check(open === 1, `moving down the menu leaves one level open, got ${open}`)
+  await page.keyboard.press('Escape')
+
   /* --- and a dialog hands the keyboard back when it closes -------------------- */
 
   /* **The keystrokes after `Escape` went nowhere** (#27): the finder took focus
