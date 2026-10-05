@@ -393,7 +393,7 @@ fn query_for(owner: &str, name: &str) -> String {
           pageInfo {{ hasNextPage endCursor }}
           {SLIM_THREAD_NODES}
         }}
-        reviews(states: CHANGES_REQUESTED, first: 20) {{ nodes {{ author {{ login }} submittedAt }} }}
+        latestOpinionatedReviews(first: 20) {{ nodes {{ state author {{ login }} submittedAt }} }}
       }}
     }}
   }}
@@ -756,18 +756,28 @@ fn answered_by_pushing(n: &Value) -> bool {
     let pushed = n
         .pointer("/commits/nodes/0/commit/committedDate")
         .and_then(|d| d.as_str());
-    let asked = n
-        .pointer("/reviews/nodes")
-        .and_then(|r| r.as_array())
-        .and_then(|r| {
-            r.iter()
-                .filter_map(|v| v.get("submittedAt").and_then(|d| d.as_str()))
-                .max()
-        });
+    let asked = change_requests(n)
+        .filter_map(|v| v.get("submittedAt").and_then(|d| d.as_str()))
+        .max();
     match (pushed, asked) {
         (Some(pushed), Some(asked)) => pushed > asked,
         _ => false,
     }
+}
+
+/// The reviews still standing as a change request: each reviewer's latest
+/// verdict, and only where that verdict is one.
+///
+/// It used to be `reviews(states: CHANGES_REQUESTED)`, which is every change
+/// request ever left, so a reviewer who asked for changes and then approved kept
+/// the PR amber with nothing on it to answer. `latestOpinionatedReviews` is one
+/// per reviewer and skips plain comments, which do not lift a request either.
+fn change_requests(n: &Value) -> impl Iterator<Item = &Value> {
+    n.pointer("/latestOpinionatedReviews/nodes")
+        .and_then(|r| r.as_array())
+        .into_iter()
+        .flatten()
+        .filter(|v| v.get("state").and_then(|s| s.as_str()) == Some("CHANGES_REQUESTED"))
 }
 
 fn parse_pr(n: &Value, viewer: &str) -> Option<Pr> {
@@ -790,11 +800,7 @@ fn parse_pr(n: &Value, viewer: &str) -> Option<Pr> {
         .and_then(|b| b.as_bool())
         .unwrap_or(false);
 
-    let changes_requested = n
-        .pointer("/reviews/nodes")
-        .and_then(|r| r.as_array())
-        .map(|r| !r.is_empty())
-        .unwrap_or(false);
+    let changes_requested = change_requests(n).next().is_some();
 
     Some(Pr {
         number,
@@ -1331,7 +1337,7 @@ mod tests {
         // whose every thread has your reply or your 👍 is their turn, not yours.
         let n = node(
             r#"{"number":1,"title":"t","headRefName":"a","baseRefName":"develop",
-                "reviews":{"nodes":[{"author":{"login":"them"}}]},
+                "latestOpinionatedReviews":{"nodes":[{"state":"CHANGES_REQUESTED","author":{"login":"them"}}]},
                 "reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[
                   {"isResolved":false,"isOutdated":false,"comments":{"nodes":[
                     {"author":{"login":"me"},"reactionGroups":[]}]}},
@@ -1367,7 +1373,7 @@ mod tests {
         // answer and no 👍 to leave; it would otherwise vanish from the rail.
         let n = node(
             r#"{"number":1,"title":"t","headRefName":"a","baseRefName":"develop",
-                "reviews":{"nodes":[{"author":{"login":"them"}}]},
+                "latestOpinionatedReviews":{"nodes":[{"state":"CHANGES_REQUESTED","author":{"login":"them"}}]},
                 "reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}"#,
         );
         let pr = parse_pr(&n, "me").unwrap();
@@ -1383,7 +1389,7 @@ mod tests {
         let n = node(
             r#"{"number":1,"title":"t","headRefName":"a","baseRefName":"develop",
                 "commits":{"nodes":[{"commit":{"oid":"abc","committedDate":"2026-08-21T09:00:00Z"}}]},
-                "reviews":{"nodes":[{"author":{"login":"them"},"submittedAt":"2026-08-20T12:00:00Z"}]},
+                "latestOpinionatedReviews":{"nodes":[{"state":"CHANGES_REQUESTED","author":{"login":"them"},"submittedAt":"2026-08-20T12:00:00Z"}]},
                 "reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[
                   {"isResolved":false,"isOutdated":true,"comments":{"nodes":[
                     {"author":{"login":"them"},"reactionGroups":[
@@ -1394,13 +1400,26 @@ mod tests {
         assert!(!pr.needs_you, "but the next move is the reviewer's");
     }
 
+    /// A reviewer who asked for changes and then approved has nothing standing.
+    #[test]
+    fn a_change_request_the_same_reviewer_approved_is_gone() {
+        let n = node(
+            r#"{"number":1,"title":"t","headRefName":"a","baseRefName":"develop",
+                "latestOpinionatedReviews":{"nodes":[{"state":"APPROVED","author":{"login":"them"},"submittedAt":"2026-10-05T14:10:59Z"}]},
+                "reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}"#,
+        );
+        let pr = parse_pr(&n, "me").unwrap();
+        assert!(!pr.changes_requested);
+        assert!(!pr.needs_you);
+    }
+
     /// The other order: they read the push and asked again.
     #[test]
     fn a_change_request_newer_than_your_push_is_still_yours() {
         let n = node(
             r#"{"number":1,"title":"t","headRefName":"a","baseRefName":"develop",
                 "commits":{"nodes":[{"commit":{"oid":"abc","committedDate":"2026-08-20T12:00:00Z"}}]},
-                "reviews":{"nodes":[{"author":{"login":"them"},"submittedAt":"2026-08-21T09:00:00Z"}]},
+                "latestOpinionatedReviews":{"nodes":[{"state":"CHANGES_REQUESTED","author":{"login":"them"},"submittedAt":"2026-08-21T09:00:00Z"}]},
                 "reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}"#,
         );
         assert!(parse_pr(&n, "me").unwrap().needs_you);

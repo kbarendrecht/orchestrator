@@ -255,6 +255,8 @@ function node(p, slug, viewer) {
     // One page, never capped: a capped page sends the poll off to page the rest,
     // which is a second query shape this shim would have to answer.
     reviewThreads: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] },
-    reviews: { nodes: p.changes_requested ? [{ author: { login: 'reviewer' } }] : [] },
+    latestOpinionatedReviews: {
+      nodes: p.changes_requested ? [{ state: 'CHANGES_REQUESTED', author: { login: 'reviewer' } }] : [],
+    },
   }
 }

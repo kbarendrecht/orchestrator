@@ -437,7 +437,9 @@ Per PR: `number`, `title`, `headRefName`, `headRepositoryOwner`, `baseRefName`,
 `mergeable`, `mergeStateStatus`, `isDraft`,
 `commits(last:1){nodes{commit{statusCheckRollup{state}}}}` — the rollup hangs off
 the head commit, not off the PR — `reviewThreads(first:50){pageInfo{hasNextPage}
-nodes{isResolved,isOutdated}}`, and `reviews(states:CHANGES_REQUESTED)`.
+nodes{isResolved,isOutdated}}`, and `latestOpinionatedReviews{nodes{state}}`, which is
+each reviewer's latest verdict, so a change request that reviewer later approved
+no longer counts.
 
 **Paginate `reviewThreads`.** A long-running PR exceeds 50 and the unresolved
 count gates the `/resolve` button. Until pagination is implemented, render
