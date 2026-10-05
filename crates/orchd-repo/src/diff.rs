@@ -660,6 +660,45 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A base branch is measured against the branch it tracks, not the fork's copy:
+    /// `develop` tracking `upstream/develop` with `origin/develop` far behind. A
+    /// feature branch tracking the base still falls back to `origin/<branch>`.
+    #[test]
+    fn a_tracked_branch_of_the_same_name_is_what_is_pushed() {
+        let dir = crate::testutil::scratch_repo("diff-tracked");
+        let g = |args: &[&str]| crate::testutil::git(&dir, args);
+        g(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        std::fs::write(dir.join("a.txt"), "x\n").unwrap();
+        g(&["add", "-A"]);
+        g(&["commit", "-q", "-m", "landed upstream"]);
+        g(&["update-ref", "refs/remotes/upstream/main", "HEAD"]);
+        // A tracked branch is mapped through its remote's fetch refspec, so the
+        // remote has to exist, as it does in any real checkout.
+        g(&["remote", "add", "upstream", "."]);
+        g(&["config", "branch.main.remote", "upstream"]);
+        g(&["config", "branch.main.merge", "refs/heads/main"]);
+        assert_eq!(
+            orchd_base::git::pushed_ref(&dir, "main").as_deref(),
+            Some("upstream/main"),
+            "the tracked copy, not the fork's lagging origin/main"
+        );
+
+        g(&["checkout", "-q", "-b", "feature"]);
+        g(&["config", "branch.feature.remote", "upstream"]);
+        g(&["config", "branch.feature.merge", "refs/heads/main"]);
+        assert_eq!(
+            orchd_base::git::pushed_ref(&dir, "feature"),
+            None,
+            "tracking the base is not a copy of this branch"
+        );
+        g(&["update-ref", "refs/remotes/origin/feature", "HEAD"]);
+        assert_eq!(
+            orchd_base::git::pushed_ref(&dir, "feature").as_deref(),
+            Some("origin/feature")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A rename and a non-ASCII path, which the plain `--numstat` got wrong in the
     /// same way: it prints `dir/{old => new}` for the first and a quoted, escaped
     /// string for the second, while the `--name-status` map is keyed on the real new
