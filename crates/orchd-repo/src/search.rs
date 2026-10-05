@@ -312,6 +312,15 @@ fn loose_ignored_files(root: &Path, exclude: Option<&str>) -> Vec<std::path::Pat
                 None => true,
             })
             .map(|l| root.join(l))
+            /* **A link to a directory is a directory**, and git cannot say so. It
+            marks a directory with a slash, but a symlink is a file to git, so a
+            worktree's linked `node_modules` came back as a loose ignored file.
+            Each one then got a walk with every ignore rule off, and a walk always
+            follows its root: 730,000 files past `MAX_PATHS`, a truncated list,
+            and every word that looked like a file name drawn as a link.
+            `is_dir` follows the link, which is the question here: a directory is
+            `small_ignored_dirs`'s to weigh, with its own cap. */
+            .filter(|p| !p.is_dir())
             .collect();
         /* **A cap, because 15 is this monorepo's number and not a contract.** The
         repo in front of you is the only live test there is, and a tree that
@@ -1092,6 +1101,39 @@ mod tests {
         let found = find(&dir, "needle");
         let got: Vec<&str> = found.hits.iter().map(|h| h.path.as_str()).collect();
         assert_eq!(got, vec![".env"], "the two modes agree");
+    }
+
+    /// A worktree links its dependency folders rather than copying them, and git
+    /// reports a link as a file. One linked to a large folder must stay out of
+    /// both modes, the way the folder itself would.
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_ignored_directory_is_not_a_loose_ignored_file() {
+        let dir = orchd_base::testutil::scratch_repo("search-linked-dir");
+        let shared = orchd_base::testutil::scratch("search-linked-dir-target");
+        for i in 0..(IGNORED_CAP + 5) {
+            fs::write(shared.join(format!("f{i:05}.js")), "the needle too\n").unwrap();
+        }
+        std::os::unix::fs::symlink(&shared, dir.join("node_modules")).unwrap();
+        fs::write(dir.join(".gitignore"), ".env\n/node_modules\n").unwrap();
+        fs::write(dir.join(".env"), "TOKEN=the needle is here\n").unwrap();
+
+        let listed = paths(&dir, None).unwrap();
+        assert!(!listed.truncated);
+        assert!(
+            listed.paths.contains(&".env".to_string()),
+            "{:?}",
+            listed.paths
+        );
+        assert!(
+            !listed.paths.iter().any(|p| p.starts_with("node_modules")),
+            "a linked ignored directory is still refused: {:?}",
+            &listed.paths[..listed.paths.len().min(5)],
+        );
+        let found = find(&dir, "needle");
+        let got: Vec<&str> = found.hits.iter().map(|h| h.path.as_str()).collect();
+        assert_eq!(got, vec![".env"], "the content search agrees");
+        let _ = fs::remove_dir_all(&shared);
     }
 
     /// A path filter is the caller's question, and it has to reach these too.

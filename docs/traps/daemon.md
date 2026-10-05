@@ -475,6 +475,16 @@ was rejected for the right reason: a person looking for a file should not have t
 find a configuration file first, and would have no way of knowing that was the
 answer.
 
+**A link to a directory came in through the file route.** git marks an ignored
+directory with a slash, but a symlink is a file to git, so a worktree whose setup
+links `node_modules` from main handed every linked one to `loose_ignored_files`.
+Each got a walk with every ignore rule off, and a walk always follows its root:
+730,321 files against `MAX_PATHS`, a truncated list, and a truncated list answers
+yes to every path the terminal asks about, so `workflow.processAction` drew a
+link to a file that does not exist. `loose_ignored_files` drops anything that
+`is_dir` once followed; the worktree's list is 19,817 files again, in 0.6s rather
+than 13.
+
 
 
 ## A session auto-resume has not reached yet is not live, and that is what `was_live` reads.
