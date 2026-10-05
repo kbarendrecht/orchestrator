@@ -1681,9 +1681,23 @@ function menuRow(/** @type {MenuItem} */ [label, cls, handler]) {
   // level does not shut it; coming back inside cancels the close.
   /** @type {ReturnType<typeof setTimeout> | undefined} */
   let leaving;
-  closeLevel.set(group, () => { clearTimeout(leaving); show(false); });
-  group.onmouseenter = () => { clearTimeout(leaving); show(true); };
-  group.onmouseleave = () => { leaving = setTimeout(() => show(false), 200); };
+  /* And a moment's patience on entering while a sibling's level is up: the corner
+     cut to that level crosses this row, and opening at once shut the level the
+     pointer was on its way to. Resting here still opens it; passing over does not. */
+  /** @type {ReturnType<typeof setTimeout> | undefined} */
+  let entering;
+  closeLevel.set(group, () => { clearTimeout(leaving); clearTimeout(entering); show(false); });
+  group.onmouseenter = () => {
+    clearTimeout(leaving);
+    const siblingOpen = [...group.parentElement?.children ?? []].some((o) =>
+      o !== group && o.querySelector(':scope > .ctxmenu-sub:not([hidden])'));
+    if (siblingOpen) entering = setTimeout(() => show(true), 150);
+    else show(true);
+  };
+  group.onmouseleave = () => {
+    clearTimeout(entering);
+    leaving = setTimeout(() => show(false), 200);
+  };
   // Opens, never toggles: a mouse has already hovered it open by the time it
   // clicks, so a toggle shut the level under the pointer that reached for it.
   item.onclick = () => show(true);
