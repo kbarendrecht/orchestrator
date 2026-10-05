@@ -2142,6 +2142,21 @@ pub async fn close_process(
 // Workspaces
 // ---------------------------------------------------------------------------
 
+/// An idle workspace's changed files, as last measured: what the snapshot leaves
+/// out (`WorkspaceView::changed_omitted`). Read from memory, no git: the list is
+/// the one the sweep already holds.
+pub async fn workspace_changed(
+    State(app): State<Arc<AppState>>,
+    Path(workspace): Path<String>,
+) -> ApiResult<serde_json::Value> {
+    let inner = app.inner.read().await;
+    let w = inner
+        .workspaces
+        .get(&workspace)
+        .ok_or_else(|| anyhow::anyhow!("unknown workspace {workspace}"))?;
+    Ok(Json(json!({ "changed": w.tree.changed })))
+}
+
 pub async fn reconcile(
     State(app): State<Arc<AppState>>,
     Path(workspace): Path<String>,

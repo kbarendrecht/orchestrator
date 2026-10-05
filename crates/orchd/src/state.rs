@@ -500,6 +500,30 @@ impl Inner {
 const ENDED_MAX: usize = 10;
 
 impl Inner {
+    /// Whether a workspace's tree can have changed since it was last measured,
+    /// which is what the timer sweep measures and what the snapshot carries in
+    /// full.
+    ///
+    /// **One rule for both, because they answer one question.** A tree changes
+    /// when something works in it: a live session, a process in its drawer. Main
+    /// is always in, because the context bar reads it with nothing selected, and
+    /// so is one never measured, which has nothing to show yet. Everything else
+    /// was measured and holds still: on the monorepo this is developed against,
+    /// 194 of 200 workspaces.
+    pub fn is_active_workspace(&self, id: &str) -> bool {
+        id == crate::model::MAIN
+            || self
+                .sessions
+                .values()
+                .any(|s| s.workspace == id && s.state.is_live())
+            || self.workspaces.get(id).is_some_and(|w| {
+                !w.tree.measured
+                    || w.processes
+                        .iter()
+                        .any(|p| p.pty.as_ref().is_some_and(|h| h.is_alive()))
+            })
+    }
+
     /// Which workspace an absolute path belongs to, without taking the lock.
     ///
     /// The body of [`AppState::workspace_for_path`], which delegates here. Split
@@ -1250,7 +1274,17 @@ impl AppState {
                     at: crate::git::wip_ref(&w.id),
                 }),
                 branch: w.tree.branch.clone(),
-                changed: w.tree.changed.clone(),
+                /* **In full only where it can be moving.** The lists were 486 KB of
+                a 775 KB snapshot, for 200 workspaces, and every push carried all of
+                them to a page that draws one. An idle workspace's list is held
+                here unchanged and handed over by `/api/workspace/:id/changed`
+                when its pane asks; `changed_omitted` says to ask. */
+                changed: if inner.is_active_workspace(&w.id) {
+                    w.tree.changed.clone()
+                } else {
+                    Vec::new()
+                },
+                changed_omitted: !inner.is_active_workspace(&w.id) && !w.tree.changed.is_empty(),
                 changed_total: w.tree.changed_total,
                 changed_since: w.tree.base.clone(),
                 behind: w.tree.divergence.0,
@@ -2249,6 +2283,10 @@ pub struct WorkspaceView {
     /// **Capped at [`CHANGED_CAP`]**, with the real number in `changed_total`.
     /// That constant carries the measurement and the incident behind it.
     pub changed: Vec<crate::model::DiffFile>,
+    /// `changed` was left out to keep the snapshot small: this workspace is idle,
+    /// and its list is at `/api/workspace/:id/changed`. See
+    /// [`Inner::is_active_workspace`].
+    pub changed_omitted: bool,
     /// How many there really are, when `changed` is a prefix of them.
     ///
     /// Sent rather than inferred from the length, so the pane can say "500 of
@@ -3147,6 +3185,43 @@ mod tests {
     /// have to die with the workspace. They used to live in maps keyed by id
     /// beside it, and teardown removed only the workspace — so recreating the
     /// same id served the previous incarnation's file list and counts.
+    /// An idle workspace's changed list stays out of the snapshot and is flagged,
+    /// so the pane fetches it; a workspace with a live session keeps its list.
+    /// The lists were 486 KB of a 775 KB snapshot pushed on every change.
+    #[tokio::test]
+    async fn an_idle_workspace_leaves_its_changed_list_out_of_the_snapshot() {
+        let app = app().await;
+        let path = std::env::temp_dir().join("orchd-omit");
+        let file = || {
+            crate::model::DiffFile::untracked(&crate::model::ChangedFile {
+                path: "a.rs".into(),
+                status: crate::model::FileStatus::Untracked,
+                code: "??".into(),
+            })
+        };
+        for ws in ["idle", "busy"] {
+            app.register_worktree(ws, path.clone(), None).await;
+        }
+        {
+            let mut inner = app.inner.write().await;
+            for ws in ["idle", "busy"] {
+                let w = inner.workspaces.get_mut(ws).unwrap();
+                w.tree.changed = vec![file()];
+                w.tree.measured = true;
+            }
+            let mut s =
+                crate::model::Session::new(uuid::Uuid::new_v4(), "busy".into(), path.clone(), None);
+            s.state = crate::model::State::Working;
+            inner.sessions.insert(s.id, s);
+        }
+        let snap = app.snapshot().await;
+        let by = |id: &str| snap.workspaces.iter().find(|w| w.id == id).unwrap();
+        assert!(by("idle").changed.is_empty(), "the idle list is left out");
+        assert!(by("idle").changed_omitted, "and says so, so the pane asks");
+        assert_eq!(by("busy").changed.len(), 1, "a live one keeps its list");
+        assert!(!by("busy").changed_omitted);
+    }
+
     #[tokio::test]
     async fn a_recreated_workspace_does_not_inherit_the_old_ones_measurements() {
         let app = app().await;

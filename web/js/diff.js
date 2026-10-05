@@ -326,8 +326,9 @@ function renderFiles() {
      redraws — `wsId` alone would not, for two sessions in one workspace. */
   const cur = currentSession();
   const listSum = w && pushedMode && !diffState.open ? pushedSummary(w) : null;
+  const known = w ? changedOf(w) : [];
   if (unchanged(drawn, [wsId, w, cur?.id ?? null, !!(cur && pending(cur)),
-    diffState.open, diffState.path, diffState.summary, pushedMode, listSum], NOT_SHOWN)) return;
+    diffState.open, diffState.path, diffState.summary, pushedMode, listSum, known], NOT_SHOWN)) return;
   if (w) renderDivergence(w);
   const panes = $('filepanes');
 
@@ -363,10 +364,10 @@ function renderFiles() {
   /* Pushed, the list is the fetched summary plus the snapshot's untracked rows: a
      diff never sees an untracked file, and an untracked file is not pushed. */
   const files = sum ? sum.files
-    : listSum ? [...listSum.files, ...(w.changed || []).filter((f) => f.status === '?')]
+    : listSum ? [...listSum.files, ...(known || []).filter((f) => f.status === '?')]
       .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
     : pushedMode ? []
-    : (w.changed || []);
+    : (known || []);
   const since = sum ? sum.base : listSum ? listSum.base : pushedMode ? null : w.changed_since;
   const counted = !!(sum || listSum);
 
@@ -384,10 +385,11 @@ function renderFiles() {
   if (!files.length) {
     items.push({
       key: 'empty',
-      sig: paintSig([!!sum, w.measured, w.is_main, pushedMode, !!listSum]),
+      sig: paintSig([!!sum, w.measured, w.is_main, pushedMode, !!listSum, known === null]),
       build: () => (pushedMode && !sum
         ? (listSum ? el('div', 'fempty', 'Nothing to push.') : counting())
-        : sum || w.measured
+        // An omitted list still on its way is not counted yet, not empty.
+        : sum || (w.measured && known !== null)
           ? el('div', 'fempty',
             w.is_main ? 'Nothing changed in the main checkout.' : 'Nothing changed in this worktree yet.')
           : counting()),
@@ -503,6 +505,30 @@ function pushedSummary(/** @type {import('../snapshot').WorkspaceView} */ w) {
     });
   }
   return pushed.ws === w.id ? pushed.summary : null;
+}
+
+/** An idle workspace's changed files, which the snapshot leaves out to stay
+ *  small (`changed_omitted`): fetched once, and again when its measurements move.
+ *  `null` while the first answer is in the air.
+ *
+ *  @type {{ key: string | null, ws: string | null, files: any[] | null }} */
+const omitted = { key: null, ws: null, files: null };
+function changedOf(/** @type {import('../snapshot').WorkspaceView} */ w) {
+  if (!w.changed_omitted) return w.changed || [];
+  const key = paintSig([w.id, w.changed_total, w.changed_since, w.measured]);
+  if (omitted.key !== key) {
+    omitted.key = key;
+    if (omitted.ws !== w.id) omitted.files = null;
+    get(`/api/workspace/${encodeURIComponent(w.id)}/changed`).then((r) => {
+      if (omitted.key !== key) return;
+      omitted.ws = w.id;
+      omitted.files = r.changed || [];
+      renderFiles();
+    }, (e) => {
+      if (omitted.key === key) toast(reason(e), true);
+    });
+  }
+  return omitted.ws === w.id ? omitted.files : null;
 }
 
 /** A pushed base came back as a sha only when the branch was never pushed: the

@@ -843,6 +843,24 @@ import * as FileView from './js/fileview.js';
 // What picking a session means: open its terminal, redraw, and put the cursor
 // where you are about to type. Registered rather than called by the rail, so the
 // rail does not have to know about rendering.
+/* **An idle workspace is measured when you look at it.** The timer sweep skips a
+   workspace with nothing live in it once it has been measured (`sweep_order` in
+   `orchd-serve`), so opening an old session's pane asks for its tree once: the
+   changes and the behind count are then current for the pane you are reading.
+   At most once a minute per workspace, which is the same walk the refresh
+   button does. */
+/** @type {Map<string, number>} */
+const measuredOnOpen = new Map();
+onSelection((id) => {
+  const s = id ? everySession().find(({ session }) => session.id === id) : null;
+  if (!s || s.session.alive) return;
+  const key = `${s.checkout.path}\u0000${s.session.workspace}`;
+  if (Date.now() - (measuredOnOpen.get(key) ?? 0) < 60_000) return;
+  measuredOnOpen.set(key, Date.now());
+  callOn(s.checkout, `/api/workspace/${encodeURIComponent(s.session.workspace)}/reconcile`)
+    .catch(() => {});
+});
+
 onSelection((id, auto) => {
   // Picking a session is going back to work: the legend was an aside, and leaving
   // it up over the pane you just chose is the app arguing with you.

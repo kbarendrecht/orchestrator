@@ -494,7 +494,7 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
     through, so the panes fill in as the sweep walks. */
     tokio::spawn({
         let app = app.clone();
-        async move { reconcile_all(&app).await }
+        async move { reconcile_all(&app, Scope::Everything).await }
     });
     phases.mark("reconcile-spawn");
     adopt_banked_work(&app).await;
@@ -851,8 +851,15 @@ async fn adopt_existing_worktrees(app: &Arc<AppState>) -> Result<()> {
 /// bringing back and the selection lands on one of them. Then main, which the
 /// context bar reads even when nothing is selected. Then the rest, which nobody
 /// is looking at until they go looking, and by then this has finished.
-fn sweep_order(inner: &state::Inner) -> Vec<String> {
+fn sweep_order(inner: &state::Inner, scope: Scope) -> Vec<String> {
     let mut ids: Vec<String> = inner.workspaces.keys().cloned().collect();
+    if scope == Scope::Live {
+        /* **Only what can have changed since it was last measured**
+        (`Inner::is_active_workspace`). Measuring the rest again was a walk for
+        an answer already given — 194 of 200 workspaces and 11 to 61 seconds of
+        `git status` a sweep on the monorepo this is developed against. */
+        ids.retain(|id| inner.is_active_workspace(id));
+    }
     // Archived counts. At boot every restored session is `Archived` until
     // auto-resume spawns it, so ranking on *live* would rank nothing at all —
     // which is the case this ordering exists for.
@@ -876,6 +883,15 @@ fn sweep_order(inner: &state::Inner) -> Vec<String> {
     ids
 }
 
+/// Which workspaces a sweep measures. See [`sweep_order`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Scope {
+    /// All of them: the boot sweep, which gives every pane its first answer.
+    Everything,
+    /// The ones that can have changed: the timer's.
+    Live,
+}
+
 /// How many workspaces a sweep measures at once.
 ///
 /// The sweep is bound by process starts, not by CPU: seven git processes per tree,
@@ -887,6 +903,9 @@ fn sweep_order(inner: &state::Inner) -> Vec<String> {
 /// turn a slow start into a slow machine still holds, and four is four blocking
 /// threads and four `git status` reads, which no machine notices.
 const SWEEP_WIDTH: usize = 4;
+
+/// How often a sweep in progress shows what it has measured so far.
+const SWEEP_PUSH_EVERY: std::time::Duration = std::time::Duration::from_millis(400);
 
 /// What one pass of the sweep did with a workspace.
 #[derive(Debug, PartialEq, Eq)]
@@ -929,17 +948,19 @@ async fn sweep_one(app: &Arc<AppState>, id: &str) -> Swept {
 /// Off the boot path, so what makes it *feel* fast is [`sweep_order`]: the first
 /// tasks started are the panes being looked at. The width is what makes it *be*
 /// fast on a machine where an exec is expensive; see the constant.
-async fn reconcile_all(app: &Arc<AppState>) {
+async fn reconcile_all(app: &Arc<AppState>, scope: Scope) {
     let Ok(_sweep) = app.sweeping.try_lock() else {
         tracing::debug!("a reconcile sweep is already running; skipping this one");
         return;
     };
-    let ids = sweep_order(&*app.inner.read().await);
+    let ids = sweep_order(&*app.inner.read().await, scope);
     let total = ids.len();
     let began = std::time::Instant::now();
     let mut queue = ids.into_iter();
     let mut running = tokio::task::JoinSet::new();
     let mut skipped = 0usize;
+    let mut last_push = std::time::Instant::now();
+    let mut pending = false;
     loop {
         // Topped up in sweep order, so the visible panes are the first four in
         // flight and a slow tree elsewhere never holds a slot they need.
@@ -955,9 +976,24 @@ async fn reconcile_all(app: &Arc<AppState>) {
             // so each answer has to reach it as it lands rather than 64 of them at
             // the end, which would be the loader sitting there for the whole sweep
             // and then everything appearing at once.
-            Some(Ok(Swept::Measured)) => app.notify().await,
+            /* **Batched, not one push per workspace.** Each `notify` sends the
+            whole snapshot to every page, and 200 of them in a sweep was the
+            page parsing several hundred kilobytes about fifteen times a
+            second. The panes still fill in as the sweep walks, a few times a
+            second rather than per tree. */
+            Some(Ok(Swept::Measured)) => {
+                pending = true;
+                if last_push.elapsed() >= SWEEP_PUSH_EVERY {
+                    app.notify().await;
+                    last_push = std::time::Instant::now();
+                    pending = false;
+                }
+            }
             Some(Err(e)) => tracing::warn!("a reconcile task died: {e}"),
         }
+    }
+    if pending {
+        app.notify().await;
     }
     let ms = began.elapsed().as_millis();
     let measured = total - skipped;
@@ -1111,17 +1147,24 @@ fn start_pr_poller(app: Arc<AppState>) {
         the genuinely concurrent cases (a manual reconcile, the workspace
         watcher, a later tick that overruns). */
         let mut boot_already_did_this = true;
+        let mut woke = Woke::Timer;
         loop {
             if boot_already_did_this {
                 boot_already_did_this = false;
-            } else {
+            } else if woke == Woke::Timer {
+                /* **Only on the timer, never on a refresh.** A refresh is the PR
+                pane's button and the page coming back into focus, which it does
+                every time you return from GitHub: each one ran the base fetch
+                and the whole sweep as well, so a sweep landed every one to three
+                minutes instead of every five. A refresh is a question about the
+                PRs, and that is all it now asks. */
                 // Piggyback the upstream fetch on this timer (§5): the merge-base
                 // and the behind count are both answered from that ref.
                 let main = app.cfg.main_checkout.clone();
                 let base = app.cfg.upstream_ref.clone();
                 let _ =
                     tokio::task::spawn_blocking(move || git::fetch_upstream(&main, &base)).await;
-                reconcile_all(&app).await;
+                reconcile_all(&app, Scope::Live).await;
                 // After the fetch, because "behind the base" is the question this
                 // answers and the fetch is what makes the answer current.
                 orchd::spare::refresh(&app).await;
@@ -1261,7 +1304,7 @@ fn start_pr_poller(app: Arc<AppState>) {
                 inner.pr_polling = false;
             }
             app.notify().await;
-            next_tick(interval, &app.pr_refresh).await;
+            woke = next_tick(interval, &app.pr_refresh).await;
         }
     });
 }
@@ -1271,11 +1314,19 @@ fn start_pr_poller(app: Arc<AppState>) {
 /// **A refresh cuts the wait short *and* restarts the period**, so a button press
 /// and the next scheduled poll never land back to back. Both pollers with a
 /// button spelled this out; a third would have had to know to.
-async fn next_tick(interval: std::time::Duration, refresh: &tokio::sync::Notify) {
+async fn next_tick(interval: std::time::Duration, refresh: &tokio::sync::Notify) -> Woke {
     tokio::select! {
-        _ = tokio::time::sleep(interval) => {}
-        _ = refresh.notified() => {}
+        _ = tokio::time::sleep(interval) => Woke::Timer,
+        _ = refresh.notified() => Woke::Asked,
     }
+}
+
+/// What ended a wait in [`next_tick`], for the poller that does more on a timer
+/// than on a press.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Woke {
+    Timer,
+    Asked,
 }
 
 /// Of several resumable records, the ones to actually bring back: at most one per
@@ -1477,7 +1528,7 @@ fn start_review_poller(app: Arc<AppState>) {
             }
             app.notify().await;
 
-            next_tick(interval, &app.review_refresh).await;
+            let _ = next_tick(interval, &app.review_refresh).await;
         }
     });
 }
@@ -1985,11 +2036,45 @@ mod tests {
             inner.sessions.insert(s.id, s);
         }
 
-        let order = sweep_order(&*app.inner.read().await);
+        let order = sweep_order(&*app.inner.read().await, Scope::Everything);
         assert_eq!(
             order,
             vec!["z-session", MAIN, "a-empty", "m-empty"],
             "sessions first, then main, then the rest alphabetically"
+        );
+    }
+
+    /// The timer measures only what can have changed: main, a workspace with a
+    /// live session, and one never measured. A measured, idle one waits for the
+    /// boot sweep or for somebody to open it.
+    #[tokio::test]
+    async fn the_timer_sweep_skips_an_idle_workspace_it_has_measured() {
+        let (app, dir) = orchd::testutil::app("sweep-live");
+        for ws in ["busy", "fresh", "idle"] {
+            app.register_worktree(ws, dir.clone(), None).await;
+        }
+        {
+            let mut inner = app.inner.write().await;
+            let mut s =
+                model::Session::new(uuid::Uuid::new_v4(), "busy".to_string(), dir.clone(), None);
+            s.state = model::State::Working;
+            inner.sessions.insert(s.id, s);
+            for ws in ["busy", "idle"] {
+                if let Some(w) = inner.workspaces.get_mut(ws) {
+                    w.tree.measured = true;
+                }
+            }
+        }
+        let inner = app.inner.read().await;
+        assert_eq!(
+            sweep_order(&inner, Scope::Live),
+            vec!["busy", MAIN, "fresh"],
+            "the idle, measured one is left out"
+        );
+        assert_eq!(
+            sweep_order(&inner, Scope::Everything).len(),
+            4,
+            "boot still walks them all"
         );
     }
 

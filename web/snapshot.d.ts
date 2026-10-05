@@ -666,6 +666,12 @@ banked: BankedView | null,
  */
 changed: Array<DiffFile>, 
 /**
+ * `changed` was left out to keep the snapshot small: this workspace is idle,
+ * and its list is at `/api/workspace/:id/changed`. See
+ * [`Inner::is_active_workspace`].
+ */
+changed_omitted: boolean, 
+/**
  * How many there really are, when `changed` is a prefix of them.
  *
  * Sent rather than inferred from the length, so the pane can say "500 of
