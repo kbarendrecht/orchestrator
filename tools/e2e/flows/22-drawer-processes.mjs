@@ -73,23 +73,28 @@ export async function run(t) {
     const sock = new WebSocket(
       `ws://127.0.0.1:${t.port}/ws/pty?token=${token}&target=proc:${shell}`)
     const fail = setTimeout(() => reject(new Error('the shell never closed its socket')), 15_000)
-    sock.onopen = () => sock.send('exit\n')
+    // After a failing command, because a bare `exit` then leaves with that code,
+    // and a non-zero code used to keep the tab.
+    sock.onopen = () => sock.send('false\nexit\n')
     sock.onclose = (ev) => { clearTimeout(fail); resolve({ code: ev.code, reason: ev.reason }) }
     sock.onerror = () => { clearTimeout(fail); reject(new Error('the pty socket errored')) }
   })
   assert.equal(closed.code, 4000, `a shell that exited must say so, got ${JSON.stringify(closed)}`)
   assert.equal(closed.reason, 'process exited')
 
-  await until('the shell to be reaped', async () => {
-    const p = (await t.workspace('main')).processes.find((x) => x.id === shell)
-    return !p || !p.alive
-  })
+  // Typing `exit` closes the tab, whatever the last command returned.
+  await until('the exited shell to leave the drawer', async () =>
+    !(await t.workspace('main')).processes.some((p) => p.id === shell))
+  assert.deepEqual(await names(t), ['watch'])
 
   // Closing a tab is a stop, not a hide: the × has to reach the process, or the
   // next one starts beside it.
-  await t.api('POST', `/api/process/${shell}/close`)
+  const { process: open } = await t.api('POST', '/api/workspace/main/shell')
+  await until('a second shell to appear', async () =>
+    (await t.workspace('main')).processes.some((p) => p.id === open))
+  await t.api('POST', `/api/process/${open}/close`)
   await until('the shell tab to go', async () =>
-    !(await t.workspace('main')).processes.some((p) => p.id === shell))
+    !(await t.workspace('main')).processes.some((p) => p.id === open))
   assert.deepEqual(await names(t), ['watch'])
 
   // --- and they belong to the session --------------------------------------------

@@ -172,28 +172,26 @@ pub async fn spawn_shell(app: &Arc<AppState>, workspace: &str) -> Result<String>
         }
     }
 
-    // Ctrl+D means close. A shell that exits cleanly is removed outright rather
-    // than left as a corpse tab you have to hunt down an × to clear.
-    //
-    // §2 says a dead shell keeps its buffer "until dismissed", and that is still
-    // true of the case it was written for: a shell that died on its own, with a
-    // non-zero code, keeps its output so the failure is not swallowed.
+    /* `exit` and Ctrl+D mean close, whatever the code. A shell that exits is
+    removed outright rather than left as a corpse tab you have to hunt down an ×
+    to clear.
+
+    **It used to keep the tab on a non-zero code**, so that a shell that died on
+    its own did not swallow its last output (§2's "until dismissed"). But bash's
+    bare `exit` leaves with the status of the last command, so `exit` after
+    anything that failed kept the tab too, and that is the common case. The code
+    cannot tell the two apart: portable-pty reports a shell killed by a signal as
+    1, the same as `false; exit`. So the rule is the one you typed, and the cost
+    is that a shell killed from outside loses its scrollback. */
     let app2 = app.clone();
     let ws = workspace.to_string();
     let pid2 = proc_id.clone();
     tokio::spawn(async move {
-        let code = spawned.handle.wait().await;
+        spawned.handle.wait().await;
         {
             let mut inner = app2.inner.write().await;
             if let Some(w) = inner.workspaces.get_mut(&ws) {
-                if code == 0 {
-                    w.processes.retain(|p| p.id != pid2);
-                } else if let Some(p) = w.processes.iter_mut().find(|p| p.id == pid2) {
-                    p.kind = ProcKind::Shell {
-                        exit_code: Some(code),
-                    };
-                    p.health = Health::Dead;
-                }
+                w.processes.retain(|p| p.id != pid2);
             }
         }
         app2.notify().await;

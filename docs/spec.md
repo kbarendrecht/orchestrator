@@ -171,8 +171,8 @@ above it. No health parsing, no restart policy, no rail entry. This is what make
 the drawer agnostic: it hosts whatever pty you point at it, and `ng-watch` is
 just the one main happens to declare.
 
-Shells are disposable. They die with the daemon and are not resumable; a dead
-shell keeps its buffer and shows its exit code until dismissed.
+Shells are disposable. They die with the daemon and are not resumable, and a
+shell that exits closes its tab, whatever its exit code.
 
 > A shell opened in a worktree inherits the worktree's constraints. `docker
 > compose` resolves the wrong project from there and is blocked by `pre-bash`;
@@ -795,8 +795,8 @@ per Process. On main that means `ng-watch` and `docker`; on a worktree it starts
 empty and is a thin bar until you open something.
 
 `+ Shell` (⌃`) opens a plain shell in the selected session's workspace directory.
-Managed processes get a health dot and a restart button; shells get an exit code
-and a close button. Auto-expands when a managed process transitions to `Failing`.
+Managed processes get a health dot and a restart button; shells get a close
+button. Auto-expands when a managed process transitions to `Failing`.
 
 ### Right
 
