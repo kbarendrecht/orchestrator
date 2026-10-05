@@ -244,8 +244,14 @@ pub async fn scratchpad_image(
     let session = q.session;
     let read = crate::proc::run_blocking("reading a scratchpad image", move || {
         let at = std::fs::canonicalize(&q.path).ok()?;
-        let tmp = std::fs::canonicalize(std::env::temp_dir()).ok()?;
-        if !in_scratchpad(&at, &tmp, &cwd, session) {
+        /* Both bases resolved the way the file was. On macOS `/tmp` is a link to
+        `/private/tmp`, so a resolved file never started with the plain `/tmp`
+        and its own image answered 404 — caught by `check` on macos-14. */
+        let bases: Vec<std::path::PathBuf> = [std::env::temp_dir(), "/tmp".into()]
+            .iter()
+            .filter_map(|b| std::fs::canonicalize(b).ok())
+            .collect();
+        if !in_scratchpad(&at, &bases, &cwd, session) {
             return None;
         }
         let md = std::fs::metadata(&at).ok()?;
@@ -276,12 +282,17 @@ pub async fn scratchpad_image(
 /// Whether `at`, already resolved, is inside this session's scratchpad:
 /// `<tmp>/claude-<digits>/<slug of cwd>/<session>/scratchpad/…`.
 ///
-/// Pure, so the shape is tested rather than trusted. `tmp` is the resolved temp
-/// folder; `/tmp` is accepted as well, because that is where Claude Code puts it
-/// even on a machine whose `TMPDIR` points elsewhere.
-pub fn in_scratchpad(at: &Path, tmp: &Path, cwd: &Path, session: uuid::Uuid) -> bool {
+/// Pure, so the shape is tested rather than trusted. `bases` are the resolved temp
+/// folder and the resolved `/tmp`: Claude Code puts it there even on a machine
+/// whose `TMPDIR` points elsewhere.
+pub fn in_scratchpad(
+    at: &Path,
+    bases: &[std::path::PathBuf],
+    cwd: &Path,
+    session: uuid::Uuid,
+) -> bool {
     let slug = crate::config::transcript_slug(cwd);
-    [tmp, Path::new("/tmp")].iter().any(|base| {
+    bases.iter().any(|base| {
         let Ok(rest) = at.strip_prefix(base) else {
             return false;
         };
@@ -364,7 +375,11 @@ mod tests {
         let id = uuid::Uuid::parse_str("f8452082-4dc5-4a96-836f-02f7ee3a2250").unwrap();
         let other = uuid::Uuid::parse_str("2b0cf0c7-dc0a-4dac-832d-ee69ac9b0478").unwrap();
         let cwd = Path::new("/home/k/dev/scienta/.claude/worktrees/story-53860");
-        let tmp = Path::new("/var/tmp-elsewhere");
+        let tmp = [
+            std::path::PathBuf::from("/var/tmp-elsewhere"),
+            std::path::PathBuf::from("/tmp"),
+        ];
+        let tmp = tmp.as_slice();
         let slug = "-home-k-dev-scienta--claude-worktrees-story-53860";
         let at = |s: &str| std::path::PathBuf::from(s);
         let mine = format!("/tmp/claude-1000/{slug}/{id}/scratchpad/kanban.png");
@@ -399,6 +414,14 @@ mod tests {
         let user = format!("/tmp/claude-x/{slug}/{id}/scratchpad/a.png");
         assert!(!in_scratchpad(&at(&user), tmp, cwd, id), "not a uid");
         assert!(!in_scratchpad(&at("/etc/passwd"), tmp, cwd, id));
+        // macOS: `/tmp` resolves to `/private/tmp`, and the route resolves both
+        // the file and its bases, so the two still agree.
+        let mac = [std::path::PathBuf::from("/private/tmp")];
+        let resolved = format!("/private/tmp/claude-501/{slug}/{id}/scratchpad/kanban.png");
+        assert!(
+            in_scratchpad(&at(&resolved), &mac, cwd, id),
+            "a resolved /tmp"
+        );
     }
 
     fn grant(page: &str, page_ignored: bool) -> PreviewGrant {
