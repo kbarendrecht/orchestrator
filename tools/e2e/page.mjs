@@ -2020,11 +2020,17 @@ try {
      you were watching jumped down past main the moment the worktree was done. */
   await page.$eval('body', (b) => /** @type {HTMLElement} */ (b).focus())
   await page.keyboard.press(chord('KeyN'))
-  const placed = await page.waitForSelector('#rail .sess.starting', { timeout: 5000 })
-    .then(() => page.$$eval('#rail .sess', (rows) => ({
-      at: rows.findIndex((r) => r.classList.contains('starting')),
-      lastMain: rows.map((r) => !!r.querySelector('.sess-main')).lastIndexOf(true),
-    })))
+  /* Read in the same call that sees the row. A spare worktree is claimed in tens
+     of milliseconds, so a second call after the wait found the placeholder gone
+     and answered `at: -1` on a fast runner. */
+  const placed = await page.waitForFunction(() => {
+    const rows = [...document.querySelectorAll('#rail .sess')]
+    const at = rows.findIndex((r) => r.classList.contains('starting'))
+    return at < 0 ? null : {
+      at, lastMain: rows.map((r) => !!r.querySelector('.sess-main')).lastIndexOf(true),
+    }
+  }, null, { timeout: 5000, polling: 'raf' })
+    .then((h) => h.jsonValue())
     .catch(() => null)
   check(!!placed && placed.lastMain >= 0 && placed.at > placed.lastMain,
     `a worktree being cut sits below main's rows, got ${JSON.stringify(placed)}`)
