@@ -865,6 +865,28 @@ function markCursor() {
   $('ovcount').textContent = `change ${diffState.cursor + 1} of ${anchors.length}${where}`;
 }
 
+/** Scroll the file as it is now to `line`, opening the folds when it is inside
+ *  one. The number is the right side's, the file on disk, which is the one an
+ *  agent, a stack trace and the editor all count in. */
+function goTo(/** @type {number} */ line) {
+  const find = () => /** @type {HTMLElement | null} */ ($('diffbody').querySelector(
+    diffState.split ? `.gutter + .ln > i[data-n="${line}"]` : `.ln:not(.del) > i[data-n="${line}"]`))
+    ?.parentElement ?? null;
+  let row = find();
+  if (!row && diffState.lines && diffState.file) {
+    for (let i = 0; i <= diffState.file.hunks.length; i++) {
+      diffState.reveal.set(i, { top: Number.MAX_SAFE_INTEGER, bottom: 0 });
+    }
+    renderDiff();
+    row = find();
+  }
+  if (!row) return false;
+  for (const e of $('diffbody').querySelectorAll('.ln.goto')) e.classList.remove('goto');
+  row.classList.add('goto');
+  row.scrollIntoView({ block: 'center' });
+  return true;
+}
+
 /** Walk to the next/previous change block, carrying on into the next file in the
  *  changeset's order rather than wrapping inside the current one. Files with no
  *  change blocks (binary, or nothing textual) are hopped over, and the whole
@@ -1043,4 +1065,4 @@ function openEditor() {
   });
 }
 
-export { toggleBase, diffState as state, openDiff as open, closeDiff as close, renderDiff as render, stepChange as step, loadFile, renderFiles, openEditor };
+export { goTo, toggleBase, diffState as state, openDiff as open, closeDiff as close, renderDiff as render, stepChange as step, loadFile, renderFiles, openEditor };

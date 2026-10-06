@@ -322,6 +322,14 @@ export function create(on) {
       if (view.spot) paint(view.spot);
     },
 
+    /** Put line `line` in the middle, as lines. False when there is no text to
+     *  move through: nothing loaded, or a picture. */
+    goTo: (/** @type {number} */ line) => {
+      if (!view.file || view.mode === 'image') return false;
+      paint({ line, col: 0, len: 0 });
+      return true;
+    },
+
     /** Show `path` at `spot`, fetching it unless it is already the one on screen.
      *
      *  A refusal — binary, too large, deleted underneath you — is a sentence in

@@ -1745,6 +1745,8 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 .ln i::before{content:attr(data-n)}
 .ln s{text-decoration:none;padding:0 12px;display:block}
 .ln.add s{background:var(--add)}
+/* Where "go to line" landed, until the next jump. */
+.ln.goto i{box-shadow:inset 2px 0 0 var(--focus)}
 .ln.del s{background:var(--del)}
 .ln.empty s{background:#0B0B0B}
 .w-add{background:var(--add-hi);border-radius:2px}

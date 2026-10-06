@@ -79,6 +79,18 @@ export async function back() {
 
 export const isOpen = () => state.open;
 
+/** Move to a line, which means the source: a rendered page has no line numbers. */
+export function goTo(/** @type {number} */ line) {
+  if (!viewer().goTo(line)) return false;
+  state.line = line;
+  state.last = 0;
+  if (state.rendered) {
+    state.rendered = false;
+    renderHead(true);
+  }
+  return true;
+}
+
 /** Show one file, at one line.
  *
  *  `candidates` is what the caller resolved the text to: a name an agent printed

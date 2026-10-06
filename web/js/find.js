@@ -85,6 +85,9 @@ const state = {
 
 export const isOpen = () => state.open;
 
+/** Move the shown file to a line, if a file is shown. */
+export const goTo = (/** @type {number} */ line) => viewer().goTo(line);
+
 /** Where each jump came from, newest last, so the mouse's back button can return.
  *
  *  **Only a jump pushes.** Typing a new query is not a place you were sent to, it

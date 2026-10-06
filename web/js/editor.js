@@ -209,6 +209,24 @@ export async function save() {
   await host.onSaved?.();
 }
 
+/** Put the caret at the start of a line and scroll it into the middle. */
+export function goTo(/** @type {number} */ line) {
+  const ta = /** @type {HTMLTextAreaElement | null | undefined} */ (
+    state.host?.mount.querySelector('.editarea'));
+  if (!state.on || !ta) return false;
+  let at = 0;
+  for (let n = 1; n < line; n++) {
+    const next = ta.value.indexOf('\n', at);
+    if (next < 0) break;
+    at = next + 1;
+  }
+  ta.focus();
+  ta.setSelectionRange(at, at);
+  const lh = parseFloat(getComputedStyle(ta).lineHeight) || 18;
+  ta.scrollTop = Math.max(0, (line - 1) * lh - ta.clientHeight / 2);
+  return true;
+}
+
 /** Is anything open to save? The `Ctrl+S` binding is the app's and there are two
  *  overlays that can hold a buffer, so it asks here rather than naming one. */
 export const isOpen = () => state.on;

@@ -3,7 +3,7 @@
 // The SPA is a module now, so what it reaches for is written down. `core.js` holds
 // the primitives every part needs; `queue.js` is the first seam extracted whole.
 import {
-$, el, toast, reason, safeHref, copyText, call, callHost, get, activeCheckout, CHECKOUTS, setCheckouts, HOST, snapshotOf, repoSummary, everySession, enterCheckout, snap, receive, keyActivate, setZoom, setUiPx, uiPx, saveZoom, onScaleChange, ZOOM, selected, setSelected, onSelection, prForWorkspace, terms, CHROME, stateLabel, sessionDot, isWaiting, isArchived, byNewest, currentSession, activeWorkspaceId, currentWorkspaceId, closeMenu, menuOpen, openMenu, callOn, newSession, newWorktree, newShell, mainWorkspace, workspaceById, prState, handedToPr, drawerCollapsed, setDrawerCollapsed, pendingSelect, setPendingSelect, onDrawerChange, onCreatingChange, creating, creatingIn, startingShown, appMod, IS_MAC, MOD_LABEL, closeLegend, toggleLegend, typingElsewhere, mark, reportBoot, dialogOpen, dismissDialog, unchanged, tick,
+$, el, toast, reason, safeHref, copyText, call, callHost, get, activeCheckout, CHECKOUTS, setCheckouts, HOST, snapshotOf, repoSummary, everySession, enterCheckout, snap, receive, keyActivate, setZoom, setUiPx, uiPx, saveZoom, onScaleChange, ZOOM, selected, setSelected, onSelection, prForWorkspace, terms, CHROME, stateLabel, sessionDot, isWaiting, isArchived, byNewest, currentSession, activeWorkspaceId, currentWorkspaceId, closeMenu, menuOpen, openMenu, callOn, newSession, newWorktree, newShell, mainWorkspace, workspaceById, prState, handedToPr, drawerCollapsed, setDrawerCollapsed, pendingSelect, setPendingSelect, onDrawerChange, onCreatingChange, creating, creatingIn, startingShown, appMod, IS_MAC, MOD_LABEL, closeLegend, toggleLegend, typingElsewhere, mark, reportBoot, dialogOpen, dismissDialog, promptBox, unchanged, tick,
 } from './js/core.js';
 import { onThemeChange } from './js/theme.js';
 import { detailEl, symbolAt } from './js/source.js';
@@ -820,6 +820,19 @@ import * as Drawer from './js/drawer.js';
 // ---------------------------------------------------------------------------
 import * as Diff from './js/diff.js';
 
+/** Ask for a line and send the pane on top there. */
+async function goToLine() {
+  const asked = await promptBox('Go to line', { placeholder: 'line number', ok: 'Go' });
+  if (asked == null) return;
+  const line = Number.parseInt(String(asked).trim(), 10);
+  if (!Number.isFinite(line) || line < 1) return toast(`not a line number: ${asked}`, true);
+  const went = Editor.isOpen() ? Editor.goTo(line)
+    : FileView.isOpen() ? FileView.goTo(line)
+      : Find.isOpen() ? Find.goTo(line)
+        : Diff.state.open ? Diff.goTo(line) : false;
+  if (!went) toast(`line ${line} is not on screen here`, true);
+}
+
 // ---------------------------------------------------------------------------
 // Review overlay
 // ---------------------------------------------------------------------------
@@ -1529,6 +1542,21 @@ function keymap(/** @type {KeyboardEvent} */ e) {
   if (e.key === 'Escape' && Open.isOpen() && Open.close()) {
     e.preventDefault();
     return;
+  }
+  /* **Go to line: `g` in a viewer, the app modifier and G in a buffer.** A bare
+     key belongs to the open overlay, but a bare `g` in a textarea is a letter, so
+     the editor takes the chord the save beside it already uses. The pane on top
+     answers: the file pane over the finder over the diff, as they stack. */
+  {
+    const typing = !!/** @type {HTMLElement} */ (e.target).closest?.('textarea, input, [contenteditable="true"]');
+    const bare = e.key === 'g' && !e.ctrlKey && !e.altKey && !e.metaKey && !typing;
+    const chord = (e.key === 'g' || e.key === 'G') && appMod(e) && !e.shiftKey && !e.altKey
+      && Editor.isOpen() && typing;
+    if ((bare || chord) && (Editor.isOpen() || FileView.isOpen() || Find.isOpen() || Diff.state.open)) {
+      e.preventDefault();
+      void goToLine();
+      return;
+    }
   }
   /* One save chord for both overlays. It used to name the diff's editor, which
      was the only one; the buffer is `editor.js` now and either viewer can hold

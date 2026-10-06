@@ -1565,6 +1565,17 @@ try {
     return !!e && !e.textContent?.includes(String(n))
   }, foldBefore, { timeout: 5000 })
   check(await hiddenNow() === foldBefore - 20, `a fold step shows twenty more lines, ${foldBefore} hidden before`)
+
+  /* **`g` goes to a line, through a fold.** Line 10 is inside the fold above
+     the change, so landing on it proves the jump opens what hides it. */
+  await page.evaluate(() => /** @type {HTMLElement} */ (document.activeElement)?.blur())
+  await page.keyboard.press('g')
+  await page.waitForSelector('.dlginput', { timeout: 5000 })
+  await page.keyboard.type('10')
+  await page.keyboard.press('Enter')
+  await page.waitForSelector('#diffbody .ln.goto', { timeout: 5000 })
+  check(await page.$eval('#diffbody .ln.goto i', (i) => i.dataset.n) === '10',
+    'g then 10 lands on line 10 of the file, out of its fold')
   git(tree, ['update-ref', 'refs/remotes/origin/main', upstreamWas])
   await page.evaluate(async () => (await import('/js/diff.js')).loadFile('README.md'))
   await page.waitForFunction(
