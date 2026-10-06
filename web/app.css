@@ -1786,6 +1786,12 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
   font-size:calc(10.5px * var(--fs));cursor:pointer;grid-column:1/-1;
 }
 .fold:hover{color:var(--dim)}
+.fold{display:flex;align-items:center;gap:8px}
+.fold-step{
+  font:inherit;color:inherit;background:none;border:1px solid var(--line);border-radius:2px;
+  padding:0 6px;cursor:pointer;
+}
+.fold-step:hover{color:var(--text);border-color:var(--faint-solid)}
 .diffnote{padding:24px 16px;font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid);grid-column:1/-1}
 /* A hunk's section heading, pinned while you scroll a long hunk so "which
    function is this" never leaves the screen. Spans the full width in split mode,

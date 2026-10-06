@@ -443,7 +443,8 @@ function renderFiles() {
  *           summary: import('../repo').DiffSummary | null, path: string | null,
  *           file: import('../repo').FileDiff | null, split: boolean,
  *           cursor: number, pendingCursor: 'first' | 'last' | null, context: number,
- *           anchors?: HTMLElement[], loading?: boolean }}
+ *           anchors?: HTMLElement[], loading?: boolean, lines: string[] | null,
+ *           reveal: Map<number, { top: number, bottom: number }> }}
  */
 const diffState = {
   open: false,
@@ -463,6 +464,14 @@ const diffState = {
    * Null on a normal load so the cursor is just clamped to what fits. */
   pendingCursor: null,
   context: 3,
+  /* The file on disk, line by line, which is where an unchanged line a fold hides
+     comes from: the right side is the working tree, so its lines are the
+     unchanged ones too. Null when it cannot be read (deleted, binary), and then a
+     fold falls back to asking git for more context everywhere. */
+  lines: null,
+  /** Per fold, how many lines are shown from its top and its bottom. Keyed on
+   *  the hunk the fold sits above, and `hunks.length` for the one after the last. */
+  reveal: new Map(),
 };
 
 /* **Two questions, and the header is the switch between them.** `Changes` is
@@ -656,14 +665,70 @@ function renderDiff() {
     body.appendChild(b);
   };
 
-  for (const h of f.hunks) {
-    if (h.gap_before > 0) {
-      const b = el('div', 'fold', `⋯ ${h.gap_before} unchanged lines — click to expand`);
+  const drawContext = (/** @type {import('../repo').Row} */ r) => {
+    if (diffState.split) push3(lineEl(r, 'old'), lineEl(r, 'new'));
+    else body.appendChild(lineEl(r, 'new'));
+  };
+  /** The unchanged lines between two hunks, as many as the fold shows. */
+  const drawGap = (/** @type {number} */ idx, /** @type {number} */ oldStart,
+    /** @type {number} */ newStart, /** @type {number} */ count) => {
+    if (count <= 0) return;
+    const lines = diffState.lines;
+    if (!lines) {
+      // Nothing to draw the lines from, so the old way: ask git for more context.
+      if (idx >= f.hunks.length) return;
+      const b = el('div', 'fold', `⋯ ${count} unchanged lines, click to expand`);
       b.onclick = () => {
-        diffState.context = Math.min(diffState.context + Math.max(h.gap_before, 20), 10000);
+        diffState.context = Math.min(diffState.context + Math.max(count, 20), 10000);
         void loadFile(diffState.path ?? '');
       };
       body.appendChild(b);
+      return;
+    }
+    const seen = diffState.reveal.get(idx) ?? { top: 0, bottom: 0 };
+    const row = (/** @type {number} */ k) => /** @type {import('../repo').Row} */ ({
+      kind: 'context', old: oldStart + k, new: newStart + k,
+      text: (lines[newStart + k - 1] ?? '').replace(/\r$/, ''),
+    });
+    if (seen.top + seen.bottom >= count) {
+      for (let k = 0; k < count; k++) drawContext(row(k));
+      return;
+    }
+    for (let k = 0; k < seen.top; k++) drawContext(row(k));
+    const hidden = count - seen.top - seen.bottom;
+    const show = (/** @type {number} */ top, /** @type {number} */ bottom) => {
+      diffState.reveal.set(idx, { top: seen.top + top, bottom: seen.bottom + bottom });
+      renderDiff();
+    };
+    const bar = el('div', 'fold');
+    bar.title = 'Click to show them all';
+    bar.onclick = () => show(count, 0);
+    /* Twenty at a time from either end: the line above a change is usually the
+       one you wanted, and opening a 400-line fold to read it loses your place. */
+    const step = (/** @type {string} */ label, /** @type {string} */ tip, /** @type {() => void} */ go) => {
+      const b = el('button', 'fold-step', label);
+      b.title = tip;
+      b.onclick = (e) => { e.stopPropagation(); go(); };
+      return b;
+    };
+    if (idx > 0) bar.appendChild(step('↓ 20', 'Show 20 more below the change above', () => show(20, 0)));
+    if (idx < f.hunks.length) bar.appendChild(step('↑ 20', 'Show 20 more above the change below', () => show(0, 20)));
+    bar.appendChild(el('span', null, `⋯ ${hidden} unchanged line${hidden === 1 ? '' : 's'}`));
+    body.appendChild(bar);
+    for (let k = count - seen.bottom; k < count; k++) drawContext(row(k));
+  };
+  /** The last line a hunk reaches on each side, so the next gap starts after it. */
+  const ends = (/** @type {import('../repo').Hunk} */ h) => {
+    let o = h.old_start - 1;
+    let n = h.new_start - 1;
+    for (const r of h.rows) { o = r.old ?? o; n = r.new ?? n; }
+    return { o, n };
+  };
+
+  for (const [hi, h] of f.hunks.entries()) {
+    {
+      const prev = hi > 0 ? ends(f.hunks[hi - 1]) : { o: 0, n: 0 };
+      drawGap(hi, prev.o + 1, prev.n + 1, h.gap_before);
     }
 
     // The hunk's section heading — git's text after the second @@, the function
@@ -710,6 +775,12 @@ function renderDiff() {
         body.appendChild(e);
       }
     }
+  }
+
+  {
+    // After the last change, down to the end of the file.
+    const tail = ends(f.hunks[f.hunks.length - 1]);
+    drawGap(f.hunks.length, tail.o + 1, tail.n + 1, (diffState.lines?.length ?? 0) - tail.n);
   }
 
   diffState.anchors = anchors;
@@ -839,6 +910,13 @@ async function loadSummary() {
   renderFiles();
 }
 
+/** A file's lines, without the empty one after a final newline. */
+function linesOf(/** @type {string | undefined} */ content) {
+  if (content == null) return null;
+  if (content === '') return [];
+  return (content.endsWith('\n') ? content.slice(0, -1) : content).split('\n');
+}
+
 async function loadFile(/** @type {string} */ path) {
   const ws = diffState.ws || activeWorkspaceId();
   if (!ws) return;
@@ -853,10 +931,17 @@ async function loadFile(/** @type {string} */ path) {
   // fast local diff never flashes it and a slow one stops reading as "did nothing"
   // by leaving the previous file's hunks on screen.
   const slow = setTimeout(() => { diffState.loading = true; renderDiff(); }, 150);
+  diffState.reveal = new Map();
   try {
-    diffState.file = await get(`/api/diff/file?${q}`);
+    let live;
+    [diffState.file, live] = await Promise.all([
+      get(`/api/diff/file?${q}`),
+      get(`/api/file?${new URLSearchParams({ workspace: ws, path })}`).catch(() => null),
+    ]);
+    diffState.lines = linesOf(live?.content);
   } catch (e) {
     diffState.file = null;
+    diffState.lines = null;
     toast(reason(e), true);
   }
   clearTimeout(slow);
@@ -942,7 +1027,15 @@ function openEditor() {
       const pr = prForWorkspace(ws);
       if (pr?.base_ref) q.set('pr_base', pr.base_ref);
       try {
-        diffState.file = await get(`/api/diff/file?${q}`);
+        let live;
+        [diffState.file, live] = await Promise.all([
+          get(`/api/diff/file?${q}`),
+          get(`/api/file?${new URLSearchParams({ workspace: ws, path: diffState.path ?? '' })}`)
+            .catch(() => null),
+        ]);
+        // The folds draw from these, so they follow the write too.
+        diffState.lines = linesOf(live?.content);
+        diffState.reveal = new Map();
       } catch (e) {
         /* the editor is still the source of truth on screen */
       }

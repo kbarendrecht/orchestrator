@@ -63,7 +63,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 import { chromium } from 'playwright-core'
-import { sandbox, until } from './harness.mjs'
+import { git, sandbox, until } from './harness.mjs'
 
 const asMac = process.argv.includes('--mac')
 /* **The modifier the *page* is waiting for, not the one this machine has.**
@@ -1539,6 +1539,37 @@ try {
   check(await onDisk(true, 'undo'), 'and Undo writes the line back')
   await page.waitForFunction(
     () => !!document.querySelector('#diffbody .ln.add'), null, { timeout: 10_000 })
+
+  /* **A fold opens twenty lines at a time.** The fixture's README is one line,
+     so a long file is committed for this: one line changed near its end leaves
+     one fold above the change, and its step shows the lines nearest it, so the
+     count the fold reports drops by exactly twenty. */
+  const long = Array.from({ length: 60 }, (_, i) => `line ${i + 1}`)
+  fs.writeFileSync(path.join(tree, 'long.txt'), long.join('\n') + '\n')
+  git(tree, ['add', 'long.txt'])
+  git(tree, ['commit', '-qm', 'a long file'])
+  // The diff's base is `origin/main`, so the commit has to be in it, or the
+  // whole file reads as added. Put back once the case is done.
+  const upstreamWas = git(tree, ['rev-parse', 'origin/main']).trim()
+  git(tree, ['update-ref', 'refs/remotes/origin/main', 'HEAD'])
+  long[54] = 'line 55, changed'
+  fs.writeFileSync(path.join(tree, 'long.txt'), long.join('\n') + '\n')
+  await page.evaluate(async () => (await import('/js/diff.js')).loadFile('long.txt'))
+  await page.waitForSelector('#diffbody .fold span', { timeout: 10_000 })
+  const hiddenNow = () => page.$eval('#diffbody .fold span',
+    (e) => Number(/(\d+)/.exec(e.textContent ?? '')?.[1] ?? -1))
+  const foldBefore = await hiddenNow()
+  await press('#diffbody .fold .fold-step')
+  await page.waitForFunction((n) => {
+    const e = document.querySelector('#diffbody .fold span')
+    return !!e && !e.textContent?.includes(String(n))
+  }, foldBefore, { timeout: 5000 })
+  check(await hiddenNow() === foldBefore - 20, `a fold step shows twenty more lines, ${foldBefore} hidden before`)
+  git(tree, ['update-ref', 'refs/remotes/origin/main', upstreamWas])
+  await page.evaluate(async () => (await import('/js/diff.js')).loadFile('README.md'))
+  await page.waitForFunction(
+    () => document.querySelector('#diffbody .ln.add')?.textContent?.includes('diff'), null,
+    { timeout: 10_000 })
 
   /* **And a modifier-click works in the diff, which is the return on one
      renderer.** `source.js` reads the word off the caret and neither viewer knows
