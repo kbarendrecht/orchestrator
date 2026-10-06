@@ -34,14 +34,20 @@ export const MAX = 2000;
 /** Escape a literal query, so a symbol with a `(` in it searches for that `(`. */
 const literal = (/** @type {string} */ q) => q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-/** The query as a regular expression, or null when it is one that does not
- *  compile. `flags` is what the caller needs on top of the smart case.
+/** How to read the query: as a pattern rather than a literal, and in the case it
+ *  is written rather than smart-cased. The two toggles in the bar, and the same
+ *  two the workspace search has.
  *
- *  @param {string} query @param {boolean} useRegex @param {string} flags */
-function pattern(query, useRegex, flags) {
+ *  @typedef {{ regex?: boolean, exact?: boolean }} How */
+
+/** The query as a regular expression, or null when it is one that does not
+ *  compile. `flags` is what the caller needs on top of the case.
+ *
+ *  @param {string} query @param {How} how @param {string} flags */
+function pattern(query, how, flags) {
+  const insensitive = !how.exact && query === query.toLowerCase();
   try {
-    return new RegExp(useRegex ? query : literal(query),
-      flags + (query === query.toLowerCase() ? 'i' : ''));
+    return new RegExp(how.regex ? query : literal(query), flags + (insensitive ? 'i' : ''));
   } catch (err) {
     return null;
   }
@@ -56,11 +62,11 @@ function pattern(query, useRegex, flags) {
  *
  *  @param {string} text
  *  @param {string} query
- *  @param {boolean} useRegex
+ *  @param {How} how
  *  @returns {Hit[] | null} */
-export function matches(text, query, useRegex) {
+export function matches(text, query, how) {
   if (!query) return [];
-  const re = pattern(query, useRegex, 'gm');
+  const re = pattern(query, how, 'gm');
   if (!re) return null;
   // One pass for the line starts, so each match is placed by a search over an
   // array of numbers rather than by counting newlines in the text again.
@@ -146,10 +152,10 @@ export const hitLines = (/** @type {Hit[]} */ hits) => [...new Set(hits.map((h) 
  *  substitution and forty hand edits.
  *
  *  @param {string} matched exactly the text the hit covered
- *  @param {string} query @param {boolean} useRegex @param {string} to */
-export function substitute(matched, query, useRegex, to) {
-  if (!useRegex) return to;
-  const re = pattern(query, true, '');
+ *  @param {string} query @param {string} to @param {How} how */
+export function substitute(matched, query, to, how) {
+  if (!how.regex) return to;
+  const re = pattern(query, how, '');
   return re ? matched.replace(re, to) : matched;
 }
 
@@ -161,13 +167,13 @@ export function substitute(matched, query, useRegex, to) {
  *
  *  @param {string} text
  *  @param {Hit[]} hits in the order [`matches`] answers, which is left to right
- *  @param {string} query @param {boolean} useRegex @param {string} to */
-export function replaceAll(text, hits, query, useRegex, to) {
+ *  @param {string} query @param {string} to @param {How} how */
+export function replaceAll(text, hits, query, to, how) {
   let out = text;
   for (let i = hits.length - 1; i >= 0; i--) {
     const h = hits[i];
     if (!h) continue;
-    out = out.slice(0, h.at) + substitute(out.slice(h.at, h.at + h.len), query, useRegex, to)
+    out = out.slice(0, h.at) + substitute(out.slice(h.at, h.at + h.len), query, to, how)
       + out.slice(h.at + h.len);
   }
   return { text: out, count: hits.length };

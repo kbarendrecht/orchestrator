@@ -221,9 +221,7 @@
       </div>
       <!-- Find in the file on screen, under the header rather than in it: the
            header says which file this is, and this asks a question about what is
-           inside it. Hidden until MOD F. Two controls and no more — a whole-word
-           search is `\bword\b` with the regex toggle on, and the case is smart
-           the way the daemon's search is. -->
+           inside it. Hidden until MOD F. -->
       <div class="seekbar" id="fvseek" hidden>
         <input class="fnq" id="fvseekq" spellcheck="false" autocomplete="off"
                placeholder="find in this file" aria-label="find in this file">
@@ -235,6 +233,11 @@
         <span class="ov-count" id="fvseekn"></span>
         <button class="head-btn" id="fvseekdo" hidden title="Replace this match (Enter in the replace box)">Replace</button>
         <button class="head-btn" id="fvseekall" hidden title="Replace every match, as one undo">All</button>
+        <!-- The same two the workspace search has, and the same defaults: off is
+             smart case, and a whole-word search is `\bword\b` with the pattern
+             toggle on. Two find boxes in one app that disagree about case is a
+             difference nobody can see. -->
+        <button class="fntg" id="fvseekcase" title="Match the case written. Off is smart case: an upper-case letter already makes the search sensitive">Aa</button>
         <button class="fntg" id="fvseekre" title="The query is a regular expression">.*</button>
         <button class="head-btn" id="fvseekprev" title="Previous match (Shift Enter)">&#8593;</button>
         <button class="head-btn" id="fvseeknext" title="Next match (Enter)">&#8595;</button>

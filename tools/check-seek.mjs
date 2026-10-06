@@ -21,49 +21,54 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
 const text = L('let a = 1', 'let bb = 2', 'LET c = 3')
 
 {
-  const h = matches(text, 'let', false)
+  const h = matches(text, 'let', {})
   check(h.length === 3, 'a lower-case query is case-insensitive (smart case)')
   check(same(h[0], { line: 1, col: 0, len: 3, at: 0 }), 'the first hit is line 1, column 0')
   check(h[2].line === 3 && h[2].col === 0, 'the upper-case line is found too')
 }
 {
-  const h = matches(text, 'LET', false)
+  const h = matches(text, 'LET', {})
   check(h.length === 1 && h[0].line === 3, 'an upper-case letter makes the query sensitive')
 }
 {
-  const h = matches(text, 'b+', false)
+  // The toggle, for the search smart case cannot express.
+  const h = matches(text, 'let', { exact: true })
+  check(h.length === 2 && h.every((x) => x.line < 3), 'and the exact flag holds a lower-case query to its case')
+}
+{
+  const h = matches(text, 'b+', {})
   check(h.length === 0, 'a literal query is not a pattern')
-  check(matches(text, 'b+', true).length === 1, 'the same query as a regex is one')
+  check(matches(text, 'b+', { regex: true }).length === 1, 'the same query as a regex is one')
 }
 {
   // The trap this exists for: a column counted in bytes puts the mark two glyphs
   // to the right of the word on a line with an accent in it.
   const t = L('// héllo wörld', 'const x = 1')
-  const h = matches(t, 'wörld', false)
+  const h = matches(t, 'wörld', {})
   check(h[0].col === 9 && h[0].at === 9, 'columns are characters, not bytes')
-  const h2 = matches(t, 'const', false)
+  const h2 = matches(t, 'const', {})
   check(h2[0].line === 2 && h2[0].col === 0, 'a line after a multi-byte one is placed right')
 }
 {
   // `lastIndex` does not move on an empty match, so this is an infinite loop
   // rather than a wrong answer.
-  const h = matches(text, 'x*', true)
+  const h = matches(text, 'x*', { regex: true })
   check(Array.isArray(h) && h.length === 0, 'a pattern that can match nothing terminates')
-  check(matches(text, '^', true).length === 0, 'and so does an anchor on its own')
+  check(matches(text, '^', { regex: true }).length === 0, 'and so does an anchor on its own')
 }
 {
-  check(matches(text, '[', true) === null, 'a regex that does not compile answers null')
-  check(matches(text, '[', false).length === 0, 'the same text as a literal is just not there')
-  check(same(matches(text, '', false), []), 'an empty query matches nothing')
+  check(matches(text, '[', { regex: true }) === null, 'a regex that does not compile answers null')
+  check(matches(text, '[', {}).length === 0, 'the same text as a literal is just not there')
+  check(same(matches(text, '', {}), []), 'an empty query matches nothing')
 }
 {
   // `^` and `$` mean the line, because this searches inside one file.
-  check(matches(text, '^bb', true).length === 0 && matches(text, 'bb', true).length === 1,
+  check(matches(text, '^bb', { regex: true }).length === 0 && matches(text, 'bb', { regex: true }).length === 1,
     'the start anchor is the line, not the file')
-  check(matches(text, '= 1$', true).length === 1, 'and so is the end anchor')
+  check(matches(text, '= 1$', { regex: true }).length === 1, 'and so is the end anchor')
 }
 {
-  const h = matches(text, 'let', false)
+  const h = matches(text, 'let', {})
   check(nextIndex(h, -1, 1) === 0, 'forward from before the file lands on the first hit')
   check(nextIndex(h, h[0].at, 1) === 1, 'forward from a hit lands on the next one')
   check(nextIndex(h, h[2].at, 1) === 0, 'forward from the last hit wraps')
@@ -72,7 +77,7 @@ const text = L('let a = 1', 'let bb = 2', 'LET c = 3')
   check(nextIndex([], 0, 1) === -1, 'no hits is no index')
 }
 {
-  const many = matches('x\n'.repeat(MAX + 500), 'x', false)
+  const many = matches('x\n'.repeat(MAX + 500), 'x', {})
   check(many.length === MAX, 'the collection stops at the cap')
 }
 {
@@ -80,39 +85,39 @@ const text = L('let a = 1', 'let bb = 2', 'LET c = 3')
   check(offsetOf(text, 99) === offsetOf(text, 3), 'a line past the end is the last one')
 }
 {
-  const h = matches(L('a a', 'b', 'a'), 'a', false)
+  const h = matches(L('a a', 'b', 'a'), 'a', {})
   check(same(hitLines(h), [1, 3]), 'the ruler is told each line once')
 }
 
 // --- replace --------------------------------------------------------------
 {
   const t = L('let a = 1', 'let bb = 2')
-  const r = replaceAll(t, matches(t, 'let', false), 'let', false, 'const')
+  const r = replaceAll(t, matches(t, 'let', {}), 'let', 'const', {})
   check(r.text === L('const a = 1', 'const bb = 2') && r.count === 2, 'every match is replaced')
 }
 {
   // The trap: a replacement of a different length moves every offset after it.
   const t = 'xx xx xx'
-  const r = replaceAll(t, matches(t, 'xx', false), 'xx', false, 'yyyy')
+  const r = replaceAll(t, matches(t, 'xx', {}), 'xx', 'yyyy', {})
   check(r.text === 'yyyy yyyy yyyy', 'a longer replacement does not corrupt the hits after it')
-  const s2 = replaceAll(t, matches(t, 'xx', false), 'xx', false, 'z')
+  const s2 = replaceAll(t, matches(t, 'xx', {}), 'xx', 'z', {})
   check(s2.text === 'z z z', 'nor a shorter one')
 }
 {
   // The reason the regex toggle is worth having in a replace box at all.
   const t = 'foo_bar and baz_qux'
   const q = '(\\w+)_(\\w+)'
-  const r = replaceAll(t, matches(t, q, true), q, true, '$2_$1')
+  const r = replaceAll(t, matches(t, q, { regex: true }), q, '$2_$1', { regex: true })
   check(r.text === 'bar_foo and qux_baz', `a group reaches the replacement, got ${r.text}`)
 }
 {
-  check(substitute('cost$', 'cost$', false, 'price$') === 'price$',
+  check(substitute('cost$', 'cost$', 'price$', {}) === 'price$',
     'a literal replacement is itself, dollars and all')
-  check(substitute('a1', '(\\w)(\\d)', true, '$2$1') === '1a', 'and a pattern uses its groups')
+  check(substitute('a1', '(\\w)(\\d)', '$2$1', { regex: true }) === '1a', 'and a pattern uses its groups')
 }
 {
   const t = 'a\nb'
-  check(replaceAll(t, [], 'a', false, 'z').text === t, 'nothing to replace changes nothing')
+  check(replaceAll(t, [], 'a', 'z', {}).text === t, 'nothing to replace changes nothing')
 }
 
 console.log(failed ? '\n✘ seek' : '\n✔ seek')

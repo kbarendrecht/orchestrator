@@ -1987,7 +1987,10 @@ try {
       && document.querySelectorAll('#fvsrc .edithl').length === 0
   }), 'a file with no colour to draw is numbered all the same')
   await page.$eval('#fvedit', (b) => b.click())
-  await page.waitForFunction(() => !document.querySelector('#fvsrc .editarea'),
+  /* Waited as far as the file being drawn again, not just the buffer going away:
+     cancelling re-reads the file, and the step below closes this pane. */
+  await page.waitForFunction(
+    () => !document.querySelector('#fvsrc .editarea') && !!document.querySelector('#fvsrc .fnrow'),
     null, { timeout: 5000 })
 
   /* --- a bare name, a range, and two files with one name ---------------------- */
@@ -2268,6 +2271,21 @@ try {
     await page.$eval('#fvseekn', (n) => n.textContent) === 'no matches',
     'and an upper-case letter makes it match the case written',
   )
+  /* The case toggle, which is the finder's with the same default. The two checks
+     above are smart case doing its job; this is the search it cannot express — a
+     lower-case query that must stay lower-case. */
+  await page.fill('#fvseekq', 'more')
+  check(
+    await page.$eval('#fvseekn', (n) => n.textContent) === '1 of 60',
+    'a lower-case query finds the capitalised word',
+  )
+  await page.$eval('#fvseekcase', (b) => b.click())
+  check(
+    await page.$eval('#fvseekn', (n) => n.textContent) === 'no matches',
+    'and Aa holds it to the case you typed',
+  )
+  await page.$eval('#fvseekcase', (b) => b.click())
+
   // The `.*` toggle, which is also the whole-word search: `\bx\b`.
   await page.fill('#fvseekq', '^## Mo')
   check(

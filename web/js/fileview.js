@@ -481,6 +481,13 @@ export function closeSeek() {
   return true;
 }
 
+/** How the query is to be read, from the two toggles. The same pair the
+ *  workspace search carries, so one habit covers both boxes. */
+const how = () => ({
+  regex: $('fvseekre').classList.contains('on'),
+  exact: $('fvseekcase').classList.contains('on'),
+});
+
 /** The text being searched, and where "from here" is in it. One function,
  *  because every caller has to ask both questions of the same source. */
 function searched() {
@@ -503,7 +510,7 @@ function runSeek(move) {
   bar.hits = [];
   bar.at = -1;
   if (text == null) return seekCount('nothing to search');
-  const found = matches(text, q, $('fvseekre').classList.contains('on'));
+  const found = matches(text, q, how());
   if (found === null) return seekCount('bad pattern');
   bar.hits = found;
   if (!Editor.isOpen()) viewer().setHits(hitLines(found));
@@ -569,11 +576,13 @@ function initSeek() {
     e.preventDefault();
     seekStep(e.shiftKey ? -1 : 1);
   };
-  $('fvseekre').onclick = () => {
-    $('fvseekre').classList.toggle('on');
-    box.focus();
-    runSeek(true);
-  };
+  for (const id of ['fvseekcase', 'fvseekre']) {
+    $(id).onclick = () => {
+      $(id).classList.toggle('on');
+      box.focus();
+      runSeek(true);
+    };
+  }
   $('fvseekprev').onclick = () => seekStep(-1);
   $('fvseeknext').onclick = () => seekStep(1);
   $('fvseekx').onclick = () => closeSeek();
@@ -593,11 +602,7 @@ function toReplace() {
   if (!bar.on || !Editor.isOpen() || !bar.hits.length) return null;
   const query = /** @type {HTMLInputElement} */ ($('fvseekq')).value;
   if (!query) return null;
-  return {
-    query,
-    to: /** @type {HTMLInputElement} */ ($('fvseekr')).value,
-    re: $('fvseekre').classList.contains('on'),
-  };
+  return { query, to: /** @type {HTMLInputElement} */ ($('fvseekr')).value };
 }
 
 /** Replace the match you are on, then go to the next.
@@ -613,7 +618,7 @@ function replaceOne() {
   const text = Editor.text();
   if (!hit || text == null) return;
   const was = text.slice(hit.at, hit.at + hit.len);
-  Editor.overwrite(hit.at, hit.len, substitute(was, what.query, what.re, what.to));
+  Editor.overwrite(hit.at, hit.len, substitute(was, what.query, what.to, how()));
   /* The buffer is a different string now, so every offset after this one has
      moved: the hits are found again rather than adjusted. The caret is where the
      replacement ended, so the next match is the one after it. */
@@ -627,7 +632,7 @@ function replaceEvery() {
   if (!what) return;
   const text = Editor.text();
   if (text == null) return;
-  const { text: out, count } = replaceAll(text, bar.hits, what.query, what.re, what.to);
+  const { text: out, count } = replaceAll(text, bar.hits, what.query, what.to, how());
   if (out === text) return toast('nothing to replace');
   Editor.overwrite(0, text.length, out);
   toast(`replaced ${count}`);
