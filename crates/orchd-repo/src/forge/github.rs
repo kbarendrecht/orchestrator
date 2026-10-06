@@ -75,8 +75,8 @@ pub fn resolve_token(token_file: Option<&Path>) -> Result<Token> {
     let out = match orchd_base::proc::run_bounded(Path::new("/"), 15, &argv, "gh auth token") {
         Ok(out) => out,
         Err(e) if orchd_base::proc::not_installed(&e) => bail!(
-            "no GitHub credential: install `gh` and run `gh auth login`, or point \
-             github_token_file at a token"
+            "no GitHub credential: `gh` is not on the app's PATH. Install it and run \
+             `gh auth login`, or point github_token_file at a token"
         ),
         Err(e) => bail!("no GitHub credential: `gh auth token` could not be run: {e:#}"),
     };

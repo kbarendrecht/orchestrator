@@ -34,7 +34,13 @@ const ADOPTED: &str = "ORCHD_ADOPTED_LOGIN_PATH";
 /// runtime, the daemon and every pty exist.
 pub(crate) fn adopt_login_path() {
     use std::io::IsTerminal;
-    if std::io::stdin().is_terminal() || std::env::var_os(ADOPTED).is_some() {
+    if std::io::stdin().is_terminal() {
+        return;
+    }
+    /* A self-restart inherits the PATH this function set last time, so it skips
+    the work, unless a tool upgrade has since removed a folder from it. Then the
+    inherited PATH is the stale one too, and only asking the shell again helps. */
+    if std::env::var_os(ADOPTED).is_some() && cache_still_holds() {
         return;
     }
     /* **The cache is here because this is on the critical path of the window.**
@@ -87,14 +93,39 @@ fn login_path_cache() -> Option<std::path::PathBuf> {
         .map(|d| d.join("login-path"))
 }
 
-/// The remembered PATH, if it still looks like one.
+/// The remembered PATH, if it still looks like one and every folder in it is
+/// still there.
 ///
 /// Sanity-checked rather than trusted: a truncated or hand-edited file would
 /// otherwise put junk in front of every lookup the daemon makes, and the failure
 /// would be "`claude` not found" with no hint where it came from.
+///
+/// **A missing folder means the cache is out of date.** mise names an install
+/// folder after its version and removes it on an upgrade, so after `mise up` the
+/// remembered PATH pointed only at folders that were gone, and `gh` was "not
+/// installed" until somebody deleted this file. The writer keeps only folders that
+/// exist, so a missing one is a change since then, never a folder the shell always
+/// listed, and the price is one slow start after an upgrade.
 fn cached_login_path() -> Option<String> {
     let raw = std::fs::read_to_string(login_path_cache()?).ok()?;
-    usable_path(&raw)
+    usable_path(&raw).filter(|p| all_present(p))
+}
+
+/// Whether the remembered PATH is still one this launch may use as it is.
+fn cache_still_holds() -> bool {
+    cached_login_path().is_some()
+}
+
+fn all_present(path: &str) -> bool {
+    std::env::split_paths(path).all(|p| p.is_dir())
+}
+
+/// Only the folders that exist now, so a later [`all_present`] that fails
+/// means something was removed rather than never there.
+fn existing_only(path: &str) -> String {
+    std::env::join_paths(std::env::split_paths(path).filter(|p| p.is_dir()))
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| path.to_string())
 }
 
 /// Does this file's contents look like a PATH worth adopting?
@@ -115,6 +146,7 @@ fn write_cached_login_path(path: &str) {
     if let Some(dir) = file.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
+    let path = existing_only(path);
     if let Err(e) = std::fs::write(&file, format!("{path}\n")) {
         tracing::debug!("could not remember the login PATH: {e}");
     }
@@ -194,6 +226,29 @@ mod tests {
             usable_path("no-slashes-here").is_none(),
             "that is not a path list"
         );
+    }
+
+    /// The cache only ever holds folders that existed, so one that is gone is an
+    /// upgrade that removed it, and that has to send the launch back to the shell.
+    #[test]
+    fn a_cache_naming_a_removed_folder_is_stale() {
+        let dir = std::env::temp_dir().join(format!("orchd-login-path-{}", std::process::id()));
+        let kept = dir.join("kept");
+        let gone = dir.join("gh_2.101.0/bin");
+        std::fs::create_dir_all(&kept).unwrap();
+        std::fs::create_dir_all(&gone).unwrap();
+        let path = format!("{}:{}:/no/such/folder", gone.display(), kept.display());
+
+        let written = existing_only(&path);
+        assert_eq!(
+            written,
+            format!("{}:{}", gone.display(), kept.display()),
+            "a folder that was never there is not remembered"
+        );
+        assert!(all_present(&written));
+        std::fs::remove_dir_all(&gone).unwrap();
+        assert!(!all_present(&written), "the upgrade removed a folder");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
