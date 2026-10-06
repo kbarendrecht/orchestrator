@@ -717,6 +717,18 @@ button.ctx-btn:hover{color:var(--text)}
 /* The rail's own foot: `+ open project`, below every project and above the PR
    pane. Outside `.rail-scroll`, so an open archive cannot push it away. */
 .railfoot{flex:0 0 auto;border-top:1px solid var(--line)}
+/* After a restart, above the sessions: how many it cut off, and Continue. */
+.railnudge{
+  flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:7px 12px;
+  border-bottom:1px solid var(--line);color:var(--attn);font-size:calc(11.5px * var(--fs));
+}
+.railnudge-go{
+  font:inherit;color:var(--attn);background:none;border:1px solid currentColor;
+  border-radius:2px;padding:0 7px;cursor:pointer;
+}
+.railnudge-go:disabled{opacity:.5;cursor:default}
+.railnudge-x{margin-left:auto;font:inherit;color:var(--faint-solid);background:none;border:0;cursor:pointer}
+.railnudge-x:hover{color:var(--text)}
 
 /* A past conversation. Quieter than a live row, and one line rather than two, so
    twenty of them still read as a list. */

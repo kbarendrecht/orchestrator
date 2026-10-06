@@ -87,6 +87,7 @@ function renderRail() {
      only way to stop redrawing, so a flag left set by a gesture that ended without
      its closing event froze it for good: the selection moved, the terminal
      followed, and the highlight stayed on the row it was on. */
+  renderNudge();
   if (editingName !== null && !document.querySelector('#rail .sess-rename')) editingName = null;
   if (editingName !== null || dragging !== null || rowDrag !== null) return;
 
@@ -2440,6 +2441,46 @@ const isNudgeable = (/** @type {import('../snapshot').SessionView} */ s) =>
   // at the same empty prompt, and calling finished work "paused" was what the
   // old bar did.
   && s.interrupted;
+
+/** The ids the strip was closed on: ✕ holds until a different set is cut off. */
+let nudgeDismissed = '';
+
+/** The strip above the sessions after a restart: how many it cut off mid-turn,
+ *  and one press to send them all on.
+ *
+ *  **It used to be a menu item, and a menu nobody could open.** It lived in the
+ *  checkout header's right-click menu, and a single-checkout install draws no
+ *  checkout header, so on a single-checkout install, which is every install
+ *  today, the action could not be reached. A restart is exactly when you want it, and it is rare enough that a
+ *  strip which is only there for that minute costs the rail nothing the rest of
+ *  the time. Across every checkout, since the restart was the app's, not one
+ *  project's. */
+function renderNudge() {
+  const bar = $('railnudge');
+  const by = CHECKOUTS
+    .map((c) => ({ c, ids: (snapshotOf(c.path)?.sessions ?? []).filter(isNudgeable).map((s) => s.id) }))
+    .filter((x) => x.ids.length);
+  const ids = by.flatMap((x) => x.ids).sort().join(',');
+  const want = !!ids && ids !== nudgeDismissed;
+  if (bar.hidden === !want && bar.dataset.ids === ids) return;
+  bar.dataset.ids = ids;
+  bar.hidden = !want;
+  if (!want) return;
+  const n = ids.split(',').length;
+  const say = el('span', 'railnudge-say', `${n} cut off by the restart`);
+  say.title = 'These were mid-turn when the app restarted. Continue types "continue" into each of them; '
+    + 'a finished turn, a question and a permission prompt are left alone.';
+  const go = el('button', 'railnudge-go', 'Continue');
+  go.onclick = async () => {
+    go.disabled = true;
+    for (const x of by) await nudgeAll(x.c);
+  };
+  const close = el('button', 'railnudge-x', '✕');
+  close.title = 'Hide until a restart cuts other sessions off';
+  close.setAttribute('aria-label', 'Hide');
+  close.onclick = () => { nudgeDismissed = ids; renderNudge(); };
+  bar.replaceChildren(say, go, close);
+}
 
 /** Send on every session a restart left parked mid-turn, in one checkout.
  *

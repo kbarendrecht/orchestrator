@@ -115,6 +115,9 @@
 
   <!-- ============ RAIL ============ -->
   <nav class="rail" aria-label="Sessions">
+    <!-- After a restart: the sessions it cut off mid-turn, and one press to send
+         them on. Hidden the rest of the time; `renderNudge` in rail.js. -->
+    <div class="railnudge" id="railnudge" role="status" hidden></div>
     <div class="rail-scroll" id="rail"></div>
     <!-- `+ open project` lives here rather than inside the scroller. It is the
          app's verb and there is one of it however many projects are open, so

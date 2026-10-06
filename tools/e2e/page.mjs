@@ -818,6 +818,39 @@ try {
      through the module's own state rather than by clicking a file: the thing under
      test is the guard, and `stepChange` on an empty changeset is a no-op by its
      own first branch. */
+  /* **After a restart, the rail says how many were cut off and offers Continue.**
+     A restart cannot be staged here, so the page is handed a snapshot in which
+     one live session came back cut off mid-turn, which is exactly what the
+     daemon reports after one. The strip must appear for it, and ✕ must hide it. */
+  const nudge = await page.evaluate(async () => {
+    const core = await import('/js/core.js')
+    const Rail = await import('/js/rail.js')
+    const c = core.activeCheckout()
+    const real = core.snapshotOf(c.path)
+    const one = real?.sessions.find((s) => s.alive)
+    if (!real || !one) return 'no live session to mark'
+    core.receive(c, {
+      ...real,
+      sessions: real.sessions.map((s) => (s === one ? {
+        ...s,
+        state: { state: 'your_turn', reason: 'ready', since: { secs_since_epoch: 0, nanos_since_epoch: 0 } },
+        has_transcript: true,
+        interrupted: true,
+      } : s)),
+    })
+    Rail.render()
+    const bar = /** @type {HTMLElement} */ (document.getElementById('railnudge'))
+    const shown = !bar.hidden && (bar.textContent ?? '').includes('1 cut off by the restart')
+    const x = /** @type {HTMLElement} */ (bar.querySelector('.railnudge-x'))
+    x.click()
+    const closed = bar.hidden
+    core.receive(c, real)
+    Rail.render()
+    return JSON.stringify({ shown, closed })
+  })
+  check(nudge === '{"shown":true,"closed":true}',
+    `a session a restart cut off gets the Continue strip, and ✕ hides it, got ${nudge}`)
+
   const withDiffOpen = async (init) => page.evaluate(async (d) => {
     const Diff = await import('/js/diff.js')
     const was = Diff.state.open
