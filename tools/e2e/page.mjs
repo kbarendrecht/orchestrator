@@ -2374,7 +2374,15 @@ try {
      deprecated and still the only way into a textarea's undo stack. */
   await page.$eval('#fvsrc .editarea', (ta) => ta.focus())
   await page.keyboard.press(chord('KeyZ'))
-  check(await countIn('prose') === proseWas - 1, 'and one undo takes All back off')
+  /* Waited rather than read: the undo lands on the textarea's own event loop, and
+     a runner under load is where that shows. The counts go in the message, since
+     a failure here is either "nothing happened" or "the wrong amount did". */
+  const undone = await page.waitForFunction(
+    (want) => (/** @type {HTMLTextAreaElement} */ (document.querySelector('#fvsrc .editarea')))
+      .value.split('prose').length - 1 === want,
+    proseWas - 1, { timeout: 5000 }).then(() => true).catch(() => false)
+  check(undone,
+    `and one undo takes All back off, got ${await countIn('prose')} of ${proseWas - 1}`)
   // Put the buffer back, so cancelling below is not asked about unsaved typing.
   await page.evaluate(async (v) => {
     const ta = /** @type {HTMLTextAreaElement} */ (document.querySelector('#fvsrc .editarea'))
