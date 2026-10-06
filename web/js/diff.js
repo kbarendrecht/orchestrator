@@ -8,6 +8,7 @@
 
 import { $, activeWorkspaceId, borrowFocus, call, confirmBox, currentSession, el, get, openMenu, pending, prForWorkspace, returnFocus, snap, reason, toast, paintSig, reconcile, unchanged, workspaceById } from './core.js';
 import * as Editor from './editor.js';
+import { changeBlocks, revertedText } from './revert.js';
 import { charRanges, langFor, lineSegments } from './source.js';
 
 // ---------------------------------------------------------------------------
@@ -648,9 +649,10 @@ function renderDiff() {
 
   // Every row is three grid cells in split view and one in unified, so a fold
   // spanning the full width interleaves naturally between hunks.
-  const push3 = (/** @type {HTMLElement} */ a, /** @type {HTMLElement} */ b) => {
+  const push3 = (/** @type {HTMLElement} */ a, /** @type {HTMLElement} */ b,
+    /** @type {HTMLElement} */ g = el('div', 'gutter')) => {
     body.appendChild(a);
-    body.appendChild(el('div', 'gutter'));
+    body.appendChild(g);
     body.appendChild(b);
   };
 
@@ -673,20 +675,27 @@ function renderDiff() {
 
     if (diffState.split) {
       let splitInBlock = false;
+      const blocks = changeBlocks(h);
+      let inHunk = -1;
       for (const [o, n] of pairRows(h.rows)) {
         const lo = lineEl(o, 'old');
         const ro = lineEl(n, 'new');
         const changed = o?.kind === 'del' || n?.kind === 'add';
+        const gutter = el('div', 'gutter');
         if (changed) {
           /* The right cell, because the right pane is the file as it is now and
              the one you edit, so that is where a change is. A block that only
              deletes still marks its filler row there, where the lines went. */
-          if (!splitInBlock) { block += 1; anchors.push(ro); splitInBlock = true; }
+          if (!splitInBlock) {
+            block += 1; anchors.push(ro); splitInBlock = true; inHunk += 1;
+            const b = blocks[inHunk];
+            if (b) gutter.appendChild(revertArrow(b));
+          }
           lo.dataset.blk = ro.dataset.blk = String(block);
         } else {
           splitInBlock = false;
         }
-        push3(lo, ro);
+        push3(lo, ro, gutter);
       }
     } else {
       let inBlock = false;
@@ -710,6 +719,63 @@ function renderDiff() {
       : Math.min(diffState.cursor, last);
   diffState.pendingCursor = null;
   markCursor();
+}
+
+function revertArrow(/** @type {import('./revert.js').Block} */ b) {
+  const n = Math.max(b.dels.length, b.adds.length);
+  const btn = el('button', 'revert', '→');
+  btn.title = b.adds.length
+    ? `Put these ${n} line${n === 1 ? '' : 's'} back as they were on the left`
+    : `Put the ${n} removed line${n === 1 ? '' : 's'} back`;
+  btn.onclick = (e) => { e.stopPropagation(); void revertBlock(b); };
+  return btn;
+}
+
+async function revertBlock(/** @type {import('./revert.js').Block} */ b) {
+  const ws = diffState.ws || activeWorkspaceId();
+  const path = diffState.path;
+  if (!ws || !path) return;
+  const q = new URLSearchParams({ workspace: ws, path });
+  /** @type {(content: string, version: string) => Promise<string | null>} */
+  const write = async (content, version) => {
+    try {
+      const out = await call('/api/file', { workspace: ws, path, content, version });
+      if (out.result === 'conflict') {
+        toast('refused: the file changed on disk just now. Look again and retry.', true);
+        return null;
+      }
+      return out.version;
+    } catch (e) {
+      toast(reason(e), true);
+      return null;
+    }
+  };
+  const reload = async () => { await loadSummary(); await loadFile(path); };
+  let live;
+  try {
+    live = await get(`/api/file?${q}`);
+  } catch (e) {
+    return toast(reason(e), true);
+  }
+  const next = revertedText(live.content, b);
+  if (next === null) {
+    toast('refused: those lines changed since the diff was drawn. Look again and retry.', true);
+    return reload();
+  }
+  const version = await write(next, live.version);
+  if (version === null) return reload();
+  const n = Math.max(b.dels.length, b.adds.length);
+  /* An undo rather than a confirm box: a block that was never committed has no
+     copy anywhere else, but a dialog per arrow is the cost of the rare mistake
+     paid on every click. The undo is a write of its own, version-checked too. */
+  toast(`reverted ${n} line${n === 1 ? '' : 's'}`, false, {
+    label: 'Undo',
+    run: async () => {
+      if (await write(live.content, version) !== null) toast('undone');
+      await reload();
+    },
+  });
+  await reload();
 }
 
 function markCursor() {

@@ -1517,6 +1517,29 @@ try {
     'and cancelling puts the Save button away',
   )
 
+  /* **The revert arrow writes the file, and Undo writes it back.** Asserted on
+     the file on disk, since that is what the arrow is for; the redrawn diff alone
+     would also pass for an arrow that only re-fetched. */
+  const readme = path.join(tree, 'README.md')
+  const added = 'a line the diff can show\n'
+  const onDisk = async (want, what) => {
+    for (let i = 0; i < 50; i++) {
+      if (fs.readFileSync(readme, 'utf8').includes(added) === want) return true
+      await page.waitForTimeout(100)
+    }
+    console.log(`    ${what}: README.md never got there`)
+    return false
+  }
+  check(await page.$$eval('#diffbody .gutter .revert', (b) => b.length) >= 1,
+    'a change block has a revert arrow in the gutter')
+  await press('#diffbody .gutter .revert')
+  check(await onDisk(false, 'revert'), 'the arrow puts the block back on disk')
+  await page.waitForSelector('.toast .toast-act', { timeout: 5000 })
+  await press('.toast .toast-act')
+  check(await onDisk(true, 'undo'), 'and Undo writes the line back')
+  await page.waitForFunction(
+    () => !!document.querySelector('#diffbody .ln.add'), null, { timeout: 10_000 })
+
   /* **And a modifier-click works in the diff, which is the return on one
      renderer.** `source.js` reads the word off the caret and neither viewer knows
      anything about the other; the diff draws `.ln` rows and the search viewer

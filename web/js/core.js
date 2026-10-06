@@ -662,10 +662,21 @@ function armToast(/** @type {HTMLElement} */ row, /** @type {number} */ ms) {
   }, ms));
 }
 
-export function toast(/** @type {string} */ message, /** @type {boolean | undefined} */ bad) {
+export function toast(
+  /** @type {string} */ message,
+  /** @type {boolean | undefined} */ bad,
+  /** @type {{ label: string, run: () => void | Promise<void> } | undefined} */ action = undefined,
+) {
   const stack = $('toaststack');
-  const row = el('div', 'toast on' + (bad ? ' bad' : ''));
+  const row = el('div', 'toast on' + (bad ? ' bad' : '') + (action ? ' acts' : ''));
   row.appendChild(el('span', 'toast-msg', message));
+  /* An action is the undo for what the message reports, so it outlives a plain
+     receipt: 2.6s is long enough to read "reverted" and not to reach the button. */
+  if (action) {
+    const b = el('button', 'toast-act', action.label);
+    b.onclick = () => { dismissToast(row); void action.run(); };
+    row.appendChild(b);
+  }
   if (bad) {
     // Errors persist and are copyable; the ✕ is the only thing that closes one.
     row.tabIndex = -1;
@@ -684,7 +695,7 @@ export function toast(/** @type {string} */ message, /** @type {boolean | undefi
     });
   }
   stack.appendChild(row);
-  if (!bad) armToast(row, 2600);
+  if (!bad) armToast(row, action ? 8000 : 2600);
   // A burst must not fill the screen: drop the oldest past the cap.
   while (stack.children.length > MAX_TOASTS) {
     dismissToast(/** @type {HTMLElement} */ (stack.firstElementChild));

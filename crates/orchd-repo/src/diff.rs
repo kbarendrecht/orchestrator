@@ -244,6 +244,12 @@ pub struct Row {
         ts(type = "[number, number][] | undefined")
     )]
     pub words: Vec<(usize, usize)>,
+    /// This line is its side's last and has no newline after it: git's
+    /// `\ No newline at end of file`. The revert arrow needs it, or putting a
+    /// block back at the end of a file adds or drops that newline.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[cfg_attr(any(test, feature = "test-util"), ts(type = "true | undefined"))]
+    pub no_eol: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -342,6 +348,10 @@ fn parse_unified(path: &str, raw: &str) -> FileDiff {
             continue;
         }
         if line == "\\ No newline at end of file" {
+            // It names the row before it, on whichever side that row is.
+            if let Some(row) = h.rows.last_mut() {
+                row.no_eol = true;
+            }
             continue;
         }
 
@@ -365,6 +375,7 @@ fn parse_unified(path: &str, raw: &str) -> FileDiff {
             new,
             text: text.to_string(),
             words: Vec::new(),
+            no_eol: false,
         });
         // A side's counter moves only when the row exists on that side.
         if old.is_some() {
@@ -798,6 +809,25 @@ mod tests {
         assert_eq!(joined, "héllo wörld");
     }
 
+    /// The marker names the line before it, so a revert at the end of a file
+    /// knows which side lacked the newline.
+    #[test]
+    fn a_missing_newline_at_the_end_is_kept_on_its_row() {
+        let raw = "\
+@@ -1,2 +1,2 @@
+ one
+-two
+\\ No newline at end of file
++two
+";
+        let d = parse_unified("x", raw);
+        let rows = &d.hunks[0].rows;
+        assert_eq!(rows.len(), 3, "the marker is not a row");
+        assert!(!rows[0].no_eol);
+        assert!(rows[1].no_eol, "the old side ended without one");
+        assert!(!rows[2].no_eol, "the new side has it");
+    }
+
     #[test]
     fn parses_line_numbers_from_a_unified_diff() {
         let raw = "\
@@ -1044,6 +1074,7 @@ index 111..222 100644
                     new: None,
                     text: noise.line(noise.0 as usize % 8),
                     words: Vec::new(),
+                    no_eol: false,
                 });
             }
             mark_words(&mut rows);

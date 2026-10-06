@@ -1559,6 +1559,7 @@ async fn module(UrlPath(file): UrlPath<String>) -> Response {
         "pathlink.js" => include_str!("../../../web/js/pathlink.js"),
         "rail.js" => include_str!("../../../web/js/rail.js"),
         "diff.js" => include_str!("../../../web/js/diff.js"),
+        "revert.js" => include_str!("../../../web/js/revert.js"),
         "source.js" => include_str!("../../../web/js/source.js"),
         "find.js" => include_str!("../../../web/js/find.js"),
         "viewer.js" => include_str!("../../../web/js/viewer.js"),

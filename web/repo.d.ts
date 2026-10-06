@@ -220,7 +220,13 @@ export type Row = { kind: RowKind, old: number | null, new: number | null, text:
  * highlighting. Computed here so the browser's main thread never pays for
  * it (§5). Non-overlapping and in ascending order.
  */
-words: [number, number][] | undefined, };
+words: [number, number][] | undefined, 
+/**
+ * This line is its side's last and has no newline after it: git's
+ * `\ No newline at end of file`. The revert arrow needs it, or putting a
+ * block back at the end of a file adds or drops that newline.
+ */
+no_eol: true | undefined, };
 
 export type RowKind = "context" | "del" | "add";
 

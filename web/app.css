@@ -1648,6 +1648,13 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
   padding:0 2px;user-select:none;border-radius:2px;transition:color .12s;
 }
 .toast-x:hover{color:var(--bad)}
+/* A toast with a button takes clicks, which the stack otherwise refuses. */
+.toast.acts{pointer-events:auto}
+.toast-act{
+  margin-left:auto;flex:0 0 auto;font:inherit;color:var(--text);background:none;
+  border:1px solid currentColor;border-radius:3px;padding:0 6px;cursor:pointer;
+}
+.toast-act:hover{background:var(--hover)}
 
 /* Update nudge: a quiet pill top-centre, out of the way but not a toast that
    vanishes before you act on it. */
@@ -1723,6 +1730,13 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 .diff.split{display:grid;grid-template-columns:1fr 22px 1fr;align-items:stretch;align-content:start}
 .pane{min-width:0}
 .gutter{background:var(--surface);border-left:1px solid var(--line-soft);border-right:1px solid var(--line-soft);height:100%}
+/* The revert arrow sits on a block's first row, in the gutter between the
+   sides, and points the way the lines go. */
+.gutter .revert{
+  display:block;width:100%;padding:0;border:0;background:none;font:inherit;line-height:inherit;
+  color:var(--faint-solid);cursor:pointer;text-align:center;
+}
+.gutter .revert:hover{color:var(--text);background:var(--hover)}
 .ln{display:grid;grid-template-columns:44px 1fr;white-space:pre-wrap;word-break:break-word}
 /* The number is generated content, which no engine puts in a selection. The
    `user-select` stays for the box itself, so a drag starting in the gutter does

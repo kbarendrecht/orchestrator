@@ -23,8 +23,8 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::api::{
-    ask_token_ok, fetch_threads, pr_from_poll, proposal_token_ok, refuse, refuse_if_occupied,
-    write_forge, ApiError, ApiResult,
+    ask_token_ok, fetch_threads, pr_from_poll, proposal_token_ok, refuse, refuse_busy,
+    refuse_if_occupied, write_forge, ApiError, ApiResult,
 };
 use crate::model::*;
 use crate::spawn;
@@ -359,6 +359,13 @@ pub async fn write_file(
         .workspace_path(&body.workspace)
         .await
         .ok_or_else(|| anyhow::anyhow!("unknown workspace {}", body.workspace))?;
+    /* Refused mid-turn, like the file verbs. The version check catches an agent
+    that already wrote the file, not one about to: it reads, you write, and its
+    next edit lands on a copy that no longer exists. The diff's revert arrow made
+    that a click away. */
+    if let Some(who) = app.busy_session_in(&body.workspace).await {
+        refuse_busy!("{who} is mid-turn in {}, wait for it", body.workspace);
+    }
     let out = crate::edit::write(
         &root,
         &body.path,
@@ -814,6 +821,50 @@ mod tests {
         };
         assert_eq!(out.0["fix_pr"], false);
         assert!(!flag(rid).await, "nothing to watch, nothing armed");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A write is refused while an agent in that workspace is mid-turn, and
+    /// goes through once it is not. The version check alone cannot see an
+    /// agent that read the file and has not written it yet.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_write_waits_for_an_agent_mid_turn() {
+        use crate::model::{Session, State as S, MAIN};
+
+        let (app, dir) = crate::testutil::app("write-busy");
+        std::fs::write(dir.join("f.txt"), "one\n").unwrap();
+        let version = crate::edit::read(&dir, "f.txt", &dir).unwrap().version;
+        let go = |content: &str| {
+            let (app, content, version) = (app.clone(), content.to_string(), version.clone());
+            async move {
+                write_file(
+                    State(app),
+                    Json(WriteBody {
+                        workspace: MAIN.to_string(),
+                        path: "f.txt".into(),
+                        content,
+                        version,
+                    }),
+                )
+                .await
+            }
+        };
+
+        let id = Uuid::new_v4();
+        {
+            let mut inner = app.inner.write().await;
+            let mut s = Session::new(id, MAIN.to_string(), dir.clone(), None);
+            s.set_state(S::Working);
+            inner.sessions.insert(id, s);
+        }
+        let e = go("two\n").await.expect_err("an agent is working");
+        assert!(format!("{:#}", e.0).contains("mid-turn"));
+        assert_eq!(std::fs::read_to_string(dir.join("f.txt")).unwrap(), "one\n");
+
+        app.inner.write().await.sessions.remove(&id);
+        assert!(go("two\n").await.is_ok());
+        assert_eq!(std::fs::read_to_string(dir.join("f.txt")).unwrap(), "two\n");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
