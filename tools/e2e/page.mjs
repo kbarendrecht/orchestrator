@@ -2130,7 +2130,97 @@ try {
       && await page.$$eval('#fvsrc .md', (m) => m.length) === 0,
     'and the toggle puts the file back as it is written',
   )
+
+  /* --- and MOD F finds inside the file on screen ------------------------------ */
+
+  /* **The one search the workspace search cannot do.** `/api/search` lists files;
+     asked about the file already open it answers with an index of one and takes
+     the pane away to show it. And the browser's own find is no answer either —
+     this viewer draws a band of 320 rows with spacers standing in for the rest,
+     so Chrome's find sees the band and reports a file that is mostly not there.
+     Which is why the count below is asserted rather than the highlight: the
+     number is the thing nothing else in this app can produce.
+
+     Rendered first, because a query is a reason to show the source: a markdown
+     page has no line to point at, so finding something in it has to put the
+     lines back. */
+  await page.$eval('#fvmode', (b) => b.click())
+  await page.waitForFunction(() => document.querySelectorAll('#fvsrc .md').length === 1,
+    null, { timeout: 5000 })
+  await page.keyboard.press(chord('KeyF'))
+  await page.waitForSelector('#fvseek:not([hidden])', { timeout: 5000 })
+  await page.fill('#fvseekq', 'More')
+  const found = await page.waitForFunction(
+    () => document.getElementById('fvseekn')?.textContent === '1 of 60',
+    null, { timeout: 5000 }).then(() => true).catch(() => false)
+  check(found, 'a query counts every match in the file')
+  /* The button, not the rows: `seek` paints lines whatever the mode says, so a
+     flip that drew them without recording them passed a check on the rows — and
+     left the *next* file opening rendered when it had been asked for as source.
+     The label is what says which mode the pane believes it is in. */
+  check(
+    await page.$$eval('#fvsrc .fnrow', (rs) => rs.length) > 0
+      && await page.$eval('#fvmode', (b) => b.textContent) === 'Rendered',
+    'and finding in a rendered page puts the lines back, which is where a match is',
+  )
+  check(
+    (await page.$eval('#fvsrc .fnrow.on', (r) => r.textContent) ?? '').includes('More'),
+    'the first match is the lit row',
+  )
+  // Enter steps forward, Shift Enter back, and both ends wrap.
+  await page.keyboard.press('Enter')
+  check(await page.$eval('#fvseekn', (n) => n.textContent) === '2 of 60', 'Enter goes to the next')
+  await page.keyboard.press('Shift+Enter')
+  await page.keyboard.press('Shift+Enter')
+  check(await page.$eval('#fvseekn', (n) => n.textContent) === '60 of 60', 'and back off the top wraps')
+  check(
+    await page.$$eval('#fvsrc .ruler .rm.hit', (ms) => ms.length) > 0,
+    'the ruler beside the scrollbar marks them',
+  )
+  /* Smart case, the daemon's own rule: an upper-case letter anywhere makes the
+     query sensitive. Two find boxes in one app that disagree about this is a
+     difference nobody can see. */
+  await page.fill('#fvseekq', 'title')
+  check(
+    await page.$eval('#fvseekn', (n) => n.textContent) === '1 of 1',
+    'a lower-case query ignores case',
+  )
+  await page.fill('#fvseekq', 'TITLE')
+  check(
+    await page.$eval('#fvseekn', (n) => n.textContent) === 'no matches',
+    'and an upper-case letter makes it match the case written',
+  )
+  // The `.*` toggle, which is also the whole-word search: `\bx\b`.
+  await page.fill('#fvseekq', '^## Mo')
+  check(
+    await page.$eval('#fvseekn', (n) => n.textContent) === 'no matches',
+    'a query is a literal until the toggle says otherwise',
+  )
+  await page.$eval('#fvseekre', (b) => b.click())
+  check(
+    await page.$eval('#fvseekn', (n) => n.textContent) === '1 of 60',
+    'and the toggle makes the same query a pattern',
+  )
+  await page.fill('#fvseekq', '[')
+  check(
+    await page.$eval('#fvseekn', (n) => n.textContent) === 'bad pattern',
+    'a pattern that does not compile is a sentence in the box, not a thrown error',
+  )
+  await page.$eval('#fvseekre', (b) => b.click())
+  /* **Escape dismisses the topmost thing**, and while the bar is up that is the
+     bar. It used to be the pane, which is one press too far: closing a file to
+     get out of its find box loses where you were in it. */
   await page.keyboard.press('Escape')
+  check(
+    await page.$eval('#fvseek', (b) => b.hidden) === true
+      && await page.$$eval('#fvoverlay.on', (o) => o.length) === 1,
+    'Escape puts the bar away and leaves the file open',
+  )
+  await page.keyboard.press('Escape')
+  check(
+    await page.$$eval('#fvoverlay.on', (o) => o.length) === 0,
+    'and the next Escape closes the file',
+  )
 
   /* --- and an html file runs in a sandbox ------------------------------------ */
 

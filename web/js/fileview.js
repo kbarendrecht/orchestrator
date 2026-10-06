@@ -16,6 +16,7 @@ import {
 } from './core.js';
 import * as Editor from './editor.js';
 import { folders, level, matching } from './pathlink.js';
+import { MAX, hitLines, matches, nextIndex, offsetOf } from './seek.js';
 import * as Viewer from './viewer.js';
 
 /** The open overlay. `ws` is pinned at open for the reason the finder's is:
@@ -214,6 +215,9 @@ async function show(ws, path, line, last, pinned = false, onTrail = false) {
      thing that was actually asked for, and the button is right there. */
   if (drawn && viewer().renderable() && state.rendered && !line) viewer().render();
   renderHead(drawn);
+  // The bar outlives the file: a query asked of one file is usually a query
+  // about the next one too, and re-asking it is cheaper than retyping it.
+  if (bar.on) runSeek(false);
 }
 
 /** The header's two buttons: what this file can be shown as, and what it is
@@ -240,6 +244,7 @@ export async function close() {
   // The buffer answers first: closing over a half-written edit would discard it
   // without asking, which is the one thing the editor exists to refuse.
   if (Editor.isOpen() && !await Editor.close()) return false;
+  closeSeek();
   state.open = false;
   state.pinned = false;
   state.trail = [];
@@ -397,7 +402,9 @@ function edit() {
     // Back to the viewer, on the file as it now is.
     onClosed: () => { viewer().drop(); void redraw(); },
     onSaved: () => { viewer().drop(); },
-  });
+  // The buffer and the file are two different strings, and the bar was searching
+  // the other one a moment ago.
+  }).then(() => { if (bar.on) runSeek(false); });
 }
 
 /** Draw the file again, where you were.
@@ -409,10 +416,160 @@ async function redraw() {
   if (!state.open || !state.ws || !state.path) return;
   await viewer().show(state.ws, state.path, { line: state.line, last: state.last, col: 0, len: 0 });
   if (state.rendered && viewer().renderable()) viewer().render();
+  if (bar.on) runSeek(false);
+}
+
+// ---------------------------------------------------------------------------
+// Find in the file on screen
+// ---------------------------------------------------------------------------
+//
+// **The workspace search cannot answer this, and not for want of trying.** It
+// walks the tree and lists files; asking it about the file already in front of
+// you throws away the file pane you are in and answers with an index of one. And
+// once the editor is open it cannot answer at all — the text is a buffer nobody
+// has written to disk, so the daemon would search the version you are editing
+// away from. The match is therefore made in the page, over the string whichever
+// of the two already holds, and `seek.js` is that and nothing else.
+//
+// Here rather than in `viewer.js` for the reason the viewer exists: the viewer
+// draws one file and owns no reason for looking at it. A query is a reason.
+
+/** The bar. `hits` is kept rather than recomputed because the arrows, the count
+ *  and the ruler all read it between keystrokes, and `at` is which one is
+ *  current — `-1` until something has been jumped to.
+ *
+ *  @type {{ on: boolean, hits: import('./seek.js').Hit[], at: number }} */
+const bar = { on: false, hits: [], at: -1 };
+
+/** Open the bar, or put the keyboard back in it when it is already open — which
+ *  is what pressing the chord again means everywhere else. */
+export function seek() {
+  if (!state.open) return;
+  if (viewer().isImage() && !Editor.isOpen()) return toast('a picture has nothing to search', true);
+  bar.on = true;
+  $('fvseek').hidden = false;
+  const box = /** @type {HTMLInputElement} */ ($('fvseekq'));
+  box.focus();
+  box.select();
+  runSeek(false);
+}
+
+export const seeking = () => bar.on;
+
+/** Put the bar away, and the marks with it. The caret stays on the last match:
+ *  in a buffer that is where you were going, and the pane has no caret to move. */
+export function closeSeek() {
+  if (!bar.on) return false;
+  bar.on = false;
+  bar.hits = [];
+  bar.at = -1;
+  $('fvseek').hidden = true;
+  if (!Editor.isOpen()) viewer().setHits([]);
+  else Editor.focus();
+  return true;
+}
+
+/** The text being searched, and where "from here" is in it. One function,
+ *  because every caller has to ask both questions of the same source. */
+function searched() {
+  if (Editor.isOpen()) return { text: Editor.text(), from: Editor.caret() };
+  const text = viewer().text();
+  return { text, from: text == null ? 0 : offsetOf(text, state.line) };
+}
+
+/** Search again and say what was found.
+ *
+ *  `move` is whether to go to a match as well as count them. Typing moves the
+ *  pane, because watching the file arrive under the query is the whole of what a
+ *  find box is for. It does not move the *caret* in a buffer, which is a
+ *  different thing: [`Editor.select`] says why.
+ *
+ *  @param {boolean} move */
+function runSeek(move) {
+  const q = /** @type {HTMLInputElement} */ ($('fvseekq')).value;
+  const { text, from } = searched();
+  bar.hits = [];
+  bar.at = -1;
+  if (text == null) return seekCount('nothing to search');
+  const found = matches(text, q, $('fvseekre').classList.contains('on'));
+  if (found === null) return seekCount('bad pattern');
+  bar.hits = found;
+  if (!Editor.isOpen()) viewer().setHits(hitLines(found));
+  if (!q) return seekCount('');
+  if (!found.length) return seekCount('no matches');
+  if (move) goToHit(nextIndex(found, from - 1, 1));
+  else seekCount(countLabel());
+}
+
+/** `3 of 48`, or `of 48` before anything has been jumped to. The cap is said out
+ *  loud: a count that stops at a round number without saying so is a lie about
+ *  the file. */
+function countLabel() {
+  const n = bar.hits.length;
+  const total = `${n}${n >= MAX ? '+' : ''}`;
+  return bar.at < 0 ? `of ${total}` : `${bar.at + 1} of ${total}`;
+}
+
+function seekCount(/** @type {string} */ what) {
+  $('fvseekn').textContent = what;
+}
+
+/** Show hit `i`, in whichever of the two is up. */
+function goToHit(/** @type {number} */ i) {
+  const hit = bar.hits[i];
+  if (!hit) return;
+  bar.at = i;
+  if (Editor.isOpen()) Editor.select(hit.at, hit.len);
+  else {
+    /* A rendered page has no lines to point at, so a search is a reason to show
+       the source — the same rule a line number follows in [`show`]. */
+    if (state.rendered && viewer().renderable()) {
+      state.rendered = false;
+      viewer().renderSource();
+      renderHead(true);
+    }
+    viewer().seek(hit.line, hit.col, hit.len);
+    state.line = hit.line;
+    state.last = 0;
+  }
+  seekCount(countLabel());
+}
+
+/** The arrows, and Enter in the box. Stepping is from the *current match* once
+ *  there is one and from where the reader is before that, so the first press
+ *  after typing goes forward from the line on screen rather than back to the top
+ *  of the file.
+ *
+ *  @param {number} dir */
+export function seekStep(dir) {
+  if (!bar.on || !bar.hits.length) return;
+  const here = bar.hits[bar.at];
+  const from = here ? here.at + (dir > 0 ? here.len - 1 : 0) : searched().from - 1;
+  goToHit(nextIndex(bar.hits, from, dir));
+}
+
+/** Wire the bar, once, at boot. */
+function initSeek() {
+  const box = /** @type {HTMLInputElement} */ ($('fvseekq'));
+  box.oninput = () => runSeek(true);
+  box.onkeydown = (e) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    seekStep(e.shiftKey ? -1 : 1);
+  };
+  $('fvseekre').onclick = () => {
+    $('fvseekre').classList.toggle('on');
+    box.focus();
+    runSeek(true);
+  };
+  $('fvseekprev').onclick = () => seekStep(-1);
+  $('fvseeknext').onclick = () => seekStep(1);
+  $('fvseekx').onclick = () => closeSeek();
 }
 
 /** Wire the chrome. Called once, at boot. */
 export function init() {
+  initSeek();
   $('fvmode').onclick = () => {
     state.rendered = !state.rendered;
     if (state.rendered) viewer().render();

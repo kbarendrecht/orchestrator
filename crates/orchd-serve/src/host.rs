@@ -1562,6 +1562,7 @@ async fn module(UrlPath(file): UrlPath<String>) -> Response {
         "revert.js" => include_str!("../../../web/js/revert.js"),
         "source.js" => include_str!("../../../web/js/source.js"),
         "find.js" => include_str!("../../../web/js/find.js"),
+        "seek.js" => include_str!("../../../web/js/seek.js"),
         "viewer.js" => include_str!("../../../web/js/viewer.js"),
         "markdown.js" => include_str!("../../../web/js/markdown.js"),
         "fileview.js" => include_str!("../../../web/js/fileview.js"),

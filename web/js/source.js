@@ -33,6 +33,19 @@ export function charRanges(text, pairs) {
   return pairs.map(([s, e]) => ({ s: at(s), e: at(e) }));
 }
 
+/** The byte offsets of the character range `[s, e)` in `text`.
+ *
+ *  The other direction, for a match found in the page rather than sent by the
+ *  daemon: the viewer's spot is in bytes because everything that used to fill it
+ *  came from Rust, and a search made over a JS string has characters.
+ *
+ *  @param {string} text @param {number} s @param {number} e
+ *  @returns {[number, number]} */
+export function byteRange(text, s, e) {
+  const from = ENC.encode(text.slice(0, s)).length;
+  return [from, from + ENC.encode(text.slice(s, e)).length];
+}
+
 /* Prism is vendored whole (every grammar) and driven for its token stream only,
  * never its markup: the daemon already marks the changed slices of a line, and
  * those `.w-add`/`.w-del` ranges have to interleave with the syntax spans rather

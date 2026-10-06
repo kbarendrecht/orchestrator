@@ -2789,6 +2789,17 @@ select.opfield,input.opfield{appearance:none}
    right while the path keeps the left. */
 .fnview-head .ov-count{margin-left:auto}
 
+/* Find in the file on screen: a row of its own under the file's header, in the
+   same chrome, so the query box lines up with the path above it. */
+.seekbar{
+  display:flex;align-items:center;gap:8px;padding:5px 16px;flex:0 0 auto;
+  background:var(--surface);border-bottom:1px solid var(--line-soft);
+}
+/* The box takes the width and the count sits against it, so the arrows and Close
+   group at the right where the header's buttons already are. */
+.seekbar .fnq{flex:1}
+.seekbar .ov-count{flex:0 0 auto;white-space:nowrap}
+
 /* The viewer. Scrolls in its own box, so the page never scrolls sideways. */
 .fnsrc{
   flex:1;overflow:auto;background:var(--bg);

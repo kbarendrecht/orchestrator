@@ -1378,8 +1378,8 @@ $('killbtn').onclick = () => {
 //   • the app modifier — **⌘ on macOS, Ctrl elsewhere** (`core.appMod`): new
 //     worktree / session / shell (n, Shift+n, Shift+t), switch session (Tab /
 //     Shift+Tab), jump to what needs you (Space), the diff (Shift+d), zoom
-//     (= − 0), save (s). The platform comes from the daemon, which knows it at
-//     compile time, not from a sniffed user agent.
+//     (= − 0), save (s), find in the file on screen (f). The platform comes from
+//     the daemon, which knows it at compile time, not from a sniffed user agent.
 //   • Escape is not a layer, it is one rule: dismiss the topmost thing —
 //     legend, then menu, then settings, then the open overlay.
 //
@@ -1400,6 +1400,10 @@ $('killbtn').onclick = () => {
 //     next-history), `Ctrl+d` is not (the diff is `Ctrl+Shift+d`, because `Ctrl+d`
 //     is EOF and still has to exit a shell). `Ctrl+n` and `Ctrl+Space` (NUL,
 //     emacs set-mark) are the two that currently take something.
+//   * **A binding guarded by an open overlay takes nothing**, because the overlay
+//     is drawn over the terminal the key would otherwise reach. That is what buys
+//     `Ctrl+f` its plain letter: it is live only while the file pane is up, and a
+//     pty nobody can see is a pty nobody is typing into.
 //   * `Ctrl+n`, `Ctrl+Shift+n` and `Ctrl+Tab` are browser-reserved (new window,
 //     incognito, tab switch) and never arrive in a plain tab; they work in the
 //     desktop webview, which is the primary target. The legend says so rather than
@@ -1639,6 +1643,18 @@ function keymap(/** @type {KeyboardEvent} */ e) {
       return;
     }
   }
+  /* **Find in the file on screen: the app modifier and F.** The workspace-wide
+     search is MOD Shift F, so the Shift widens the question from this file to
+     every file — one key, two sizes of the same verb.
+
+     Plain MOD+F rather than the Ctrl+Shift the contract defaults to, and it
+     costs the terminal nothing: the binding is live only while the file overlay
+     is up, and that overlay covers the pty it would otherwise shadow. */
+  if (appMod(e) && (e.key === 'f' || e.key === 'F') && !e.shiftKey && !e.altKey && FileView.isOpen()) {
+    e.preventDefault();
+    FileView.seek();
+    return;
+  }
   /* One save chord for both overlays. It used to name the diff's editor, which
      was the only one; the buffer is `editor.js` now and either viewer can hold
      it, so the question is whether *anything* is open to write. */
@@ -1687,6 +1703,9 @@ function keymap(/** @type {KeyboardEvent} */ e) {
      field, so the letters belong to what you are typing until Tab moves off it. */
   if (FileView.isOpen() && e.key === 'Escape') {
     e.preventDefault();
+    // The find bar is the topmost thing in this overlay when it is up, so it is
+    // what Escape dismisses — the same rule the legend and the menu follow above.
+    if (FileView.closeSeek()) return;
     // One step back through the links a page led to, and out once there are none.
     void FileView.back();
     return;

@@ -334,10 +334,43 @@ function replace(/** @type {HTMLTextAreaElement} */ ta, /** @type {import('./edi
   ta.setSelectionRange(ed.selStart, ed.selEnd);
 }
 
+/** The textarea the buffer lives in, or nothing when none is open. */
+const area = () => /** @type {HTMLTextAreaElement | null | undefined} */ (
+  state.host?.mount.querySelector('.editarea'));
+
+/** What is in the buffer now, for a search over it. Null when none is open.
+ *
+ *  **The buffer, not the file**: typing is not on disk, so a search that asked
+ *  the daemon would answer about a version of the file nobody is looking at. */
+export const text = () => (state.on ? area()?.value ?? null : null);
+
+/** The caret, so a search knows where "next" starts from. */
+export const caret = () => (state.on ? area()?.selectionStart ?? 0 : 0);
+
+/** Select `len` characters from `at` and scroll them into the middle.
+ *
+ *  **It does not take the focus, deliberately.** The caller is a find box being
+ *  typed into, and a focus that followed each match would move the keyboard off
+ *  the query after the first letter. The selection is still set, so closing the
+ *  box leaves the caret on the match, which is what you want it on.
+ *
+ *  @param {number} at @param {number} len */
+export function select(at, len) {
+  const ta = area();
+  if (!state.on || !ta) return false;
+  ta.setSelectionRange(at, at + len);
+  scrollToLine(ta, ta.value.slice(0, at).split('\n').length);
+  return true;
+}
+
+/** Put the keyboard back in the buffer, where the selection already is. */
+export function focus() {
+  area()?.focus();
+}
+
 /** Put the caret at the start of a line and scroll it into the middle. */
 export function goTo(/** @type {number} */ line) {
-  const ta = /** @type {HTMLTextAreaElement | null | undefined} */ (
-    state.host?.mount.querySelector('.editarea'));
+  const ta = area();
   if (!state.on || !ta) return false;
   let at = 0;
   for (let n = 1; n < line; n++) {
@@ -347,9 +380,20 @@ export function goTo(/** @type {number} */ line) {
   }
   ta.focus();
   ta.setSelectionRange(at, at);
+  scrollToLine(ta, line);
+  return true;
+}
+
+/** Put line `line` in the middle of the buffer's viewport.
+ *
+ *  A line is a line high because `.editarea` is `white-space:pre`: nothing wraps,
+ *  so the row and the line are the same thing and the arithmetic holds. The
+ *  height is read rather than assumed, because the font size is a slider here.
+ *
+ *  @param {HTMLTextAreaElement} ta @param {number} line */
+function scrollToLine(ta, line) {
   const lh = parseFloat(getComputedStyle(ta).lineHeight) || 18;
   ta.scrollTop = Math.max(0, (line - 1) * lh - ta.clientHeight / 2);
-  return true;
 }
 
 /** Is anything open to save? The `Ctrl+S` binding is the app's and there are two

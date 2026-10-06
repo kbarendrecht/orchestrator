@@ -215,6 +215,20 @@
         <button class="head-btn" id="fvsave" hidden><span data-mod>Save MOD S</span></button>
         <button class="head-btn" id="fvclose">Close ESC</button>
       </div>
+      <!-- Find in the file on screen, under the header rather than in it: the
+           header says which file this is, and this asks a question about what is
+           inside it. Hidden until MOD F. Two controls and no more — a whole-word
+           search is `\bword\b` with the regex toggle on, and the case is smart
+           the way the daemon's search is. -->
+      <div class="seekbar" id="fvseek" hidden>
+        <input class="fnq" id="fvseekq" spellcheck="false" autocomplete="off"
+               placeholder="find in this file" aria-label="find in this file">
+        <span class="ov-count" id="fvseekn"></span>
+        <button class="fntg" id="fvseekre" title="The query is a regular expression">.*</button>
+        <button class="head-btn" id="fvseekprev" title="Previous match (Shift Enter)">&#8593;</button>
+        <button class="head-btn" id="fvseeknext" title="Next match (Enter)">&#8595;</button>
+        <button class="head-btn" id="fvseekx">Close ESC</button>
+      </div>
       <div class="fnsrc" id="fvsrc"></div>
     </div>
 
@@ -840,6 +854,7 @@
 
       <div class="settings-group">Overlays</div>
       <dt data-mod>MOD&nbsp;Shift&nbsp;F</dt><dd>find in this workspace's files</dd>
+      <dt data-mod>MOD&nbsp;F</dt><dd>find in the file on screen</dd>
       <dt>Shift&nbsp;Shift</dt><dd>find a file by name</dd>
       <dt>Enter</dt><dd>open the found file on its own, with the markdown view</dd>
       <dt data-mod>MOD&nbsp;Shift&nbsp;D</dt><dd>toggle the diff</dd>

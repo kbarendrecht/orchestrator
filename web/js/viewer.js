@@ -15,7 +15,7 @@
 // reads as a truncated file rather than a broken viewer.
 
 import { activeCheckout, call, copyText, el, get, openMenu, reason, safeHref, toast } from './core.js';
-import { charRanges, hlTokens, langFor, paintRanges } from './source.js';
+import { byteRange, charRanges, hlTokens, langFor, paintRanges } from './source.js';
 import { parse } from './markdown.js';
 
 /** Rows drawn around the line, and how close to the edge the viewport gets
@@ -466,6 +466,25 @@ export function create(on) {
     setHits: (/** @type {number[]} */ lines) => {
       hits = lines;
       redrawRuler();
+    },
+
+    /** The file on screen as one string, for a search made in the page. Null
+     *  when there is nothing to search: a picture, or nothing loaded yet. */
+    text: () => view.file?.lines.join('\n') ?? null,
+
+    /** Put a match in the middle and mark it.
+     *
+     *  `col` and `len` are **characters**, which is what a search over the
+     *  string answers in; the spot a band paints from is in bytes, because every
+     *  other filler of it is Rust. The conversion is here so that one caller
+     *  cannot forget it.
+     *
+     *  @param {number} line @param {number} col @param {number} len */
+    seek: (line, col, len) => {
+      if (!view.file || view.mode === 'image') return false;
+      const [s, e] = byteRange(view.file.lines[line - 1] ?? '', col, col + len);
+      paint({ line, col: s, len: e - s });
+      return true;
     },
 
     /** Put line `line` in the middle, as lines. False when there is no text to
