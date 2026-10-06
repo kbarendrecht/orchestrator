@@ -316,6 +316,16 @@ function decorate(ta, lang) {
   let queued = false;
   const paint = () => {
     queued = false;
+    /* **A whole pixel per line, or the layers drift apart in WebKit.** The CSS
+       says 1.65, which is 18.975px at the default size, and that is what
+       `getComputedStyle` reports; but WebKitGTK lays every line out 18px apart,
+       textarea and copies alike. So a band placed at `first * 18.975` sat a pixel
+       lower per line above it, and thirty lines down the selection was a line off
+       the text it selected. A rounded height is one both the layout and this
+       arithmetic agree on, in every engine. Set on every paint, since the zoom
+       slider moves the font size. */
+    const size = parseFloat(getComputedStyle(ta).fontSize) || 11.5;
+    wrap.style.setProperty('--edit-lh', `${Math.max(1, Math.round(size * 1.65))}px`);
     const cs = getComputedStyle(ta);
     const lh = parseFloat(cs.lineHeight) || 18;
     const top = parseFloat(cs.paddingTop) || 0;

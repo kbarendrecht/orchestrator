@@ -2083,6 +2083,9 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
    crosses the gutter would otherwise carry them into what you paste. */
 .editnums-in > div::before{content:attr(data-n)}
 .editwrap > .editarea,.editwrap > .edithl{padding-left:calc(var(--gut,4ch) + 12px)}
+/* Whole pixels, set from the font size by `decorate` in editor.js: WebKit lays a
+   fractional line height out rounded down, and the layers are placed by it. */
+.editwrap > .editarea,.editwrap > .edithl,.editwrap > .editnums{line-height:var(--edit-lh,1.65)}
 .editwrap > .editarea{background:none}
 .editarea.hl{background:transparent;color:transparent;-webkit-text-fill-color:transparent;caret-color:var(--text)}
 .editarea.hl::selection{background:rgba(120,160,220,.3)}

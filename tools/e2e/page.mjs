@@ -1691,6 +1691,12 @@ try {
     const ta = /** @type {HTMLTextAreaElement | null} */ (document.querySelector('#diffbody .editarea'))
     return !!under && !!ta && under.textContent?.startsWith(ta.value.split('\n')[0]) === true
   }), 'the editor draws its lines in colour under the textarea')
+  /* **Whole pixels per line.** WebKit lays a fractional line height out rounded
+     down while the layers are placed by the fraction, so the copy drifted a pixel
+     a line and the selection ended up on the wrong one. Chrome keeps the fraction
+     and never shows it, which is why the height itself is what is asserted. */
+  const editLh = await page.$eval('#diffbody .editarea', (ta) => getComputedStyle(ta).lineHeight)
+  check(/^\d+px$/.test(editLh), `the editor's line height is whole pixels, got ${editLh}`)
   /* **And numbers them.** The viewer draws a numbered row per line and pressing
      Edit used to replace that with an unnumbered block — while the app's own
      go-to-line still landed in it, and a line number is how you tell an agent
