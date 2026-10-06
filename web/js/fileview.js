@@ -113,6 +113,15 @@ export async function open(ws, candidates, line, last, ev) {
   await show(ws, candidates[0] ?? '', line, last);
 }
 
+/** Open a file in this pane and go straight into editing it, with the caret on
+ *  `line`. The finder's Edit, which used to edit in its own short bottom half. */
+export async function openToEdit(/** @type {string} */ ws, /** @type {string} */ path, /** @type {number} */ line) {
+  await show(ws, path, line);
+  if (!state.open || state.path !== path) return;
+  await edit();
+  if (line > 0) Editor.goTo(line);
+}
+
 /** Where a session's scratchpad image is served, on the daemon at `base`.
  *  @param {string} base @param {string} session @param {string} abs */
 export const scratchUrl = (base, session, abs) =>

@@ -527,29 +527,16 @@ export function openCurrent() {
   void FileView.open(state.ws, [hit.path], hit.line, hit.last);
 }
 
-/** Open what the cursor is on for editing.
+/** Open what the cursor is on for editing, in the file pane.
  *
- *  **No base pane, and that is the difference from the diff's editor.** A search
- *  result is usually a file nobody changed, so there is no revision to sit beside
- *  it — which is why this had to be lifted out of `diff.js` rather than reached
- *  into.
+ *  **Not in the finder's own bottom half**, which is where it used to happen: a
+ *  buffer you type in wants the height of the window, and the file pane is the
+ *  full-height one, with the same Esc back to this list that Enter has.
  */
 function edit() {
   const hit = state.hits[state.cursor];
-  if (!hit || !viewer().shownPath()) return toast('nothing to edit here', true);
-  return Editor.open({
-    mount: $('fnsrc'),
-    mountClass: 'fnsrc editing',
-    workspace: state.ws ?? '',
-    path: hit.path,
-    base: null,
-    save: $('fnsave'),
-    edit: $('fnedit'),
-    // Back to the viewer, on the file as it now is: the band is rebuilt from
-    // the viewer's own copy, so a discarded edit must not leave a stale one.
-    onClosed: () => { viewer().drop(); void showCursor(); },
-    onSaved: () => { viewer().drop(); },
-  });
+  if (!hit || !state.ws || !viewer().shownPath()) return toast('nothing to edit here', true);
+  void FileView.openToEdit(state.ws, hit.path, hit.line);
 }
 
 /** How tall the index is, as the stylesheet reads it, and where that is

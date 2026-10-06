@@ -1503,21 +1503,23 @@ try {
      header — the diff's path sits under it too. The assertion here is about the
      buffer, not about hit-testing a button. */
   const press = (id) => page.$eval(id, (b) => b.click())
+  /* **Edit opens the file pane**, the full-height one, rather than a buffer in
+     the finder's short bottom half; Esc comes back to the list, as from Enter. */
   await press('#fnedit')
-  await page.waitForSelector('#fnsrc.editing .editarea', { timeout: 5000 })
+  await page.waitForSelector('#fvoverlay.on #fvsrc.editing .editarea', { timeout: 5000 })
   check(
-    await page.$$eval('#fnsrc .editbase', (b) => b.length) === 0,
+    await page.$$eval('#fvsrc .editbase', (b) => b.length) === 0,
     'no base pane: a search result has no revision to sit beside',
   )
-  await page.fill('#fnsrc .editarea', 'the frobnicate word moved\n')
+  await page.fill('#fvsrc .editarea', 'the frobnicate word moved\n')
   check(
-    await page.$eval('#fnsave', (b) => b.textContent) === 'Save •',
+    await page.$eval('#fvsave', (b) => b.textContent) === 'Save •',
     'typing marks the buffer dirty',
   )
-  await press('#fnsave')
+  await press('#fvsave')
   await page.waitForFunction(
-    () => document.getElementById('fnsave')?.textContent?.startsWith('Save') === true
-      && !document.getElementById('fnsave')?.textContent?.includes('•'),
+    () => document.getElementById('fvsave')?.textContent?.startsWith('Save') === true
+      && !document.getElementById('fvsave')?.textContent?.includes('•'),
     null, { timeout: 5000 },
   )
   check(
@@ -1527,13 +1529,28 @@ try {
 
   // Cancel goes back to the viewer, on the file as it now is rather than the copy
   // the band was built from.
-  await press('#fnedit')
+  await press('#fvedit')
   await page.waitForFunction(
-    () => !!document.querySelector('#fnsrc .fnrow'), null, { timeout: 5000 })
+    () => !!document.querySelector('#fvsrc .fnrow'), null, { timeout: 5000 })
   check(
-    await page.$eval('#fnsrc .fnrow', (r) => r.textContent) === 'the frobnicate word moved',
+    await page.$eval('#fvsrc .fnrow', (r) => r.textContent) === 'the frobnicate word moved',
     'and the viewer comes back on the saved file, not the stale one',
   )
+  /* **Pressing Edit moves no glyph sideways.** The editor's gutter was sized
+     from the digit count and padded differently, so the text jumped as the
+     buffer replaced the rows. Measured where the text starts, in both. */
+  const viewX = await page.$eval('#fvsrc .fnrow s', (e) => e.getBoundingClientRect().left
+    + parseFloat(getComputedStyle(e).paddingLeft))
+  await press('#fvedit')
+  await page.waitForSelector('#fvsrc.editing .editarea', { timeout: 5000 })
+  const editX = await page.$eval('#fvsrc .editarea', (ta) => ta.getBoundingClientRect().left
+    + parseFloat(getComputedStyle(ta).paddingLeft) + parseFloat(getComputedStyle(ta).borderLeftWidth))
+  check(Math.abs(viewX - editX) < 0.5, `the text starts where the viewer had it, ${viewX} against ${editX}`)
+  await press('#fvedit')
+  await page.waitForFunction(() => !!document.querySelector('#fvsrc .fnrow'), null, { timeout: 5000 })
+  // The file pane, then the finder under it.
+  await page.keyboard.press('Escape')
+  await page.waitForFunction(() => !document.getElementById('fvoverlay')?.classList.contains('on'), null, { timeout: 5000 })
   await page.keyboard.press('Escape')
 
   /* --- modifier-click goes to a definition ------------------------------------ */

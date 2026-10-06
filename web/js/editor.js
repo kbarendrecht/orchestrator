@@ -325,7 +325,9 @@ function decorate(ta, lang) {
        arithmetic agree on, in every engine. Set on every paint, since the zoom
        slider moves the font size. */
     const size = parseFloat(getComputedStyle(ta).fontSize) || 11.5;
-    wrap.style.setProperty('--edit-lh', `${Math.max(1, Math.round(size * 1.65))}px`);
+    // Down, as WebKit lays the viewer's own 1.65 out: rounding up put each line a
+    // pixel lower than the rows it replaced.
+    wrap.style.setProperty('--edit-lh', `${Math.max(1, Math.floor(size * 1.65))}px`);
     const cs = getComputedStyle(ta);
     const lh = parseFloat(cs.lineHeight) || 18;
     const top = parseFloat(cs.paddingTop) || 0;
@@ -334,7 +336,7 @@ function decorate(ta, lang) {
     const lines = all.slice(first, first + Math.ceil(ta.clientHeight / lh) + 2);
     /* Wide enough for the last line in the file, not for the ones on screen: a
        gutter that grew as you scrolled would shift every glyph in the buffer. */
-    wrap.style.setProperty('--gut', `calc(${String(all.length).length}ch + 16px)`);
+    wrap.style.setProperty('--gut-digits', `calc(${String(all.length).length}ch + 12px)`);
     // Drawn rather than written, as the viewer's numbers are: a `user-select`
     // rule still lets a selection across the gutter carry the numbers into what
     // you paste, and generated content is not in the document to be taken.
