@@ -872,6 +872,21 @@ try {
   })
   check(keptAdd === true, `the + worktree button survives a snapshot it does not draw, got ${keptAdd}`)
 
+
+  /* **A session the page is told to land on is selected at once when it is
+     already known.** A move to main answers after its last snapshot, and the
+     selection used to wait for the next one, which might never come. */
+  const landedAt = await page.evaluate(async () => {
+    const core = await import('/js/core.js')
+    const was = core.selected
+    const other = core.snap.sessions.find((s) => s.alive && s.id !== was)?.id
+    if (!other) return 'no other session'
+    core.setPendingSelect(other)
+    const now = core.selected === other && core.pendingSelect === null
+    core.setSelected(was)
+    return now
+  })
+  check(landedAt === true, `a pending selection of a known session lands at once, got ${landedAt}`)
   const withDiffOpen = async (init) => page.evaluate(async (d) => {
     const Diff = await import('/js/diff.js')
     const was = Diff.state.open

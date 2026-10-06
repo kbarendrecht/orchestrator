@@ -1932,7 +1932,7 @@ export async function newSession(workspace, where) {
   await asTheOnlyCreate('starting a session', target, intoMain, async () => {
     try {
       const r = await callOn(target, '/api/session', { workspace });
-      if (startingWatched || startingFollow) pendingSelect = r.session;
+      if (startingWatched || startingFollow) setPendingSelect(r.session);
     } catch (e) {
       toast(reason(e), true);
     }
@@ -1970,7 +1970,7 @@ export async function newWorktree(named, where) {
          because this is the line that asks for it — and by then `creating` has
          already been cleared by the `finally` below, so nothing downstream can still
          tell the two cases apart. */
-      if (startingWatched || startingFollow) pendingSelect = r.session;
+      if (startingWatched || startingFollow) setPendingSelect(r.session);
       toast(name ? `creating worktree ${name}` : 'creating worktree');
     } catch (e) {
       toast(reason(e), true);
@@ -2347,7 +2347,20 @@ export let pendingSelect = null;
 /* Written from more than one module, and an imported binding is read-only, so the
  * writes come through here. The alternative — leaving the state in `app.js` and
  * letting modules reach back for it — is the coupling the modules exist to end. */
-export function setPendingSelect(/** @type {string | null} */ id) { pendingSelect = id; }
+export function setPendingSelect(/** @type {string | null} */ id) {
+  /* **Now, when a snapshot already has it.** A move to main or a resume answers
+     after its last snapshot went out, so waiting for the next one waited for
+     nothing: the session landed in main and the pane stayed where it was until
+     something unrelated changed. A session that is not known yet still waits. */
+  // Not an archived one: a resume answers while its row still says archived, and
+  // the snapshot handler drops a selection of one, which would lose the landing.
+  if (id && CHECKOUTS.some((c) => snapshotOf(c.path)?.sessions.some((s) => s.id === id && !isArchived(s)))) {
+    pendingSelect = null;
+    setSelected(id, true);
+    return;
+  }
+  pendingSelect = id;
+}
 export function setPendingProcFocus(/** @type {string | null} */ id) { pendingProcFocus = id; }
 export function setDrawerTouched(/** @type {boolean} */ v) { drawerTouched = v; }
 export function setSelectedProc(/** @type {string | null} */ wsId, /** @type {string | null} */ procId) { selectedProc[wsKey(wsId)] = procId; }
