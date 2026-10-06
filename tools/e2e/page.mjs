@@ -80,6 +80,13 @@ const MOD_KEY = asMac || process.platform === 'darwin' ? 'Meta' : 'Control'
  *  test that hardcodes `Control+Shift+F` is testing one of the two branches and
  *  silently skipping the other. */
 const chord = (/** @type {string} */ rest) => `${MOD_KEY}+${rest}`
+/** A chord the **browser** owns, which takes the runner's platform and never the
+ *  simulated one. The mirror image of the note above, and it cost a red build:
+ *  the textarea's undo is Chrome's, so it is `Ctrl+Z` on this runner however
+ *  macOS the page has been told it is — and the `--mac` run pressed `⌘Z` at a
+ *  Linux Chrome, which undoes nothing. Only for keys no app binding claims. */
+const nativeChord = (/** @type {string} */ rest) =>
+  `${process.platform === 'darwin' ? 'Meta' : 'Control'}+${rest}`
 const keep = process.argv.includes('--keep')
 
 let failed = false
@@ -2373,7 +2380,7 @@ try {
      the browser's own insert rather than a loop of them. `execCommand` is
      deprecated and still the only way into a textarea's undo stack. */
   await page.$eval('#fvsrc .editarea', (ta) => ta.focus())
-  await page.keyboard.press(chord('KeyZ'))
+  await page.keyboard.press(nativeChord('KeyZ'))
   /* Waited rather than read: the undo lands on the textarea's own event loop, and
      a runner under load is where that shows. The counts go in the message, since
      a failure here is either "nothing happened" or "the wrong amount did". */
