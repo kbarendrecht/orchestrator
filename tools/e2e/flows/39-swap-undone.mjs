@@ -41,6 +41,15 @@ export async function run(t) {
   assert.match(refused.message, /swap failed, nothing moved/)
   assert.equal(refused.status, 409, 'an undone swap is a try-again, not a never')
 
+  /* **Both intended deaths, and no more.** This flow decides how a swap fails by
+     counting resumes, and the undo's own two resumes then have to find the counter
+     empty: one death left over kills a session on its way home, and the only
+     symptom is the wait below never coming true — which is how this flow failed on
+     a macOS runner, saying nothing about why. Read here, so that a miscount names
+     itself instead of looking like a slow machine. */
+  const deaths = fs.readFileSync(path.join(t.root, 'die-on-resume'), 'utf8').trim()
+  assert.equal(deaths, '0,0', 'the swap used both deaths and left none for the undo')
+
   // The branches and each tree's own edits are back.
   assert.equal(branchOf(t.repo), base)
   assert.equal(branchOf(dir), 'worktree-invoice')
@@ -56,6 +65,21 @@ export async function run(t) {
     return a?.workspace === 'main' && a.alive
       && b?.workspace === 'invoice' && b.alive
       && main?.occupant === inMain
+  }, {
+    /* Which of the three was false. A timeout that only names what it wanted is
+       the least useful failure here: the daemon is gone by the time anyone reads
+       the log, and a session that would not come home looks exactly like one that
+       was merely slow. */
+    context: async () => {
+      const s = await t.state()
+      const where = (id) => {
+        const x = s.sessions.find((y) => y.id === id)
+        return x ? `${x.workspace}/${x.alive ? 'alive' : 'stopped'}` : 'no record'
+      }
+      const main = s.workspaces.find((w) => w.id === 'main')
+      return `main's ${where(inMain)}, the worktree's ${where(inTree)}, `
+        + `main held by ${main?.occupant?.slice(0, 8) ?? 'nobody'}`
+    },
   })
   const s = await t.state()
   for (const id of [inMain, inTree]) {
