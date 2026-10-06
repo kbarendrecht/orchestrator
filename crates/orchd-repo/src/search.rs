@@ -61,7 +61,7 @@ pub const MAX_PATHS: usize = 20_000;
 /// A flag that survives `#[serde(flatten)]` in a query string.
 ///
 /// **Every flag here is read through this, and that is a bug fix rather than a
-/// style.** [`crate::api::SearchQuery`] flattens this struct, and a flattened
+/// style.** `SearchQuery` in `orchd`'s `api.rs` flattens this struct, and a flattened
 /// struct is deserialised through serde's map path, where `serde_urlencoded`
 /// hands every value over as a *string*. So a plain `bool` field was refused —
 /// `invalid type: string "true", expected a boolean` — and the whole request

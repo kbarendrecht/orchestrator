@@ -50,6 +50,21 @@ and the config key is `worktrees_subdir`. An unknown config key is ignored in
 silence, so `worktrees_dir` leaves the daemon managing `.claude/worktrees` and
 logging that it is "ignoring worktree outside the managed dir".
 
+## A `#[serde(flatten)]`'d flag in a query string arrives as a string, and the route refuses it.
+`SearchQuery` is a workspace plus `search::Query` flattened in, and a flattened
+struct deserialises through serde's **map** path — where `serde_urlencoded` hands
+every value over as a string. So `?regex=true` came back as
+`invalid type: string "true", expected a boolean`, and the request failed whole
+rather than ignoring the flag: pressing `.*` or `W` in the find overlay turned
+every search into that sentence in the footer, and `Aa` sent nothing at all. **All
+three toggles were dead and two of them were worse than dead**, for the life of
+the overlay. `glob` is a `String` and came through, which is exactly the half a
+flatten gets right and the reason nobody looked at the other half.
+The flags read through a `flag` deserializer now, which takes the string and a
+real boolean. Two gates, because one of them cannot see this: flow 29 sends each
+flag over the route, and `page-check` presses each button — a route's own test
+answers for the daemon and never for a control that forgets to send.
+
 ## A markdown heading in a tag message is a comment to git.
 `mise run release` writes the release notes into the annotated tag and the
 workflow reads them back, because `generate_release_notes: true` builds a body

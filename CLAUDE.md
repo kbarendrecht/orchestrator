@@ -455,6 +455,7 @@ together: same entries, same order, same groups.
 - A test that asserts on git's own error wording fails on an older git.
 - A route an agent calls needs a line in `is_ask_route`, and forgetting it fails as `bad origin`.
 - Driving the API by hand has four traps.
+- A `#[serde(flatten)]`'d flag in a query string arrives as a string, and the route refuses it.
 - A markdown heading in a tag message is a comment to git.
 
 ## Releases
