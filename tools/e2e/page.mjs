@@ -2230,6 +2230,10 @@ try {
     const r = rs.find((x) => x.textContent === 'two')?.getBoundingClientRect()
     return r ? { x: r.left + 40, y: r.top + r.height / 2 } : null
   })
+  /* Toasts first: the stack hangs from the top of the window, and the earlier
+     cases leave a few up. A long enough stack covers this row, and the right
+     click then lands on a toast and opens nothing. */
+  await page.$$eval('#toaststack .toast', (ts) => ts.forEach((t) => t.remove()))
   if (second) await page.mouse.click(second.x, second.y, { button: 'right' })
   const offered = await page.waitForSelector('#ctxmenu:not([hidden])', { timeout: 3000 })
     .then(() => page.$$eval('#ctxmenu .ctxmenu-item', (bs) => bs.map((b) => b.textContent)))
