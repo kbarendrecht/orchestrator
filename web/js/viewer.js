@@ -121,10 +121,18 @@ export function create(on) {
         }
       }
       changed = out;
-      if (view.mode === 'source' && view.spot) band(view.from, view.spot);
+      redrawRuler();
     } catch (e) {
       // No ruler is the answer for a file git cannot diff; the file still shows.
     }
+  }
+
+  /** Swap the ruler alone when its marks arrive. **Not the band**: a rebuilt
+   *  band can move the pane's scroll, and a scroll closes an open menu, so the
+   *  marks landing a moment after a right-click took the menu away with them. */
+  function redrawRuler() {
+    const old = on.mount.querySelector(':scope > .ruler');
+    if (old && view.file && view.mode === 'source') old.replaceWith(ruler(view.file.lines.length));
   }
 
   /** A strip beside the scrollbar with the changes and the hits on it, each a
@@ -457,7 +465,7 @@ export function create(on) {
     /** The lines a search hit in the file on screen, for the ruler. */
     setHits: (/** @type {number[]} */ lines) => {
       hits = lines;
-      if (view.mode === 'source' && view.file && view.spot) band(view.from, view.spot);
+      redrawRuler();
     },
 
     /** Put line `line` in the middle, as lines. False when there is no text to
