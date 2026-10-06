@@ -144,7 +144,11 @@ export function setSelected(/** @type {string | null} */ id, auto = false) {
   // Picking a session while a worktree is being cut is not cancelling the cut; it
   // is saying the pane is about something else now. `auto` is excluded because the
   // pick the app makes for you when a session ends is not that statement.
-  if (id && !auto) startingWatched = false;
+  if (id && !auto) {
+    startingWatched = false;
+    // Another session is a different place to be; the one you were on is not.
+    if (id !== selected) startingFollow = false;
+  }
   selected = id;
   // Picking a session is also saying which checkout you are in, which is what
   // holds the pane still when that session ends.
@@ -1872,9 +1876,17 @@ export const creatingIntoMain = () => creatingMain;
  *  `startingRow`, which is a button now for exactly that reason.
  */
 let startingWatched = false;
+/** Whether the new session takes the pane when it arrives. Separate from
+ *  `startingWatched`, because **the press no longer shows the placeholder.** It
+ *  did, and the session you were in left the screen for the ten seconds of the
+ *  cut, which is exactly when you go on reading it. So the pane stays where it is
+ *  and the new session takes over when it is up, unless you went to another
+ *  session in between, which says you are busy somewhere else. */
+let startingFollow = false;
 export const startingShown = () => startingWatched && creatingWhat !== null;
 export function watchStarting(/** @type {boolean} */ on) {
   startingWatched = on;
+  if (on) startingFollow = true;
   for (const fn of creatingListeners) fn(creatingWhat);
 }
 
@@ -1897,9 +1909,10 @@ async function asTheOnlyCreate(/** @type {string} */ what, /** @type {Target} */
   creatingWhat = what;
   creatingWhere = where.path;
   creatingMain = intoMain;
-  // You pressed `+`, so the create is what you are looking at — until you say
-  // otherwise by picking a session.
-  startingWatched = true;
+  // The placeholder only when there is nothing else on screen to keep; the new
+  // session follows when it is up, either way.
+  startingWatched = !selected;
+  startingFollow = true;
   for (const fn of creatingListeners) fn(creatingWhat);
   try {
     await go();
@@ -1919,7 +1932,7 @@ export async function newSession(workspace, where) {
   await asTheOnlyCreate('starting a session', target, intoMain, async () => {
     try {
       const r = await callOn(target, '/api/session', { workspace });
-      if (startingWatched) pendingSelect = r.session;
+      if (startingWatched || startingFollow) pendingSelect = r.session;
     } catch (e) {
       toast(reason(e), true);
     }
@@ -1957,7 +1970,7 @@ export async function newWorktree(named, where) {
          because this is the line that asks for it — and by then `creating` has
          already been cleared by the `finally` below, so nothing downstream can still
          tell the two cases apart. */
-      if (startingWatched) pendingSelect = r.session;
+      if (startingWatched || startingFollow) pendingSelect = r.session;
       toast(name ? `creating worktree ${name}` : 'creating worktree');
     } catch (e) {
       toast(reason(e), true);

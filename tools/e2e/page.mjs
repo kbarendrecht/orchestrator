@@ -2312,6 +2312,8 @@ try {
      above the worktrees'. The placeholder used to go above everything, so the row
      you were watching jumped down past main the moment the worktree was done. */
   await page.$eval('body', (b) => /** @type {HTMLElement} */ (b).focus())
+  const wasOn = await page.$eval('#rail .sess[aria-current="true"]', (r) => r.getAttribute('data-id'))
+    .catch(() => null)
   await page.keyboard.press(chord('KeyN'))
   /* Read in the same call that sees the row. A spare worktree is claimed in tens
      of milliseconds, so a second call after the wait found the placeholder gone
@@ -2321,14 +2323,24 @@ try {
     const at = rows.findIndex((r) => r.classList.contains('starting'))
     return at < 0 ? null : {
       at, lastMain: rows.map((r) => !!r.querySelector('.sess-main')).lastIndexOf(true),
+      // What is on screen while the cut runs: the session you were in.
+      on: document.querySelector('#rail .sess[aria-current="true"]')?.getAttribute('data-id') ?? null,
+      placeholder: !document.getElementById('termstarting')?.hidden,
     }
   }, null, { timeout: 5000, polling: 'raf' })
     .then((h) => h.jsonValue())
     .catch(() => null)
   check(!!placed && placed.lastMain >= 0 && placed.at > placed.lastMain,
     `a worktree being cut sits below main's rows, got ${JSON.stringify(placed)}`)
+  check(!!placed && !!wasOn && placed.on === wasOn && !placed.placeholder,
+    `the session you were in stays on screen while a worktree is cut, got ${JSON.stringify({ wasOn, placed })}`)
   await page.waitForFunction(() => !document.querySelector('#rail .sess.starting'), null, { timeout: 20_000 })
     .catch(() => {})
+  const landedOn = await page.waitForFunction((was) => {
+    const on = document.querySelector('#rail .sess[aria-current="true"]')?.getAttribute('data-id')
+    return on && on !== was ? on : null
+  }, wasOn, { timeout: 10_000 }).then((h) => h.jsonValue()).catch(() => null)
+  check(!!landedOn, 'and the new session takes the screen when it is up')
 
   /* **Restart from a row's menu selects that row.** You restart a session to
      watch it come back, and a menu opened on another row left the old one on
