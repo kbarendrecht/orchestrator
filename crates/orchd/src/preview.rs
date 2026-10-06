@@ -364,9 +364,116 @@ fn content_type(rel: &str) -> &'static str {
     }
 }
 
+/// A file dropped on a session's terminal: the bytes, and the name it had.
+#[derive(Deserialize)]
+pub struct DropQuery {
+    pub session: uuid::Uuid,
+    pub name: String,
+}
+
+/// The largest file a drop carries. A screenshot or a log, not a disk image.
+pub const DROP_MAX: usize = 50 * 1024 * 1024;
+
+/// Save a dropped file into the session's scratchpad and say where.
+///
+/// **Only when the webview gave no path.** A drop from a Linux file manager
+/// carries the file's own path and the page types that; a Mac webview hands the
+/// page the file's bytes and no path at all. Those bytes land in the scratchpad
+/// because it is the one folder outside the workspace the agent may read without
+/// asking, and the page types that path instead.
+pub async fn drop_file(
+    State(app): State<Arc<AppState>>,
+    Query(q): Query<DropQuery>,
+    body: axum::body::Bytes,
+) -> ApiResult<serde_json::Value> {
+    let cwd = {
+        let inner = app.inner.read().await;
+        inner.sessions.get(&q.session).map(|s| s.cwd.clone())
+    };
+    let Some(cwd) = cwd else {
+        return Err(anyhow::anyhow!("no session {}", q.session).into());
+    };
+    let session = q.session;
+    let path = crate::proc::run_blocking("saving a dropped file", move || {
+        use std::os::unix::fs::MetadataExt;
+        // Claude Code's own folder is named for the uid, and HOME is the user's.
+        let home = std::env::var_os("HOME").unwrap_or_else(|| "/".into());
+        let uid = std::fs::metadata(&home)?.uid();
+        let mut at = drop_path(Path::new("/tmp"), uid, &cwd, session, &q.name, 0);
+        std::fs::create_dir_all(at.parent().unwrap_or(Path::new("/tmp")))?;
+        // A second drop of `screenshot.png` must not overwrite the first, which
+        // the agent may still be reading.
+        let mut n = 0;
+        while at.exists() && n < 1000 {
+            n += 1;
+            at = drop_path(Path::new("/tmp"), uid, &cwd, session, &q.name, n);
+        }
+        std::fs::write(&at, &body)?;
+        anyhow::Ok(at)
+    })
+    .await??;
+    Ok(Json(serde_json::json!({ "path": path })))
+}
+
+/// Where a dropped file goes: this session's scratchpad, under the name it had,
+/// stripped of any folder, with `-n` before the extension for the `n`th copy.
+fn drop_path(
+    base: &Path,
+    uid: u32,
+    cwd: &Path,
+    session: uuid::Uuid,
+    name: &str,
+    n: u32,
+) -> std::path::PathBuf {
+    let leaf = Path::new(name)
+        .file_name()
+        .map(|f| f.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let clean: String = leaf
+        .chars()
+        .filter(|c| !c.is_control() && *c != '/' && *c != '\\')
+        .collect();
+    let clean = clean.trim_start_matches('.');
+    let clean = if clean.is_empty() { "dropped" } else { clean };
+    let file = if n == 0 {
+        clean.to_string()
+    } else {
+        match clean.rsplit_once('.') {
+            Some((stem, ext)) if !stem.is_empty() => format!("{stem}-{n}.{ext}"),
+            _ => format!("{clean}-{n}"),
+        }
+    };
+    base.join(format!("claude-{uid}"))
+        .join(crate::config::transcript_slug(cwd))
+        .join(session.to_string())
+        .join("scratchpad")
+        .join(file)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A dropped file lands where the scratchpad reader looks, under a name with
+    /// no folder in it, and a second copy does not take the first one's place.
+    #[test]
+    fn a_dropped_file_lands_in_the_scratchpad_by_its_own_name() {
+        let id = uuid::Uuid::parse_str("f8452082-4dc5-4a96-836f-02f7ee3a2250").unwrap();
+        let cwd = Path::new("/home/me/dev/repo");
+        let base = Path::new("/tmp");
+        let at = drop_path(base, 501, cwd, id, "Screen Shot.png", 0);
+        assert!(
+            in_scratchpad(&at, &[base.to_path_buf()], cwd, id),
+            "{}",
+            at.display()
+        );
+        assert!(at.ends_with("scratchpad/Screen Shot.png"));
+        assert!(drop_path(base, 501, cwd, id, "Screen Shot.png", 2)
+            .ends_with("scratchpad/Screen Shot-2.png"));
+        assert!(drop_path(base, 501, cwd, id, "../../etc/passwd", 0).ends_with("scratchpad/passwd"));
+        assert!(drop_path(base, 501, cwd, id, ".env", 0).ends_with("scratchpad/env"));
+        assert!(drop_path(base, 501, cwd, id, "", 0).ends_with("scratchpad/dropped"));
+    }
 
     /// The one folder a scratchpad link may read: this session's, under the temp
     /// folder, below `scratchpad/`. Each refusal is a path an agent could print.

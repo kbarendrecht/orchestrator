@@ -375,10 +375,16 @@ prevents default draws a plain move cursor and no badge. The green copy badge on
 screen is `NSDragOperationCopy`, which is what that destination returns — so
 something other than the page was answering. That is what named the mechanism from
 a recording, without a Mac.
-`build_window` calls `disable_drag_drop_handler()` (#19). Nothing here wants a
-file drop, so the native half was pure loss. If one is ever wanted it has to come
-from Rust through `on_drag_drop_event`; there is no configuration in which both
-work.
+`build_window` calls `disable_drag_drop_handler()` (#19), and there is no
+configuration in which both work. **A file drop is the page's now, as an HTML5
+drop** (`app.js`), and that is the only shape that keeps the rail's drag alive.
+With the native handler off, a file nobody took was the webview's, and its
+default was to navigate to it: the app vanished behind an image until a restart.
+So every file drag is prevented on the window, and one on a session's terminal
+types its path there. The path comes from `text/uri-list` where the drop carries
+one; a Mac webview hands over the bytes alone, which `POST /api/session/drop`
+saves to the session's scratchpad, the one folder outside the workspace the agent
+may read without asking.
 **No gate, and this is the measured refusal rather than a shrug.** Observing it
 needs a native drag gesture on a real macOS webview, which is the one thing
 `mise run app-check` established a runner cannot drive — the entry in

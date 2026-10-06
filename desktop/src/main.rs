@@ -470,10 +470,11 @@ fn build_window(
         the row ghost follows the pointer and the release does nothing. The tell in
         #19 was the cursor: `effectAllowed = 'move'` cannot draw a copy badge, and
         `NSDragOperationCopy` is what that destination returns.
-        Nothing here wants a file drop — no `on_drag_drop_event` in this crate and
-        no `dataTransfer` outside `web/js/rail.js` — so the native half is pure
-        loss. If a real file drop is ever wanted it has to come from Rust through
-        `on_drag_drop_event`; the two cannot both be live on one webview. */
+        A file dropped on a session is taken by the page instead (`app.js`), as an
+        HTML5 drop: the path where the drop carries one, and the bytes, saved to
+        the session's scratchpad, where it does not. That keeps the rail's drag
+        working, which a native handler through `on_drag_drop_event` would not,
+        since the two cannot both be live on one webview. */
         .disable_drag_drop_handler()
         .transparent(see_through)
         /* **The ground is the app's, not the toolkit's white.** A webview paints

@@ -1129,7 +1129,17 @@ function hasSelection(/** @type {import('../serve').Checkout} */ checkout, /** @
   return !!entry && !!entry.term.getSelection().trim();
 }
 
+/** Type text into a pane as one paste, the way a terminal takes a dropped file.
+ *  False when the pane is not open. */
+function pasteInto(/** @type {import('../serve').Checkout} */ checkout, /** @type {string} */ target, /** @type {string} */ text) {
+  const entry = terms.get(termKey(checkout, target));
+  if (!entry || entry.closed) return false;
+  entry.term.paste(text);
+  entry.term.focus();
+  return true;
+}
+
 export {
-  showTerm as show, closeTerm as close, reviveTerm as revive, refit, applyScale, applyTermTheme, readTerm,
+  pasteInto, showTerm as show, closeTerm as close, reviveTerm as revive, refit, applyScale, applyTermTheme, readTerm,
   hasSelection,
 };

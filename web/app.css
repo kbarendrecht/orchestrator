@@ -717,6 +717,8 @@ button.ctx-btn:hover{color:var(--text)}
 /* The rail's own foot: `+ open project`, below every project and above the PR
    pane. Outside `.rail-scroll`, so an open archive cannot push it away. */
 .railfoot{flex:0 0 auto;border-top:1px solid var(--line)}
+/* A file held over the terminal: the pane says it will take it. */
+#termwrap.dropping{box-shadow:inset 0 0 0 2px var(--work)}
 /* After a restart, above the sessions: how many it cut off, and Continue. */
 .railnudge{
   flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:7px 12px;

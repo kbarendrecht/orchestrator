@@ -1184,6 +1184,36 @@ try {
   await page.$eval(`#rail .sess[data-id="${session}"]`, (b) => /** @type {HTMLElement} */ (b).click())
   await page.waitForTimeout(300)
 
+  /* --- a file dropped on the window stays in the app ---------------------------- */
+
+  /* **A drop never navigates, and one on the terminal reaches the session.** The
+     webview's default for a dropped file is to open it in place of the app. The
+     synthetic drop carries bytes and no path, which is what a Mac webview hands
+     over, so the page has to save it to the session's scratchpad first: the file
+     appearing there is the proof the whole chain ran. */
+  const dropped = await page.evaluate(async () => {
+    const core = await import('/js/core.js')
+    const s = core.currentSession()
+    if (!s) return { error: 'no session selected' }
+    const drop = (/** @type {Element} */ at) => {
+      const dt = new DataTransfer()
+      dt.items.add(new File(['a picture, honestly'], 'dropped shot.png', { type: 'image/png' }))
+      return !at.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt }))
+    }
+    const railTaken = drop(/** @type {Element} */ (document.getElementById('rail')))
+    const termTaken = drop(/** @type {Element} */ (document.getElementById('termwrap')))
+    return { railTaken, termTaken, id: s.id, cwd: s.cwd }
+  })
+  check(dropped.railTaken === true && dropped.termTaken === true,
+    `a dropped file is the page's wherever it lands, got ${JSON.stringify(dropped)}`)
+  if (dropped.id) {
+    const slug = dropped.cwd.replace(/[/.]/g, '-')
+    const landed = path.join('/tmp', `claude-${process.getuid?.() ?? 0}`, slug, dropped.id, 'scratchpad', 'dropped shot.png')
+    await until('the dropped file to land in the scratchpad', async () => fs.existsSync(landed))
+    check(fs.readFileSync(landed, 'utf8') === 'a picture, honestly', 'and one on the terminal is saved where the agent can read it')
+    fs.rmSync(landed)
+  }
+
   /* --- the search answers, and the viewer shows the file it found ------------- */
 
   /* **The overlay is the viewer, so this is one assertion about both.** Opening it

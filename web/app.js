@@ -3,7 +3,7 @@
 // The SPA is a module now, so what it reaches for is written down. `core.js` holds
 // the primitives every part needs; `queue.js` is the first seam extracted whole.
 import {
-$, el, toast, reason, safeHref, copyText, call, callHost, get, activeCheckout, CHECKOUTS, setCheckouts, HOST, snapshotOf, repoSummary, everySession, enterCheckout, snap, receive, keyActivate, setZoom, setUiPx, uiPx, saveZoom, onScaleChange, ZOOM, selected, setSelected, onSelection, prForWorkspace, terms, CHROME, stateLabel, sessionDot, isWaiting, isArchived, byNewest, currentSession, activeWorkspaceId, currentWorkspaceId, closeMenu, menuOpen, openMenu, callOn, newSession, newWorktree, newShell, mainWorkspace, workspaceById, prState, handedToPr, drawerCollapsed, setDrawerCollapsed, pendingSelect, setPendingSelect, onDrawerChange, onCreatingChange, creating, creatingIn, startingShown, appMod, IS_MAC, MOD_LABEL, closeLegend, toggleLegend, typingElsewhere, mark, reportBoot, dialogOpen, dismissDialog, promptBox, unchanged, tick,
+$, el, toast, reason, safeHref, copyText, call, callHost, get, activeCheckout, CHECKOUTS, setCheckouts, HOST, snapshotOf, repoSummary, everySession, enterCheckout, snap, receive, keyActivate, setZoom, setUiPx, uiPx, saveZoom, onScaleChange, ZOOM, selected, setSelected, onSelection, prForWorkspace, terms, CHROME, stateLabel, sessionDot, isWaiting, isArchived, byNewest, currentSession, activeWorkspaceId, currentWorkspaceId, closeMenu, menuOpen, openMenu, callOn, newSession, newWorktree, newShell, mainWorkspace, workspaceById, prState, handedToPr, drawerCollapsed, setDrawerCollapsed, pendingSelect, setPendingSelect, onDrawerChange, onCreatingChange, creating, creatingIn, startingShown, appMod, IS_MAC, MOD_LABEL, closeLegend, toggleLegend, typingElsewhere, mark, reportBoot, dialogOpen, dismissDialog, promptBox, bytesOn, unchanged, tick,
 } from './js/core.js';
 import { onThemeChange } from './js/theme.js';
 import { detailEl, symbolAt } from './js/source.js';
@@ -820,6 +820,66 @@ import * as Drawer from './js/drawer.js';
 // ---------------------------------------------------------------------------
 import * as Diff from './js/diff.js';
 import { toggleBlame } from './js/viewer.js';
+
+/* **A file dropped on the window is the page's, always.** The native drop
+   handler is off so the rail's own drag works (see `main.rs`), which left a
+   dropped file to the webview's default: navigate to it, and the app was gone
+   until a restart. So every file drag is taken here. One dropped on a session's
+   terminal types its path there, the way a terminal does; anywhere else it is
+   refused with a word about where to put it. */
+const carriesFiles = (/** @type {DragEvent} */ e) => [...(e.dataTransfer?.types ?? [])].includes('Files');
+const overTerminal = (/** @type {DragEvent} */ e) =>
+  !!(/** @type {HTMLElement} */ (e.target).closest?.('#termwrap')) && !!currentSession();
+window.addEventListener('dragover', (e) => {
+  if (!carriesFiles(e)) return;
+  e.preventDefault();
+  const on = overTerminal(e);
+  if (e.dataTransfer) e.dataTransfer.dropEffect = on ? 'copy' : 'none';
+  $('termwrap').classList.toggle('dropping', on);
+});
+window.addEventListener('dragleave', (e) => {
+  if (!e.relatedTarget) $('termwrap').classList.remove('dropping');
+});
+window.addEventListener('drop', (e) => {
+  if (!carriesFiles(e)) return;
+  e.preventDefault();
+  $('termwrap').classList.remove('dropping');
+  const s = currentSession();
+  if (!s || !overTerminal(e) || !e.dataTransfer) {
+    toast('drop a file on a session\'s terminal to hand the agent its path');
+    return;
+  }
+  void dropIntoSession(s.id, e.dataTransfer);
+});
+
+/** A path as a shell and Claude Code both read it: bare when it is plain,
+ *  single-quoted when a space or a quote would split it. */
+const quotePath = (/** @type {string} */ p) =>
+  (/^[\w@%+=:,./-]+$/.test(p) ? p : `'${p.replace(/'/g, `'\\''`)}'`);
+
+/** Type the dropped files' paths into the session. A drop that names its files
+ *  (a Linux file manager) is typed as it is; one that only carries their bytes
+ *  (a Mac webview) is saved to the session's scratchpad first. */
+async function dropIntoSession(/** @type {string} */ session, /** @type {DataTransfer} */ dt) {
+  /** @type {string[]} */
+  const paths = (dt.getData('text/uri-list') || '').split(/\r?\n/)
+    .filter((u) => u.startsWith('file://'))
+    .map((u) => decodeURIComponent(new URL(u).pathname));
+  if (!paths.length) {
+    for (const f of [...dt.files]) {
+      try {
+        const q = new URLSearchParams({ session, name: f.name });
+        paths.push((await bytesOn(activeCheckout(), `/api/session/drop?${q}`, f)).path);
+      } catch (err) {
+        toast(`${f.name}: ${reason(err)}`, true);
+      }
+    }
+  }
+  if (!paths.length) return;
+  if (!Term.pasteInto(activeCheckout(), `session:${session}`, paths.map(quotePath).join(' ') + ' ')) {
+    toast('that session has no terminal open to type into', true);
+  }
+}
 
 /** Ask for a line and send the pane on top there. */
 async function goToLine() {

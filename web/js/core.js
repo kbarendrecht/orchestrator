@@ -921,6 +921,24 @@ export async function callOn(c, path, body) {
   return json;
 }
 
+/** POST raw bytes to one checkout's daemon: a dropped file, which JSON would
+ *  only make three times larger.
+ *
+ *  @param {Endpoint} c
+ *  @param {string} path
+ *  @param {Blob} body
+ */
+export async function bytesOn(c, path, body) {
+  const res = await fetch(c.base + path, {
+    method: 'POST',
+    headers: { 'content-type': 'application/octet-stream', 'x-orch-token': c.token },
+    body,
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(json.error || res.statusText);
+  return json;
+}
+
 /** GET from one checkout's daemon.
  *
  *  `signal` is for a caller whose next request supersedes this one — the search

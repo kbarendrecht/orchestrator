@@ -647,6 +647,12 @@ fn daemon_router(app: Arc<AppState>) -> Router {
         .route("/api/diff", get(api::diff_summary))
         .route("/api/diff/file", get(api::diff_file))
         .route("/api/blame", get(api::blame))
+        .route(
+            "/api/session/drop",
+            post(orchd::preview::drop_file).layer(axum::extract::DefaultBodyLimit::max(
+                orchd::preview::DROP_MAX,
+            )),
+        )
         .route("/api/search", get(api::search))
         .route("/api/archive/search", get(api::search_archive))
         .route("/api/paths", get(api::paths))
