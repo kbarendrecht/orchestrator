@@ -189,7 +189,10 @@ function renderRail() {
      Reconciled rather than replaced, like the rail below it: it is a button with
      a hover, and one rebuilt under the pointer on every repaint is the fault
      `core.reconcile` exists for. */
-  reconcile($('railfoot'), [{ key: 'addco', sig: chrome, build: () => addCheckoutButton() }]);
+  // Signed by its HTML for the reason the add row is: a button rebuilt on every
+  // snapshot loses a click in WebKit.
+  const addco = addCheckoutButton();
+  reconcile($('railfoot'), [{ key: 'addco', sig: addco.outerHTML, build: () => addco }]);
   reconcile(rail, items);
 
   // Its own pane below the scroller, so it stays put while sessions scroll. It
@@ -1337,7 +1340,13 @@ function fillSessions(/** @type {HTMLElement} */ group, /** @type {import('./cor
     });
   }
 
-  items.push({ key: 'add', sig: chrome, build: () => addRow(c, state) });
+  /* **Signed by what it draws, not by `chrome`.** `chrome` moves on every
+     redraw, so the row was rebuilt on every snapshot, and a click whose press and
+     release land on different nodes is never sent in WebKit: `+ worktree` pressed
+     while a snapshot landed did nothing at all. Built every time to read its
+     HTML, which is cheap; inserted only when that HTML changed. */
+  const add = addRow(c, state);
+  items.push({ key: 'add', sig: add.outerHTML, build: () => add });
   /* **The rows, in the box `archivedToggle` opens from the add row above.** The box is
      bounded in CSS at about ten rows rather than truncated, and it is also what
      says "section" now that the control naming it rides the header —
@@ -1576,7 +1585,7 @@ function addRow(c, state) {
   /* Naming a worktree is not a control: it is shift-click and `Shift N`, and it
      stays in this tooltip because that is the only place it is ever discovered. */
   tree.title = cutting || `New worktree session · ${MOD_LABEL} N (shift-click to name it)`;
-  tree.onclick = (/** @type {MouseEvent} */ ev) => void newWorktree(ev.shiftKey, c);
+  tree.onclick = (/** @type {MouseEvent} */ ev) => void newWorktree(ev.shiftKey, liveTarget(c));
   row.appendChild(tree);
 
   row.appendChild(el('span', 'addsep', '\u00b7'));
@@ -1601,7 +1610,7 @@ function addRow(c, state) {
       : `New session in the main checkout · ${MOD_LABEL} Shift N`;
   // `void` is how this file says fire-and-forget out loud; the row lands on the
   // next snapshot either way.
-  inMain.onclick = () => { if (main) void newSession(main.id, c); };
+  inMain.onclick = () => { if (main) void newSession(main.id, liveTarget(c)); };
   row.appendChild(inMain);
 
   /* Hard right, so the row says one thing about the list above it rather than two:
@@ -1612,6 +1621,11 @@ function addRow(c, state) {
 
   return row;
 }
+
+/** The checkout's target as it is now. `setCheckouts` replaces every target on
+ *  each snapshot, and one captured by a node the rail kept holds a base and a
+ *  token a daemon restart makes worthless. */
+const liveTarget = (/** @type {import('./core.js').Target} */ c) => CHECKOUTS.find((x) => x.path === c.path) ?? c;
 
 /** The four things both the header and the list read off one snapshot.
  *
@@ -1695,8 +1709,11 @@ function archivedToggle(/** @type {import('./core.js').Target} */ c, /** @type {
        usually the one you closed a moment ago. Fire-and-forget: the answer arrives
        as a snapshot like everything else, and a refresh that fails leaves the list
        exactly as it was, which is not news worth a toast. */
-    if (!open) void callOn(c, '/api/external/refresh').catch(() => undefined);
-    showArchived[held] = !open;
+    // Read now, not when the button was drawn: the add row keeps its node for as
+    // long as it draws the same, so a captured flag or target can be stale.
+    const now = !!showArchived[held];
+    if (!now) void callOn(liveTarget(c), '/api/external/refresh').catch(() => undefined);
+    showArchived[held] = !now;
     renderRail();
   };
   return btn;

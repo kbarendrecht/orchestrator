@@ -851,6 +851,27 @@ try {
   check(nudge === '{"shown":true,"closed":true}',
     `a session a restart cut off gets the Continue strip, and ✕ hides it, got ${nudge}`)
 
+  /* **A snapshot that changes nothing the add row draws keeps its button.** It
+     was rebuilt on every snapshot, and WebKit sends no click when the press and
+     the release land on different nodes: `+ worktree` pressed while a snapshot
+     landed did nothing. Chrome redirects that click, so asserting a click here
+     would pass either way; the node surviving is what fails without the fix. */
+  const keptAdd = await page.evaluate(async () => {
+    const core = await import('/js/core.js')
+    const Rail = await import('/js/rail.js')
+    const c = core.activeCheckout()
+    const real = core.snapshotOf(c.path)
+    const before = [...document.querySelectorAll('#rail .addbtn')].find((b) => b.textContent === '+ worktree')
+    if (!real || !before) return 'no add row'
+    core.receive(c, { ...real, sessions: real.sessions.map((s, i) => (i === 0 ? { ...s, title: `${s.title ?? ''} renamed` } : s)) })
+    Rail.render()
+    const after = [...document.querySelectorAll('#rail .addbtn')].find((b) => b.textContent === '+ worktree')
+    core.receive(c, real)
+    Rail.render()
+    return before === after && before.isConnected
+  })
+  check(keptAdd === true, `the + worktree button survives a snapshot it does not draw, got ${keptAdd}`)
+
   const withDiffOpen = async (init) => page.evaluate(async (d) => {
     const Diff = await import('/js/diff.js')
     const was = Diff.state.open
