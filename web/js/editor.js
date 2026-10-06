@@ -400,6 +400,25 @@ export function focus() {
   area()?.focus();
 }
 
+/** Put `text` in place of the `len` characters at `at`.
+ *
+ *  **It takes the focus and gives it back**, which is not tidiness: the insert
+ *  goes through `document.execCommand`, and that writes into whatever element is
+ *  focused — a find box, if the caller is one. The focus is restored to where it
+ *  was so that typing carries on where it was going.
+ *
+ *  @param {number} at @param {number} len @param {string} text */
+export function overwrite(at, len, text) {
+  const ta = area();
+  if (!state.on || !ta) return false;
+  const was = document.activeElement;
+  ta.focus();
+  const to = at + text.length;
+  replace(ta, { from: at, to: at + len, text, selStart: at, selEnd: to });
+  if (was instanceof HTMLElement && was !== ta) was.focus();
+  return true;
+}
+
 /** Put the caret at the start of a line and scroll it into the middle. */
 export function goTo(/** @type {number} */ line) {
   const ta = area();

@@ -8,7 +8,7 @@
 // either end, and smart case. A wrong column here puts the mark on the wrong
 // glyph, which reads as a renderer bug rather than as a search bug.
 
-import { MAX, hitLines, matches, nextIndex, offsetOf } from '../web/js/seek.js'
+import { MAX, hitLines, matches, nextIndex, offsetOf, replaceAll, substitute } from '../web/js/seek.js'
 
 let failed = false
 const check = (ok, what) => {
@@ -82,6 +82,37 @@ const text = L('let a = 1', 'let bb = 2', 'LET c = 3')
 {
   const h = matches(L('a a', 'b', 'a'), 'a', false)
   check(same(hitLines(h), [1, 3]), 'the ruler is told each line once')
+}
+
+// --- replace --------------------------------------------------------------
+{
+  const t = L('let a = 1', 'let bb = 2')
+  const r = replaceAll(t, matches(t, 'let', false), 'let', false, 'const')
+  check(r.text === L('const a = 1', 'const bb = 2') && r.count === 2, 'every match is replaced')
+}
+{
+  // The trap: a replacement of a different length moves every offset after it.
+  const t = 'xx xx xx'
+  const r = replaceAll(t, matches(t, 'xx', false), 'xx', false, 'yyyy')
+  check(r.text === 'yyyy yyyy yyyy', 'a longer replacement does not corrupt the hits after it')
+  const s2 = replaceAll(t, matches(t, 'xx', false), 'xx', false, 'z')
+  check(s2.text === 'z z z', 'nor a shorter one')
+}
+{
+  // The reason the regex toggle is worth having in a replace box at all.
+  const t = 'foo_bar and baz_qux'
+  const q = '(\\w+)_(\\w+)'
+  const r = replaceAll(t, matches(t, q, true), q, true, '$2_$1')
+  check(r.text === 'bar_foo and qux_baz', `a group reaches the replacement, got ${r.text}`)
+}
+{
+  check(substitute('cost$', 'cost$', false, 'price$') === 'price$',
+    'a literal replacement is itself, dollars and all')
+  check(substitute('a1', '(\\w)(\\d)', true, '$2$1') === '1a', 'and a pattern uses its groups')
+}
+{
+  const t = 'a\nb'
+  check(replaceAll(t, [], 'a', false, 'z').text === t, 'nothing to replace changes nothing')
 }
 
 console.log(failed ? '\n✘ seek' : '\n✔ seek')

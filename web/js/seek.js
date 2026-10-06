@@ -34,6 +34,19 @@ export const MAX = 2000;
 /** Escape a literal query, so a symbol with a `(` in it searches for that `(`. */
 const literal = (/** @type {string} */ q) => q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+/** The query as a regular expression, or null when it is one that does not
+ *  compile. `flags` is what the caller needs on top of the smart case.
+ *
+ *  @param {string} query @param {boolean} useRegex @param {string} flags */
+function pattern(query, useRegex, flags) {
+  try {
+    return new RegExp(useRegex ? query : literal(query),
+      flags + (query === query.toLowerCase() ? 'i' : ''));
+  } catch (err) {
+    return null;
+  }
+}
+
 /** Every match of `query` in `text`, or null when the query is a regex that does
  *  not compile — which is a thing to say in the box, not a thing to throw.
  *
@@ -47,12 +60,8 @@ const literal = (/** @type {string} */ q) => q.replace(/[.*+?^${}()|[\]\\]/g, '\
  *  @returns {Hit[] | null} */
 export function matches(text, query, useRegex) {
   if (!query) return [];
-  let re;
-  try {
-    re = new RegExp(useRegex ? query : literal(query), query === query.toLowerCase() ? 'gmi' : 'gm');
-  } catch (err) {
-    return null;
-  }
+  const re = pattern(query, useRegex, 'gm');
+  if (!re) return null;
   // One pass for the line starts, so each match is placed by a search over an
   // array of numbers rather than by counting newlines in the text again.
   const starts = [0];
@@ -127,3 +136,39 @@ export function offsetOf(text, line) {
 
 /** The lines the hits are on, each once, for the ruler beside the scrollbar. */
 export const hitLines = (/** @type {Hit[]} */ hits) => [...new Set(hits.map((h) => h.line))];
+
+/** What one match becomes.
+ *
+ *  A literal replacement is itself, `$` included: a person replacing `cost$` with
+ *  `price$` means the dollar. A pattern's replacement is the browser's own, so
+ *  `$1` is the first group — which is the whole reason the regex toggle is worth
+ *  having here, since renaming `foo_bar` to `fooBar` across a file is one
+ *  substitution and forty hand edits.
+ *
+ *  @param {string} matched exactly the text the hit covered
+ *  @param {string} query @param {boolean} useRegex @param {string} to */
+export function substitute(matched, query, useRegex, to) {
+  if (!useRegex) return to;
+  const re = pattern(query, true, '');
+  return re ? matched.replace(re, to) : matched;
+}
+
+/** `text` with every hit replaced, and how many that was.
+ *
+ *  **Right to left**, because a replacement of a different length moves every
+ *  offset after it: walking forwards would need each hit re-measured against the
+ *  text it had already changed.
+ *
+ *  @param {string} text
+ *  @param {Hit[]} hits in the order [`matches`] answers, which is left to right
+ *  @param {string} query @param {boolean} useRegex @param {string} to */
+export function replaceAll(text, hits, query, useRegex, to) {
+  let out = text;
+  for (let i = hits.length - 1; i >= 0; i--) {
+    const h = hits[i];
+    if (!h) continue;
+    out = out.slice(0, h.at) + substitute(out.slice(h.at, h.at + h.len), query, useRegex, to)
+      + out.slice(h.at + h.len);
+  }
+  return { text: out, count: hits.length };
+}

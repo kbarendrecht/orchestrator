@@ -2280,6 +2280,49 @@ try {
   check(Number(band.got) > 1, `the numbers follow the band when the buffer is scrolled, got ${band.got}`)
   check(String(band.want) === band.got,
     `and name the line the buffer is actually showing, got ${JSON.stringify(band)}`)
+  /* --- and the same bar replaces, once a buffer is open ---------------------- */
+
+  /* **Replace is the editor's half of the find bar**, so it appears with the
+     buffer and not before: a file being read has nothing to write to, and a
+     Replace button over it is a refusal waiting to happen. */
+  await page.keyboard.press(chord('KeyF'))
+  await page.waitForSelector('#fvseek:not([hidden])', { timeout: 5000 })
+  check(
+    await page.$eval('#fvseekr', (b) => b.hidden) === false
+      && await page.$eval('#fvseekall', (b) => b.hidden) === false,
+    'the replace box is there while a buffer is open',
+  )
+  const countIn = (/** @type {string} */ word) => page.$eval('#fvsrc .editarea',
+    (ta, w) => ta.value.split(w).length - 1, word)
+  const bufWas = await page.$eval('#fvsrc .editarea', (ta) => ta.value)
+  const proseWas = await countIn('prose')
+  await page.fill('#fvseekq', 'prose')
+  await page.fill('#fvseekr', 'verse')
+  await page.$eval('#fvseekdo', (b) => b.click())
+  check(
+    await countIn('verse') === 1 && await countIn('prose') === proseWas - 1,
+    'Replace writes the match you are on and leaves the rest',
+  )
+  await page.$eval('#fvseekall', (b) => b.click())
+  check(
+    await countIn('prose') === 0 && await countIn('verse') === proseWas,
+    'and All writes every one of them',
+  )
+  /* **One undo puts the whole of All back**, which is why it is one edit through
+     the browser's own insert rather than a loop of them. `execCommand` is
+     deprecated and still the only way into a textarea's undo stack. */
+  await page.$eval('#fvsrc .editarea', (ta) => ta.focus())
+  await page.keyboard.press(chord('KeyZ'))
+  check(await countIn('prose') === proseWas - 1, 'and one undo takes All back off')
+  // Put the buffer back, so cancelling below is not asked about unsaved typing.
+  await page.evaluate(async (v) => {
+    const ta = /** @type {HTMLTextAreaElement} */ (document.querySelector('#fvsrc .editarea'))
+    ta.value = v
+    const ed = await import('/js/editor.js')
+    ed.state.dirty = false
+  }, bufWas)
+  await page.keyboard.press('Escape')
+
   await page.$eval('#fvedit', (b) => b.click())
   await page.waitForFunction(() => !document.querySelector('#fvsrc .editarea'),
     null, { timeout: 5000 })

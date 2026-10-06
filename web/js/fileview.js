@@ -16,7 +16,7 @@ import {
 } from './core.js';
 import * as Editor from './editor.js';
 import { folders, level, matching } from './pathlink.js';
-import { MAX, hitLines, matches, nextIndex, offsetOf } from './seek.js';
+import { MAX, hitLines, matches, nextIndex, offsetOf, replaceAll, substitute } from './seek.js';
 import * as Viewer from './viewer.js';
 
 /** The open overlay. `ws` is pinned at open for the reason the finder's is:
@@ -404,7 +404,7 @@ function edit() {
     onSaved: () => { viewer().drop(); },
   // The buffer and the file are two different strings, and the bar was searching
   // the other one a moment ago.
-  }).then(() => { if (bar.on) runSeek(false); });
+  }).then(() => { seekChrome(); if (bar.on) runSeek(false); });
 }
 
 /** Draw the file again, where you were.
@@ -416,6 +416,9 @@ async function redraw() {
   if (!state.open || !state.ws || !state.path) return;
   await viewer().show(state.ws, state.path, { line: state.line, last: state.last, col: 0, len: 0 });
   if (state.rendered && viewer().renderable()) viewer().render();
+  // `redraw` is what runs when a buffer is cancelled, so the replace half goes
+  // away here rather than being left over a file nobody can write to.
+  seekChrome();
   if (bar.on) runSeek(false);
 }
 
@@ -448,10 +451,19 @@ export function seek() {
   if (viewer().isImage() && !Editor.isOpen()) return toast('a picture has nothing to search', true);
   bar.on = true;
   $('fvseek').hidden = false;
+  seekChrome();
   const box = /** @type {HTMLInputElement} */ ($('fvseekq'));
   box.focus();
   box.select();
   runSeek(false);
+}
+
+/** Show the replace half only while a buffer is open. A file being read has
+ *  nothing to write to, and a Replace button over it would be a refusal waiting
+ *  to happen. */
+function seekChrome() {
+  const editing = bar.on && Editor.isOpen();
+  for (const id of ['fvseekr', 'fvseekdo', 'fvseekall']) $(id).hidden = !editing;
 }
 
 export const seeking = () => bar.on;
@@ -565,6 +577,61 @@ function initSeek() {
   $('fvseekprev').onclick = () => seekStep(-1);
   $('fvseeknext').onclick = () => seekStep(1);
   $('fvseekx').onclick = () => closeSeek();
+  const repl = /** @type {HTMLInputElement} */ ($('fvseekr'));
+  repl.onkeydown = (e) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    replaceOne();
+  };
+  $('fvseekdo').onclick = () => replaceOne();
+  $('fvseekall').onclick = () => replaceEvery();
+}
+
+/** The query and the replacement as they stand, with the hits they apply to.
+ *  Null when there is nothing to do, which both buttons answer the same way. */
+function toReplace() {
+  if (!bar.on || !Editor.isOpen() || !bar.hits.length) return null;
+  const query = /** @type {HTMLInputElement} */ ($('fvseekq')).value;
+  if (!query) return null;
+  return {
+    query,
+    to: /** @type {HTMLInputElement} */ ($('fvseekr')).value,
+    re: $('fvseekre').classList.contains('on'),
+  };
+}
+
+/** Replace the match you are on, then go to the next.
+ *
+ *  **The one you are on, or the next one if you are not on one yet.** A Replace
+ *  that silently started at the top of the file would rewrite a line nobody had
+ *  looked at. */
+function replaceOne() {
+  const what = toReplace();
+  if (!what) return;
+  if (bar.at < 0) seekStep(1);
+  const hit = bar.hits[bar.at];
+  const text = Editor.text();
+  if (!hit || text == null) return;
+  const was = text.slice(hit.at, hit.at + hit.len);
+  Editor.overwrite(hit.at, hit.len, substitute(was, what.query, what.re, what.to));
+  /* The buffer is a different string now, so every offset after this one has
+     moved: the hits are found again rather than adjusted. The caret is where the
+     replacement ended, so the next match is the one after it. */
+  runSeek(false);
+  seekStep(1);
+}
+
+/** Replace every match, as one edit — so one `Ctrl+Z` puts the file back. */
+function replaceEvery() {
+  const what = toReplace();
+  if (!what) return;
+  const text = Editor.text();
+  if (text == null) return;
+  const { text: out, count } = replaceAll(text, bar.hits, what.query, what.re, what.to);
+  if (out === text) return toast('nothing to replace');
+  Editor.overwrite(0, text.length, out);
+  toast(`replaced ${count}`);
+  runSeek(false);
 }
 
 /** Wire the chrome. Called once, at boot. */

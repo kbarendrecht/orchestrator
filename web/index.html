@@ -223,7 +223,14 @@
       <div class="seekbar" id="fvseek" hidden>
         <input class="fnq" id="fvseekq" spellcheck="false" autocomplete="off"
                placeholder="find in this file" aria-label="find in this file">
+        <!-- Replace is the editor's half of the bar, so it is here and hidden
+             until a buffer is open: there is nothing to write in a file being
+             read. -->
+        <input class="fnq seekrepl" id="fvseekr" spellcheck="false" autocomplete="off" hidden
+               placeholder="replace with" aria-label="replace with">
         <span class="ov-count" id="fvseekn"></span>
+        <button class="head-btn" id="fvseekdo" hidden title="Replace this match (Enter in the replace box)">Replace</button>
+        <button class="head-btn" id="fvseekall" hidden title="Replace every match, as one undo">All</button>
         <button class="fntg" id="fvseekre" title="The query is a regular expression">.*</button>
         <button class="head-btn" id="fvseekprev" title="Previous match (Shift Enter)">&#8593;</button>
         <button class="head-btn" id="fvseeknext" title="Next match (Enter)">&#8595;</button>
@@ -854,7 +861,7 @@
 
       <div class="settings-group">Overlays</div>
       <dt data-mod>MOD&nbsp;Shift&nbsp;F</dt><dd>find in this workspace's files</dd>
-      <dt data-mod>MOD&nbsp;F</dt><dd>find in the file on screen</dd>
+      <dt data-mod>MOD&nbsp;F</dt><dd>find in the file on screen, and replace while editing</dd>
       <dt>Shift&nbsp;Shift</dt><dd>find a file by name</dd>
       <dt>Enter</dt><dd>open the found file on its own, with the markdown view</dd>
       <dt data-mod>MOD&nbsp;Shift&nbsp;D</dt><dd>toggle the diff</dd>

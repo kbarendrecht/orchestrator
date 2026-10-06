@@ -2813,6 +2813,9 @@ select.opfield,input.opfield{appearance:none}
 /* The box takes the width and the count sits against it, so the arrows and Close
    group at the right where the header's buttons already are. */
 .seekbar .fnq{flex:1}
+/* The replace box takes less room than the query: you read the file by what you
+   searched for, and the replacement is usually the shorter word. */
+.seekbar .seekrepl{flex:0 1 220px}
 .seekbar .ov-count{flex:0 0 auto;white-space:nowrap}
 
 /* The viewer. Scrolls in its own box, so the page never scrolls sideways. */
