@@ -43,7 +43,7 @@ use grep_searcher::sinks::UTF8;
 use grep_searcher::{BinaryDetection, SearcherBuilder};
 use ignore::overrides::OverrideBuilder;
 use ignore::{WalkBuilder, WalkState};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -58,6 +58,31 @@ pub const MAX_TOTAL: usize = 400;
 /// fetched once per workspace rather than per keystroke.
 pub const MAX_PATHS: usize = 20_000;
 
+/// A flag that survives `#[serde(flatten)]` in a query string.
+///
+/// **Every flag here is read through this, and that is a bug fix rather than a
+/// style.** [`crate::api::SearchQuery`] flattens this struct, and a flattened
+/// struct is deserialised through serde's map path, where `serde_urlencoded`
+/// hands every value over as a *string*. So a plain `bool` field was refused —
+/// `invalid type: string "true", expected a boolean` — and the whole request
+/// failed: pressing the overlay's `.*` or `W` turned every search into that
+/// sentence in the footer. `glob` is a `String` and passed, which is exactly the
+/// half a flatten gets right and the reason nothing caught this.
+///
+/// A real boolean is taken too, for any caller that builds this from JSON.
+fn flag<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Given {
+        Bool(bool),
+        Text(String),
+    }
+    Ok(match Given::deserialize(d)? {
+        Given::Bool(b) => b,
+        Given::Text(s) => matches!(s.as_str(), "true" | "1" | "on" | "yes"),
+    })
+}
+
 /// What to look for. The three flags are the overlay's three toggles.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Query {
@@ -65,10 +90,10 @@ pub struct Query {
     /// The pattern is a regular expression. Off means it is a literal, which is
     /// the default because most queries are a symbol and a literal cannot fail
     /// on a stray bracket.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "flag")]
     pub regex: bool,
     /// Match whole words only.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "flag")]
     pub word: bool,
     /// A path filter, as a glob: `web/`, `*.rs`, `crates/**/api.rs`. A trailing
     /// slash is completed to `/**`, because "in this directory" is what a person
@@ -77,11 +102,13 @@ pub struct Query {
     pub glob: Option<String>,
     /// Match the case written, rather than smart-casing it.
     ///
-    /// The overlay never sets this — smart case is what a person typing a query
-    /// wants. [`crate::symbols`] does, because a definition jump moves the cursor
+    /// Smart case is the default, because it is what a person typing a query
+    /// wants; the overlay's `Aa` asks for this one, for the search smart case
+    /// cannot express — a lower-case word that must not match the upper-case one.
+    /// [`crate::symbols`] sets it too, because a definition jump moves the cursor
     /// on the strength of there being exactly one hit, and folding `run_blocking`
     /// onto `RUN_BLOCKING` is a way to land somewhere nobody asked for.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "flag")]
     pub exact_case: bool,
 }
 

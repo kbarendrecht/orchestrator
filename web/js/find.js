@@ -221,6 +221,13 @@ async function search() {
       state.truncated = false;
     } else {
       const p = new URLSearchParams({ workspace: state.ws ?? '', pattern: q });
+      /* **`exact_case`, and only when it is asked for.** The button was drawn on
+         from the start and sent nothing, so for its whole life `Aa` was a control
+         that did not control anything — the search was smart-cased either way.
+         Smart case stays the default, because it is what a person typing a query
+         wants; the toggle is for the search it cannot express, which is a
+         lower-case word that must not match the upper-case one. */
+      if (toggled('fncase')) p.set('exact_case', 'true');
       if (toggled('fnre')) p.set('regex', 'true');
       if (toggled('fnword')) p.set('word', 'true');
       const glob = /** @type {HTMLInputElement} */ ($('fnglob')).value.trim();

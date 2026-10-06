@@ -47,6 +47,29 @@ export async function run(t) {
   const filtered = await find(t, workspace, '&glob=*.rs')
   assert.deepEqual(filtered.hits, [], 'a glob that matches no file finds nothing')
 
+  /* And a *boolean* through that same flatten, which is the half the glob cannot
+     answer for. `exact_case` was the one flag the overlay never sent, so nothing
+     had ever asked whether it arrives. */
+  fs.writeFileSync(path.join(tree, 'capitalised.txt'), 'Frobnicate here\n')
+  const smart = await find(t, workspace)
+  assert.equal(smart.hits.length, 2, 'smart case finds the capital one too')
+  const exact = await find(t, workspace, '&exact_case=true')
+  assert.deepEqual(
+    exact.hits.map((h) => h.path), ['in-the-worktree.txt'],
+    'and exact case leaves it behind',
+  )
+  fs.rmSync(path.join(tree, 'capitalised.txt'))
+
+  /* The other two flags go through the same parser, and both were refused with
+     it — so pressing `.*` or `W` in the overlay turned every search into a
+     deserialize error rather than a different answer. */
+  const asRegex = await t.api('GET', `/api/search?workspace=${encodeURIComponent(workspace)}`
+    + '&pattern=frobni.ate&regex=true')
+  assert.equal(asRegex.hits.length, 1, 'a regex query reaches the walk')
+  const asWord = await t.api('GET', `/api/search?workspace=${encodeURIComponent(workspace)}`
+    + '&pattern=frobnicat&word=true')
+  assert.deepEqual(asWord.hits, [], 'and a whole-word query is a whole word')
+
   // And the name search: same walk, same workspace.
   const listed = await t.api('GET', `/api/paths?workspace=${encodeURIComponent(workspace)}`)
   assert.ok(listed.paths.includes('in-the-worktree.txt'), 'the file is listed')

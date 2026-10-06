@@ -1343,6 +1343,49 @@ try {
   await page.waitForFunction(
     () => document.querySelectorAll('#fnhits .fnhit').length === 1, null, { timeout: 5000 })
 
+  /* --- and the three toggles reach the daemon --------------------------------- */
+
+  /* **All three were dead, and two of them were worse than dead.** The flags
+     ride in a `#[serde(flatten)]`'d struct, where a query string's values arrive
+     as strings — so `?regex=true` was refused as "invalid type: string" and
+     pressing `.*` or `W` turned every search into that sentence in the footer.
+     `Aa` sent nothing at all. Asserted from the button rather than the route,
+     because the route's own flow cannot see a control that forgets to send. */
+  fs.writeFileSync(path.join(tree, 'casing.txt'), 'Frobnicate with a capital\n')
+  await page.fill('#fnq', 'frobnicate')
+  const bothCases = await page.waitForFunction(
+    () => document.querySelectorAll('#fnhits .fnhit').length === 2, null, { timeout: 5000 })
+    .then(() => true).catch(() => false)
+  check(bothCases, 'smart case finds the capitalised word too')
+  await page.$eval('#fncase', (b) => b.click())
+  const onlyLower = await page.waitForFunction(
+    () => document.querySelectorAll('#fnhits .fnhit').length === 1, null, { timeout: 5000 })
+    .then(() => true).catch(() => false)
+  check(onlyLower, 'and Aa asks for the case written')
+  check(
+    await page.$eval('#fnhits .fnhit .fnat', (r) => r.textContent) === 'haystack.txt:3',
+    'leaving the one that is written the way you typed it',
+  )
+  await page.$eval('#fncase', (b) => b.click())
+
+  await page.fill('#fnq', 'frobni.ate')
+  const asLiteral = await page.waitForFunction(
+    () => document.querySelectorAll('#fnhits .fnhit').length === 0, null, { timeout: 5000 })
+    .then(() => true).catch(() => false)
+  check(asLiteral, 'a query with a dot in it is a literal')
+  await page.$eval('#fnre', (b) => b.click())
+  const asPattern = await page.waitForFunction(
+    () => document.querySelectorAll('#fnhits .fnhit').length === 2, null, { timeout: 5000 })
+    .then(() => true).catch(() => false)
+  check(asPattern, 'and the regex toggle makes it a pattern, rather than an error')
+  await page.$eval('#fnre', (b) => b.click())
+
+  // Back to one hit, which is what everything below is written about.
+  fs.rmSync(path.join(tree, 'casing.txt'))
+  await page.fill('#fnq', 'frobnicate')
+  await page.waitForFunction(
+    () => document.querySelectorAll('#fnhits .fnhit').length === 1, null, { timeout: 5000 })
+
   /* --- and the split between the two panes is draggable ----------------------- */
 
   /* A search that answers with forty rows and one that answers with two want

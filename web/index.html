@@ -168,7 +168,11 @@
         <input class="fnglob" id="fnglob" spellcheck="false" autocomplete="off"
                placeholder="path filter" aria-label="path filter">
         <div class="ov-nav">
-          <button class="fntg on" id="fncase" title="Smart case: an upper-case letter makes the search sensitive">Aa</button>
+          <!-- Off is smart case, which is what a person typing a query wants and
+               what the daemon does by default. On asks for the case written, for
+               the one search smart case cannot express: a lower-case word that
+               must stay lower-case. -->
+          <button class="fntg" id="fncase" title="Match the case written. Off is smart case: an upper-case letter already makes the search sensitive">Aa</button>
           <button class="fntg" id="fnre" title="The query is a regular expression">.*</button>
           <button class="fntg" id="fnword" title="Whole words only">W</button>
           <button class="head-btn" id="fnclose">Close ESC</button>
