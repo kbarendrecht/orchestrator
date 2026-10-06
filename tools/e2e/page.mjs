@@ -1508,6 +1508,18 @@ try {
     await page.$$eval('#diffbody .editbase', (b) => b.length) === 1,
     "the diff's editor still shows the base revision beside the buffer",
   )
+  /* **Tab indents and stays in the buffer.** A plain textarea hands Tab to the
+     focus order, so the key used to leave the editor; here it must write the
+     indent and keep the caret where it was typing. */
+  await page.$eval('#diffbody .editarea', (ta) => { ta.focus(); ta.setSelectionRange(0, 0) })
+  const wasText = await page.$eval('#diffbody .editarea', (ta) => ta.value)
+  await page.keyboard.press('Tab')
+  check(await page.$eval('#diffbody .editarea', (ta) => document.activeElement === ta
+    && ta.value.length > 0 && /^[ \t]/.test(ta.value)),
+  'Tab writes an indent and the editor keeps the focus')
+  // Put the buffer back, so the cancel below is not asked about unsaved typing.
+  await page.$eval('#diffbody .editarea', (ta, v) => { ta.value = v }, wasText)
+  await page.evaluate(async () => { (await import('/js/editor.js')).state.dirty = false })
   await press('#ovedit')
   await page.waitForFunction(
     () => !document.getElementById('diffbody')?.classList.contains('editing'),

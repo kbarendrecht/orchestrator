@@ -17,7 +17,9 @@
 // editing underneath you, and a mismatch is refused at the write. That is §5's
 // invalidation, in the direction that loses work.
 
-import { call, confirmBox, el, get, MOD_LABEL, reason, toast } from './core.js';
+import { appMod, call, confirmBox, el, get, MOD_LABEL, reason, toast } from './core.js';
+import { commentFor, indent, indentUnit, newline, toggleComment } from './editkeys.js';
+import { langFor } from './source.js';
 
 /** The chord is the same in both overlays, so the label is written once and from
  *  the platform's own modifier — a hardcoded glyph here was the Mac key
@@ -127,6 +129,23 @@ export async function open(host) {
   };
   body.appendChild(ta);
   ta.focus();
+  const unit = indentUnit(live.content);
+  const mark = commentFor(langFor(host.path));
+  ta.onkeydown = (e) => {
+    const plain = !e.ctrlKey && !e.altKey && !e.metaKey;
+    /** @type {import('./editkeys.js').Edit | null} */
+    let ed = null;
+    if (e.key === 'Tab' && plain) {
+      ed = indent(ta.value, ta.selectionStart, ta.selectionEnd, unit, e.shiftKey);
+    } else if (e.key === 'Enter' && plain && !e.shiftKey) {
+      ed = newline(ta.value, ta.selectionStart, ta.selectionEnd);
+    } else if (e.key === '/' && appMod(e) && !e.shiftKey && !e.altKey && mark) {
+      ed = toggleComment(ta.value, ta.selectionStart, ta.selectionEnd, mark);
+    }
+    if (!ed) return;
+    e.preventDefault();
+    replace(ta, ed);
+  };
 
   // Invalidation: an agent editing the same file underneath you must not be
   // discovered only at save time (§5).
@@ -207,6 +226,18 @@ export async function save() {
   host.save.textContent = SAVE_LABEL;
   toast('saved');
   await host.onSaved?.();
+}
+
+/** Make one edit through the browser's own insert, so `Ctrl+Z` undoes it like
+ *  typing. `execCommand` is deprecated and still the only way into a
+ *  textarea's undo stack; where it is refused the edit lands without undo. */
+function replace(/** @type {HTMLTextAreaElement} */ ta, /** @type {import('./editkeys.js').Edit} */ ed) {
+  ta.setSelectionRange(ed.from, ed.to);
+  if (!document.execCommand('insertText', false, ed.text)) {
+    ta.setRangeText(ed.text, ed.from, ed.to, 'end');
+    ta.dispatchEvent(new Event('input'));
+  }
+  ta.setSelectionRange(ed.selStart, ed.selEnd);
 }
 
 /** Put the caret at the start of a line and scroll it into the middle. */
