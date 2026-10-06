@@ -34,4 +34,5 @@ node tools/check-module-routes.mjs
 node tools/check-pathlink.mjs
 node tools/check-revert.mjs
 node tools/check-editkeys.mjs
+node tools/check-merge.mjs
 node tools/check-markdown.mjs

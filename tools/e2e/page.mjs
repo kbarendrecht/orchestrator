@@ -1528,6 +1528,29 @@ try {
   // Put the buffer back, so the cancel below is not asked about unsaved typing.
   await page.$eval('#diffbody .editarea', (ta, v) => { ta.value = v }, wasText)
   await page.evaluate(async () => { (await import('/js/editor.js')).state.dirty = false })
+
+  /* **A save over a file that moved merges instead of refusing.** You type at the
+     end, an agent rewrites the first line, and the save finds the version moved:
+     the buffer must come back holding both, and nothing may be written yet, since
+     you have not seen their change. */
+  const readmeFile = path.join(tree, 'README.md')
+  const diskWas = fs.readFileSync(readmeFile, 'utf8')
+  await page.$eval('#diffbody .editarea', (ta) => {
+    ta.focus()
+    ta.setSelectionRange(ta.value.length, ta.value.length)
+  })
+  await page.keyboard.type('typed in the buffer')
+  const theirs = diskWas.replace('# fixture', '# fixture, rewritten by an agent')
+  fs.writeFileSync(readmeFile, theirs)
+  await page.keyboard.press(chord('KeyS'))
+  await page.waitForFunction(() => (/** @type {HTMLTextAreaElement | null} */ (
+    document.querySelector('#diffbody .editarea'))?.value ?? '').includes('rewritten by an agent'),
+  null, { timeout: 5000 })
+  check(await page.$eval('#diffbody .editarea', (ta) => ta.value.includes('typed in the buffer')),
+    'a save over a moved file merges their change into the buffer and keeps yours')
+  check(fs.readFileSync(readmeFile, 'utf8') === theirs, 'and writes nothing until you save again')
+  fs.writeFileSync(readmeFile, diskWas)
+  await page.evaluate(async () => { (await import('/js/editor.js')).state.dirty = false })
   await press('#ovedit')
   await page.waitForFunction(
     () => !document.getElementById('diffbody')?.classList.contains('editing'),

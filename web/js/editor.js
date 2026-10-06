@@ -19,6 +19,7 @@
 
 import { appMod, call, confirmBox, el, get, MOD_LABEL, reason, toast } from './core.js';
 import { commentFor, indent, indentUnit, newline, toggleComment } from './editkeys.js';
+import { hasMarkers, merge3 } from './merge.js';
 import { hlTokens, langFor, paintRanges } from './source.js';
 
 /** The chord is the same in both overlays, so the label is written once and from
@@ -44,14 +45,18 @@ export const SAVE_LABEL = `Save ${MOD_LABEL} S`;
 /** The open editor. `version` is what the buffer was loaded at, and `watch` is
  *  the poll that notices somebody editing the file underneath you.
  *
+ *  `base` is the text that version had, which is what a merge measures both
+ *  sides from when the file moves underneath.
+ *
  *  @type {{ on: boolean, path: string | null, version: string | null,
  *           dirty: boolean, watch: ReturnType<typeof setInterval> | null,
- *           host: Host | null, mountWas: string | null }}
+ *           host: Host | null, mountWas: string | null, base: string | null }}
  */
 export const state = {
   on: false,
   path: null,
   version: null,
+  base: null,
   dirty: false,
   watch: null,
   host: null,
@@ -102,6 +107,7 @@ export async function open(host) {
   state.on = true;
   state.path = host.path;
   state.version = live.version;
+  state.base = live.content;
   state.dirty = false;
   host.save.hidden = false;
   host.save.textContent = SAVE_LABEL;
@@ -159,16 +165,49 @@ async function checkUnderneath() {
   if (!state.on) return;
   try {
     const now = await get(`/api/file?${query({})}`);
-    if (now.version !== state.version) {
-      clearInterval(state.watch ?? undefined);
-      state.watch = null;
-      if (state.host) state.host.save.textContent = 'Save (conflict)';
-      toast('this file changed on disk — an agent is editing it too. Saving will be refused.', true);
-    }
+    if (now.version !== state.version) catchUp(now);
   } catch (e) {
     // A file that vanished is also a change worth knowing about, but not worth
     // a second alarm; the save will report it.
   }
+}
+
+/** Take in a version of the file somebody else wrote.
+ *
+ *  **It used to stop at a warning**, and the only way on was to cancel, lose
+ *  your typing or theirs, and reopen. An agent editing the file you have open is
+ *  the normal case here, not the rare one. So a buffer nobody typed in simply
+ *  follows the file, and a buffer you did type in gets their change merged in by
+ *  line: different lines both land, the same lines two ways are marked in the
+ *  buffer for you, and Save refuses until the markers are gone.
+ *
+ *  @param {{ content: string, version: string }} now */
+function catchUp(now) {
+  const host = state.host;
+  const ta = /** @type {HTMLTextAreaElement | null | undefined} */ (host?.mount.querySelector('.editarea'));
+  if (!state.on || !host || !ta) return;
+  const merged = state.dirty
+    ? merge3(state.base ?? '', ta.value, now.content)
+    : { text: now.content, conflicts: 0 };
+  if (!merged) {
+    host.save.textContent = 'Save (conflict)';
+    toast('this file changed on disk and is too far from your buffer to merge here. Saving will be refused.', true);
+    return;
+  }
+  const caret = Math.min(ta.selectionStart, merged.text.length);
+  const top = ta.scrollTop;
+  const wasDirty = state.dirty;
+  replace(ta, { from: 0, to: ta.value.length, text: merged.text, selStart: caret, selEnd: caret });
+  ta.scrollTop = top;
+  state.version = now.version;
+  state.base = now.content;
+  state.dirty = wasDirty;
+  host.save.textContent = wasDirty ? 'Save •' : SAVE_LABEL;
+  if (!wasDirty) return toast('the file changed on disk, the buffer follows it');
+  if (merged.conflicts) {
+    return toast(`the file changed on disk: ${merged.conflicts} conflict${merged.conflicts === 1 ? '' : 's'} marked in your buffer, fix and save`, true);
+  }
+  toast('the file changed on disk, their change is merged into your buffer');
 }
 
 /** Put the editor away. `false` means the question was answered "keep editing".
@@ -205,6 +244,8 @@ export async function save() {
   if (!state.on || !host) return;
   const ta = host.mount.querySelector('.editarea');
   if (!ta) return;
+  const content = /** @type {HTMLTextAreaElement} */ (ta).value;
+  if (hasMarkers(content)) return toast('refused: the buffer still has conflict markers in it', true);
   let out;
   try {
     out = await call('/api/file', {
@@ -212,18 +253,23 @@ export async function save() {
       // selected now — see the note at the top of this file.
       workspace: host.workspace,
       path: state.path,
-      content: /** @type {HTMLTextAreaElement} */ (ta).value,
+      content,
       version: state.version,
     });
   } catch (e) {
     return toast(reason(e), true);
   }
   if (out.result === 'conflict') {
-    return toast(
-      'refused: the file changed on disk since you opened it. Cancel and reopen to see their version.',
-      true);
+    // Not saved: their change goes into the buffer first, and you look again.
+    try {
+      catchUp(await get(`/api/file?${query({})}`));
+    } catch (e) {
+      toast(reason(e), true);
+    }
+    return;
   }
   state.version = out.version;
+  state.base = content;
   state.dirty = false;
   host.save.textContent = SAVE_LABEL;
   toast('saved');
