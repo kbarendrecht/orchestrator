@@ -1942,8 +1942,9 @@ try {
   await page.waitForSelector('#ctxmenu:not([hidden])', { timeout: 5000 })
   const items = await page.$$eval('#ctxmenu .ctxmenu-item', (bs) => bs.map((b) => b.textContent))
   check(
-    items.length === 3 && items[1] === 'Open the folder' && /Finder|file manager/.test(items[2] ?? ''),
-    `the menu offers the three answers, got ${JSON.stringify(items)}`,
+    items.length === 4 && items[1] === 'Open the folder' && /Finder|file manager/.test(items[2] ?? '')
+      && items[3] === 'Copy path',
+    `the menu offers the three answers and a copy, got ${JSON.stringify(items)}`,
   )
   await page.keyboard.press('Escape')
   const onWord = await pointAt('and Lonely.txt again', 0, 3)
@@ -1957,6 +1958,24 @@ try {
     !plain.some((t) => t === 'Open the folder'),
     `ordinary output gets the pane's own menu, got ${JSON.stringify(plain)}`,
   )
+
+  /* **A link gets its own two answers.** Copying a URL out of an agent pane by
+     selecting it does not work, since the drag goes to Claude Code's mouse
+     reporting; the menu is the way. */
+  await page.keyboard.press('Escape')
+  await focusTerm()
+  await page.keyboard.type("printf 'see https://example.com/%s now\\n' docs")
+  await page.keyboard.press('Enter')
+  const onLink = await pointAt('see https://example.com/docs now', 4, 12)
+  await page.mouse.move(onLink.x, onLink.y)
+  await page.waitForTimeout(150)
+  await page.mouse.click(onLink.x, onLink.y, { button: 'right' })
+  const linkItems = await page.waitForSelector('#ctxmenu:not([hidden])', { timeout: 5000 })
+    .then(() => page.$$eval('#ctxmenu .ctxmenu-item', (bs) => bs.map((b) => b.textContent)))
+    .catch(() => [])
+  check(JSON.stringify(linkItems) === '["Open link","Copy link"]',
+    `a link offers to open or copy it, got ${JSON.stringify(linkItems)}`)
+  // Left open: the folder case below starts by pressing Escape on it.
 
   /* --- and a folder opens a menu of what is in it ---------------------------- */
 
@@ -1993,8 +2012,8 @@ try {
   await page.mouse.click(folderAgain.x, folderAgain.y, { button: 'right' })
   await page.waitForSelector('#ctxmenu:not([hidden])', { timeout: 5000 })
   const onFolder = await page.$$eval('#ctxmenu > .ctxmenu-item, #ctxmenu > .ctxmenu-group > .ctxmenu-item', (bs) => bs.map((b) => b.textContent))
-  check(onFolder.length === 3 && /Finder|file manager/.test(onFolder[2] ?? ''),
-    `the right-click lists the same, with the file manager below, got ${JSON.stringify(onFolder)}`)
+  check(onFolder.length === 4 && /Finder|file manager/.test(onFolder[2] ?? '') && onFolder[3] === 'Copy path',
+    `the right-click lists the same, with the file manager and a copy below, got ${JSON.stringify(onFolder)}`)
   // Left open: the next block's Escape closes it, and an Escape with nothing to
   // close reaches the shell, where it is readline's meta key and eats the command.
 

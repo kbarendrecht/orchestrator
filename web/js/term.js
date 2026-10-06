@@ -2,7 +2,7 @@
 // over a websocket. The DOM renderer is deliberate under WebKitGTK, and only
 // there — see the renderer comment below, and CLAUDE.md.
 
-import { $, CHECKOUTS, CHROME, IS_MAC, callOn, copyText, el, mark, note, reason, reportBoot, selected, terms, termKey, typingElsewhere, uiScale, wheelScale } from './core.js';
+import { $, CHECKOUTS, CHROME, IS_MAC, callOn, copyText, el, mark, note, openMenu, reason, reportBoot, selected, terms, termKey, toast, typingElsewhere, uiScale, wheelScale } from './core.js';
 import { fontStack, theme } from './theme.js';
 import { termColours } from './palette.js';
 import { continues, linksIn } from './pathlink.js';
@@ -123,11 +123,11 @@ function pathUnder(term, host, ev, agent) {
   /* **The underlined paths, not the matcher's.** The menu has to decide here, in
      the event, whether to take it from the drawer's, and there is no time to ask
      the file list. The provider already asked it when the pointer came onto this
-     line, so its answer is what the menu reads: the path menu opens exactly where
-     an underline is. Paths only, because the menu's verbs are all about a file. */
+     line, so its answer is what the menu reads: the menu opens exactly where an
+     underline is, a path's or a link's. */
   const shown = underlined.get(term);
   if (!shown || shown.from !== found.from || shown.text !== found.text) return null;
-  for (const h of shown.hits) if (h.kind === 'path' && at >= h.start && at < h.end) return h;
+  for (const h of shown.hits) if (at >= h.start && at < h.end) return h;
   return null;
 }
 
@@ -388,6 +388,18 @@ function openTerm(checkout, target, parent) {
     const found = pathUnder(term, host, e, agentPane);
     if (!found) return;
     e.preventDefault();
+    /* A link has two things to do to it, and the second is why this menu exists:
+       copying a URL out of an agent pane otherwise means selecting it, and there
+       the drag goes to Claude Code's mouse reporting instead. */
+    if (found.kind === 'url') {
+      e.stopPropagation();
+      const url = found.url;
+      openMenu(e, [
+        ['Open link', null, () => openUrl(checkout, url)],
+        ['Copy link', null, () => void copyText(url).then((ok) => { if (ok) toast('copied the link'); })],
+      ]);
+      return;
+    }
     /* **And stopped, which `preventDefault` alone does not do.** The drawer hangs
        its own menu off the pane — "send the last lines to the session" — and it is
        an ancestor, so without this the event bubbles on and that menu replaces

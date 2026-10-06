@@ -1133,6 +1133,15 @@ Term.onPathMenu(({ checkout, target, path, line, last, ev }) => {
      menu. */
   const resolved = () => FileView.candidates(workspace, rel);
   const manager = IS_MAC ? 'Open with Finder' : 'Open with the file manager';
+  /* The path as it was printed, and with its line when it had one, which is what
+     a PR comment or another agent takes. */
+  const copy = (/** @type {string} */ text) => () =>
+    void copyText(text).then((ok) => { if (ok) toast(`copied ${text}`); });
+  /** @type {import('./js/core.js').MenuItem[]} */
+  const copies = [
+    ['Copy path', null, copy(path)],
+    ...(line ? /** @type {import('./js/core.js').MenuItem[]} */ ([[`Copy ${path}:${line}`, null, copy(`${path}:${line}`)]]) : []),
+  ];
   /* **A folder gets its files instead**, and the file manager on the folder itself
      rather than on its parent. Decided from the list the underline was drawn from,
      so a right-click on a file waits for no second walk. */
@@ -1140,10 +1149,13 @@ Term.onPathMenu(({ checkout, target, path, line, last, ev }) => {
     void FileView.foldersOf(workspace, rel).then((dirs) => {
       if (!dirs.length) return toast(`no ${rel} in this workspace`, true);
       const [first] = dirs;
-      FileView.openFolder(workspace, dirs, ev, dirs.length > 1 || !first ? [] : [
-        [manager, null, () => void callOn(CHECKOUTS.find((c) => c.path === checkout) ?? activeCheckout(),
-          '/api/open/reveal', { workspace, path: first.folder, folder: false })
-          .catch((e) => toast(reason(e), true))],
+      FileView.openFolder(workspace, dirs, ev, [
+        ...(dirs.length > 1 || !first ? [] : /** @type {import('./js/core.js').MenuItem[]} */ ([
+          [manager, null, () => void callOn(CHECKOUTS.find((c) => c.path === checkout) ?? activeCheckout(),
+            '/api/open/reveal', { workspace, path: first.folder, folder: false })
+            .catch((e) => toast(reason(e), true))],
+        ])),
+        ...copies,
       ]);
     });
     return;
@@ -1153,6 +1165,7 @@ Term.onPathMenu(({ checkout, target, path, line, last, ev }) => {
       .then((found) => FileView.open(workspace, found, line, last, ev))],
     ['Open the folder', null, () => void resolved().then((found) => reveal(found, true))],
     [manager, null, () => void resolved().then((found) => reveal(found, false))],
+    ...copies,
   ]);
 });
 
