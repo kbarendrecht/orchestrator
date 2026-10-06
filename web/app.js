@@ -819,6 +819,7 @@ import * as Drawer from './js/drawer.js';
 // Diff (§5)
 // ---------------------------------------------------------------------------
 import * as Diff from './js/diff.js';
+import { toggleBlame } from './js/viewer.js';
 
 /** Ask for a line and send the pane on top there. */
 async function goToLine() {
@@ -1555,6 +1556,13 @@ function keymap(/** @type {KeyboardEvent} */ e) {
     if ((bare || chord) && (Editor.isOpen() || FileView.isOpen() || Find.isOpen() || Diff.state.open)) {
       e.preventDefault();
       void goToLine();
+      return;
+    }
+    // `b` for blame, in the two panes that draw a file's lines.
+    if (e.key === 'b' && !e.ctrlKey && !e.altKey && !e.metaKey && !typing
+        && !Editor.isOpen() && (FileView.isOpen() || Find.isOpen())) {
+      e.preventDefault();
+      toggleBlame();
       return;
     }
   }

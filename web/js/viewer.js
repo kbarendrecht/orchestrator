@@ -35,6 +35,35 @@ const IMAGE = /\.(png|jpe?g|gif|webp|avif|svg|ico|bmp)$/i;
  * @typedef {{ path: string, lines: string[], lang: string | null, plain: boolean }} Loaded
  */
 
+/* **Blame is one switch for every viewer**, remembered per browser like the
+   pane sizes: it is a way of reading code, not a property of one file. Each
+   viewer registers its redraw, so flipping it repaints whatever is on screen. */
+const BLAME_KEY = 'orch.blame';
+let blameOn = false;
+try {
+  blameOn = localStorage.getItem(BLAME_KEY) === '1';
+} catch (err) { /* no storage: blame starts off */ }
+/** @type {Set<() => void>} */
+const redraws = new Set();
+
+/** Turn the blame gutter on or off in every viewer. */
+export function toggleBlame() {
+  blameOn = !blameOn;
+  try {
+    localStorage.setItem(BLAME_KEY, blameOn ? '1' : '0');
+  } catch (err) { /* the switch still works for this page */ }
+  for (const r of redraws) r();
+}
+
+/** `3d`, `5mo`, `2y`: how long ago, at the width a gutter has. */
+function age(/** @type {number} */ secs) {
+  const d = Math.max(0, Date.now() / 1000 - secs) / 86400;
+  if (d < 1) return 'today';
+  if (d < 30) return `${Math.floor(d)}d`;
+  if (d < 365) return `${Math.floor(d / 30)}mo`;
+  return `${Math.floor(d / 365)}y`;
+}
+
 /** A viewer over one mount point.
  *
  *  `path` and `where` are the two header elements it writes: which file, and
@@ -60,6 +89,37 @@ export function create(on) {
    *           rowH: number, seq: number, mode: 'source' | 'markdown' | 'preview' | 'image',
    *           ws: string | null }} */
   const view = { file: null, spot: null, from: 0, to: 0, rowH: 0, seq: 0, mode: 'source', ws: null };
+  /** Blame for the file on screen, by line, and the bands already asked for so
+   *  a scroll back does not ask git again. Both cleared with the file. */
+  /** @type {Map<number, import('../repo').BlameLine>} */
+  let blame = new Map();
+  /** @type {Set<string>} */
+  let blameAsked = new Set();
+  redraws.add(() => {
+    if (view.mode === 'source' && view.file && view.spot) band(view.from, view.spot);
+  });
+
+  /** Fetch blame for the drawn band, once, and draw it when it lands. */
+  async function askBlame(/** @type {number} */ from, /** @type {number} */ to) {
+    const file = view.file;
+    const key = `${file?.path}:${from}`;
+    if (!file || !view.ws || blameAsked.has(key)) return;
+    blameAsked.add(key);
+    try {
+      const q = new URLSearchParams({ workspace: view.ws, path: file.path, from: String(from + 1), to: String(to) });
+      /** @type {import('../repo').BlameLine[]} */
+      const lines = await get(`/api/blame?${q}`);
+      if (view.file !== file) return;
+      for (const l of lines) blame.set(l.line, l);
+      // Lines git had nothing for are still answered, or the band asks forever.
+      for (let n = from + 1; n <= to; n++) {
+        if (!blame.has(n)) blame.set(n, { line: n, commit: '', author: '', time: 0, summary: '' });
+      }
+      if (blameOn && view.mode === 'source' && view.spot) band(view.from, view.spot);
+    } catch (e) {
+      toast(reason(e), true);
+    }
+  }
 
   /* A click on a file link in the rendered page. Resolved the way the repo's own
      docs mean it — against the directory of the file that holds the link, and a
@@ -107,6 +167,7 @@ export function create(on) {
     if (picked) items.push(['copy selection', null, copy(picked)]);
     if (n) items.push([`copy ${path}:${n}`, null, copy(`${path}:${n}`)]);
     items.push(['copy path', null, copy(path)]);
+    if (view.mode === 'source') items.push([blameOn ? 'hide blame' : 'show blame', null, toggleBlame]);
     openMenu(ev, items);
   });
 
@@ -140,7 +201,8 @@ export function create(on) {
     view.from = from;
     view.to = to;
 
-    const rows = el('div', 'fnrows');
+    const rows = el('div', 'fnrows' + (blameOn ? ' blamed' : ''));
+    if (blameOn && !blame.has(from + 1)) void askBlame(from, to);
     for (let i = from; i < to; i++) {
       const text = file.lines[i] ?? '';
       /* A range lights every row in it. `overlay.service.ts:124-129` is what an
@@ -152,6 +214,22 @@ export function create(on) {
       // Drawn, not written: a `user-select:none` gutter is still taken by a
       // selection that crosses it, so the numbers would ride along into every
       // copied snippet. Generated content is not in the document to be taken.
+      if (blameOn) {
+        /* Drawn like the number, so a copied snippet does not carry it. Only
+           the first line of a run from one commit is labelled: the same name
+           down forty lines is noise, and the gap is what shows where it ends. */
+        const b = blame.get(n);
+        const g = el('b', 'blame');
+        if (b) {
+          const prev = blame.get(n - 1);
+          const who = b.commit ? (b.author.split(' ')[0] || '?') : 'you';
+          if (i === from || prev?.commit !== b.commit) g.dataset.b = b.commit ? `${who} · ${age(b.time)}` : who;
+          g.title = b.commit
+            ? `${b.commit} ${b.author}, ${new Date(b.time * 1000).toLocaleDateString()}\n${b.summary}`
+            : 'not committed yet';
+        }
+        row.appendChild(g);
+      }
       const num = el('i');
       num.dataset.n = String(n);
       row.appendChild(num);
@@ -373,6 +451,8 @@ export function create(on) {
           plain,
         };
         view.rowH = 0;
+        blame = new Map();
+        blameAsked = new Set();
       }
       paint(spot);
       return true;

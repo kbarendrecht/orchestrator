@@ -281,6 +281,91 @@ pub struct FileDiff {
     pub truncated: bool,
 }
 
+/// Who last changed one line, for the viewer's blame gutter.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[cfg_attr(
+    any(test, feature = "test-util"),
+    derive(ts_rs::TS),
+    ts(export, export_to = "repo.d.ts")
+)]
+pub struct BlameLine {
+    pub line: u32,
+    /// Empty for a line nobody has committed yet.
+    pub commit: String,
+    pub author: String,
+    /// Seconds since the epoch, the author's.
+    #[cfg_attr(any(test, feature = "test-util"), ts(type = "number"))]
+    pub time: i64,
+    pub summary: String,
+}
+
+/// `git blame` over lines `from..=to` of the file as it is on disk.
+///
+/// Only the lines the viewer has drawn, because blame is the slowest thing git
+/// does per line and a file can be long. A file git does not track has nobody
+/// to blame, and comes back empty rather than as an error.
+pub fn blame(cwd: &Path, path: &str, from: u32, to: u32) -> Result<Vec<BlameLine>> {
+    let range = format!("{},{}", from.max(1), to.max(from.max(1)));
+    let Ok(out) = git(cwd, &["blame", "--porcelain", "-L", &range, "--", path]) else {
+        return Ok(Vec::new());
+    };
+    Ok(parse_blame(&out))
+}
+
+/// Read `--porcelain`: a header per line, the commit's details only the first
+/// time a commit appears, and the line itself after a tab.
+fn parse_blame(raw: &str) -> Vec<BlameLine> {
+    #[derive(Default, Clone)]
+    struct Info {
+        author: String,
+        time: i64,
+        summary: String,
+    }
+    let mut seen: std::collections::HashMap<String, Info> = std::collections::HashMap::new();
+    let mut out = Vec::new();
+    let mut cur: Option<(String, u32)> = None;
+    for line in raw.lines() {
+        if line.starts_with('\t') {
+            if let Some((sha, n)) = cur.take() {
+                let info = seen.get(&sha).cloned().unwrap_or_default();
+                let uncommitted = sha.bytes().all(|b| b == b'0');
+                out.push(BlameLine {
+                    line: n,
+                    commit: if uncommitted {
+                        String::new()
+                    } else {
+                        sha.chars().take(8).collect()
+                    },
+                    author: info.author,
+                    time: info.time,
+                    summary: info.summary,
+                });
+            }
+            continue;
+        }
+        let mut words = line.split(' ');
+        let first = words.next().unwrap_or_default();
+        if first.len() == 40 && first.bytes().all(|b| b.is_ascii_hexdigit()) {
+            let n = words.nth(1).and_then(|w| w.parse().ok()).unwrap_or(0);
+            seen.entry(first.to_string()).or_default();
+            cur = Some((first.to_string(), n));
+            continue;
+        }
+        let Some((sha, _)) = &cur else { continue };
+        let Some(info) = seen.get_mut(sha) else {
+            continue;
+        };
+        if let Some(v) = line.strip_prefix("author ") {
+            info.author = v.to_string();
+        } else if let Some(v) = line.strip_prefix("author-time ") {
+            info.time = v.parse().unwrap_or(0);
+        } else if let Some(v) = line.strip_prefix("summary ") {
+            info.summary = v.to_string();
+        }
+    }
+    out
+}
+
 /// A file as it exists at `base`, for the read-only left pane in edit mode.
 pub fn show_at(cwd: &Path, base: &str, path: &str) -> Result<String> {
     // `--` so a path that looks like a rev is still treated as a path.
@@ -914,6 +999,38 @@ index 111..222 100644
 ";
         let d = parse_unified("x", raw);
         assert!(d.hunks[0].rows.iter().all(|r| r.words.is_empty()));
+    }
+
+    /// Blame names the commit per line, carries a commit's details to every
+    /// line it owns (porcelain gives them once), and says nobody for a line
+    /// that is not committed yet.
+    #[test]
+    fn blame_reads_each_line_and_the_uncommitted_ones() {
+        let dir = crate::testutil::scratch_repo("diff-blame");
+        let g = |args: &[&str]| crate::testutil::git(&dir, args);
+        std::fs::write(dir.join("f.txt"), "one\ntwo\nthree\n").unwrap();
+        g(&["add", "-A"]);
+        g(&["commit", "-q", "-m", "the first three"]);
+        let sha = g(&["rev-parse", "HEAD"]);
+        std::fs::write(dir.join("f.txt"), "one\ntwo\nthree\nfour\n").unwrap();
+
+        let lines = blame(&dir, "f.txt", 2, 4).unwrap();
+        assert_eq!(
+            lines.iter().map(|l| l.line).collect::<Vec<_>>(),
+            vec![2, 3, 4]
+        );
+        assert_eq!(lines[0].commit, sha[..8]);
+        assert_eq!(
+            lines[1].summary, "the first three",
+            "the details reach every line"
+        );
+        assert_eq!(lines[1].author, "t");
+        assert!(lines[2].commit.is_empty(), "line four is not committed");
+        assert!(
+            blame(&dir, "nope.txt", 1, 3).unwrap().is_empty(),
+            "an unknown file blames nobody"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

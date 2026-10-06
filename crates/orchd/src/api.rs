@@ -2441,6 +2441,37 @@ async fn searchable(
 }
 
 #[derive(Deserialize)]
+pub struct BlameQuery {
+    pub workspace: String,
+    pub path: String,
+    pub from: u32,
+    pub to: u32,
+}
+
+/// Who last changed the lines the viewer has drawn.
+pub async fn blame(
+    State(app): State<Arc<AppState>>,
+    Query(q): Query<BlameQuery>,
+) -> ApiResult<Vec<crate::diff::BlameLine>> {
+    let root = app
+        .workspace_path(&q.workspace)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("unknown workspace {}", q.workspace))?;
+    // The same bound the editor reads under, so blame cannot name a file the
+    // viewer could not have shown.
+    crate::edit::resolve_in_workspace(&root, &q.path, &app.cfg.main_checkout)?;
+    // A band is 320 lines; more than a few of those is not a viewer asking.
+    let to = q.to.min(q.from.saturating_add(2000));
+    let (path, from) = (q.path.clone(), q.from);
+    Ok(Json(
+        crate::proc::run_blocking("a blame", move || {
+            crate::diff::blame(&root, &path, from, to)
+        })
+        .await??,
+    ))
+}
+
+#[derive(Deserialize)]
 pub struct FileDiffQuery {
     pub workspace: String,
     pub path: String,

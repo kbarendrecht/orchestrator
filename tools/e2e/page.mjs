@@ -1322,6 +1322,18 @@ try {
   // The whole file is there to scroll, not only the matched line.
   const viewerRows = await page.$$eval('#fnsrc .fnrow', (rs) => rs.length)
   check(viewerRows === 5, `the viewer holds the file, not the hit, got ${viewerRows} rows`)
+  /* **`b` shows who changed each line, and `b` hides it.** Off the query box
+     first, since there `b` is a letter. The file is not committed, so the column
+     says so rather than staying blank, which is the answer that proves the blame
+     came back at all. */
+  await page.evaluate(() => /** @type {HTMLElement} */ (document.activeElement)?.blur())
+  await page.keyboard.press('b')
+  await page.waitForSelector('#fnsrc .fnrows.blamed .fnrow b.blame[data-b]', { timeout: 5000 })
+  check(await page.$eval('#fnsrc .fnrow b.blame[data-b]', (b) => b.dataset.b) === 'you',
+    'b draws a blame column, and an uncommitted line is yours')
+  await page.keyboard.press('b')
+  await page.waitForFunction(() => !document.querySelector('#fnsrc .fnrows.blamed'), null, { timeout: 5000 })
+  await page.focus('#fnq')
   /* --- and the viewer edits, with no base revision beside it ------------------ */
 
   /* **The half that only exists because `editor.js` was lifted out of the diff.**

@@ -2789,6 +2789,13 @@ select.opfield,input.opfield{appearance:none}
 }
 .fnrow i::before{content:attr(data-n)}
 .fnrow s{text-decoration:none;padding:0 12px;display:block}
+/* The blame column: who and how long ago, on the first line of each run. */
+.fnrows.blamed .fnrow{grid-template-columns:18ch 56px 1fr}
+.fnrow b.blame{
+  font-weight:normal;color:var(--faint-solid);padding:0 8px;overflow:hidden;
+  text-overflow:ellipsis;user-select:none;border-right:1px solid var(--line-soft);
+}
+.fnrow b.blame::before{content:attr(data-b)}
 .fnrow.on{background:#1B1A14;box-shadow:inset 2px 0 0 var(--attn)}
 /* The match itself, in the diff's own word-highlight shape so a marked span
    means one thing everywhere in this app. */
