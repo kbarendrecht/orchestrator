@@ -1508,6 +1508,14 @@ try {
     await page.$$eval('#diffbody .editbase', (b) => b.length) === 1,
     "the diff's editor still shows the base revision beside the buffer",
   )
+  /* **The buffer is coloured, under a textarea that still owns the text.** The
+     copy underneath must say what the textarea says, or the colours are on the
+     wrong letters. */
+  check(await page.evaluate(() => {
+    const under = document.querySelector('#diffbody .edithl')
+    const ta = /** @type {HTMLTextAreaElement | null} */ (document.querySelector('#diffbody .editarea'))
+    return !!under && !!ta && under.textContent?.startsWith(ta.value.split('\n')[0]) === true
+  }), 'the editor draws its lines in colour under the textarea')
   /* **Tab indents and stays in the buffer.** A plain textarea hands Tab to the
      focus order, so the key used to leave the editor; here it must write the
      indent and keep the caret where it was typing. */

@@ -19,7 +19,7 @@
 
 import { appMod, call, confirmBox, el, get, MOD_LABEL, reason, toast } from './core.js';
 import { commentFor, indent, indentUnit, newline, toggleComment } from './editkeys.js';
-import { langFor } from './source.js';
+import { hlTokens, langFor, paintRanges } from './source.js';
 
 /** The chord is the same in both overlays, so the label is written once and from
  *  the platform's own modifier — a hardcoded glyph here was the Mac key
@@ -127,10 +127,12 @@ export async function open(host) {
     state.dirty = true;
     host.save.textContent = 'Save •';
   };
-  body.appendChild(ta);
+  const lang = langFor(host.path);
+  if (lang && live.content.length <= COLOUR_MAX) body.appendChild(colourUnder(ta, lang));
+  else body.appendChild(ta);
   ta.focus();
   const unit = indentUnit(live.content);
-  const mark = commentFor(langFor(host.path));
+  const mark = commentFor(lang);
   ta.onkeydown = (e) => {
     const plain = !e.ctrlKey && !e.altKey && !e.metaKey;
     /** @type {import('./editkeys.js').Edit | null} */
@@ -226,6 +228,52 @@ export async function save() {
   host.save.textContent = SAVE_LABEL;
   toast('saved');
   await host.onSaved?.();
+}
+
+/** Past this a buffer is edited without colour, as the viewer draws it plain. */
+const COLOUR_MAX = 512 * 1024;
+
+/** The textarea, with the visible lines drawn in colour underneath it.
+ *
+ *  **A textarea cannot colour its own text**, and a `contenteditable` that could
+ *  brings its own caret, undo and paste, none of them a textarea's. So the text
+ *  stays a textarea's, drawn transparent, and a copy of the lines in view is
+ *  painted behind it with the viewer's tokens. Only the visible band, per line,
+ *  the way the viewer does it: the cost per keystroke is the screen, not the file.
+ *  The two must share every metric that places a glyph, which is why both take
+ *  their font, padding and tab size from one CSS rule. */
+function colourUnder(/** @type {HTMLTextAreaElement} */ ta, /** @type {string} */ lang) {
+  const wrap = el('div', 'editwrap');
+  const under = el('pre', 'edithl');
+  const inner = el('div', 'edithl-in');
+  under.appendChild(inner);
+  ta.classList.add('hl');
+  wrap.append(under, ta);
+  let queued = false;
+  const paint = () => {
+    queued = false;
+    const cs = getComputedStyle(ta);
+    const lh = parseFloat(cs.lineHeight) || 18;
+    const top = parseFloat(cs.paddingTop) || 0;
+    const first = Math.max(0, Math.floor((ta.scrollTop - top) / lh));
+    const lines = ta.value.split('\n').slice(first, first + Math.ceil(ta.clientHeight / lh) + 2);
+    inner.replaceChildren(...lines.map((l) => {
+      const row = el('div');
+      paintRanges(row, l || ' ', l ? hlTokens(l, lang) : []);
+      return row;
+    }));
+    inner.style.transform = `translate(${-ta.scrollLeft}px, ${first * lh - ta.scrollTop}px)`;
+  };
+  const later = () => {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(paint);
+  };
+  ta.addEventListener('input', later);
+  ta.addEventListener('scroll', later);
+  new ResizeObserver(later).observe(ta);
+  later();
+  return wrap;
 }
 
 /** Make one edit through the browser's own insert, so `Ctrl+Z` undoes it like

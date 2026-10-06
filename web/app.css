@@ -2037,7 +2037,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 
 /* ---------- editable right pane (§5) ---------- */
 .diff.editing{grid-template-rows:1fr;align-content:stretch;overflow:hidden}
-.editbase,.editarea{
+.editbase,.editarea,.edithl{
   font-family:var(--code);font-size:calc(var(--code-px,11.5px) * var(--fs));line-height:1.65;
   padding:8px 12px;margin:0;overflow:auto;min-height:0;height:100%;
   white-space:pre;tab-size:4;
@@ -2048,6 +2048,15 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
   box-shadow:inset 2px 0 0 var(--attn);
 }
 .editarea:focus{box-shadow:inset 2px 0 0 var(--ok)}
+/* The coloured copy under a transparent textarea: same box, same metrics, and
+   the textarea on top owns the caret, the selection and every key. */
+.editwrap{position:relative;min-height:0;height:100%;overflow:hidden}
+.fnsrc.editing .editwrap{flex:1}
+.editwrap > .edithl,.editwrap > .editarea{position:absolute;inset:0;width:100%;box-sizing:border-box}
+.edithl{overflow:hidden;pointer-events:none;color:var(--text);background:var(--bg)}
+.edithl-in{will-change:transform}
+.editarea.hl{background:transparent;color:transparent;-webkit-text-fill-color:transparent;caret-color:var(--text)}
+.editarea.hl::selection{background:rgba(120,160,220,.3)}
 
 /* ---------- divergence strip ---------- */
 .diverge{display:none}
