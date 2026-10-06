@@ -1622,6 +1622,13 @@ try {
   'the change stepper marks the right pane')
   await press('#ovedit')
   await page.waitForSelector('#diffbody.editing .editarea', { timeout: 5000 })
+  /* The layers behind the textarea are painted on the next frame, so the textarea
+     arriving is not them arriving. Waited for, because the two checks below read
+     them and a frame is exactly the kind of race that fails once a fortnight. */
+  await page.waitForFunction(
+    () => !!document.querySelector('#diffbody .edithl-in > div')
+      && !!document.querySelector('#diffbody .editnums-in > div'),
+    null, { timeout: 5000 })
   check(
     await page.$$eval('#diffbody .editbase', (b) => b.length) === 1,
     "the diff's editor still shows the base revision beside the buffer",
@@ -1634,6 +1641,18 @@ try {
     const ta = /** @type {HTMLTextAreaElement | null} */ (document.querySelector('#diffbody .editarea'))
     return !!under && !!ta && under.textContent?.startsWith(ta.value.split('\n')[0]) === true
   }), 'the editor draws its lines in colour under the textarea')
+  /* **And numbers them.** The viewer draws a numbered row per line and pressing
+     Edit used to replace that with an unnumbered block — while the app's own
+     go-to-line still landed in it, and a line number is how you tell an agent
+     where to look. Asserted on the first number and on the count, because a
+     gutter that drew the band's own index would start at 1 wherever you are. */
+  check(await page.evaluate(() => {
+    const nums = [...document.querySelectorAll('#diffbody .editnums-in > div')]
+      .map((d) => d.dataset.n)
+    const ta = /** @type {HTMLTextAreaElement | null} */ (document.querySelector('#diffbody .editarea'))
+    return nums[0] === '1' && nums.length > 1 && nums.length <= (ta?.value.split('\n').length ?? 0) + 2
+      && nums.every((n, i) => Number(n) === i + 1)
+  }), 'and numbers them, from the first line of the file')
   /* **Tab indents and stays in the buffer.** A plain textarea hands Tab to the
      focus order, so the key used to leave the editor; here it must write the
      indent and keep the caret where it was typing. */
@@ -1911,6 +1930,22 @@ try {
     await page.$$eval('#fnoverlay.on', (o) => o.length) === 0,
     'and the finder is left alone — this is a pane of its own',
   )
+
+  /* **A file with no grammar is numbered too**, which is the half that was
+     missing: the gutter rode along with the colour, so `deep.txt` — nothing for
+     Prism to tokenise — opened for editing as a block of unnumbered text. */
+  await page.$eval('#fvedit', (b) => b.click())
+  await page.waitForSelector('#fvsrc .editarea', { timeout: 5000 })
+  await page.waitForFunction(() => !!document.querySelector('#fvsrc .editnums-in > div'),
+    null, { timeout: 5000 })
+  check(await page.evaluate(() => {
+    const nums = [...document.querySelectorAll('#fvsrc .editnums-in > div')].map((d) => d.dataset.n)
+    return nums[0] === '1' && nums.length >= 3
+      && document.querySelectorAll('#fvsrc .edithl').length === 0
+  }), 'a file with no colour to draw is numbered all the same')
+  await page.$eval('#fvedit', (b) => b.click())
+  await page.waitForFunction(() => !document.querySelector('#fvsrc .editarea'),
+    null, { timeout: 5000 })
 
   /* --- a bare name, a range, and two files with one name ---------------------- */
 
@@ -2216,6 +2251,39 @@ try {
       && await page.$$eval('#fvoverlay.on', (o) => o.length) === 1,
     'Escape puts the bar away and leaves the file open',
   )
+
+  /* **And the numbers follow the buffer when it scrolls.** The gutter draws only
+     the lines in view, so the number on a row is the band's offset plus its index
+     — drop the offset and every file still reads 1, 2, 3 until somebody scrolls.
+     This is the one file long enough here to scroll. */
+  await page.$eval('#fvedit', (b) => b.click())
+  await page.waitForSelector('#fvsrc .editarea', { timeout: 5000 })
+  /* Scrolled and then given two frames: the gutter repaints on a
+     `requestAnimationFrame`, so reading it in the same tick reads the paint from
+     before the scroll — which passed this check for the wrong reason once. */
+  await page.evaluate(() => new Promise((done) => {
+    const ta = /** @type {HTMLTextAreaElement} */ (document.querySelector('#fvsrc .editarea'))
+    ta.scrollTop = 1200
+    requestAnimationFrame(() => requestAnimationFrame(() => done(null)))
+  }))
+  const band = await page.evaluate(() => {
+    const ta = /** @type {HTMLTextAreaElement} */ (document.querySelector('#fvsrc .editarea'))
+    const lh = parseFloat(getComputedStyle(ta).lineHeight)
+    const top = parseFloat(getComputedStyle(ta).paddingTop)
+    return {
+      want: Math.floor((ta.scrollTop - top) / lh) + 1,
+      got: document.querySelector('#fvsrc .editnums-in > div')?.dataset.n,
+      scrollTop: ta.scrollTop, lh, top, lines: ta.value.split('\n').length,
+      rows: document.querySelectorAll('#fvsrc .editnums-in > div').length,
+    }
+  })
+  check(Number(band.got) > 1, `the numbers follow the band when the buffer is scrolled, got ${band.got}`)
+  check(String(band.want) === band.got,
+    `and name the line the buffer is actually showing, got ${JSON.stringify(band)}`)
+  await page.$eval('#fvedit', (b) => b.click())
+  await page.waitForFunction(() => !document.querySelector('#fvsrc .editarea'),
+    null, { timeout: 5000 })
+
   await page.keyboard.press('Escape')
   check(
     await page.$$eval('#fvoverlay.on', (o) => o.length) === 0,

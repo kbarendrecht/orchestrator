@@ -134,8 +134,7 @@ export async function open(host) {
     host.save.textContent = 'Save •';
   };
   const lang = langFor(host.path);
-  if (lang && live.content.length <= COLOUR_MAX) body.appendChild(colourUnder(ta, lang));
-  else body.appendChild(ta);
+  body.appendChild(decorate(ta, lang && live.content.length <= COLOUR_MAX ? lang : null));
   ta.focus();
   const unit = indentUnit(live.content);
   const mark = commentFor(lang);
@@ -279,22 +278,41 @@ export async function save() {
 /** Past this a buffer is edited without colour, as the viewer draws it plain. */
 const COLOUR_MAX = 512 * 1024;
 
-/** The textarea, with the visible lines drawn in colour underneath it.
+/** The textarea, with a line-number gutter beside it and — when the file is one
+ *  that can be coloured — the visible lines drawn in colour underneath it.
  *
- *  **A textarea cannot colour its own text**, and a `contenteditable` that could
- *  brings its own caret, undo and paste, none of them a textarea's. So the text
- *  stays a textarea's, drawn transparent, and a copy of the lines in view is
- *  painted behind it with the viewer's tokens. Only the visible band, per line,
- *  the way the viewer does it: the cost per keystroke is the screen, not the file.
- *  The two must share every metric that places a glyph, which is why both take
- *  their font, padding and tab size from one CSS rule. */
-function colourUnder(/** @type {HTMLTextAreaElement} */ ta, /** @type {string} */ lang) {
+ *  **A textarea cannot colour its own text or number its own lines**, and a
+ *  `contenteditable` that could brings its own caret, undo and paste, none of
+ *  them a textarea's. So the text stays a textarea's and both decorations are
+ *  layers behind it: only the visible band, per line, the way the viewer does it,
+ *  so the cost per keystroke is the screen rather than the file. Every layer must
+ *  share each metric that places a glyph, which is why they take their font,
+ *  padding and tab size from one CSS rule.
+ *
+ *  **The wrap is built for every file, which it was not.** A file with no grammar
+ *  — or one past the colour cap — used to mount the bare textarea, so the viewer's
+ *  numbered rows became an unnumbered block the moment you pressed Edit. A line
+ *  number is not a colour: it is how you say *which* line to an agent, and the
+ *  app's own go-to-line lands on one.
+ *
+ *  @param {HTMLTextAreaElement} ta
+ *  @param {string | null} lang null for a file drawn plain */
+function decorate(ta, lang) {
   const wrap = el('div', 'editwrap');
-  const under = el('pre', 'edithl');
-  const inner = el('div', 'edithl-in');
-  under.appendChild(inner);
-  ta.classList.add('hl');
-  wrap.append(under, ta);
+  const nums = el('pre', 'editnums');
+  const numsIn = el('div', 'editnums-in');
+  nums.appendChild(numsIn);
+  wrap.appendChild(nums);
+  /** @type {HTMLElement | null} */
+  let inner = null;
+  if (lang) {
+    const under = el('pre', 'edithl');
+    inner = el('div', 'edithl-in');
+    under.appendChild(inner);
+    ta.classList.add('hl');
+    wrap.appendChild(under);
+  }
+  wrap.appendChild(ta);
   let queued = false;
   const paint = () => {
     queued = false;
@@ -302,7 +320,21 @@ function colourUnder(/** @type {HTMLTextAreaElement} */ ta, /** @type {string} *
     const lh = parseFloat(cs.lineHeight) || 18;
     const top = parseFloat(cs.paddingTop) || 0;
     const first = Math.max(0, Math.floor((ta.scrollTop - top) / lh));
-    const lines = ta.value.split('\n').slice(first, first + Math.ceil(ta.clientHeight / lh) + 2);
+    const all = ta.value.split('\n');
+    const lines = all.slice(first, first + Math.ceil(ta.clientHeight / lh) + 2);
+    /* Wide enough for the last line in the file, not for the ones on screen: a
+       gutter that grew as you scrolled would shift every glyph in the buffer. */
+    wrap.style.setProperty('--gut', `calc(${String(all.length).length}ch + 16px)`);
+    // Drawn rather than written, as the viewer's numbers are: a `user-select`
+    // rule still lets a selection across the gutter carry the numbers into what
+    // you paste, and generated content is not in the document to be taken.
+    numsIn.replaceChildren(...lines.map((l, i) => {
+      const row = el('div');
+      row.dataset.n = String(first + i + 1);
+      return row;
+    }));
+    numsIn.style.transform = `translateY(${first * lh - ta.scrollTop}px)`;
+    if (!inner) return;
     inner.replaceChildren(...lines.map((l) => {
       const row = el('div');
       paintRanges(row, l || ' ', l ? hlTokens(l, lang) : []);
