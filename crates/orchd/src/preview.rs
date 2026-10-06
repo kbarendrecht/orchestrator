@@ -319,14 +319,33 @@ pub fn in_scratchpad(
 /// must not be committed. Unless the page is ignored itself: that is build output,
 /// `dist/index.html`, and its own directory is served, or it could not load its
 /// own bundle.
+///
+/// **The page's own folder may start with a dot.** A plan an agent writes to
+/// `.plan/` was refused as its own first request, and the pane stayed blank. You
+/// opened that file, so the folder holding it is no secret; a dot below it, and
+/// every dot anywhere else, is still refused, and `.git` never gets that far
+/// because the open refuses it.
 fn servable(rel: &str, grant: &PreviewGrant, ignored: impl Fn(&str) -> bool) -> bool {
-    if rel.is_empty() || rel.split('/').any(|c| c.is_empty() || c.starts_with('.')) {
+    let dir = Path::new(&grant.page).parent().unwrap_or(Path::new(""));
+    let own = Path::new(rel)
+        .strip_prefix(dir)
+        .ok()
+        .filter(|_| !dir.as_os_str().is_empty())
+        .and_then(|rest| rest.to_str());
+    let checked = own.unwrap_or(rel);
+    if rel.is_empty()
+        || rel
+            .split('/')
+            .any(|c| c.is_empty() || c == ".." || c == ".")
+        || checked
+            .split('/')
+            .any(|c| c.is_empty() || c.starts_with('.'))
+    {
         return false;
     }
     if !ignored(rel) {
         return true;
     }
-    let dir = Path::new(&grant.page).parent().unwrap_or(Path::new(""));
     grant.page_ignored && Path::new(rel).starts_with(dir)
 }
 
@@ -558,6 +577,25 @@ mod tests {
             "",
         ] {
             assert!(!servable(bad, &g, none), "{bad}");
+        }
+    }
+
+    /// A page in a dot folder is served with what sits beside it, and nothing
+    /// with a dot of its own, there or anywhere else.
+    #[test]
+    fn a_page_in_a_dot_folder_is_served() {
+        let g = grant(".plan/plan.html", true);
+        let ignored = |p: &str| p.starts_with(".plan/");
+        assert!(servable(".plan/plan.html", &g, ignored), "the page itself");
+        assert!(servable(".plan/plan.css", &g, ignored), "beside it");
+        for bad in [
+            ".plan/.env",
+            ".plan/../.env",
+            ".other/x.html",
+            ".env",
+            ".plan/a/.git/config",
+        ] {
+            assert!(!servable(bad, &g, ignored), "{bad}");
         }
     }
 
