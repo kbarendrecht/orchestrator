@@ -2113,6 +2113,9 @@ const isRewindable = (/** @type {import('../snapshot').SessionView} */ s) =>
  *  The daemon queues rather than restarts: a session mid-turn goes when its turn
  *  ends, so the toast says which of the two happened rather than "restarted". */
 async function restartSession(/** @type {import('../snapshot').SessionView} */ s, /** @type {boolean} */ cancel) {
+  // The session you restart is the one you want to watch come back, like rewind
+  // below; a menu opened on another row left you looking at the old one.
+  if (!cancel) setSelected(s.id);
   try {
     const r = await callFor(s.id, `/api/session/${s.id}/restart`, cancel ? { cancel: true } : {});
     if (cancel) toast('restart cancelled');

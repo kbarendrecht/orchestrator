@@ -2330,6 +2330,27 @@ try {
   await page.waitForFunction(() => !document.querySelector('#rail .sess.starting'), null, { timeout: 20_000 })
     .catch(() => {})
 
+  /* **Restart from a row's menu selects that row.** You restart a session to
+     watch it come back, and a menu opened on another row left the old one on
+     screen. Last, because the restart respawns that session's agent. */
+  const other = await page.evaluate(async () => {
+    const core = await import('/js/core.js')
+    return core.snap.sessions.find((s) => s.alive && s.id !== core.selected)?.id ?? null
+  })
+  if (other) {
+    await page.click(`#rail .sess[data-id="${other}"]`, { button: 'right' })
+    await page.waitForSelector('#ctxmenu:not([hidden]) button', { timeout: 5000 })
+    let pressed = false
+    for (const item of await page.$$('#ctxmenu button')) {
+      if ((await item.textContent())?.trim() === 'restart') { await item.click(); pressed = true; break }
+    }
+    check(pressed, 'a live row offers restart')
+    check(await page.evaluate(async () => (await import('/js/core.js')).selected) === other,
+      'restart from a row menu selects that session')
+  } else {
+    check(false, 'no second live session to restart')
+  }
+
   console.log(`\npage-check: ${failed ? 'FAILED' : 'ok'}`)
 } finally {
   await browser?.close()
