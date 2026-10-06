@@ -78,9 +78,19 @@ export function repoSummary(c) {
  *  @param {import("../snapshot").Snapshot} next
  */
 export function receive(checkout, next) {
+  const now = Date.now();
+  arrived.set(next, now);
+  for (const s of next.sessions ?? []) arrived.set(s, now);
   snaps.set(checkout.path, next);
   adopt();
 }
+
+/* **When each snapshot landed, and each session row with it.** The rail draws
+   every checkout's sessions, each snapshot arriving on its own socket, and one
+   `snapAt` for all of them read a quiet checkout's waiting time against the
+   arrival of a busy one: activating a row rebuilt it, and its clock jumped. */
+/** @type {WeakMap<object, number>} */
+const arrived = new WeakMap();
 
 /** Point `snap` at the active checkout's snapshot.
  *
@@ -94,10 +104,11 @@ function adopt() {
   const next = snaps.get(activeCheckout().path);
   if (!next) return;
   snap = next;
-  snapAt = Date.now();
+  snapAt = arrived.get(next) ?? Date.now();
 }
 
-const sinceSnap = (/** @type {number | null | undefined} */ ms) => (ms == null ? null : ms + (Date.now() - snapAt));
+const sinceSnap = (/** @type {number | null | undefined} */ ms, /** @type {object | undefined} */ from) =>
+  (ms == null ? null : ms + (Date.now() - ((from && arrived.get(from)) ?? snapAt)));
 
 /** A live age, formatted — the same number [`clock`] would tick, said once.
  *
@@ -570,7 +581,7 @@ export function caret() {
  *  queue's "· 3s ago" was re-rendered by the rebuild this change is removing, so
  *  once the pane stopped rebuilding the clock stopped with it.
  */
-export function clock(/** @type {string} */ cls, /** @type {number | null | undefined} */ ms, suffix = '', prefix = '') {
+export function clock(/** @type {string} */ cls, /** @type {number | null | undefined} */ ms, suffix = '', prefix = '', /** @type {object | undefined} */ from = undefined) {
   // An absent base renders empty and is left un-marked. `Number('')` is 0, so a
   // null written into the dataset would come back as a clock counting up from the
   // epoch of nothing — a "0s" that grows where there had been no text at all.
@@ -583,7 +594,8 @@ export function clock(/** @type {string} */ cls, /** @type {number | null | unde
      every push rebuilt the rail, and the first thing the render guards exposed.
      An absolute instant does not care how often a snapshot lands. */
   // `ms` is non-null here — the guard above returned — so the fallback never runs.
-  const started = Date.now() - (sinceSnap(ms) ?? 0);
+  // `from` is the session the number belongs to, when it is not `snap`'s own.
+  const started = Date.now() - (sinceSnap(ms, from) ?? 0);
   const span = el('span', cls, prefix + duration(Date.now() - started) + suffix);
   span.dataset.clock = String(started);
   if (suffix) span.dataset.clockSuffix = suffix;

@@ -1717,7 +1717,7 @@ function archivedRow(/** @type {import('../snapshot').SessionView} */ s, /** @ty
   row.appendChild(el('span', 'sess-name', arcName, arcName));
   const forked = forkBadge(s);
   if (forked) row.appendChild(forked);
-  row.appendChild(clock('sess-id', s.created_ms, ' ago'));
+  row.appendChild(clock('sess-id', s.created_ms, ' ago', '', s));
   btn.appendChild(row);
 
   if (said) {
@@ -1951,9 +1951,9 @@ function sessionRow(/** @type {import('../snapshot').SessionView} */ s, /** @typ
      shows the PR's state rather than `turn complete`. Drawing it anyway put a
      duration against a sentence it did not belong to. */
   if (isWaiting(s) && s.waiting_ms != null && !handedToPr(s)) {
-    sub.appendChild(clock('', s.waiting_ms));
+    sub.appendChild(clock('', s.waiting_ms, '', '', s));
   } else if (s.state.state === 'starting') {
-    sub.appendChild(clock('', s.created_ms));
+    sub.appendChild(clock('', s.created_ms, '', '', s));
   }
   btn.appendChild(sub);
 
