@@ -1195,6 +1195,73 @@ fn read_head(path: &Path, n: u64) -> std::io::Result<Vec<u8>> {
     Ok(buf)
 }
 
+/// Whether the conversation ended its turn with background work still out: a
+/// shell started with `run_in_background`, or a background agent, that never
+/// reported back.
+///
+/// **A finished turn is not always a finished job.** An agent that starts a
+/// watcher in the background and ends its turn is waiting on that watcher, and a
+/// restart kills it without a word: the session comes back at a quiet prompt,
+/// looking done, with nothing left that would ever wake it. That is the same debt
+/// a turn cut off mid-way leaves, so the caller marks it the same way.
+///
+/// Read from the transcript's own words, which are Claude Code's and
+/// undocumented: a start says `with ID: <id>` or `agentId: <id>` in its result,
+/// and an end is a `<task-notification>` naming that id. A format that moves
+/// answers false, which is today's behaviour, not a wrong nudge.
+pub fn left_background_work(id: uuid::Uuid, cwd: &Path, recorded: Option<&Path>) -> bool {
+    let Some(path) = transcript_file(id, cwd, recorded) else {
+        return false;
+    };
+    let Ok(tail) = read_tail(&path, BACKGROUND_TAIL_BYTES) else {
+        return false;
+    };
+    background_left_in(&String::from_utf8_lossy(&tail))
+}
+
+/// A watcher started an hour before the restart is still in the last turn or two,
+/// and those are rarely more than this.
+const BACKGROUND_TAIL_BYTES: u64 = 256 * 1024;
+
+/// The half of [`left_background_work`] that reads text, so a test can hand it
+/// a transcript without a file.
+fn background_left_in(text: &str) -> bool {
+    let mut open: Vec<String> = Vec::new();
+    let id_after = |s: &str, mark: &str| -> Vec<String> {
+        s.match_indices(mark)
+            .filter_map(|(at, _)| {
+                let rest = &s[at + mark.len()..];
+                let id: String = rest
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric())
+                    .collect();
+                (!id.is_empty()).then_some(id)
+            })
+            .collect()
+    };
+    // Skip the first line: a tail read almost always lands mid-record.
+    for line in text.split('\n').skip(1) {
+        if line.contains("<task-id>") {
+            for done in id_after(line, "<task-id>") {
+                open.retain(|o| *o != done);
+            }
+            continue;
+        }
+        if !line.contains("\"tool_result\"") {
+            continue;
+        }
+        for started in id_after(line, "running in background with ID: ")
+            .into_iter()
+            .chain(id_after(line, "agentId: "))
+        {
+            if !open.contains(&started) {
+                open.push(started);
+            }
+        }
+    }
+    !open.is_empty()
+}
+
 /// The last `n` bytes of a file, or the whole thing if it is shorter.
 fn read_tail(path: &Path, n: u64) -> std::io::Result<Vec<u8>> {
     use std::io::{Read, Seek, SeekFrom};
@@ -1210,6 +1277,48 @@ fn read_tail(path: &Path, n: u64) -> std::io::Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    /// A background shell that never reported back is work the restart stopped;
+    /// one that did report is not, and a notification for a task started before
+    /// the tail does no harm.
+    #[test]
+    fn background_work_counts_until_its_notification() {
+        let start = |id: &str| {
+            format!(
+                r#"{{"type":"user","message":{{"content":[{{"type":"tool_result","content":"Command running in background with ID: {id}. Output is being written to: /tmp/x"}}]}}}}"#
+            )
+        };
+        let done = |id: &str| {
+            format!(
+                r#"{{"type":"user","message":{{"content":"<task-notification>\n<task-id>{id}</task-id>\n<status>completed</status>"}}}}"#
+            )
+        };
+        let t = |lines: &[String]| format!("partial line\n{}\n", lines.join("\n"));
+        assert!(
+            super::background_left_in(&t(&[start("b6z8obsuh")])),
+            "started and never heard from"
+        );
+        assert!(
+            !super::background_left_in(&t(&[start("b6z8obsuh"), done("b6z8obsuh")])),
+            "it reported"
+        );
+        assert!(
+            super::background_left_in(&t(&[start("a1"), done("a1"), start("b2")])),
+            "the second watcher is still out"
+        );
+        assert!(
+            !super::background_left_in(&t(&[done("old")])),
+            "an end with no start in view"
+        );
+        let agent = r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"Async agent launched successfully. agentId: ad2c60b9 (internal ID)"}]}}"#.to_string();
+        assert!(
+            super::background_left_in(&t(&[agent])),
+            "a background agent counts too"
+        );
+        assert!(
+            !super::background_left_in(""),
+            "an empty transcript has nothing out"
+        );
+    }
 
     /// **A corrupt store must not be overwritten by the default it degrades to.**
     /// `load_json` warned and handed back `T::default()`, and the next `save_*`

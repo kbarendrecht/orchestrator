@@ -1191,6 +1191,7 @@ impl AppState {
     pub async fn restore_sessions(&self, records: Vec<crate::store::SessionRecord>) {
         let mut inner = self.inner.write().await;
         for r in records {
+            let was_live = r.was_live;
             let mut s = r.restore();
             // A worktree session's recorded path can name a directory Claude Code
             // never wrote to; see `store::find_transcript`. Corrected once here,
@@ -1203,6 +1204,16 @@ impl AppState {
             // rather than leaving the whole archive reading as worktree names.
             if s.title.is_none() {
                 s.title = crate::store::ai_title(s.id, &s.cwd, s.transcript_path.as_deref());
+            }
+            // A turn that ended with a watcher still out owes you the rest as much
+            // as one cut off mid-way, and the restart just killed the watcher. Only
+            // for a session that was live, since nothing else had one running.
+            if was_live
+                && s.had_a_turn
+                && !s.interrupted
+                && crate::store::left_background_work(s.id, &s.cwd, s.transcript_path.as_deref())
+            {
+                s.interrupted = true;
             }
             inner.sessions.entry(s.id).or_insert(s);
         }

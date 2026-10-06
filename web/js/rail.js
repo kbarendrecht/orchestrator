@@ -2468,7 +2468,8 @@ function renderNudge() {
   if (!want) return;
   const n = ids.split(',').length;
   const say = el('span', 'railnudge-say', `${n} cut off by the restart`);
-  say.title = 'These were mid-turn when the app restarted. Continue types "continue" into each of them; '
+  say.title = 'These were mid-turn, or waiting on background work, when the app restarted. '
+    + 'Continue types "continue" into each of them; '
     + 'a finished turn, a question and a permission prompt are left alone.';
   const go = el('button', 'railnudge-go', 'Continue');
   go.onclick = async () => {
