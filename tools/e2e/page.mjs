@@ -1322,6 +1322,13 @@ try {
   // The whole file is there to scroll, not only the matched line.
   const viewerRows = await page.$$eval('#fnsrc .fnrow', (rs) => rs.length)
   check(viewerRows === 5, `the viewer holds the file, not the hit, got ${viewerRows} rows`)
+  /* **The ruler marks the hit and the changes.** The file is new, so every line
+     is a change since the last commit, and the search hit is marked beside them;
+     a click on the hit's mark is the same jump as the hit itself. */
+  await page.waitForSelector('#fnsrc .ruler .rm.hit', { timeout: 5000 })
+  await page.waitForSelector('#fnsrc .ruler .rm.add', { timeout: 5000 })
+  check(await page.$$eval('#fnsrc .ruler .rm.add', (m) => m.length) === 4,
+    'the ruler marks every uncommitted line of the file, and the hit')
   /* **`b` shows who changed each line, and `b` hides it.** Off the query box
      first, since there `b` is a letter. The file is not committed, so the column
      says so rather than staying blank, which is the answer that proves the blame

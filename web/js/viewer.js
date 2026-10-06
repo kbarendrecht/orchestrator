@@ -95,6 +95,60 @@ export function create(on) {
   let blame = new Map();
   /** @type {Set<string>} */
   let blameAsked = new Set();
+  /** Where the file differs from its last commit, and where a search hit it, by
+   *  line: what the ruler beside the scrollbar marks. */
+  /** @type {{ line: number, kind: 'add' | 'del' }[]} */
+  let changed = [];
+  /** @type {number[]} */
+  let hits = [];
+
+  /** The uncommitted changes in the file on screen, for the ruler. */
+  async function askChanges() {
+    const file = view.file;
+    if (!file || !view.ws) return;
+    try {
+      const q = new URLSearchParams({ workspace: view.ws, path: file.path, base: 'head', context: '0' });
+      /** @type {import('../repo').FileDiff} */
+      const d = await get(`/api/diff/file?${q}`);
+      if (view.file !== file) return;
+      /** @type {{ line: number, kind: 'add' | 'del' }[]} */
+      const out = [];
+      for (const h of d.hunks) {
+        let next = h.new_start;
+        for (const r of h.rows) {
+          if (r.kind === 'add' && r.new != null) { out.push({ line: r.new, kind: 'add' }); next = r.new + 1; }
+          if (r.kind === 'del') out.push({ line: Math.max(1, next), kind: 'del' });
+        }
+      }
+      changed = out;
+      if (view.mode === 'source' && view.spot) band(view.from, view.spot);
+    } catch (e) {
+      // No ruler is the answer for a file git cannot diff; the file still shows.
+    }
+  }
+
+  /** A strip beside the scrollbar with the changes and the hits on it, each a
+   *  click away. Sticky inside the scrolling pane, so it is the pane's height
+   *  wherever the band is, and takes no room from the lines. */
+  function ruler(/** @type {number} */ total) {
+    const h = on.mount.clientHeight;
+    const strip = el('div', 'ruler');
+    strip.style.height = `${h}px`;
+    strip.style.marginBottom = `${-h}px`;
+    if (!total || !h) return strip;
+    const mark = (/** @type {number} */ line, /** @type {string} */ cls, /** @type {string} */ tip) => {
+      const m = el('i', `rm ${cls}`);
+      m.style.top = `${((line - 1) / total) * 100}%`;
+      m.title = tip;
+      m.onclick = () => paint({ line, col: 0, len: 0 });
+      strip.appendChild(m);
+    };
+    // One mark per line is plenty: a file with a thousand changed lines is a
+    // strip of colour either way, and the DOM is the cost.
+    for (const c of changed.slice(0, 600)) mark(c.line, c.kind, `line ${c.line}, ${c.kind === 'add' ? 'changed' : 'removed'} since the last commit`);
+    for (const n of hits.slice(0, 600)) mark(n, 'hit', `line ${n}, a search hit`);
+    return strip;
+  }
   redraws.add(() => {
     if (view.mode === 'source' && view.file && view.spot) band(view.from, view.spot);
   });
@@ -249,7 +303,7 @@ export function create(on) {
 
     const top = el('div', 'fnpad');
     const bot = el('div', 'fnpad');
-    on.mount.replaceChildren(top, rows, bot);
+    on.mount.replaceChildren(ruler(total), top, rows, bot);
     if (!view.rowH) {
       const one = rows.firstElementChild;
       view.rowH = one ? one.getBoundingClientRect().height : 0;
@@ -400,6 +454,12 @@ export function create(on) {
       if (view.spot) paint(view.spot);
     },
 
+    /** The lines a search hit in the file on screen, for the ruler. */
+    setHits: (/** @type {number[]} */ lines) => {
+      hits = lines;
+      if (view.mode === 'source' && view.file && view.spot) band(view.from, view.spot);
+    },
+
     /** Put line `line` in the middle, as lines. False when there is no text to
      *  move through: nothing loaded, or a picture. */
     goTo: (/** @type {number} */ line) => {
@@ -453,6 +513,9 @@ export function create(on) {
         view.rowH = 0;
         blame = new Map();
         blameAsked = new Set();
+        changed = [];
+        hits = [];
+        void askChanges();
       }
       paint(spot);
       return true;

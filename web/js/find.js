@@ -397,6 +397,8 @@ async function showCursor() {
   const hit = state.hits[state.cursor];
   if (!hit) return viewer().clear();
   await viewer().show(state.ws ?? '', hit.path, hit);
+  // A name search has no lines to mark; a contents search marks every hit here.
+  viewer().setHits(state.hits.filter((h) => h.path === hit.path && h.len).map((h) => h.line));
 }
 
 /** The path the viewer is showing, for a caller that needs to say which file a
