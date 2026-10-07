@@ -2278,18 +2278,20 @@ function setupChrome() {
   /** How far the pointer must travel before a press on a bar becomes a drag. */
   const DRAG_SLOP = 3;
 
-  /* **The two overlay headers drag the window too.** They look like titlebars,
-     they sit where one sits, and they were the only bars in the app that did
-     nothing when you pulled them — which reads as the window being stuck rather
-     than as the header not being a handle. Both are `.settings-title` (the legend
-     reuses the settings shell), and both are in `index.html` at boot behind
-     `hidden`, so one static pass over the document still finds them.
-     The guard below already spares their `×`, which is a `<button>`. */
-  for (const bar of document.querySelectorAll('.top, .settings-title')) {
-    bar.addEventListener('mousedown', (ev) => {
+  /* **Every header that sits where a titlebar sits drags the window.** The
+     settings and legend headers did (`.settings-title`), and the overlays did not:
+     the diff, the finder, the file pane and the review cover the window's top and
+     their headers did nothing when you pulled them, which reads as the window being
+     stuck. One listener on the document rather than one per bar, because the
+     review builds its header at run time, after any pass over the page at boot.
+     The guard below spares what is in them to press: buttons, the finder's box. */
+  const TITLEBARS = '.top, .settings-title, .ov-head, .fnview-head';
+  {
+    document.addEventListener('mousedown', (ev) => {
       // `addEventListener` promises the handler an `Event`; narrowing in the
       // parameter is what `strictFunctionTypes` refuses, so it happens here.
       const e = /** @type {MouseEvent} */ (ev);
+      if (!/** @type {HTMLElement} */ (e.target).closest?.(TITLEBARS)) return;
       // Left button only, and only on the bar's own background: a drag that
       // swallowed clicks on the session name or the close button would make
       // the header unusable.
@@ -2334,7 +2336,8 @@ function setupChrome() {
       window.addEventListener('mouseup', stop);
       window.addEventListener('blur', stop);
     });
-    bar.addEventListener('dblclick', (e) => {
+    document.addEventListener('dblclick', (e) => {
+      if (!/** @type {HTMLElement} */ (e.target).closest?.(TITLEBARS)) return;
       if (/** @type {HTMLElement} */ (e.target).closest('button, input, a, kbd, .ctx-btn')) return;
       void wcmd('toggle-maximize');
     });
