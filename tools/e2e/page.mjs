@@ -1745,6 +1745,12 @@ try {
      and never shows it, which is why the height itself is what is asserted. */
   const editLh = await page.$eval('#diffbody .editarea', (ta) => getComputedStyle(ta).lineHeight)
   check(/^\d+px$/.test(editLh), `the editor's line height is whole pixels, got ${editLh}`)
+  const envLangs = await page.evaluate(async () => {
+    const { langFor } = await import('/js/source.js')
+    return ['.env', '.env.local', 'deploy/prod.env', 'envelope.txt'].map(langFor)
+  })
+  check(JSON.stringify(envLangs) === '["bash","bash","bash",null]',
+    `an env file is coloured as shell, and only an env file, got ${JSON.stringify(envLangs)}`)
   /* **And numbers them.** The viewer draws a numbered row per line and pressing
      Edit used to replace that with an unnumbered block — while the app's own
      go-to-line still landed in it, and a line number is how you tell an agent

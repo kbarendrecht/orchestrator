@@ -75,6 +75,12 @@ export function langFor(/** @type {string} */ path) {
   const base = (path.split('/').pop() ?? '').toLowerCase();
   const byName = BASENAME_LANG[/** @type {keyof typeof BASENAME_LANG} */ (base)];
   if (byName) return Prism.languages[byName] ? byName : null;
+  /* An env file is shell assignments: `KEY=value`, quotes, `$VAR` and `#`
+     comments. Named by its start as often as its end (`.env.local`,
+     `.env.example`), so neither table above can hold it. */
+  if (base === '.env' || base.startsWith('.env.') || base.endsWith('.env')) {
+    return Prism.languages.bash ? 'bash' : null;
+  }
   const dot = base.lastIndexOf('.');
   const lang = EXT_LANG[/** @type {keyof typeof EXT_LANG} */ (dot >= 0 ? base.slice(dot + 1) : '')];
   return lang && Prism.languages[lang] ? lang : null;
