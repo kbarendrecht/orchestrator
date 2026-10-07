@@ -1577,6 +1577,16 @@ try {
   })
   check(scrolledEdit.mountTop === 0 && scrolledEdit.visible && scrolledEdit.caretLine > 100,
     `edit on a scrolled file opens on screen, at the line you were on, got ${JSON.stringify(scrolledEdit)}`)
+  /* **Blame, turned on while editing, leaves the buffer alone.** The viewer shares
+     the pane with the buffer, and its redraw replaced the buffer with rows. */
+  const keptBuffer = await page.evaluate(async () => {
+    const V = await import('/js/viewer.js')
+    V.toggleBlame()
+    const kept = !!document.querySelector('#fvsrc .editwrap .editarea')
+    V.toggleBlame()
+    return kept
+  })
+  check(keptBuffer, 'turning blame on while editing leaves the buffer on screen')
   await press('#fvedit')
   await page.waitForFunction(() => !!document.querySelector('#fvsrc .fnrow'), null, { timeout: 5000 })
   // The file pane, then the finder under it.

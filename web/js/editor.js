@@ -252,6 +252,8 @@ export async function close(silent) {
     // it had rather than the editor's.
     if (state.mountWas !== null) host.mount.className = state.mountWas;
     state.mountWas = null;
+    // And empty: the viewer draws nothing into a pane the buffer still holds.
+    host.mount.replaceChildren();
     host.onClosed();
   }
   return true;

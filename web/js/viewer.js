@@ -127,6 +127,13 @@ export function create(on) {
     }
   }
 
+  /** Whether the editor has this pane. **The viewer then draws nothing**: it
+   *  shares the mount with the buffer, and every redraw it makes replaces the
+   *  mount's children. "Show blame" from a right-click in the buffer redrew the
+   *  rows over it and the pane went empty; a blame answer or the ruler's marks
+   *  landing late would have done the same. */
+  const held = () => !!on.mount.querySelector(':scope > .editwrap, :scope > .editarea');
+
   /** Swap the ruler alone when its marks arrive. **Not the band**: a rebuilt
    *  band can move the pane's scroll, and a scroll closes an open menu, so the
    *  marks landing a moment after a right-click took the menu away with them. */
@@ -215,6 +222,9 @@ export function create(on) {
      so the finder and the file pane cannot drift. The app's menu replaces the
      webview's, so a selection gets its plain copy back as the first item. */
   on.mount.addEventListener('contextmenu', (ev) => {
+    // The buffer's own menu while it is up: cut, copy, paste are its, and this
+    // one's items would draw rows over it.
+    if (held()) return;
     const path = view.file?.path ?? (view.mode === 'image' ? on.path?.textContent : null);
     if (!path) return;
     const row = /** @type {HTMLElement | null} */ (
@@ -257,7 +267,7 @@ export function create(on) {
    *  @param {Spot} spot */
   function band(from, spot) {
     const file = view.file;
-    if (!file) return;
+    if (!file || held()) return;
     const total = file.lines.length;
     const to = Math.min(total, from + BAND);
     view.from = from;
@@ -325,7 +335,7 @@ export function create(on) {
    *  @param {Spot} spot */
   function paint(spot) {
     const file = view.file;
-    if (!file) return;
+    if (!file || held()) return;
     view.mode = 'source';
     view.spot = spot;
     const total = file.lines.length;
