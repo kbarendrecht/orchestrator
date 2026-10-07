@@ -1766,6 +1766,16 @@ try {
   check(await page.$eval('#diffbody .editarea', (ta) => document.activeElement === ta
     && ta.value.length > 0 && /^[ \t]/.test(ta.value)),
   'Tab writes an indent and the editor keeps the focus')
+  /* **Ctrl+Z undoes, which WebKitGTK does not bind.** A synthetic key, because
+     Chrome would undo a real one natively and pass either way: only the page's
+     own binding answers this event. Not on a Mac, where ⌘Z is the menu's. */
+  if (!asMac) {
+    const undone = await page.$eval('#diffbody .editarea', (ta) => {
+      ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true, cancelable: true }))
+      return ta.value
+    })
+    check(undone === wasText, 'Ctrl+Z takes the indent back off')
+  }
   // Put the buffer back, so the cancel below is not asked about unsaved typing.
   await page.$eval('#diffbody .editarea', (ta, v) => { ta.value = v }, wasText)
   await page.evaluate(async () => { (await import('/js/editor.js')).state.dirty = false })

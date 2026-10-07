@@ -17,7 +17,7 @@
 // editing underneath you, and a mismatch is refused at the write. That is §5's
 // invalidation, in the direction that loses work.
 
-import { appMod, call, confirmBox, el, get, MOD_LABEL, reason, toast } from './core.js';
+import { appMod, call, confirmBox, el, get, IS_MAC, MOD_LABEL, reason, toast } from './core.js';
 import { commentFor, indent, indentUnit, newline, toggleComment } from './editkeys.js';
 import { hasMarkers, merge3 } from './merge.js';
 import { hlTokens, langFor, paintRanges } from './source.js';
@@ -145,6 +145,15 @@ export async function open(host) {
   const unit = indentUnit(live.content);
   const mark = commentFor(lang);
   ta.onkeydown = (e) => {
+    /* **Undo is ours to bind on Linux.** WebKitGTK keeps a textarea's undo
+       history and answers `execCommand('undo')`, but binds no key to it: Ctrl+Z
+       did nothing at all, measured. Not on a Mac, where ⌘Z reaches the buffer
+       through the app's Edit menu and binding it here as well would undo twice. */
+    if (!IS_MAC && e.ctrlKey && !e.altKey && !e.metaKey && (e.key === 'z' || e.key === 'Z' || e.key === 'y')) {
+      e.preventDefault();
+      document.execCommand(e.key === 'y' || e.shiftKey ? 'redo' : 'undo');
+      return;
+    }
     const plain = !e.ctrlKey && !e.altKey && !e.metaKey;
     /** @type {import('./editkeys.js').Edit | null} */
     let ed = null;
