@@ -2051,7 +2051,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 
 /* ---------- editable right pane (§5) ---------- */
 .diff.editing{grid-template-rows:1fr;align-content:stretch;overflow:hidden}
-.editbase,.editarea,.edithl,.editnums{
+.editbase,.editarea,.edithl,.editnums,.editmarks{
   font-family:var(--code);font-size:calc(var(--code-px,11.5px) * var(--fs));line-height:1.65;
   padding:8px 12px;margin:0;overflow:auto;min-height:0;height:100%;
   white-space:pre;tab-size:4;
@@ -2070,7 +2070,13 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 }
 .fnsrc .editwrap,.fnsrc.editing .editwrap{--gut-min:56px}
 .fnsrc.editing .editwrap{flex:1}
-.editwrap > .edithl,.editwrap > .editarea{position:absolute;inset:0;width:100%;box-sizing:border-box}
+.editwrap > .edithl,.editwrap > .editarea,.editwrap > .editmarks{position:absolute;inset:0;width:100%;box-sizing:border-box}
+/* The find bar's hits, under the text: transparent glyphs, so only the marks show,
+   in the colours the viewer marks a hit with. */
+.editmarks{overflow:hidden;pointer-events:none;color:transparent;background:none}
+.editmarks-in{will-change:transform}
+.editmarks .mk{background:#3A2C12;border-radius:2px}
+.editmarks .mk.cur{background:#5A4318;box-shadow:0 0 0 1px var(--attn)}
 .edithl{overflow:hidden;pointer-events:none;color:var(--text);background:none}
 .edithl-in{will-change:transform}
 /* The line numbers, in a column of their own on the left. `--gut` is set from the
@@ -2085,10 +2091,10 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 /* Drawn, not written, for the reason the viewer's numbers are: a selection that
    crosses the gutter would otherwise carry them into what you paste. */
 .editnums-in > div::before{content:attr(data-n)}
-.editwrap > .editarea,.editwrap > .edithl{padding-left:calc(var(--gut,4ch) + 12px)}
+.editwrap > .editarea,.editwrap > .edithl,.editwrap > .editmarks{padding-left:calc(var(--gut,4ch) + 12px)}
 /* Whole pixels, set from the font size by `decorate` in editor.js: WebKit lays a
    fractional line height out rounded down, and the layers are placed by it. */
-.editwrap > .editarea,.editwrap > .edithl,.editwrap > .editnums{line-height:var(--edit-lh,1.65);padding-top:0}
+.editwrap > .editarea,.editwrap > .edithl,.editwrap > .editnums,.editwrap > .editmarks{line-height:var(--edit-lh,1.65);padding-top:0}
 .editwrap > .editarea{background:none}
 .editarea.hl{background:transparent;color:transparent;-webkit-text-fill-color:transparent;caret-color:var(--text)}
 .editarea.hl::selection{background:rgba(120,160,220,.3)}

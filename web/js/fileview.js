@@ -492,7 +492,10 @@ export function closeSeek() {
   bar.at = -1;
   $('fvseek').hidden = true;
   if (!Editor.isOpen()) viewer().setHits([]);
-  else Editor.focus();
+  else {
+    Editor.mark([], -1);
+    Editor.focus();
+  }
   return true;
 }
 
@@ -529,6 +532,7 @@ function runSeek(move) {
   if (found === null) return seekCount('bad pattern');
   bar.hits = found;
   if (!Editor.isOpen()) viewer().setHits(hitLines(found));
+  else Editor.mark(q ? found : [], -1);
   if (!q) return seekCount('');
   if (!found.length) return seekCount('no matches');
   if (move) goToHit(nextIndex(found, from - 1, 1));
@@ -553,7 +557,10 @@ function goToHit(/** @type {number} */ i) {
   const hit = bar.hits[i];
   if (!hit) return;
   bar.at = i;
-  if (Editor.isOpen()) Editor.select(hit.at, hit.len);
+  if (Editor.isOpen()) {
+    Editor.select(hit.at, hit.len);
+    Editor.mark(bar.hits, i);
+  }
   else {
     /* A rendered page has no lines to point at, so a search is a reason to show
        the source — the same rule a line number follows in [`show`]. */

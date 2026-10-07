@@ -50,13 +50,17 @@ export const SAVE_LABEL = `Save ${MOD_LABEL} S`;
  *
  *  @type {{ on: boolean, path: string | null, version: string | null,
  *           dirty: boolean, watch: ReturnType<typeof setInterval> | null,
- *           host: Host | null, mountWas: string | null, base: string | null }}
+ *           host: Host | null, mountWas: string | null, base: string | null,
+ *           marks: { list: { at: number, len: number }[], cur: number },
+ *           repaint: (() => void) | null }}
  */
 export const state = {
   on: false,
   path: null,
   version: null,
   base: null,
+  marks: { list: [], cur: -1 },
+  repaint: null,
   dirty: false,
   watch: null,
   host: null,
@@ -108,6 +112,7 @@ export async function open(host) {
   state.path = host.path;
   state.version = live.version;
   state.base = live.content;
+  state.marks = { list: [], cur: -1 };
   state.dirty = false;
   host.save.hidden = false;
   host.save.textContent = SAVE_LABEL;
@@ -318,6 +323,15 @@ function decorate(ta, lang) {
   const numsIn = el('div', 'editnums-in');
   nums.appendChild(numsIn);
   wrap.appendChild(nums);
+  /* The find bar's hits, under the text. **Its own layer**, because the
+     selection that marks the current one is the textarea's, and an unfocused
+     textarea in WebKit draws its selection faintly or not at all, with the
+     keyboard in the find box that is always. Text drawn transparent, so only
+     the backgrounds of the marks show. */
+  const marked = el('pre', 'editmarks');
+  const markedIn = el('div', 'editmarks-in');
+  marked.appendChild(markedIn);
+  wrap.appendChild(marked);
   /** @type {HTMLElement | null} */
   let inner = null;
   if (lang) {
@@ -361,6 +375,27 @@ function decorate(ta, lang) {
       return row;
     }));
     numsIn.style.transform = `translateY(${first * lh - ta.scrollTop}px)`;
+    // The offset each drawn line starts at, so a mark can be placed on it.
+    let at = 0;
+    for (let i = 0; i < first; i++) at += all[i].length + 1;
+    const { list, cur } = state.marks;
+    markedIn.replaceChildren(...lines.map((l) => {
+      const row = el('div');
+      const start = at;
+      at += l.length + 1;
+      const here = list
+        .map((m, i) => ({ s: Math.max(m.at, start) - start, e: Math.min(m.at + m.len, start + l.length) - start, i }))
+        .filter((r) => r.e > r.s);
+      let pos = 0;
+      for (const r of here) {
+        if (r.s > pos) row.appendChild(document.createTextNode(l.slice(pos, r.s)));
+        row.appendChild(el('span', r.i === cur ? 'mk cur' : 'mk', l.slice(r.s, r.e)));
+        pos = r.e;
+      }
+      row.appendChild(document.createTextNode(l.slice(pos) || ' '));
+      return row;
+    }));
+    markedIn.style.transform = `translate(${-ta.scrollLeft}px, ${first * lh - ta.scrollTop}px)`;
     if (!inner) return;
     inner.replaceChildren(...lines.map((l) => {
       const row = el('div');
@@ -374,6 +409,7 @@ function decorate(ta, lang) {
     queued = true;
     requestAnimationFrame(paint);
   };
+  state.repaint = later;
   ta.addEventListener('input', later);
   ta.addEventListener('scroll', later);
   new ResizeObserver(later).observe(ta);
@@ -420,6 +456,15 @@ export function select(at, len) {
   ta.setSelectionRange(at, at + len);
   scrollToLine(ta, ta.value.slice(0, at).split('\n').length);
   return true;
+}
+
+/** Mark the find bar's hits in the buffer, `cur` the one it is on, or none
+ *  with an empty list.
+ *
+ *  @param {{ at: number, len: number }[]} list @param {number} cur */
+export function mark(list, cur) {
+  state.marks = { list, cur };
+  state.repaint?.();
 }
 
 /** Put the keyboard back in the buffer, where the selection already is. */

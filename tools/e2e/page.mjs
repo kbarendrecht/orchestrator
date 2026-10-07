@@ -2435,6 +2435,12 @@ try {
   const bufWas = await page.$eval('#fvsrc .editarea', (ta) => ta.value)
   const proseWas = await countIn('prose')
   await page.fill('#fvseekq', 'prose')
+  /* **The hit you are on is marked in the buffer**, under the text. The textarea's
+     own selection is all that marked it, and with the keyboard in the find box
+     WebKit draws that faintly or not at all. */
+  const curMark = await page.waitForSelector('#fvsrc .editmarks .mk.cur', { timeout: 5000 })
+    .then((m) => m.textContent()).catch(() => null)
+  check(curMark === 'prose', `the current hit is marked in the buffer, got ${curMark}`)
   await page.fill('#fvseekr', 'verse')
   await page.$eval('#fvseekdo', (b) => b.click())
   check(
