@@ -2057,11 +2057,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
   white-space:pre;tab-size:4;
 }
 .editbase{color:var(--faint-solid);background:#0B0B0B}
-.editarea{
-  color:var(--text);background:var(--bg);border:0;resize:none;outline:0;
-  box-shadow:inset 2px 0 0 var(--attn);
-}
-.editarea:focus{box-shadow:inset 2px 0 0 var(--ok)}
+.editarea{color:var(--text);background:var(--bg);border:0;resize:none;outline:0}
 /* The layers under a transparent textarea: same box, same metrics, and the
    textarea on top owns the caret, the selection and every key. The wrap carries
    the background, so what is behind the text shows through. */
