@@ -1436,6 +1436,12 @@ function fillArchive(box, c, archived, external) {
   ]);
 }
 
+/** The checkout whose archive was just opened from the rail, so its filter is
+ *  given the keyboard when it is drawn. Kept by path rather than by element,
+ *  because the press that opens it also redraws the row it came from. */
+/** @type {string | null} */
+let focusFilterOf = null;
+
 /** The filter line, pinned at the top of the archive box.
  *
  *  Inside the box rather than above it, because the box is what the caret opens: a
@@ -1446,6 +1452,11 @@ function fillArchive(box, c, archived, external) {
 function archiveFilter(c) {
   const wrap = el('div', 'arcfilter');
   const input = /** @type {HTMLInputElement} */ (el('input', 'arcq'));
+  if (focusFilterOf === c.path) {
+    focusFilterOf = null;
+    // After the frame that puts it in the page: a detached input takes no focus.
+    requestAnimationFrame(() => input.focus());
+  }
   input.type = 'search';
   input.placeholder = 'filter past conversations';
   input.value = arcQuery[c.path] || '';
@@ -1714,6 +1725,8 @@ function archivedToggle(/** @type {import('./core.js').Target} */ c, /** @type {
     const now = !!showArchived[held];
     if (!now) void callOn(liveTarget(c), '/api/external/refresh').catch(() => undefined);
     showArchived[held] = !now;
+    // Opening it is going to look for something, so the filter takes the keys.
+    if (!now) focusFilterOf = c.path;
     renderRail();
   };
   return btn;

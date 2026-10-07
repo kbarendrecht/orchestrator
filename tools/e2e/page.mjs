@@ -725,6 +725,9 @@ try {
      the failure worth catching. */
   await page.click('#rail .ws-add .arctoggle')
   await page.waitForSelector('#rail .arcbox .arcq', { timeout: 10_000 })
+  // Opening it is going to look for something, so the filter has the keyboard.
+  check(await page.waitForFunction(() => document.activeElement?.classList.contains('arcq'), null,
+    { timeout: 2000 }).then(() => true).catch(() => false), 'opening the archive puts the keyboard in its filter')
   const arcRows = () => page.locator('#rail .arcbox .sess.arc').count()
   check(await arcRows() >= 1, 'the archive opens on the conversation that was killed')
   await page.fill('#rail .arcbox .arcq', 'zzzznothinglikethis')
