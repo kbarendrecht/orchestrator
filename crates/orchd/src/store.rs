@@ -1227,6 +1227,14 @@ const BACKGROUND_TAIL_BYTES: u64 = 256 * 1024;
 /// a transcript without a file.
 fn background_left_in(text: &str) -> bool {
     let mut open: Vec<String> = Vec::new();
+    /* **A notification is not an answer.** The first version took any
+    `<task-notification>` as the work being done. But the one a restart produces
+    says `stopped`, Claude Code delivers it into the conversation at the next
+    start, and the agent may never get a turn to read it: the session sat at its
+    prompt with "Background shell command didn't finish" unanswered, and
+    Continue skipped it as finished. So a delivered notification owes a reply
+    until an assistant line follows it. */
+    let mut unanswered = false;
     let id_after = |s: &str, mark: &str| -> Vec<String> {
         s.match_indices(mark)
             .filter_map(|(at, _)| {
@@ -1241,9 +1249,17 @@ fn background_left_in(text: &str) -> bool {
     };
     // Skip the first line: a tail read almost always lands mid-record.
     for line in text.split('\n').skip(1) {
+        if line.contains("\"type\":\"assistant\"") {
+            unanswered = false;
+        }
         if line.contains("<task-id>") {
             for done in id_after(line, "<task-id>") {
                 open.retain(|o| *o != done);
+            }
+            // Delivered, as opposed to queued: the `queue-operation` lines carry
+            // the same text before it reaches the conversation.
+            if line.contains("\"type\":\"user\"") {
+                unanswered = true;
             }
             continue;
         }
@@ -1259,7 +1275,7 @@ fn background_left_in(text: &str) -> bool {
             }
         }
     }
-    !open.is_empty()
+    !open.is_empty() || unanswered
 }
 
 /// The last `n` bytes of a file, or the whole thing if it is shorter.
@@ -1293,21 +1309,41 @@ mod tests {
             )
         };
         let t = |lines: &[String]| format!("partial line\n{}\n", lines.join("\n"));
+        let reply =
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"on it"}]}}"#
+                .to_string();
+        let stopped = |id: &str| {
+            format!(
+                r#"{{"type":"user","message":{{"content":"<task-notification>\n<task-id>{id}</task-id>\n<status>stopped</status>"}}}}"#
+            )
+        };
         assert!(
             super::background_left_in(&t(&[start("b6z8obsuh")])),
             "started and never heard from"
         );
         assert!(
-            !super::background_left_in(&t(&[start("b6z8obsuh"), done("b6z8obsuh")])),
-            "it reported"
+            !super::background_left_in(&t(&[start("b6z8obsuh"), done("b6z8obsuh"), reply.clone()])),
+            "it reported, and the agent read it"
         );
         assert!(
-            super::background_left_in(&t(&[start("a1"), done("a1"), start("b2")])),
+            super::background_left_in(&t(&[start("bzn1l3k1h"), stopped("bzn1l3k1h")])),
+            "a restart's stop notice nobody answered is still owed"
+        );
+        assert!(
+            !super::background_left_in(&t(&[
+                start("bzn1l3k1h"),
+                stopped("bzn1l3k1h"),
+                reply.clone()
+            ])),
+            "answered, it is done"
+        );
+        assert!(
+            super::background_left_in(&t(&[start("a1"), done("a1"), reply.clone(), start("b2")])),
             "the second watcher is still out"
         );
         assert!(
-            !super::background_left_in(&t(&[done("old")])),
-            "an end with no start in view"
+            !super::background_left_in(&t(&[done("old"), reply.clone()])),
+            "an end with no start in view, answered"
         );
         let agent = r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"Async agent launched successfully. agentId: ad2c60b9 (internal ID)"}]}}"#.to_string();
         assert!(
