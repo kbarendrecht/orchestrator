@@ -444,7 +444,7 @@ function renderFiles() {
  *           file: import('../repo').FileDiff | null, split: boolean,
  *           cursor: number, pendingCursor: 'first' | 'last' | null, context: number,
  *           anchors?: HTMLElement[], loading?: boolean, lines: string[] | null,
- *           reveal: Map<number, { top: number, bottom: number }> }}
+ *           reveal: Map<number, { top: number, bottom: number }>, gone?: string | null }}
  */
 const diffState = {
   open: false,
@@ -649,9 +649,15 @@ function renderDiff() {
     diffState.anchors = [];
   };
   if (diffState.loading) return note('reading the diff…');
+  if (!f && diffState.gone === diffState.path) return note('This file is gone: it was removed after the list was drawn.');
   if (!f) return note('Select a file.');
   if (f.binary) return note('Binary file — not shown.');
-  if (!f.hunks.length) return note('No textual changes against this base.');
+  if (!f.hunks.length) {
+    // A new file with nothing in it has no lines to show, which is not the same
+    // as having no changes: it is the change.
+    const listed = diffState.summary?.files.find((x) => x.path === diffState.path);
+    return note(listed?.status === '?' ? 'A new, empty file.' : 'No textual changes against this base.');
+  }
 
   const anchors = [];
   let block = -1;
@@ -932,6 +938,16 @@ async function loadSummary() {
   renderFiles();
 }
 
+/** Whether the workspace still has `path`, asked of the list git gives now. */
+async function fileExists(/** @type {string} */ ws, /** @type {string} */ path) {
+  try {
+    await get(`/api/file?${new URLSearchParams({ workspace: ws, path })}`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** A file's lines, without the empty one after a final newline. */
 function linesOf(/** @type {string | undefined} */ content) {
   if (content == null) return null;
@@ -964,7 +980,11 @@ async function loadFile(/** @type {string} */ path) {
   } catch (e) {
     diffState.file = null;
     diffState.lines = null;
-    toast(reason(e), true);
+    /* A short-lived file (a tool's temp or lock file) can be listed and gone by
+       the click. Said in the pane, where you are looking, rather than as git's
+       refusal in a toast. */
+    if (!(await fileExists(ws, path))) diffState.gone = path;
+    else toast(reason(e), true);
   }
   clearTimeout(slow);
   diffState.loading = false;
@@ -990,7 +1010,11 @@ async function openDiff(/** @type {string} */ path) {
   borrowFocus('diff');
   $('overlay').classList.add('on');
   await loadSummary();
-  const first = path || diffState.summary?.files?.[0]?.path;
+  const files = diffState.summary?.files ?? [];
+  /* A collapsed untracked folder (`newdir/`) is a row in the pane but not a file
+     git can diff, so it opens its first file, which the summary now lists. */
+  const first = (path?.endsWith('/') ? files.find((f) => f.path.startsWith(path))?.path : path)
+    || files[0]?.path;
   if (first) {
     diffState.cursor = 0;
     await loadFile(first);

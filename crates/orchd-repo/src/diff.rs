@@ -205,6 +205,30 @@ pub fn mark_worktree_state(files: &mut [DiffFile], set: &orchd_base::model::File
     }
 }
 
+/// Add the untracked files to a summary, one row each, after the tracked ones.
+///
+/// **A diff never lists an untracked file**, so with the overlay open the pane,
+/// which then shows this summary, dropped every `?` row the moment you clicked
+/// one. They are added from `git status` instead. One row per file rather than
+/// per folder: a collapsed `newdir/` looks like a file and cannot be diffed.
+/// Capped, because an un-ignored build folder would be thousands of rows.
+pub fn add_untracked(
+    files: &mut Vec<DiffFile>,
+    untracked: &[orchd_base::model::ChangedFile],
+    cap: usize,
+) {
+    let mut have: std::collections::HashSet<String> =
+        files.iter().map(|f| f.path.clone()).collect();
+    let mut new: Vec<DiffFile> = untracked
+        .iter()
+        .filter(|f| !f.path.ends_with('/') && have.insert(f.path.clone()))
+        .map(DiffFile::untracked)
+        .collect();
+    new.sort_by(|a, b| a.path.cmp(&b.path));
+    new.truncate(cap);
+    files.extend(new);
+}
+
 // ---------------------------------------------------------------------------
 // Hunks
 // ---------------------------------------------------------------------------
@@ -1031,6 +1055,34 @@ index 111..222 100644
             "an unknown file blames nobody"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Untracked files join the summary once each, sorted, never as a folder
+    /// row, and never past the cap.
+    #[test]
+    fn untracked_files_join_the_summary_one_row_each() {
+        let row = |p: &str| orchd_base::model::ChangedFile {
+            path: p.to_string(),
+            status: orchd_base::model::FileStatus::Untracked,
+            code: "??".to_string(),
+        };
+        let mut files = vec![DiffFile::untracked(&row("tracked.rs"))];
+        add_untracked(
+            &mut files,
+            &[
+                row("newdir/zz.txt"),
+                row("empty.txt"),
+                row("newdir/"),
+                row("tracked.rs"),
+            ],
+            10,
+        );
+        let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, ["tracked.rs", "empty.txt", "newdir/zz.txt"]);
+        assert!(files[1..].iter().all(|f| f.status == "?"));
+        let mut capped = Vec::new();
+        add_untracked(&mut capped, &[row("a"), row("b"), row("c")], 2);
+        assert_eq!(capped.len(), 2);
     }
 
     #[test]

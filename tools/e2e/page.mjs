@@ -1887,6 +1887,30 @@ try {
   check(await page.$eval('#diffbody .ln.goto i', (i) => i.dataset.n) === '10',
     'g then 10 lands on line 10 of the file, out of its fold')
   git(tree, ['update-ref', 'refs/remotes/origin/main', upstreamWas])
+
+  /* **Untracked files stay in the open diff's list**, one row each. The list is
+     the diff's own summary while it is open, and a diff never lists an untracked
+     file, so every `?` row vanished the moment one was clicked. A new folder is
+     its files, an empty new file says it is one, and the folder's own row opens
+     the file inside it. */
+  fs.writeFileSync(path.join(tree, 'empty-new.txt'), '')
+  fs.mkdirSync(path.join(tree, 'newfolder'), { recursive: true })
+  fs.writeFileSync(path.join(tree, 'newfolder/inside.txt'), 'inside\n')
+  const untrackedSeen = await page.evaluate(async () => {
+    const Diff = await import('/js/diff.js')
+    await Diff.close()
+    await Diff.open('newfolder/')
+    const opened = Diff.state.path
+    await Diff.loadFile('empty-new.txt')
+    const rows = [...document.querySelectorAll('#filepanes .dfrow .fname')].map((n) => (n.textContent ?? '').replace('\u202a', ''))
+    return { opened, rows, note: document.querySelector('#diffbody .diffnote')?.textContent }
+  })
+  check(untrackedSeen.opened === 'newfolder/inside.txt'
+    && untrackedSeen.rows.includes('empty-new.txt') && untrackedSeen.rows.includes('newfolder/inside.txt')
+    && untrackedSeen.note === 'A new, empty file.',
+  `untracked files stay listed in the open diff, got ${JSON.stringify(untrackedSeen)}`)
+  fs.rmSync(path.join(tree, 'empty-new.txt'))
+  fs.rmSync(path.join(tree, 'newfolder'), { recursive: true })
   await page.evaluate(async () => (await import('/js/diff.js')).loadFile('README.md'))
   await page.waitForFunction(
     () => document.querySelector('#diffbody .ln.add')?.textContent?.includes('diff'), null,

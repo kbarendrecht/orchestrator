@@ -2250,6 +2250,11 @@ pub async fn diff_summary(
     Query(q): Query<DiffQuery>,
 ) -> ApiResult<crate::diff::DiffSummary> {
     let (path, base) = base_for(&app, &q).await?;
+    // Main's tree holds every worktree, which its untracked rows must not list.
+    let exclude = searchable(&app, &q.workspace)
+        .await
+        .ok()
+        .and_then(|(_, e)| e);
     // Off the runtime: a `git diff` over the changeset, per click.
     Ok(Json(
         crate::proc::run_blocking("the diff summary", move || {
@@ -2259,8 +2264,12 @@ pub async fn diff_summary(
             one file offer `stage` in one pane and nothing in the other. One more
             git child per click, on a request that has already run two diffs.
             Degraded rather than fatal: the diff is what was asked for. */
-            match crate::git::status(&path, None, crate::git::Untracked::Collapsed) {
-                Ok(set) => crate::diff::mark_worktree_state(&mut sum.files, &set),
+            // The same status gives the untracked rows, one per file.
+            match crate::git::status(&path, exclude.as_deref(), crate::git::Untracked::Each) {
+                Ok(set) => {
+                    crate::diff::mark_worktree_state(&mut sum.files, &set);
+                    crate::diff::add_untracked(&mut sum.files, &set.untracked, 500);
+                }
                 Err(e) => tracing::warn!("no git verbs on this diff: {e:#}"),
             }
             Ok::<_, anyhow::Error>(sum)
