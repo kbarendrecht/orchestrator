@@ -462,6 +462,15 @@ export function create(on) {
       if (view.spot) paint(view.spot);
     },
 
+    /** The line in the middle of the pane, for a caller that hands the file to
+     *  the editor and wants it to open where you were looking. Null when no
+     *  lines are on screen. */
+    middleLine: () => {
+      if (!view.file || view.mode !== 'source' || !view.rowH) return null;
+      const n = Math.floor((on.mount.scrollTop + on.mount.clientHeight / 2) / view.rowH) + 1;
+      return Math.min(Math.max(1, n), view.file.lines.length);
+    },
+
     /** The lines a search hit in the file on screen, for the ruler. */
     setHits: (/** @type {number[]} */ lines) => {
       hits = lines;

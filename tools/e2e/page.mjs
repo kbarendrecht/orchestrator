@@ -1548,6 +1548,37 @@ try {
   check(Math.abs(viewX - editX) < 0.5, `the text starts where the viewer had it, ${viewX} against ${editX}`)
   await press('#fvedit')
   await page.waitForFunction(() => !!document.querySelector('#fvsrc .fnrow'), null, { timeout: 5000 })
+  /* **Edit on a scrolled file shows the buffer, where you were.** The pane kept
+     the viewer's scroll when the buffer replaced the rows, so the editor sat
+     above the view and the pane was empty. */
+  fs.writeFileSync(path.join(tree, 'scrolled.txt'),
+    Array.from({ length: 300 }, (_, i) => `row ${i + 1}`).join('\n') + '\n')
+  await page.evaluate(async () => {
+    const core = await import('/js/core.js')
+    const fv = await import('/js/fileview.js')
+    await fv.open(core.currentSession()?.workspace ?? 'main', ['scrolled.txt'], 0)
+  })
+  await page.waitForFunction(() => document.getElementById('fvpath')?.textContent === 'scrolled.txt',
+    null, { timeout: 5000 })
+  await page.$eval('#fvsrc', (m) => { m.scrollTop = 4000 })
+  await page.waitForTimeout(300)
+  await press('#fvedit')
+  await page.waitForSelector('#fvsrc.editing .editarea', { timeout: 5000 })
+  await page.waitForTimeout(100)
+  const scrolledEdit = await page.$eval('#fvsrc', (m) => {
+    const ta = /** @type {HTMLTextAreaElement} */ (m.querySelector('.editarea'))
+    const r = ta.getBoundingClientRect()
+    const b = m.getBoundingClientRect()
+    return {
+      mountTop: m.scrollTop,
+      visible: r.top < b.bottom && r.bottom > b.top,
+      caretLine: ta.value.slice(0, ta.selectionStart).split('\n').length,
+    }
+  })
+  check(scrolledEdit.mountTop === 0 && scrolledEdit.visible && scrolledEdit.caretLine > 100,
+    `edit on a scrolled file opens on screen, at the line you were on, got ${JSON.stringify(scrolledEdit)}`)
+  await press('#fvedit')
+  await page.waitForFunction(() => !!document.querySelector('#fvsrc .fnrow'), null, { timeout: 5000 })
   // The file pane, then the finder under it.
   await page.keyboard.press('Escape')
   await page.waitForFunction(() => !document.getElementById('fvoverlay')?.classList.contains('on'), null, { timeout: 5000 })

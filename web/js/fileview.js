@@ -400,6 +400,8 @@ function listed(at, ws, ttl) {
  */
 function edit() {
   if (!state.path || !state.ws) return toast('nothing to edit here', true);
+  // Read before the buffer replaces the rows it is measured from.
+  const looking = viewer().middleLine();
   return Editor.open({
     mount: $('fvsrc'),
     mountClass: 'fnsrc editing',
@@ -413,7 +415,11 @@ function edit() {
     onSaved: () => { viewer().drop(); },
   // The buffer and the file are two different strings, and the bar was searching
   // the other one a moment ago.
-  }).then(() => { seekChrome(); if (bar.on) runSeek(false); });
+  }).then(() => {
+    if (looking) Editor.goTo(looking);
+    seekChrome();
+    if (bar.on) runSeek(false);
+  });
 }
 
 /** Draw the file again, where you were.

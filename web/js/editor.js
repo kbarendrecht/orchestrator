@@ -115,6 +115,12 @@ export async function open(host) {
 
   const body = host.mount;
   body.replaceChildren();
+  /* **The scroll goes with the rows.** The mount is the pane the viewer or the
+     diff was scrolling, and an element keeps its offset when its children are
+     swapped: the buffer sat at the top of a pane still scrolled to line 400, so
+     Edit showed an empty pane. The caller puts the caret back where you were. */
+  body.scrollTop = 0;
+  body.scrollLeft = 0;
   state.mountWas = body.className;
   body.className = host.mountClass;
 
