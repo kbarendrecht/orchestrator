@@ -29,6 +29,9 @@ export async function run(t) {
 
   fs.writeFileSync(path.join(t.repo, 'README.md'), '# main was editing this\n')
   fs.writeFileSync(path.join(dir, 'README.md'), '# the worktree was editing this\n')
+  // A new file travels with the branch, so the undo has to bring it back too.
+  fs.mkdirSync(path.join(dir, 'made'), { recursive: true })
+  fs.writeFileSync(path.join(dir, 'made/new.txt'), 'the worktree made this\n')
 
   t.dieOnResume(1, 2)
   let refused
@@ -55,6 +58,9 @@ export async function run(t) {
   assert.equal(branchOf(dir), 'worktree-invoice')
   assert.equal(fs.readFileSync(path.join(t.repo, 'README.md'), 'utf8'), '# main was editing this\n')
   assert.equal(fs.readFileSync(path.join(dir, 'README.md'), 'utf8'), '# the worktree was editing this\n')
+  assert.equal(fs.readFileSync(path.join(dir, 'made/new.txt'), 'utf8'), 'the worktree made this\n',
+    'the new file came home with its branch')
+  assert.ok(!fs.existsSync(path.join(t.repo, 'made/new.txt')), 'and is not left behind in main')
 
   // Both conversations are home, live, under their own ids, and main is held again.
   await until('both sessions to be home', async () => {

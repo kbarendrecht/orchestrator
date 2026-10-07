@@ -2113,3 +2113,47 @@ fn a_real_fsmonitor_hook_survives_the_repair() {
         "a hook path is left exactly as it was found"
     );
 }
+
+/// New files go with the branch, a copy the other side already has stays without
+/// a word, a different file at the same path stays and is named, and a symlink
+/// stays. Moving the list back undoes it.
+#[test]
+fn untracked_files_are_carried_and_conflicts_are_named() {
+    let from = scratch_repo();
+    let to = crate::testutil::scratch("git-carry-to");
+    std::fs::create_dir_all(from.join("new/deep")).unwrap();
+    std::fs::write(from.join("new/deep/made.ts"), "made here\n").unwrap();
+    std::fs::write(from.join(".env"), "SAME=1\n").unwrap();
+    std::fs::write(to.join(".env"), "SAME=1\n").unwrap();
+    std::fs::write(from.join("clash.txt"), "mine\n").unwrap();
+    std::fs::write(to.join("clash.txt"), "theirs\n").unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink("../elsewhere", from.join("link")).unwrap();
+    let paths: Vec<String> = ["new/deep/made.ts", ".env", "clash.txt", "link"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+
+    let c = carry_untracked(&from, &to, &paths);
+    assert_eq!(c.moved, vec!["new/deep/made.ts".to_string()]);
+    assert_eq!(c.left, vec!["clash.txt".to_string()]);
+    assert_eq!(
+        std::fs::read_to_string(to.join("new/deep/made.ts")).unwrap(),
+        "made here\n"
+    );
+    assert!(!from.join("new/deep/made.ts").exists(), "moved, not copied");
+    assert!(from.join(".env").exists(), "the identical copy stays");
+    assert_eq!(
+        std::fs::read_to_string(to.join("clash.txt")).unwrap(),
+        "theirs\n"
+    );
+
+    let back = carry_untracked(&to, &from, &c.moved);
+    assert_eq!(
+        back.moved, c.moved,
+        "the undo is the same list the other way"
+    );
+    assert!(from.join("new/deep/made.ts").exists());
+    let _ = std::fs::remove_dir_all(&from);
+    let _ = std::fs::remove_dir_all(&to);
+}

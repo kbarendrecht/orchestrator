@@ -1056,6 +1056,69 @@ pub fn untracked_in(cwd: &Path, exclude: Option<&str>) -> Result<Vec<String>> {
     Ok(set.untracked.iter().map(|f| f.path.clone()).collect())
 }
 
+/// What carrying untracked files from one tree to another did.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Carried {
+    /// Moved, and so what an undo moves back.
+    pub moved: Vec<String>,
+    /// Not moved because the other tree has a different file at that path. Named
+    /// to the person, since neither copy can win on its own.
+    pub left: Vec<String>,
+}
+
+/// Move untracked files `paths` from `from` to the same place under `to`.
+///
+/// **Untracked files are the half a branch move did not carry**, because the
+/// bank is `git stash create`, which takes tracked changes only. So a session
+/// moved into main arrived with its edits and without the files it had created,
+/// and its branch was broken there until someone copied them by hand. They move
+/// after the branches have, with plain renames: nothing here touches git.
+///
+/// Three things stay put. A path the other tree already has with the same bytes
+/// is a copy worktree setup made (`.worktreeinclude`), so it stays without a word.
+/// A path it has with different bytes is a conflict neither side can win, so it
+/// stays and is named. And a symlink stays, because the ones in a worktree are
+/// the daemon's own, with targets relative to where they are.
+pub fn carry_untracked(from: &Path, to: &Path, paths: &[String]) -> Carried {
+    let mut out = Carried::default();
+    for rel in paths {
+        let src = from.join(rel);
+        let dst = to.join(rel);
+        let Ok(meta) = std::fs::symlink_metadata(&src) else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        if std::fs::symlink_metadata(&dst).is_ok() {
+            let same = matches!(
+                (std::fs::read(&src), std::fs::read(&dst)),
+                (Ok(a), Ok(b)) if a == b
+            );
+            if !same {
+                out.left.push(rel.clone());
+            }
+            continue;
+        }
+        if let Some(dir) = dst.parent() {
+            if std::fs::create_dir_all(dir).is_err() {
+                out.left.push(rel.clone());
+                continue;
+            }
+        }
+        // A rename where both trees share a disk, which is every worktree under
+        // the checkout; a copy and a remove where they do not.
+        let moved = std::fs::rename(&src, &dst).is_ok()
+            || (std::fs::copy(&src, &dst).is_ok() && std::fs::remove_file(&src).is_ok());
+        if moved {
+            out.moved.push(rel.clone());
+        } else {
+            out.left.push(rel.clone());
+        }
+    }
+    out
+}
+
 /// Bank a tree's uncommitted work as a commit object, then clean the tree.
 ///
 /// `stash create` rather than `stash push`, deliberately: it writes the WIP commit

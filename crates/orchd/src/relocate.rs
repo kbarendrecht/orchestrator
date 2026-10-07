@@ -199,8 +199,8 @@ async fn swap_with_main_inner(
     // Uncommitted work is carried, not refused — see `git::swap_branches`. Only a
     // stopped rebase is still a refusal: a tree mid-rebase cannot switch at all.
     let (m, t) = (main.clone(), tree.clone());
-    let (swapped, untracked) =
-        tokio::task::spawn_blocking(move || -> anyhow::Result<(crate::git::Swap, Vec<String>)> {
+    let (swapped, carried) = tokio::task::spawn_blocking(
+        move || -> anyhow::Result<(crate::git::Swap, crate::git::Carried)> {
             for (label, path) in [("the main checkout", &m), ("this worktree", &t)] {
                 if crate::git::rebase_in_progress(path) {
                     anyhow::bail!(
@@ -210,14 +210,20 @@ async fn swap_with_main_inner(
             }
             // Listed before the swap, because afterwards they are indistinguishable
             // from whatever the other branch leaves untracked. `stash create` does
-            // not take untracked files, so these stay put and are named rather than
-            // quietly not moving.
+            // not take untracked files, so they follow the branch here instead,
+            // after it has moved: the files a session created are half its work,
+            // and main without them held a branch that did not build.
+            // The worktree's only. Main's own untracked files stay in main: it is
+            // your checkout, and what is untracked there is as often the machine's
+            // as any session's, which nothing here can tell apart.
             let left = crate::git::untracked_in(&t, None)?;
             let swapped = crate::git::swap_branches(&m, &t)?;
-            Ok((swapped, left))
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("the swap task panicked: {e}"))??;
+            let carried = crate::git::carry_untracked(&t, &m, &left);
+            Ok((swapped, carried))
+        },
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("the swap task panicked: {e}"))??;
 
     /* The identity a swap is: what main holds now is what the worktree held, and
     the other way round. If that does not hold, something moved between the read
@@ -326,6 +332,7 @@ async fn swap_with_main_inner(
         let undo = Undo {
             moves: journal,
             records_out,
+            files: carried.moved.clone(),
         };
         match undo_swap(&app, &main, &tree, &workspace, &swapped, undo, failed).await {
             Ok(()) => {
@@ -401,8 +408,9 @@ async fn swap_with_main_inner(
         // message names the WIP commit the work is still in.
         "wip_error": swapped.wip_error,
         // Named, not counted: knowing *which* files stayed behind is the difference
-        // between going to fetch them and wondering what you lost.
-        "untracked_left": untracked,
+        // between going to fetch them and wondering what you lost. Only the ones
+        // main already had a different file for, now that the rest travel.
+        "untracked_left": carried.left,
     })))
 }
 
@@ -592,6 +600,8 @@ struct Undo {
     moves: Vec<Landed>,
     /// Main's stopped sessions, carried out before anything arrived.
     records_out: Vec<SessionId>,
+    /// The worktree's untracked files, carried into main with the branch.
+    files: Vec<String>,
 }
 
 /// A session the swap moved, and how to send it back.
@@ -639,10 +649,26 @@ async fn undo_swap(
     let Undo {
         moves: journal,
         records_out,
+        files,
     } = undo;
     let mut left = Vec::new();
     let (m, t) = (main.to_path_buf(), tree.to_path_buf());
-    match tokio::task::spawn_blocking(move || crate::git::swap_branches(&m, &t)).await {
+    // The files first, while main still holds the branch they belong to.
+    let back = tokio::task::spawn_blocking(move || {
+        let files_back = crate::git::carry_untracked(&m, &t, &files);
+        (files_back, crate::git::swap_branches(&m, &t))
+    })
+    .await
+    .map(|(files_back, swapped_back)| {
+        if !files_back.left.is_empty() {
+            left.push(format!(
+                "these files stay in main: {}",
+                files_back.left.join(", ")
+            ));
+        }
+        swapped_back
+    });
+    match back {
         Ok(Ok(_)) => {}
         Ok(Err(e)) => left.push(format!(
             "the branches stay swapped ({} in main, {} in {workspace}): {e:#}",

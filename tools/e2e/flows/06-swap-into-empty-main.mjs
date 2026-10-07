@@ -21,10 +21,13 @@ export async function run(t) {
   await t.settled(session)
   const dir = t.worktreePath('invoice')
 
-  // Work in flight, of both kinds: a tracked edit, which travels with its branch,
-  // and an untracked file, which cannot.
+  // Work in flight, of both kinds: a tracked edit, which travels with its branch
+  // through the bank, and a new file, which travels beside it. And one new file
+  // main already has a different one of, which neither side can win.
   fs.writeFileSync(path.join(dir, 'README.md'), '# edited in the worktree\n')
   fs.writeFileSync(path.join(dir, 'scratch.txt'), 'untracked\n')
+  fs.writeFileSync(path.join(dir, 'clash.txt'), 'the worktree made this\n')
+  fs.writeFileSync(path.join(t.repo, 'clash.txt'), 'main had this\n')
 
   const r = await t.api('POST', '/api/workspace/invoice/swap-main')
 
@@ -39,16 +42,19 @@ export async function run(t) {
   assert.ok(fs.existsSync(dir), 'the worktree must survive its own swap')
   assert.ok(fs.existsSync(t.repo))
 
-  // The tracked edit went with its branch; the untracked file stayed and is named
-  // rather than quietly not moving.
+  // The tracked edit went with its branch, and so did the new file: a session's
+  // created files are half its work, and main without them held a branch that
+  // did not build. The clash stayed, and is named rather than quietly not moving.
   assert.equal(
     fs.readFileSync(path.join(t.repo, 'README.md'), 'utf8'),
     '# edited in the worktree\n',
   )
-  assert.deepEqual(r.untracked_left, ['scratch.txt'])
-  assert.ok(fs.existsSync(path.join(dir, 'scratch.txt')))
-  // Tracked only: the untracked file that stayed behind is exactly why the tree
-  // is still "dirty" to a plain status, and it is not a leftover.
+  assert.equal(fs.readFileSync(path.join(t.repo, 'scratch.txt'), 'utf8'), 'untracked\n')
+  assert.ok(!fs.existsSync(path.join(dir, 'scratch.txt')), 'moved, not copied')
+  assert.deepEqual(r.untracked_left, ['clash.txt'])
+  assert.equal(fs.readFileSync(path.join(t.repo, 'clash.txt'), 'utf8'), 'main had this\n')
+  // Tracked only: the clash that stayed behind is why the tree is still "dirty"
+  // to a plain status, and it is not a leftover.
   assert.equal(
     git(dir, ['status', '--porcelain', '--untracked-files=no']),
     '',
