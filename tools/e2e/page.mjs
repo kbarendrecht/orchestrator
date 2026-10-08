@@ -2075,6 +2075,24 @@ try {
     }, [needle, from, to])
   }
 
+  /* **A printed path carries a link only once the daemon has answered that the
+     file is there**, and that answer is a tree walk over a socket. A fixed 150ms
+     was what this file waited, which is enough on an idle machine and not on a
+     loaded one: under a 14GB load the two cases that write a file and click its
+     name in the same breath failed as "nothing opened" — no toast, no menu, which
+     reads exactly like a broken lookup rather than a slow one, and cost a bisect.
+     xterm's own signal is the condition to wait on instead: it puts
+     `xterm-cursor-pointer` on the terminal for as long as a link is under the
+     pointer. Off the row and back first, because the provider is asked on
+     *entering* a row and a pointer that never left is never asked again.
+     @param {{ x: number, y: number }} spot */
+  const hoverLink = async (spot) => {
+    await page.mouse.move(spot.x, spot.y + 120)
+    await page.mouse.move(spot.x, spot.y)
+    await page.waitForSelector('#drawerbody .termhost:not([hidden]) .xterm-cursor-pointer',
+      { timeout: 10_000 })
+  }
+
   /* Two points on the one line: the path, and a word beside it that is not one.
      Measured off the text nodes rather than guessed from a column, because the
      cell width moves with the font-size setting. */
@@ -2152,8 +2170,7 @@ try {
   await page.keyboard.type("printf 'see Lonel%s.txt:2-4 now\\n' y")
   await page.keyboard.press('Enter')
   const lonely = await pointAt('see Lonely.txt:2-4 now', 4, 14)
-  await page.mouse.move(lonely.x, lonely.y)
-  await page.waitForTimeout(150)
+  await hoverLink(lonely)
   await page.mouse.click(lonely.x, lonely.y)
   const foundDeep = await page.waitForFunction(
     () => document.getElementById('fvpath')?.textContent === 'far/down/below/Lonely.txt',
@@ -2173,8 +2190,7 @@ try {
   await page.keyboard.type("printf 'and Lonel%s.txt again\\n' y")
   await page.keyboard.press('Enter')
   const twice = await pointAt('and Lonely.txt again', 4, 14)
-  await page.mouse.move(twice.x, twice.y)
-  await page.waitForTimeout(150)
+  await hoverLink(twice)
   await page.mouse.click(twice.x, twice.y)
   const picked = await page.waitForFunction(
     () => [...document.querySelectorAll('#ctxmenu:not([hidden]) .ctxmenu-item')]
@@ -2227,8 +2243,7 @@ try {
   await page.keyboard.type("printf 'see https://example.com/%s now\\n' docs")
   await page.keyboard.press('Enter')
   const onLink = await pointAt('see https://example.com/docs now', 4, 12)
-  await page.mouse.move(onLink.x, onLink.y)
-  await page.waitForTimeout(150)
+  await hoverLink(onLink)
   await page.mouse.click(onLink.x, onLink.y, { button: 'right' })
   const linkItems = await page.waitForSelector('#ctxmenu:not([hidden])', { timeout: 5000 })
     .then(() => page.$$eval('#ctxmenu .ctxmenu-item', (bs) => bs.map((b) => b.textContent)))
@@ -2250,8 +2265,7 @@ try {
   await page.keyboard.type("printf 'in app/pa%s/ now\\n' ges")
   await page.keyboard.press('Enter')
   const folder = await pointAt('in app/pages/ now', 3, 13)
-  await page.mouse.move(folder.x, folder.y)
-  await page.waitForTimeout(150)
+  await hoverLink(folder)
   await page.mouse.click(folder.x, folder.y)
   const listed = await page.waitForFunction(
     () => document.querySelectorAll('#ctxmenu:not([hidden]) > .ctxmenu-group, #ctxmenu:not([hidden]) > .ctxmenu-item').length > 0,
@@ -2303,8 +2317,7 @@ try {
   await page.keyboard.type("printf 'read not%s.md now\\n' e")
   await page.keyboard.press('Enter')
   const mdAt = await pointAt('read note.md now', 5, 12)
-  await page.mouse.move(mdAt.x, mdAt.y)
-  await page.waitForTimeout(150)
+  await hoverLink(mdAt)
   await page.mouse.click(mdAt.x, mdAt.y)
   const rendered = await page.waitForFunction(
     () => !!document.querySelector('#fvsrc .md .md-h1'), null, { timeout: 5000 })
@@ -2573,8 +2586,7 @@ try {
   await page.keyboard.type("printf 'see dem%s.html now\\n' o")
   await page.keyboard.press('Enter')
   const htmlAt = await pointAt('see demo.html now', 4, 13)
-  await page.mouse.move(htmlAt.x, htmlAt.y)
-  await page.waitForTimeout(150)
+  await hoverLink(htmlAt)
   await page.mouse.click(htmlAt.x, htmlAt.y)
   await page.waitForFunction(
     () => document.getElementById('fvpath')?.textContent === 'demo.html', null, { timeout: 5000 })
