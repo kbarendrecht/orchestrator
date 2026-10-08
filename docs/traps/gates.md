@@ -382,3 +382,27 @@ have one; the agent's comes from `mise`, which is a PATH lookup. `start_upgrade`
 one implementation for both subjects, and the implementation is what this asserts.
 The part that stays untested is the app subject's own wiring — one line in
 `upgrade_app` — and the container job is what covers the install it produces.
+
+## A bar is a pill fixed over the panes, so a click near the top of one is a click on the bar.
+
+`page-check` was red on `main` for a fortnight with no commit behind it. The bars
+— update, agent update, agent error, preflight — are pills fixed top-centre, and
+`stackBars` drops each later one 42px. The update bar shows whenever GitHub has
+published a release newer than this tree, so **the world moving turned the gate
+red**: the preflight bar went from 10px to 52px and swallowed the diff row the
+modifier-click case clicks at y=80. The symptom named nothing — a
+`waitForSelector` timeout on `#fnoverlay.on`, hundreds of lines from the cause —
+and `git bisect` led to the commit that merely added the *update check*, which is
+what first put a second bar on the board. `elementFromPoint` is what answered it,
+naming `.machinelist`.
+
+Two fixes, both in `page.mjs`. `clearBars()` dismisses whatever is showing before
+a click near the top, the same move the file already made for the toast stack.
+And `modClick` now **checks** that the point is on the row it measured, so a
+covered click fails where it happens and says what covered it. A second case —
+the file menu's right-click, which lands in the same band — was failing the same
+way behind the first one.
+
+A dismissal has to be in the page, not one `page.click('#updatex')`: the bar's ✕
+remembers the version it was shown for, and the stubbed offers earlier in the run
+mean the version dismissed may not be the one that comes back.

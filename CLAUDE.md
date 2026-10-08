@@ -283,6 +283,7 @@ together: same entries, same order, same groups.
 - `ctl(id)` is the one deliberate `any` in the SPA.
 - `dpkg-deb -c` lists a package; only a container installs one.
 - The update button is one chain, and every link had a test but the chain had none.
+- A bar is a pill fixed over the panes, so a click near the top of one is a click on the bar.
 
 ### The SPA, the webview, and the two module graphs
 

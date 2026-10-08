@@ -1628,6 +1628,22 @@ try {
     null, { timeout: 5000 })
 
   // The call site is on screen; ⌘/Ctrl-click the name in it.
+  /* **Put the bars away before clicking anything near the top of a pane.**
+     The update, agent-update, agent-error and preflight bars are pills fixed over
+     the window, stacked 42px apart, so what they cover depends on how many happen
+     to be showing — and the first of them shows whenever GitHub has published a
+     release newer than this tree. That is how this file went red on `main` with
+     no commit behind it: the preflight bar moved from 10px to 52px and swallowed
+     the diff row the modifier-click case clicks at y=80. Measured with
+     `elementFromPoint`, which named `.machinelist`. The same hazard as the toast
+     stack this file already clears, and dismissed the same way. */
+  const clearBars = () => page.evaluate(() => {
+    for (const id of ['updatex', 'agentx', 'agenterrx', 'machinex']) {
+      const b = document.getElementById(id)
+      if (b && !(/** @type {HTMLElement | null} */ (b.closest('.updatebar'))?.hidden)) b.click()
+    }
+  })
+
   const modClick = async (selector, word) => {
     const box = await page.evaluate(([sel, w]) => {
       const row = document.querySelector(sel)
@@ -1654,6 +1670,19 @@ try {
       return null
     }, [selector, word])
     if (!box) return false
+    await clearBars()
+    /* The point is checked rather than trusted: a covered click used to fail as a
+       `waitForSelector` timeout naming only the overlay it never opened, hundreds
+       of lines from the thing that covered it. */
+    const landing = await page.evaluate(([sel, x, y]) => {
+      const row = document.querySelector(sel)
+      const at = document.elementFromPoint(x, y)
+      return { onRow: !!row && !!at && row.contains(at), hit: at?.className ?? 'none' }
+    }, [selector, box.x, box.y])
+    if (!landing.onRow) {
+      console.log(`  [page-check] ${selector} at ${Math.round(box.x)},${Math.round(box.y)} is covered by .${landing.hit}`)
+      return false
+    }
     /* The modifier is held around the click rather than passed to it: this
        playwright drops a `modifiers` list it does not know and the click then
        arrives bare — which looks exactly like a broken binding. Measured, not
@@ -2742,6 +2771,8 @@ try {
      cases leave a few up. A long enough stack covers this row, and the right
      click then lands on a toast and opens nothing. */
   await page.$$eval('#toaststack .toast', (ts) => ts.forEach((t) => t.remove()))
+  // And the bars, for the same reason — this row sits where they stack.
+  await clearBars()
   if (second) await page.mouse.click(second.x, second.y, { button: 'right' })
   const offered = await page.waitForSelector('#ctxmenu:not([hidden])', { timeout: 3000 })
     .then(() => page.$$eval('#ctxmenu .ctxmenu-item', (bs) => bs.map((b) => b.textContent)))
