@@ -114,6 +114,17 @@ pub struct Config {
     /// so rather than reading as a broken command.
     #[serde(default = "default_reviews_command")]
     pub reviews_command: Vec<String>,
+    /// Which of the three the queue comes from. See [`Config::reviews_source`].
+    ///
+    /// **`None` on purpose, and it is a migration rather than an oversight.** A
+    /// config written before this field existed meant "run my command" by having
+    /// one, so defaulting it to `Default` would silently stop a configured queue
+    /// the first time this build read it. Absent asks `reviews_command`.
+    #[serde(default, rename = "reviews_source")]
+    pub reviews_source_set: Option<ReviewsSource>,
+    /// What the `custom` source lists and how it ranks. Ignored by the other two.
+    #[serde(default)]
+    pub reviews_rules: QueueRules,
     /// Bring back sessions that were live when the daemon last went down.
     ///
     /// The daemon owns every pty, so a crash — or a reboot — takes every Claude
@@ -301,6 +312,21 @@ pub struct ManagedSpec {
 }
 
 impl Config {
+    /// Where this checkout's review queue comes from.
+    ///
+    /// Reads the field when it is set and falls back to what the old shape meant:
+    /// a command if one is configured, the built-in otherwise. So a config from
+    /// before the field keeps the queue it had, and one save from the settings
+    /// panel writes the answer down.
+    pub fn reviews_source(&self) -> ReviewsSource {
+        self.reviews_source_set
+            .unwrap_or(if self.reviews_command.is_empty() {
+                ReviewsSource::Default
+            } else {
+                ReviewsSource::Command
+            })
+    }
+
     /// The processes this workspace declares.
     ///
     /// Main and a worktree declare different sets, and "which processes exist
@@ -419,6 +445,13 @@ pub struct Settings {
     pub upstream_ref: String,
     pub upstream_remote: String,
     pub reviews_command: Vec<String>,
+    /// Which of the three sources the queue uses. Written as a value rather than
+    /// inferred, so the panel can say `custom` — which no `reviews_command` can
+    /// express.
+    pub reviews_source: ReviewsSource,
+    /// What `custom` lists and how it ranks. Saved whichever source is selected,
+    /// so switching away and back does not lose what you typed.
+    pub reviews_rules: QueueRules,
     pub main_processes: Vec<ManagedSpec>,
     /// The two halves of making a cut worktree usable, in the order they run.
     ///
@@ -444,6 +477,8 @@ impl Settings {
             upstream_ref: cfg.upstream_ref.clone(),
             upstream_remote: cfg.upstream_remote.clone(),
             reviews_command: cfg.reviews_command.clone(),
+            reviews_source: cfg.reviews_source(),
+            reviews_rules: cfg.reviews_rules.clone(),
             main_processes: cfg.main_processes.clone(),
             worktree_init: cfg.worktree_init.clone(),
             worktree_setup: cfg.worktree_setup.clone(),
@@ -451,6 +486,26 @@ impl Settings {
             worktree_retention_days: cfg.worktree_retention_days,
             allow_several_in_main: cfg.allow_several_in_main,
         }
+    }
+
+    /// Whether moving from `self` to `next` gives a different review queue.
+    ///
+    /// **Three fields now, and it used to be one.** The `set_config` route pulses
+    /// the review poller when this says yes, because the alternative is waiting
+    /// out `poll_seconds` — five minutes by default — with the pane showing the
+    /// old rows. That reads as the setting not working, which is exactly what the
+    /// pulse was added for when a new `reviews_command` was the only way to change
+    /// the queue. A filter or a source left out here is that same bug, reachable
+    /// again, so they are compared together rather than one at a time.
+    ///
+    /// Compared through JSON for the same reason [`Settings::needs_restart`] is:
+    /// the rules are a struct of structs and this needs no `PartialEq` chain of
+    /// its own.
+    pub fn queue_differs(&self, next: &Settings) -> bool {
+        self.reviews_command != next.reviews_command
+            || self.reviews_source != next.reviews_source
+            || serde_json::to_value(&self.reviews_rules).ok()
+                != serde_json::to_value(&next.reviews_rules).ok()
     }
 
     /// Whether moving from `self` to `next` needs the daemon restarted.
@@ -816,6 +871,115 @@ fn default_story_timeout() -> u64 {
 
 fn default_language_value() -> String {
     "English".to_string()
+}
+
+/// Where the review queue's rows come from.
+///
+/// **An explicit choice, because the old one was inferred and could not say
+/// "mine".** It used to be read off `reviews_command`: non-empty meant a command,
+/// empty meant the built-in. That has no spelling for "the built-in, filtered",
+/// which is what issue #41 asks for, and it made clearing a command look like
+/// turning the queue off.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewsSource {
+    /// Every open PR somebody else wrote, ranked by who is waiting. What a fresh
+    /// install shows, and exactly what `Custom` does with nothing set — which is
+    /// why the panel shows the same fields for both and promotes this to `Custom`
+    /// the moment one of them is touched.
+    #[default]
+    Default,
+    /// The same queue, narrowed and ranked by [`Config::reviews_rules`].
+    Custom,
+    /// [`Config::reviews_command`] prints the queue itself.
+    Command,
+}
+
+/// What a checkout wants in its review queue, in terms every forge has.
+///
+/// **Toggles rather than a query string, and that is the whole design.** A
+/// GitHub search string in `config.json` would put one platform's grammar in the
+/// schema — the thing `forge/mod.rs` already names as the seam the review search
+/// leaks through. Every field here is a question any forge can be asked: who
+/// wrote it, what is it labelled, is it ready. Translating them is the forge's
+/// job, and `reviews.rs` does it for GitHub today.
+///
+/// Default is the built-in queue exactly as it behaves with nothing set, so
+/// switching to `custom` and saving nothing changes nothing.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueueFilter {
+    /// A row must carry one of these. Empty asks for nothing.
+    #[serde(default)]
+    pub labels_any: Vec<String>,
+    /// Drop drafts rather than sinking them below the fold.
+    #[serde(default)]
+    pub hide_drafts: bool,
+    /// Drop rows with conflicts or failing checks, the other half of the fold.
+    #[serde(default)]
+    pub hide_blocked: bool,
+    /// Only rows where your review was asked for, by name or through a team.
+    ///
+    /// The header's `asked` word as a setting. With this on, that word narrows
+    /// nothing further and the pane stops offering it.
+    #[serde(default)]
+    pub requested_only: bool,
+}
+
+/// Where a kind of row sits in the queue.
+///
+/// **The two request kinds were one hardcoded rule, and that is what this
+/// replaces.** The queue put "asked of you by name" and "asked of a team you are
+/// in" in the same band, tied, with age breaking them — which is right for a team
+/// that treats the two the same and wrong for one that does not. `Above` is that
+/// rule, so a checkout that configures nothing keeps it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QueuePlace {
+    /// Above everything, a `high_labels` row included.
+    Top,
+    /// Above the PRs nobody asked you about, ordered among themselves by age.
+    /// Today's behaviour for both kinds, and the default.
+    #[default]
+    Above,
+    /// No lift: ordered by age with everything else.
+    Normal,
+}
+
+/// The custom queue: what to list, and which labels move a row.
+///
+/// **The ranks these labels fill were reserved and left empty on purpose.**
+/// `Review::prio` has had `0 stopper` and `1 prio` since the queue was a script,
+/// and the built-in emits neither — because a label is a convention one team
+/// agreed to, and ranking on `prio` in a repo that never heard of it ranks
+/// wrongly. Configured, the convention is the checkout's own, so the ranks mean
+/// something again.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueueRules {
+    #[serde(default)]
+    pub filter: QueueFilter,
+    /// Carrying one of these lifts a row above everything, a requested review
+    /// included.
+    #[serde(default)]
+    pub high_labels: Vec<String>,
+    /// Carrying one of these sinks a row to the end of the actionable list. Still
+    /// above the fold: it is yours to look at, just not first.
+    #[serde(default)]
+    pub low_labels: Vec<String>,
+    /// Carrying one of these drops the row. **The one exclusion list**, rather
+    /// than a general "labels to exclude" beside it: a queue is a list of things
+    /// to review, so the only reason to hide a PR from it is that it does not
+    /// need reviewing. Two lists that both excluded would be two spellings of one
+    /// answer, and nobody would know which the pane obeyed.
+    #[serde(default)]
+    pub skip_labels: Vec<String>,
+    /// Where a PR that asked for you **by name** sits.
+    #[serde(default)]
+    pub asked_of_me: QueuePlace,
+    /// Where a PR that asked a **team you are in** sits. Separate from
+    /// [`QueueRules::asked_of_me`] because the two are different asks: one person
+    /// chose you, the other chose a group and anybody in it may take it.
+    #[serde(default)]
+    pub asked_of_team: QueuePlace,
 }
 
 /// Which code-hosting platform the repo lives on. The read/write seam is
@@ -1559,6 +1723,8 @@ mod tests {
             upstream_ref: "origin/main".into(),
             upstream_remote: "origin".into(),
             reviews_command: vec!["gh".into(), "pr".into()],
+            reviews_source: ReviewsSource::Command,
+            reviews_rules: QueueRules::default(),
             main_processes: vec![],
             worktree_init: vec!["git".into(), "fetch".into()],
             worktree_setup: vec![".claude/hooks/worktree-setup".into()],
@@ -1629,6 +1795,58 @@ mod tests {
             keys,
             ["main_checkout", "port"],
             "the file grew keys nobody typed"
+        );
+    }
+
+    #[test]
+    fn every_field_that_changes_the_queue_asks_for_a_refresh() {
+        let base = Settings {
+            default_language: "English".into(),
+            upstream_ref: "origin/main".into(),
+            upstream_remote: "origin".into(),
+            reviews_command: vec![],
+            reviews_source: ReviewsSource::Default,
+            reviews_rules: QueueRules::default(),
+            main_processes: vec![],
+            worktree_init: vec![],
+            worktree_setup: vec![],
+            workspace_notes: WorkspaceNotes::default(),
+            worktree_retention_days: 60,
+            allow_several_in_main: false,
+        };
+        assert!(
+            !base.queue_differs(&base),
+            "nothing changed, nothing to fetch"
+        );
+
+        let mut source = base.clone();
+        source.reviews_source = ReviewsSource::Custom;
+        assert!(base.queue_differs(&source), "a new source is a new queue");
+
+        let mut rules = base.clone();
+        rules.reviews_rules.skip_labels = vec!["no-review".into()];
+        assert!(base.queue_differs(&rules), "so is one changed rule");
+
+        let mut nested = base.clone();
+        nested.reviews_rules.filter.hide_drafts = true;
+        assert!(
+            base.queue_differs(&nested),
+            "including one inside the filter"
+        );
+
+        let mut command = base.clone();
+        command.reviews_command = vec!["true".into()];
+        assert!(
+            base.queue_differs(&command),
+            "and the command, as it always did"
+        );
+
+        // And something that is none of the three does not spend a fetch.
+        let mut other = base.clone();
+        other.worktree_retention_days = 21;
+        assert!(
+            !base.queue_differs(&other),
+            "an unrelated setting asks for nothing"
         );
     }
 

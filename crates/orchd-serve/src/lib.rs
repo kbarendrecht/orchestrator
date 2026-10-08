@@ -1518,7 +1518,12 @@ fn start_review_poller(app: Arc<AppState>) {
             // GitHub repo → `Off`, and no command at all → the built-in queue.
             let main = app.cfg.main_checkout.clone();
             let timeout = app.cfg.review_timeout_seconds;
-            let command = app.settings().reviews_command;
+            let settings = app.settings();
+            let command = settings.reviews_command;
+            // Read per poll with the command, from the same settings snapshot, so
+            // a save takes effect on the next tick rather than at a restart.
+            let source = settings.reviews_source;
+            let rules = settings.reviews_rules;
             // Two jobs now: the URL fallback for a configured command that omits
             // one, and the repository the built-in asks GitHub about. `None` means
             // no queue rather than an unlinked row.
@@ -1535,7 +1540,9 @@ fn start_review_poller(app: Arc<AppState>) {
                 reviews::fetch(
                     &main,
                     timeout,
+                    source,
                     &command,
+                    &rules,
                     repo.as_deref(),
                     token.as_ref().map(|t| t.value.as_str()),
                 )

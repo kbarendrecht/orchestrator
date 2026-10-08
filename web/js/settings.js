@@ -132,6 +132,24 @@ async function loadConfigInto(force = false) {
     loadedArgv.set(id, was);
     ctl(id).value = was.join(' ');
   }
+  /* **The queue's three sources, and the fields of the one that has any.** The
+     rules are read whichever source is selected, so switching to `command` and
+     back does not lose what was typed into them — the daemon stores them the same
+     way, for the same reason. */
+  const rules = cfg.reviews_rules || {};
+  const filter = rules.filter || {};
+  ctl('setrvsource').value = cfg.reviews_source || 'default';
+  ctl('setrvplaceme').value = rules.asked_of_me || 'above';
+  ctl('setrvplaceteam').value = rules.asked_of_team || 'above';
+  ctl('setrvany').value = (filter.labels_any || []).join(', ');
+  ctl('setrvhigh').value = (rules.high_labels || []).join(', ');
+  ctl('setrvlow').value = (rules.low_labels || []).join(', ');
+  ctl('setrvskip').value = (rules.skip_labels || []).join(', ');
+  ctl('setrvasked').checked = !!filter.requested_only;
+  ctl('setrvnodraft').checked = !!filter.hide_drafts;
+  ctl('setrvnoblocked').checked = !!filter.hide_blocked;
+  showReviewSource();
+
   /* A note is prose, so it is read and written whole — `null` is the project
      saying nothing, and the box has to show that as empty rather than as the word
      "null". The write below turns an empty box back into `null` for the same
@@ -245,6 +263,41 @@ function renderProcs() {
   });
 }
 
+/** Show the fields the selected source actually uses, and no others.
+ *
+ *  **Hidden rather than removed**, which is what lets a draft survive a look at
+ *  another source: the inputs keep their values and `saveSettings` reads them all
+ *  whatever is selected. */
+function showReviewSource() {
+  const source = ctl('setrvsource').value;
+  // `default` is `custom` with nothing set, so both show the same fields: the
+  // difference is whether they are applied, not whether they exist.
+  $('setrvcustom').hidden = source === 'command';
+  $('setrvcmdrow').hidden = source !== 'command';
+}
+
+/** The ids the rules are typed into, so an edit can say which mode it implies. */
+const RULE_FIELDS = [
+  'setrvany', 'setrvhigh', 'setrvlow', 'setrvskip',
+  'setrvasked', 'setrvnodraft', 'setrvnoblocked',
+  'setrvplaceme', 'setrvplaceteam',
+];
+
+/** Typing a rule while the source is `default` means you want it applied.
+ *
+ *  **Because the alternative is a field that does nothing and says nothing.** The
+ *  fields are shown under `default` so you can see what there is to change; left
+ *  at that, filling one in and pressing Save would write a rule the daemon then
+ *  ignores, with the pane looking exactly as it did. Promoting on the first edit
+ *  is the only reading of that edit that is not a trap. Nothing promotes away from
+ *  `command`: its fields are hidden, so no edit can reach here. */
+function promoteOnEdit() {
+  const sel = ctl('setrvsource');
+  if (sel.value !== 'default') return;
+  sel.value = 'custom';
+  showReviewSource();
+}
+
 async function saveSettings() {
   const argv = (/** @type {string} */ s) => (s.trim() ? s.trim().split(/\s+/) : []);
   /* The value to send for an argv field: what was read, unless you edited the box.
@@ -260,6 +313,23 @@ async function saveSettings() {
     upstream_ref: ctl('setupref').value.trim(),
     upstream_remote: ctl('setupremote').value.trim(),
     reviews_command: argvOf('setreviews'),
+    reviews_source: ctl('setrvsource').value,
+    /* **Sent whichever source is selected.** The daemon ignores them unless the
+       source is `custom`, and keeping them means picking `command` for an
+       afternoon does not cost you the labels you had worked out. */
+    reviews_rules: {
+      filter: {
+        labels_any: list(ctl('setrvany').value),
+        hide_drafts: !!ctl('setrvnodraft').checked,
+        hide_blocked: !!ctl('setrvnoblocked').checked,
+        requested_only: !!ctl('setrvasked').checked,
+      },
+      high_labels: list(ctl('setrvhigh').value),
+      low_labels: list(ctl('setrvlow').value),
+      skip_labels: list(ctl('setrvskip').value),
+      asked_of_me: ctl('setrvplaceme').value,
+      asked_of_team: ctl('setrvplaceteam').value,
+    },
     worktree_init: argvOf('setwtinit'),
     worktree_setup: argvOf('setwtsetup'),
     workspace_notes: {
@@ -786,6 +856,14 @@ function setupSettings() {
     $('settings').addEventListener(ev, (e) => {
       if (/** @type {HTMLElement} */ (e.target).closest('[data-config]')) markDirty();
     });
+  }
+  /* The fields follow the source at once rather than at the next read: picking
+     `custom` and finding nothing under it would read as the setting not working. */
+  ctl('setrvsource').onchange = () => showReviewSource();
+  for (const id of RULE_FIELDS) {
+    // `change` as well as `input`: a checkbox and a select raise only the first of
+    // those in some engines, which is the reason the dirty listener above says.
+    for (const ev of ['input', 'change']) ctl(id).addEventListener(ev, promoteOnEdit);
   }
   $('setdiscard').onclick = () => { dirty = false; void loadConfigInto(true); };
   $('setdiscard').title = 'Throw the unsaved edits away and read the config again';

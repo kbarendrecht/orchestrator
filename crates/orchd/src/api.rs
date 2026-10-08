@@ -430,10 +430,10 @@ pub async fn set_config(
     Json(body): Json<crate::config::Settings>,
 ) -> ApiResult<serde_json::Value> {
     body.write()?;
-    let reviews_moved = app.settings().reviews_command != body.reviews_command;
+    let reviews_moved = app.settings().queue_differs(&body);
     let restart = app.replace_settings(body);
-    // A new review command is a new queue, and waiting out the poll period to
-    // show it is the restart this replaced, only slower.
+    // A new queue — a new command, a new source, or one changed rule — and waiting
+    // out the poll period to show it is the restart this replaced, only slower.
     if reviews_moved {
         app.review_refresh.notify_one();
     }

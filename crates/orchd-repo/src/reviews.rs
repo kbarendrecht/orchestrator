@@ -1,3 +1,4 @@
+use crate::config::{QueueRules, ReviewsSource};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -55,6 +56,17 @@ pub struct Review {
     /// command: its rows are its own ranking, and the pane offers no filter it
     /// cannot honour.
     pub requested: Option<bool>,
+    /// Where a checkout's own rules put this row: 0 first, 4 last. Sort order
+    /// only, and off the wire.
+    ///
+    /// **Separate from `prio` because `prio` says what the row *is*.** The first
+    /// version of the configured ranks wrote them into `prio` — and the pane
+    /// reads `prio` for the row's colour and its reason word, so a `First` label
+    /// on a PR that asked your team turned it red and erased the word `team`. A
+    /// rule about where a row *sits* must not rewrite what it says.
+    #[serde(skip)]
+    #[cfg_attr(any(test, feature = "test-util"), ts(skip))]
+    pub rank: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -102,6 +114,25 @@ pub enum ReviewState {
     Off,
 }
 
+/// GitHub's spelling for "any of these labels": one `label:` term, comma
+/// separated, each name quoted because labels carry spaces.
+///
+/// Quoting rather than escaping: a label with a `"` in it is not a label anybody
+/// has, and dropping the quote is better than sending a query GitHub rejects —
+/// a rejected search degrades the whole pane over one odd character.
+///
+/// **A label with a comma in it cannot be configured**, here or in the panel: the
+/// list is comma separated at both ends, so such a name arrives as two. The local
+/// rules then match neither half, so the cost is a PR that does not match rather
+/// than one that wrongly does — which is the right way round for a queue.
+fn quoted_csv(names: &[String]) -> String {
+    names
+        .iter()
+        .map(|n| format!("\"{}\"", n.replace('"', "")))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 /// Version the daemon understands. The source does not emit one yet, so its
 /// absence is accepted; a *different* one is not.
 const KNOWN_VERSION: u64 = 1;
@@ -146,13 +177,35 @@ const PAGE: usize = 50;
 ///
 /// A repo that wants its own opinion sets `reviews_command` and this never runs —
 /// the contract for that is `docs/reviews-json.md`, unchanged.
-pub fn builtin(token: &str, owner: &str, name: &str) -> Result<ReviewQueue> {
+pub fn builtin(token: &str, owner: &str, name: &str, rules: &QueueRules) -> Result<ReviewQueue> {
     /* Two searches in one round trip. `all` is the queue; `asked` is only its
     numbers, so a row can say whether it was requested. `review-requested:` is
     the filter that already includes team requests, and letting GitHub answer "am
     I asked" is what keeps this out of the business of knowing your teams. */
+    /* **The filter's own terms, translated here because translating is a forge's
+    job.** `config::QueueFilter` asks neutral questions — who wrote it, what is it
+    labelled — and this is the one place that knows GitHub's grammar for them. A
+    second forge writes its own `builtin`, against the same struct.
+
+    **Into the search where GitHub can express it, and after the fetch where it
+    cannot.** The page cap is why: one page of fifty comes back, so a filter
+    applied only afterwards narrows what the cap already chose rather than what
+    the repo holds. Author and the required labels go in; drafts, blocked and
+    "asked for me" are read off rows this already parses. */
+    let f = &rules.filter;
+    /* **`-author:@me` is not configurable, and that is not an omission.** It was,
+    for an afternoon, and the options were a lie: you cannot review your own PR,
+    so "everyone" and "others" name the same list and "mine" names an empty one.
+    Your own PRs are the pane above this one. */
+    // `label:` repeated is AND on GitHub and the field means "any of", so one
+    // term with commas, which is GitHub's spelling for OR.
+    let wanted = if f.labels_any.is_empty() {
+        String::new()
+    } else {
+        format!(" label:{}", quoted_csv(&f.labels_any))
+    };
     // Oldest first, the order the queue ranks in, so a cut drops the newest.
-    let all = format!("repo:{owner}/{name} is:open is:pr -author:@me sort:created-asc");
+    let all = format!("repo:{owner}/{name} is:open is:pr -author:@me{wanted} sort:created-asc");
     let asked = format!("repo:{owner}/{name} is:open is:pr review-requested:@me");
     let query = format!(
         r#"{{
@@ -167,13 +220,14 @@ pub fn builtin(token: &str, owner: &str, name: &str) -> Result<ReviewQueue> {
 }}
 fragment Row on PullRequest {{
   number title url isDraft createdAt mergeable
+  labels(first: 20) {{ nodes {{ name }} }}
   author {{ login }}
   reviewRequests(first: 20) {{ nodes {{ requestedReviewer {{ ... on User {{ login }} }} }} }}
   latestReviews(first: 20) {{ nodes {{ author {{ login }} }} }}
   commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ state }} }} }} }}
 }}"#
     );
-    from_graphql(&crate::forge::graphql(token, &query)?)
+    from_graphql(&crate::forge::graphql(token, &query)?, rules)
 }
 
 /// Map one GraphQL answer onto the queue, applying the whole of the ranking.
@@ -181,7 +235,7 @@ fragment Row on PullRequest {{
 /// Split from [`builtin`] so the rules are testable against a captured answer
 /// rather than against GitHub — which is the only way the ordering and the amber
 /// rule get checked at all.
-fn from_graphql(v: &Value) -> Result<ReviewQueue> {
+fn from_graphql(v: &Value, rules: &QueueRules) -> Result<ReviewQueue> {
     let data = v
         .get("data")
         .context("the GraphQL answer carried no data")?;
@@ -227,7 +281,53 @@ fn from_graphql(v: &Value) -> Result<ReviewQueue> {
         if !seen.insert(number) {
             continue;
         }
-        let r = row(n, &viewer, &asked);
+        let labels = label_names(n);
+        /* **Dropped here rather than in the search, and that is the trade.** A
+        `-label:` term would spend the page cap better, but GitHub's search has no
+        way to say "none of these" that survives a label name with a comma in it,
+        and a row wrongly kept is visible while a row wrongly dropped is not. */
+        if has_label(&labels, &rules.skip_labels) {
+            continue;
+        }
+        /* **Applied here as well as in the search, and the `asked` rows are why.**
+        Two searches come back and only `all` carries the query's terms: `asked` is
+        merged in whole, deliberately, so the page cap can never drop a PR that
+        asked for you. That means a required label put only in the query let every
+        asked row through unlabelled — which reads as the setting not working. So
+        the query term is an optimisation that spends the cap better, and this is
+        the rule. */
+        if !rules.filter.labels_any.is_empty() && !has_label(&labels, &rules.filter.labels_any) {
+            continue;
+        }
+        /* The same hole, for the one term that is not configurable: `asked` does
+        not carry `-author:@me` either, and GitHub will let a team request land on
+        your own PR. You cannot review it, so it is not a queue row. */
+        if n.pointer("/author/login").and_then(Value::as_str) == Some(viewer.as_str()) {
+            continue;
+        }
+        let mut r = row(n, &viewer, &asked);
+        if rules.filter.requested_only && !r.requested.unwrap_or(false) {
+            continue;
+        }
+        if rules.filter.hide_drafts && r.is_draft {
+            continue;
+        }
+        /* **Everything but the draft**, and that word matters. `draft` is one of
+        the three blockers, so "drop the blocked ones" would have dropped drafts
+        as well — making the checkbox beside this one a subset of it, with its own
+        label promising something narrower. Two controls that overlap silently are
+        worse than one, so each now means exactly what it says. */
+        if rules.filter.hide_blocked && r.blockers.iter().any(|b| b != "draft") {
+            continue;
+        }
+        /* **The ranks the built-in leaves empty, filled by the checkout's own
+        convention.** 0 and 1 have meant `stopper` and `prio` since the queue was
+        a script, and the built-in emits neither because a label means nothing
+        outside the team that agreed it. Configured, it is that team speaking, so
+        the rank is theirs to set. 6 is the contract's `sidequest`: last among the
+        actionable, still above the fold. */
+        // Where the checkout's rules put it. `prio` is left alone: see `rank`.
+        r.rank = band(r.prio, &labels, rules);
         if r.blockers.is_empty() {
             actionable.push(r);
         } else {
@@ -240,8 +340,16 @@ fn from_graphql(v: &Value) -> Result<ReviewQueue> {
     was doing all the work anyway. Requested leads because the queue now holds
     PRs nobody asked you about, and one that did ask must not sit under them. */
     let oldest_first = |a: &Review, b: &Review| {
-        b.requested
-            .cmp(&a.requested)
+        /* **The band leads, and with nothing configured it changes nothing.**
+        Sorting on `prio` itself would have been the obvious line and it is wrong:
+        the queue emits 2 for "named you" and 3 for "asked your team", which tie
+        under `requested` today and are broken by age — so leading with `prio`
+        would quietly reorder every queue that configures nothing at all. `band`
+        maps both of those to one number until a checkout says otherwise, and
+        `requested` below it then keeps doing the work it always did. */
+        a.rank
+            .cmp(&b.rank)
+            .then(b.requested.cmp(&a.requested))
             .then(b.age_hours.total_cmp(&a.age_hours))
     };
     actionable.sort_by(oldest_first);
@@ -261,6 +369,74 @@ fn from_graphql(v: &Value) -> Result<ReviewQueue> {
         actionable,
         blocked,
     })
+}
+
+/// Where a row sits, as one number: lower is nearer the top.
+///
+/// **One scale for two things that used to be in different places** — the label
+/// ranks `prio` carries, and the two request kinds, which were a hardcoded tie.
+/// Both now land here, so "a team request outranks a label" is a thing a checkout
+/// can say and the comparator does not have to know which of the two it is
+/// reading.
+///
+/// 0 is a kind configured `Top`, 1 a `high_labels` row, 2 a request left at
+/// `Above`, 3 everything else, 4 a `low_labels` row. With nothing configured only
+/// 2 and 3 are reachable, which is exactly the order this queue has always had:
+/// requested first, then age.
+fn band(prio: u32, labels: &[String], rules: &QueueRules) -> u8 {
+    let place = |p: crate::config::QueuePlace| match p {
+        crate::config::QueuePlace::Top => 0,
+        crate::config::QueuePlace::Above => 2,
+        crate::config::QueuePlace::Normal => 3,
+    };
+    /* A configured command may still emit the label ranks 0 and 1 itself, and
+    those are its ranking rather than this checkout's rules — kept at the top,
+    where that scale has always put them. */
+    let placed = match prio {
+        0 | 1 => 1,
+        2 => place(rules.asked_of_me),
+        3 => place(rules.asked_of_team),
+        _ => 3,
+    };
+    if has_label(labels, &rules.high_labels) {
+        return placed.min(1);
+    }
+    /* **A lift wins over a sink**: a label only sinks a row that nothing placed
+    above the rest. So a chore label does not bury a PR somebody asked you to
+    look at, while the same label on a PR nobody asked about does sink it.
+    Setting that kind of ask to `Normal` is how you say the label should win. */
+    if placed >= 3 && has_label(labels, &rules.low_labels) {
+        return 4;
+    }
+    placed
+}
+
+/// Whether any of `labels` is one of `names`, the way GitHub's own search reads
+/// them: case folded and trimmed.
+///
+/// **The two halves had to agree and did not.** `label:Needs-Review` matches a
+/// `needs-review` label at GitHub, so a checkout that typed it passed the search
+/// and then had every row dropped by the rule meant to keep them — an empty queue
+/// with nothing to say why. Trimmed too, because `config.json` is hand-edited and
+/// a space after a comma is not a different label.
+fn has_label(labels: &[String], names: &[String]) -> bool {
+    names.iter().any(|n| {
+        let want = n.trim().to_lowercase();
+        !want.is_empty() && labels.iter().any(|l| l.trim().to_lowercase() == want)
+    })
+}
+
+/// The label names on a PR node, as GitHub spells them.
+fn label_names(n: &Value) -> Vec<String> {
+    n.pointer("/labels/nodes")
+        .and_then(Value::as_array)
+        .map(|ls| {
+            ls.iter()
+                .filter_map(|l| l.get("name").and_then(Value::as_str))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// One PR, as the pane reads it.
@@ -360,6 +536,8 @@ fn row(n: &Value, viewer: &str, asked: &std::collections::HashSet<u64>) -> Revie
         changed_files: None,
         checks,
         requested: Some(requested || requested_of_you),
+        // Set by the caller, which is the only place the rules are known.
+        rank: 0,
     }
 }
 
@@ -407,21 +585,33 @@ fn epoch_secs(ts: &str) -> Option<i64> {
     Some(days * 86400 + hour * 3600 + minute * 60 + second)
 }
 
-/// The queue for this checkout: a configured command when there is one, the
-/// built-in otherwise.
+/// The queue for this checkout, from whichever of the three sources it names.
 ///
-/// The command keeps precedence deliberately. A team's real ranking lives in its
-/// own tooling — this repo's own checkout points `reviews_command` at a `mise`
-/// task — and a default that overrode it would be the daemon insisting where
-/// CLAUDE.md says it should defer.
+/// **The source is asked rather than inferred now**, which is the whole of issue
+/// #41's second half: "the built-in, filtered" has no spelling in "is there a
+/// command". `Config::reviews_source` answers from the old shape when the field
+/// is absent, so a checkout that never heard of this keeps the queue it had.
+///
+/// The command keeps its precedence deliberately. A team's real ranking lives in
+/// its own tooling — this repo's own checkout points `reviews_command` at a
+/// `mise` task — and a default that overrode it would be the daemon insisting
+/// where CLAUDE.md says it should defer.
 pub fn fetch(
     main: &Path,
     timeout_secs: u64,
+    source: ReviewsSource,
     command: &[String],
+    rules: &QueueRules,
     repo: Option<&str>,
     token: Option<&str>,
 ) -> ReviewState {
-    if !command.is_empty() {
+    /* A command selected but never written is nothing to run, and an empty argv
+    reaching `run_bounded` is a spawn failure reported as a broken queue. Reads
+    as "no review queue here", which is what it is. */
+    if source == ReviewsSource::Command && command.is_empty() {
+        return ReviewState::Off;
+    }
+    if source == ReviewsSource::Command {
         return match run(main, timeout_secs, command, repo) {
             Ok(q) => ReviewState::Ok(q),
             Err(e) => ReviewState::Degraded {
@@ -440,7 +630,15 @@ pub fn fetch(
                 .to_string(),
         };
     };
-    match builtin(token, owner, name) {
+    /* The built-in is the custom one with nothing configured — same code, and the
+    default `QueueRules` is the behaviour this had before any of it existed. */
+    let none = QueueRules::default();
+    let rules = if source == ReviewsSource::Custom {
+        rules
+    } else {
+        &none
+    };
+    match builtin(token, owner, name, rules) {
         Ok(q) => ReviewState::Ok(q),
         Err(e) => ReviewState::Degraded {
             reason: format!("{e:#}"),
@@ -606,11 +804,22 @@ fn review_of(e: EntryDoc, repo: Option<&str>) -> Review {
         checks: e.pr.checks,
         // A command's rows are its own ranking; see `Review::requested`.
         requested: None,
+        /* **Flat for every row, and that is what leaves a command's own order
+        alone.** `rank` is this checkout's rules, which a command's rows are not
+        subject to — so with every row equal here the sort falls through to
+        `requested` and the age, which is the comparator this path has always
+        had. (`prio` has never been in it: a command's scale reaches the pane's
+        colour and its reason word, not its order.) */
+        rank: 0,
     }
 }
 
 #[cfg(test)]
 mod tests {
+    // Only the tests build a filter by hand: the queue itself reads one off the
+    // rules it is handed.
+    use crate::config::QueueFilter;
+
     /// The tests that do not care about link derivation.
     fn parse_t(v: Value) -> Result<ReviewQueue> {
         parse(v, Some("acme/monorepo"))
@@ -788,7 +997,15 @@ mod tests {
         // must not read as a broken command — that would colour the pane red for
         // nothing. No command *and* no repo is the only way to reach `Off` now.
         assert!(matches!(
-            fetch(Path::new("/nonexistent"), 1, &[], None, None),
+            fetch(
+                Path::new("/nonexistent"),
+                1,
+                ReviewsSource::Default,
+                &[],
+                &QueueRules::default(),
+                None,
+                None
+            ),
             ReviewState::Off
         ));
     }
@@ -801,7 +1018,9 @@ mod tests {
         let state = fetch(
             Path::new("/nonexistent"),
             1,
+            ReviewsSource::Default,
             &[],
+            &QueueRules::default(),
             Some("acme/monorepo"),
             None,
         );
@@ -817,6 +1036,410 @@ mod tests {
     /// One captured answer, carrying every rule at once: two people, a team
     /// request, a draft, a conflict, a failing check, a re-review, and a PR
     /// nobody asked you about.
+    /// The same answer with labels on three of the rows, so the configured lists
+    /// have something to match. Built by patching [`answer`] rather than by a
+    /// second copy of it: the ordering the other tests assert is the thing these
+    /// are changing, and two fixtures would drift apart.
+    fn labelled(by_number: &[(u64, &str)]) -> Value {
+        let mut v = answer();
+        for key in ["asked", "all"] {
+            let Some(nodes) = v
+                .pointer_mut(&format!("/data/{key}/nodes"))
+                .and_then(Value::as_array_mut)
+            else {
+                continue;
+            };
+            for n in nodes.iter_mut() {
+                let Some(number) = n.get("number").and_then(Value::as_u64) else {
+                    continue;
+                };
+                let names: Vec<Value> = by_number
+                    .iter()
+                    .filter(|(k, _)| *k == number)
+                    .map(|(_, l)| serde_json::json!({ "name": l }))
+                    .collect();
+                n["labels"] = serde_json::json!({ "nodes": names });
+            }
+        }
+        v
+    }
+
+    fn numbers(q: &ReviewQueue) -> Vec<u64> {
+        q.actionable.iter().map(|r| r.number).collect()
+    }
+
+    #[test]
+    fn default_rules_leave_the_queue_exactly_as_it_was() {
+        let plain = from_graphql(&answer(), &QueueRules::default()).expect("parses");
+        // Every row carries labels now, and none of them is configured.
+        let with_labels = from_graphql(
+            &labelled(&[(14, "chore"), (10, "bug"), (11, "docs")]),
+            &QueueRules::default(),
+        )
+        .expect("parses");
+        assert_eq!(
+            numbers(&plain),
+            numbers(&with_labels),
+            "a label nothing names must not move a row"
+        );
+    }
+
+    #[test]
+    fn a_high_label_outranks_a_review_asked_of_you_by_name() {
+        let rules = QueueRules {
+            high_labels: vec!["security".into()],
+            ..QueueRules::default()
+        };
+        // 14 is the row nobody asked you about, and it sorts last without a label.
+        let plain = from_graphql(&answer(), &QueueRules::default()).expect("parses");
+        assert_ne!(
+            numbers(&plain).first(),
+            Some(&14),
+            "14 does not lead by age"
+        );
+
+        let q = from_graphql(&labelled(&[(14, "security")]), &rules).expect("parses");
+        assert_eq!(
+            numbers(&q).first(),
+            Some(&14),
+            "a high label leads, over the PR that named you"
+        );
+
+        /* **And it moved the row without rewriting what the row is.** The pane
+        colours on `prio` and writes its reason word from it — amber for "named
+        you", the word `team` for a team ask — so a rule about where a row sits
+        must leave those alone. The first version of this wrote `prio = 1` and
+        turned a labelled team ask red with the word `prio` on it. */
+        let named = q
+            .actionable
+            .iter()
+            .find(|r| r.number == 10)
+            .expect("the named ask is still here");
+        assert_eq!(named.prio, 2, "named you, and the pane can still say so");
+        let team = q
+            .actionable
+            .iter()
+            .find(|r| r.number == 11)
+            .expect("the team ask is still here");
+        assert_eq!(team.prio, 3, "a team ask, and the pane can still say so");
+
+        let lifted = q
+            .actionable
+            .iter()
+            .find(|r| r.number == 14)
+            .expect("the lifted row is here");
+        assert_eq!(
+            lifted.prio, 5,
+            "lifted by a label, and still nobody's request"
+        );
+    }
+
+    #[test]
+    fn a_low_label_sinks_a_row_without_hiding_it() {
+        let rules = QueueRules {
+            low_labels: vec!["later".into()],
+            ..QueueRules::default()
+        };
+        let plain = numbers(&from_graphql(&answer(), &QueueRules::default()).expect("parses"));
+        // 14 is the row nobody asked you about, so nothing lifts it.
+        assert!(plain.contains(&14));
+
+        let q = from_graphql(&labelled(&[(14, "later")]), &rules).expect("parses");
+        let got = numbers(&q);
+        assert_eq!(got.len(), plain.len(), "sunk, not dropped");
+        assert_eq!(
+            got.last(),
+            Some(&14),
+            "and it sorts last among the actionable"
+        );
+    }
+
+    #[test]
+    fn a_lift_wins_over_a_sink_until_you_say_otherwise() {
+        let rules = QueueRules {
+            low_labels: vec!["later".into()],
+            ..QueueRules::default()
+        };
+        let lead = *numbers(&from_graphql(&answer(), &QueueRules::default()).expect("parses"))
+            .first()
+            .expect("the queue has rows");
+
+        // The leading row is one that asked for you, so a low label must not hide
+        // the ask behind a word the author chose for the change.
+        let q = from_graphql(&labelled(&[(lead, "later")]), &rules).expect("parses");
+        assert_eq!(
+            numbers(&q).first(),
+            Some(&lead),
+            "a request outranks a low label"
+        );
+
+        // Unless you say that request has no special place, and then it does sink.
+        let normal = QueueRules {
+            asked_of_me: crate::config::QueuePlace::Normal,
+            asked_of_team: crate::config::QueuePlace::Normal,
+            ..rules.clone()
+        };
+        let q = from_graphql(&labelled(&[(lead, "later")]), &normal).expect("parses");
+        assert_eq!(
+            numbers(&q).last(),
+            Some(&lead),
+            "and with no place, the label wins"
+        );
+    }
+
+    #[test]
+    fn a_required_label_reaches_the_rows_the_query_did_not_narrow() {
+        let rules = QueueRules {
+            filter: QueueFilter {
+                labels_any: vec!["needs-review".into()],
+                ..QueueFilter::default()
+            },
+            ..QueueRules::default()
+        };
+        /* Only 10 carries it. 15 comes from the `asked` search, which the GitHub
+        query narrows for `all` alone — so this is the case that was wrong: every
+        asked row appeared whatever its labels. */
+        let q = from_graphql(&labelled(&[(10, "needs-review")]), &rules).expect("parses");
+        let got = numbers(&q);
+        assert!(
+            !got.contains(&15),
+            "a row without the label must not appear: {got:?}"
+        );
+    }
+
+    /* **The same label in two lists, which nothing stops you typing.** Every pair
+    has to have an answer, and the answer has to be the one the help text claims,
+    or the first person to do it by accident learns the real rule the hard way. */
+    #[test]
+    fn a_label_in_two_lists_resolves_the_same_way_every_time() {
+        let both_ends = QueueRules {
+            high_labels: vec!["urgent".into()],
+            low_labels: vec!["urgent".into()],
+            ..QueueRules::default()
+        };
+        let q = numbers(&from_graphql(&labelled(&[(14, "urgent")]), &both_ends).expect("parses"));
+        assert_eq!(
+            q.first(),
+            Some(&14),
+            "lifted, not sunk: the lift is read first"
+        );
+
+        let lift_and_drop = QueueRules {
+            high_labels: vec!["urgent".into()],
+            skip_labels: vec!["urgent".into()],
+            ..QueueRules::default()
+        };
+        let q =
+            numbers(&from_graphql(&labelled(&[(14, "urgent")]), &lift_and_drop).expect("parses"));
+        assert!(
+            !q.contains(&14),
+            "dropped: a row that needs no review has nowhere to be lifted to"
+        );
+
+        // Required and skipped at once is a queue that can hold nothing, and it
+        // holds nothing rather than quietly ignoring one of the two.
+        let contradiction = QueueRules {
+            filter: QueueFilter {
+                labels_any: vec!["x".into()],
+                ..QueueFilter::default()
+            },
+            skip_labels: vec!["x".into()],
+            ..QueueRules::default()
+        };
+        let q = from_graphql(&labelled(&[(14, "x"), (10, "x")]), &contradiction).expect("parses");
+        assert!(
+            q.actionable.is_empty() && q.blocked.is_empty(),
+            "an empty queue, not a surprise"
+        );
+    }
+
+    /* **`Only ones asking for me` keeps the team asks**, because a team ask is an
+    ask. The place settings then say where they sit, which is the combination that
+    reads as a contradiction until you try it. */
+    #[test]
+    fn asking_for_me_keeps_team_asks_and_the_place_still_moves_them() {
+        let rules = QueueRules {
+            filter: QueueFilter {
+                requested_only: true,
+                ..QueueFilter::default()
+            },
+            asked_of_team: crate::config::QueuePlace::Normal,
+            ..QueueRules::default()
+        };
+        let q = from_graphql(&answer(), &rules).expect("parses");
+        let got = numbers(&q);
+        assert!(got.contains(&11), "the team ask is still an ask: {got:?}");
+        assert!(
+            got.iter().position(|n| *n == 10) < got.iter().position(|n| *n == 11),
+            "and it sits below the one that named you: {got:?}"
+        );
+    }
+
+    /* **The rules are ignored by the two sources that are not `custom`.** The panel
+    saves them whichever source is selected, so this is the guard on that: picking
+    `default` must give the default queue however much is typed into the fields. */
+    #[test]
+    fn only_the_custom_source_applies_the_rules() {
+        let loud = QueueRules {
+            skip_labels: vec!["chore".into()],
+            ..QueueRules::default()
+        };
+        let plain = numbers(&from_graphql(&answer(), &QueueRules::default()).expect("parses"));
+        let applied = numbers(&from_graphql(&labelled(&[(14, "chore")]), &loud).expect("parses"));
+        assert!(!applied.contains(&14), "custom drops it");
+        assert!(plain.contains(&14), "and the default does not");
+    }
+
+    /* **The two hide toggles do not overlap**, which they did: `draft` is one of
+    the three blockers, so dropping "the blocked ones" dropped drafts too and the
+    checkbox beside it did nothing anybody could see. */
+    #[test]
+    fn hiding_drafts_and_hiding_blocked_are_independent() {
+        let draft_only = QueueRules {
+            filter: QueueFilter {
+                hide_drafts: true,
+                ..QueueFilter::default()
+            },
+            ..QueueRules::default()
+        };
+        let q = from_graphql(&answer(), &draft_only).expect("parses");
+        let below: Vec<u64> = q.blocked.iter().map(|r| r.number).collect();
+        assert!(!below.contains(&12), "12 is the draft: {below:?}");
+        assert!(
+            below.contains(&13),
+            "13 conflicts and fails, and stays: {below:?}"
+        );
+
+        let blocked_only = QueueRules {
+            filter: QueueFilter {
+                hide_blocked: true,
+                ..QueueFilter::default()
+            },
+            ..QueueRules::default()
+        };
+        let q = from_graphql(&answer(), &blocked_only).expect("parses");
+        let below: Vec<u64> = q.blocked.iter().map(|r| r.number).collect();
+        assert!(below.contains(&12), "the draft stays: {below:?}");
+        assert!(
+            !below.contains(&13),
+            "and the conflicting one goes: {below:?}"
+        );
+    }
+
+    /* **GitHub matches a label without caring about case and this did**, so a
+    checkout that typed `Needs-Review` passed the search and then had every row
+    dropped by the rule meant to keep them. The two halves have to agree. */
+    #[test]
+    fn a_label_matches_however_it_is_typed() {
+        let rules = QueueRules {
+            filter: QueueFilter {
+                labels_any: vec!["Needs-Review".into()],
+                ..QueueFilter::default()
+            },
+            high_labels: vec![" SECURITY ".into()],
+            ..QueueRules::default()
+        };
+        let q = from_graphql(
+            &labelled(&[(14, "needs-review"), (14, "security"), (10, "needs-review")]),
+            &rules,
+        )
+        .expect("parses");
+        let got = numbers(&q);
+        assert!(got.contains(&14), "the required label matched: {got:?}");
+        assert_eq!(got.first(), Some(&14), "and so did the one that lifts it");
+    }
+
+    #[test]
+    fn the_two_request_kinds_are_placed_apart() {
+        // 10 asked you by name and 11 asked a team you are in; 11 is the older, so
+        // with one band for both — which is the default — age puts 11 first.
+        let tied = numbers(&from_graphql(&answer(), &QueueRules::default()).expect("parses"));
+        assert!(
+            tied.iter().position(|n| *n == 11) < tied.iter().position(|n| *n == 10),
+            "tied, the older of the two leads: {tied:?}"
+        );
+
+        // Told the team ask has no special place, the named one leads instead.
+        let team_normal = QueueRules {
+            asked_of_team: crate::config::QueuePlace::Normal,
+            ..QueueRules::default()
+        };
+        let q = numbers(&from_graphql(&answer(), &team_normal).expect("parses"));
+        assert!(
+            q.iter().position(|n| *n == 10) < q.iter().position(|n| *n == 11),
+            "the named ask now leads the team one: {q:?}"
+        );
+
+        // And a named ask put on top outranks a high label, which nothing else does.
+        let both = QueueRules {
+            asked_of_me: crate::config::QueuePlace::Top,
+            high_labels: vec!["security".into()],
+            ..QueueRules::default()
+        };
+        let q = numbers(&from_graphql(&labelled(&[(14, "security")]), &both).expect("parses"));
+        assert_eq!(
+            q.first(),
+            Some(&15),
+            "the oldest named ask leads the high label: {q:?}"
+        );
+    }
+
+    #[test]
+    fn a_no_review_needed_label_drops_the_row_from_both_lists() {
+        let rules = QueueRules {
+            skip_labels: vec!["no-review".into()],
+            ..QueueRules::default()
+        };
+        // 12 is the draft and 13 the conflicting one: both sit below the fold, so
+        // this also proves the drop reaches the list the fold holds.
+        let q = from_graphql(&labelled(&[(14, "no-review"), (13, "no-review")]), &rules)
+            .expect("parses");
+        assert!(
+            !numbers(&q).contains(&14),
+            "dropped from the actionable list"
+        );
+        assert!(
+            !q.blocked.iter().any(|r| r.number == 13),
+            "and from the blocked list"
+        );
+    }
+
+    #[test]
+    fn the_filter_toggles_drop_what_they_name() {
+        let drafts = QueueRules {
+            filter: QueueFilter {
+                hide_drafts: true,
+                ..QueueFilter::default()
+            },
+            ..QueueRules::default()
+        };
+        let q = from_graphql(&answer(), &drafts).expect("parses");
+        assert!(
+            !q.blocked.iter().any(|r| r.is_draft),
+            "no draft survives hide_drafts"
+        );
+
+        let asked_only = QueueRules {
+            filter: QueueFilter {
+                requested_only: true,
+                ..QueueFilter::default()
+            },
+            ..QueueRules::default()
+        };
+        let q = from_graphql(&answer(), &asked_only).expect("parses");
+        assert!(
+            q.actionable
+                .iter()
+                .chain(q.blocked.iter())
+                .all(|r| r.requested == Some(true)),
+            "requested_only leaves only the rows that asked"
+        );
+        assert!(
+            !numbers(&q).contains(&14),
+            "and 14, which nobody asked you about, is gone"
+        );
+    }
+
     fn answer() -> Value {
         // The rows `all` and `asked` share, written once: GitHub answers both
         // searches with the same fragment.
@@ -874,7 +1497,7 @@ mod tests {
 
     #[test]
     fn requested_then_age_orders_the_queue() {
-        let q = from_graphql(&answer()).expect("a captured answer parses");
+        let q = from_graphql(&answer(), &QueueRules::default()).expect("a captured answer parses");
         assert_eq!(
             q.actionable.iter().map(|r| r.number).collect::<Vec<_>>(),
             vec![15, 11, 10, 14],
@@ -903,8 +1526,11 @@ mod tests {
             } else {
                 vec![]
             };
-            let q = from_graphql(&serde_json::json!({"data":{"viewer":{"login":"me"},
-                "asked":{"nodes":asked},"all":{"issueCount":1,"nodes":[reviewed]}}}))
+            let q = from_graphql(
+                &serde_json::json!({"data":{"viewer":{"login":"me"},
+                "asked":{"nodes":asked},"all":{"issueCount":1,"nodes":[reviewed]}}}),
+                &QueueRules::default(),
+            )
             .expect("parse");
             q.actionable[0].needs_re_review
         };
@@ -916,7 +1542,7 @@ mod tests {
     /// pane's "requested only" filter reads that field and nothing else.
     #[test]
     fn a_pr_nobody_asked_you_about_is_listed_and_says_so() {
-        let q = from_graphql(&answer()).expect("parse");
+        let q = from_graphql(&answer(), &QueueRules::default()).expect("parse");
         let other = q
             .actionable
             .iter()
@@ -934,7 +1560,7 @@ mod tests {
 
     #[test]
     fn amber_is_being_named_yourself_and_a_team_request_is_not() {
-        let q = from_graphql(&answer()).expect("parse");
+        let q = from_graphql(&answer(), &QueueRules::default()).expect("parse");
         let by = |n: u64| {
             q.actionable
                 .iter()
@@ -958,7 +1584,7 @@ mod tests {
 
     #[test]
     fn what_waits_on_its_author_sinks_below_the_fold() {
-        let q = from_graphql(&answer()).expect("parse");
+        let q = from_graphql(&answer(), &QueueRules::default()).expect("parse");
         let mut sunk: Vec<_> = q.blocked.iter().map(|r| r.number).collect();
         sunk.sort_unstable();
         assert_eq!(sunk, vec![12, 13], "the draft and the broken one");
@@ -973,7 +1599,7 @@ mod tests {
 
     #[test]
     fn a_row_carries_who_already_looked_and_whether_you_did() {
-        let q = from_graphql(&answer()).expect("parse");
+        let q = from_graphql(&answer(), &QueueRules::default()).expect("parse");
         let team = q.actionable.iter().find(|r| r.number == 11).expect("#11");
         assert_eq!(team.reviewers, 2, "two distinct humans");
         assert!(team.needs_re_review, "you are one of them");
@@ -986,7 +1612,7 @@ mod tests {
 
     #[test]
     fn a_node_that_is_not_a_pull_request_is_skipped_not_counted() {
-        let q = from_graphql(&answer()).expect("parse");
+        let q = from_graphql(&answer(), &QueueRules::default()).expect("parse");
         assert_eq!(
             q.actionable.len() + q.blocked.len(),
             6,

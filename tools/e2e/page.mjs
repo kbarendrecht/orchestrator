@@ -324,6 +324,73 @@ try {
   await page.click('#setdiscard')
   await page.waitForTimeout(300)
   check(await page.$eval('#setdiscard', (b) => b.hidden), 'and Discard clears it')
+
+  /* **The review queue's source shows the fields it uses and no others.** Three
+     sources, two of which have fields, and the fields are *hidden* rather than
+     removed so a draft survives a look at another source — which is also why this
+     has to assert `hidden` rather than presence. A selector that showed nothing
+     would read as the setting not working at all. */
+  const sourceShows = async (/** @type {string} */ value) => {
+    await page.selectOption('#setrvsource', value)
+    await page.waitForTimeout(150)
+    return page.evaluate(() => ({
+      custom: !document.getElementById('setrvcustom')?.hidden,
+      command: !document.getElementById('setrvcmdrow')?.hidden,
+    }))
+  }
+  check(JSON.stringify(await sourceShows('custom')) === '{"custom":true,"command":false}',
+    'the custom source shows its own fields and not the command box')
+  check(JSON.stringify(await sourceShows('command')) === '{"custom":false,"command":true}',
+    'and the command source shows the command box and not them')
+  /* **`default` shows the rules too, because it *is* custom with none of them
+     set.** Showing nothing would mean picking a mode before you can see what
+     there is to change. */
+  check(JSON.stringify(await sourceShows('default')) === '{"custom":true,"command":false}',
+    'and the default shows the same fields, unapplied')
+
+  /* **Reading the config must not promote anything.** `loadConfigInto` writes
+     every one of those fields, and the promotion listens on the same events a
+     person's typing raises — so a load that promoted would turn every checkout
+     custom on the first open, and mark the pane unsaved while it did it. The
+     assignment raises no event, and this is what says so. */
+  await page.click('#setdiscard').catch(() => {})
+  await page.waitForTimeout(300)
+  /* **And it reads `command` here, which is the migration working.** This sandbox
+     sets `reviews_command` and nothing else — the shape every config written
+     before `reviews_source` existed has — so the daemon has to answer `command`
+     for it. Answering `default` would be this build silently switching off a
+     configured queue on first read. */
+  check(await page.$eval('#setrvsource', (s) => s.value) === 'command',
+    'a config with only a review command reads back as the command source')
+  check(await page.$eval('#setdiscard', (b) => b.hidden),
+    'and does not mark the pane unsaved')
+
+  /* **And typing one promotes the mode.** A rule typed under `default` would
+     otherwise be saved and ignored, with the pane looking exactly as it did —
+     which is the trap this exists to close. */
+  // Back to `default` first: the Discard above put this sandbox's own `command`
+  // back, and that hides the field this is about to type into.
+  await page.selectOption('#setrvsource', 'default')
+  await page.fill('#setrvhigh', 'security, incident')
+  await page.waitForTimeout(150)
+  check(await page.$eval('#setrvsource', (s) => s.value) === 'custom',
+    'and typing a rule under it switches the source to custom')
+  /* A checkbox too, which raises `change` and not `input` in some engines — the
+     same split the dirty listener is written for. */
+  await page.selectOption('#setrvsource', 'default')
+  await page.check('#setrvnodraft')
+  await page.waitForTimeout(150)
+  check(await page.$eval('#setrvsource', (s) => s.value) === 'custom',
+    'and so does ticking one')
+
+  /* The labels typed under one source are still there after a look at another:
+     the daemon stores them whichever is selected, and the pane has to match. */
+  await page.selectOption('#setrvsource', 'command')
+  await page.selectOption('#setrvsource', 'custom')
+  check(await page.$eval('#setrvhigh', (i) => i.value) === 'security, incident',
+    'and what you typed survives a look at another source')
+  await page.click('#setdiscard')
+  await page.waitForTimeout(300)
   // A theme control is this browser's and applies at once, so it is not a draft.
   await page.click('.settings-tab[data-tab="theme"]')
   await page.selectOption('#thpreset', { index: 1 }).catch(() => {})

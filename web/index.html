@@ -735,12 +735,115 @@
         fetch from one remote and diff against another.</p>
 
       <label class="settings-field">
+        <span class="settings-k">Review queue</span>
+        <select class="settings-in" id="setrvsource">
+          <option value="default">default</option>
+          <option value="custom">custom</option>
+          <option value="command">command</option>
+        </select>
+      </label>
+      <p class="settings-help"><b>Default</b> is every open PR somebody else wrote,
+        oldest first, with the ones that asked for you on top. <b>Custom</b> is that
+        same queue with the fields below applied — so they are shown either way, and
+        changing one switches this to custom for you. <b>Command</b> runs your own,
+        printing the same JSON.</p>
+
+      <!-- Shown for `default` and `custom` alike, because default *is* custom with
+           nothing set: a reader can see what there is to change without first
+           picking a mode, and `settings.js` promotes the mode on the first edit.
+           Hidden rather than removed for `command`, so what you typed survives a
+           look at it — the daemon stores the rules whichever source is selected. -->
+      <div id="setrvcustom" hidden>
+        <!-- Two controls rather than one, because they are two different asks:
+             one person picked you, the other picked a group and anybody in it may
+             take it. The daemon put both in the same band and let age break the
+             tie, which is right for a team that treats them alike and wrong for
+             one that does not. `above` is that old rule, so the default is it. -->
+        <label class="settings-field">
+          <span class="settings-k">Asked of me</span>
+          <select class="settings-in" id="setrvplaceme">
+            <option value="top">first, over everything</option>
+            <option value="above">above the rest</option>
+            <option value="normal">no special place</option>
+          </select>
+        </label>
+        <p class="settings-help">Where a PR sits when somebody asked for you by
+          name.</p>
+
+        <label class="settings-field">
+          <span class="settings-k">Asked of my team</span>
+          <select class="settings-in" id="setrvplaceteam">
+            <option value="top">first, over everything</option>
+            <option value="above">above the rest</option>
+            <option value="normal">no special place</option>
+          </select>
+        </label>
+        <p class="settings-help">And where it sits when the ask went to a team you
+          are in, which anybody in it may pick up.</p>
+
+        <label class="settings-field">
+          <span class="settings-k">Only ones asking for me</span>
+          <input class="settings-check" id="setrvasked" type="checkbox">
+        </label>
+        <p class="settings-help">By name or through a team you are in. With this on,
+          the pane's <code>asked</code> word has nothing left to narrow and goes.</p>
+
+        <label class="settings-field">
+          <span class="settings-k">Must be labelled</span>
+          <input class="settings-in" id="setrvany" type="text" spellcheck="false"
+                 placeholder="empty = any PR">
+        </label>
+        <p class="settings-help">Comma separated. A PR needs one of these to appear
+          at all, including one that asked for you.</p>
+
+        <label class="settings-field">
+          <span class="settings-k">First</span>
+          <input class="settings-in" id="setrvhigh" type="text" spellcheck="false"
+                 placeholder="empty = nothing jumps the queue">
+        </label>
+        <p class="settings-help">Labels that lift a PR above the rest, over one that
+          asked for you by name — but under anything set to <i>first</i> above.</p>
+
+        <label class="settings-field">
+          <span class="settings-k">Last</span>
+          <input class="settings-in" id="setrvlow" type="text" spellcheck="false"
+                 placeholder="empty = nothing sinks">
+        </label>
+        <p class="settings-help">Labels that sink a PR to the end of the list. Still
+          shown: yours to look at, just not first. A lift wins over a sink, so this
+          does not move a PR that asked for you — set that ask to <i>no special
+          place</i> if you want the label to win.</p>
+
+        <label class="settings-field">
+          <span class="settings-k">No review needed</span>
+          <input class="settings-in" id="setrvskip" type="text" spellcheck="false"
+                 placeholder="empty = nothing hidden">
+        </label>
+        <p class="settings-help">Labels that drop a PR from the queue. The only way
+          to hide one, so there is never a question of which list won.</p>
+
+        <label class="settings-field">
+          <span class="settings-k">Hide drafts</span>
+          <input class="settings-check" id="setrvnodraft" type="checkbox">
+        </label>
+        <!-- Short enough not to wrap in the label column, which is narrow and
+             which the help text below is there to widen on. -->
+        <label class="settings-field">
+          <span class="settings-k">Hide blocked</span>
+          <input class="settings-check" id="setrvnoblocked" type="checkbox">
+        </label>
+        <p class="settings-help">Conflicts and failing checks, and not drafts —
+          the box above owns those. Each kind sinks below the <i>not reviewable</i>
+          fold already, because it is waiting on its author; these two drop it
+          instead.</p>
+      </div>
+
+      <!-- Shown for `command` alone. -->
+      <label class="settings-field" id="setrvcmdrow" hidden>
         <span class="settings-k">Review command</span>
         <input class="settings-in" id="setreviews" type="text" spellcheck="false"
-               placeholder="empty = built-in queue">
+               placeholder="argv, printing the queue as JSON">
       </label>
-      <p class="settings-help">Run instead of the built-in review queue, printing
-        the same JSON. For a repo that already ranks its own reviews.</p>
 
       <label class="settings-field">
         <span class="settings-k">Worktree init</span>

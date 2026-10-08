@@ -229,8 +229,13 @@ function renderReviews() {
   /* Only where the source says which rows asked: the built-in queue does, a
      configured command does not, and a filter that cannot be honoured is not
      offered at all. */
-  const filterable = [...(rv.actionable || []), ...(rv.blocked || [])]
-    .some((r) => r.requested != null);
+  const all = [...(rv.actionable || []), ...(rv.blocked || [])];
+  /* **Offered only where it would narrow something.** The source has to say which
+     rows asked — the built-in does, a configured command does not — and there has
+     to be a row it would drop. A queue configured `requested_only` is every row
+     asking for you, so the word would sit there promising a filter that removes
+     nothing, which reads as a broken control rather than an empty answer. */
+  const filterable = all.some((r) => r.requested != null) && all.some((r) => !r.requested);
   const narrow = filterable && requestedOnly;
   const rows = (rv.actionable || []).filter((r) => !narrow || r.requested);
   const blocked = (rv.blocked || []).filter((r) => !narrow || r.requested);

@@ -28,6 +28,20 @@ export async function run(t) {
     upstream_ref: before.upstream_ref,
     upstream_remote: before.upstream_remote,
     reviews_command: ['true'],
+    /* The queue's source and its rules, sent together: `Settings` is a whole-object
+       write, so a field left out is a 400 rather than a field left alone. */
+    reviews_source: 'custom',
+    reviews_rules: {
+      filter: {
+        labels_any: ['needs-review'],
+        hide_drafts: true,
+        hide_blocked: false,
+        requested_only: false,
+      },
+      high_labels: ['security'],
+      low_labels: ['chore'],
+      skip_labels: ['no-review'],
+    },
     main_processes: [],
     worktree_init: ['git', 'fetch', '--prune'],
     worktree_setup: [],
@@ -48,6 +62,15 @@ export async function run(t) {
   assert.equal(after.default_language, 'English')
   assert.deepEqual(after.worktree_init, ['git', 'fetch', '--prune'])
   assert.deepEqual(after.workspace_notes, { main: 'The dev stack runs here.', worktree: null })
+  /* **The queue's rules survive the round trip, nested and all.** They are the one
+     setting with a struct inside a struct, and a merge that flattened or dropped a
+     level would leave a queue configured in the pane and unfiltered in the daemon —
+     with nothing to see, since the pane would read its own draft back. */
+  assert.equal(after.reviews_source, 'custom')
+  assert.deepEqual(after.reviews_rules.filter.labels_any, ['needs-review'])
+  assert.equal(after.reviews_rules.filter.hide_drafts, true)
+  assert.deepEqual(after.reviews_rules.high_labels, ['security'])
+  assert.deepEqual(after.reviews_rules.skip_labels, ['no-review'])
 
   // The keys the pane has no control for. Each one is a way to lose a working
   // install to a save nobody thought was destructive.

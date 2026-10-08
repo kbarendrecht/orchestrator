@@ -113,7 +113,9 @@ back to `config.json`; changes take effect on restart.
 | Setting | Default | What it is |
 | --- | --- | --- |
 | `upstream_ref` / `upstream_remote` | `origin/HEAD`, `origin` | the base every diff and worktree is measured against. On a **fork workflow** — an `upstream` remote beside `origin` — a first run detects it and writes `upstream/<default branch>` instead, so there is nothing to set by hand. |
-| `reviews_command` | *(empty — the built-in queue)* | argv printing the review queue as JSON. See below. Empty means the daemon builds the queue itself; set it to use your team's own ranking. |
+| `reviews_source` | `default` | where the review pane's rows come from: `default`, `custom` or `command`. `default` is `custom` with no rules applied, so the panel shows the same fields for both and switches to `custom` when one is changed. Absent means what it used to: a command if `reviews_command` is set, the default queue otherwise. |
+| `reviews_rules` | *(empty)* | what `custom` lists and how it ranks. See below. |
+| `reviews_command` | *(empty — the built-in queue)* | argv printing the review queue as JSON. See below. Used when `reviews_source` is `command`. |
 | `main_processes` | *(empty)* | long-running processes shown in the drawer. See below. |
 | `tracker` | `none` | where an out-of-scope review point can be filed as a story. Three fields — `mcp_server`, `host` and an optional `token_env` — so pointing it at another tracker is a config edit rather than a release. Its token is **not** a config key — set `ORCHD_TRACKER_TOKEN` in the daemon's environment, or let `env_source` read the checkout's own. It also needs the repo to declare a matching **MCP server** — see below. |
 | `env_source` | `mise` | which tool is asked what a session's own directory exports — `mise`, `direnv`, or `none`. Config file only, not in the settings panel. See below. |
@@ -153,13 +155,60 @@ the same `curl` the PR pane already uses. No script, no `node`, no `gh`.
 
 - **The `all` / `asked` word in its header narrows it** to the PRs GitHub has your
   review requested on (`review-requested:@me`, a team you are in included).
-  Remembered per browser.
+  Remembered per browser. `all` is every open PR somebody else wrote: you cannot
+  review your own, and the PR pane above holds those. The word is offered only
+  where it would narrow something, so a queue configured `requested_only` does not
+  show it.
 - **Requested first, then age**, oldest first within each. How long somebody has
   waited is true whatever a team's labels mean.
 - **Amber means you were named.** A request to a team you belong to stays grey and
   says `team`.
 - **Draft, conflicting and failing rows sink** below a "not reviewable" fold. They
   are waiting on their author.
+
+**Narrow and rank it without leaving the daemon.** Set `reviews_source` to
+`custom` and `reviews_rules` says the rest, in Settings → Git or in `config.json`:
+
+```json
+"reviews_rules": {
+  "filter": {
+    "labels_any": ["needs-review"],
+    "hide_drafts": false,
+    "hide_blocked": false,
+    "requested_only": false
+  },
+  "high_labels": ["security"],
+  "low_labels": ["chore"],
+  "skip_labels": ["no-review"],
+  "asked_of_me": "above",
+  "asked_of_team": "above"
+}
+```
+
+- **The two asks are placed separately.** `asked_of_me` is somebody picking you by
+  name; `asked_of_team` is somebody picking a group you are in, which anybody in it
+  may take. Each is `top`, `above` or `normal`. Both default to `above`, which is
+  the one band they shared before this existed, so an unconfigured queue is
+  unchanged.
+- `high_labels` lifts a PR above the rest, over an ordinary request. `low_labels`
+  sinks it to the end, still shown. `skip_labels` drops it — **the only exclusion
+  list there is**, so there is never a question of which one the pane obeyed.
+- **A lift wins over a sink.** Top-placed ask, then `high_labels`, then an ask at
+  `above`, then everything else, then `low_labels`. So a chore label does not bury
+  a PR somebody asked you to look at; set that ask to `normal` if you want it to.
+- **Where two lists name one label**, `skip_labels` wins over both others and
+  `high_labels` wins over `low_labels`. A label in `labels_any` *and* `skip_labels`
+  is a queue that can hold nothing, and it holds nothing.
+- `hide_drafts` and `hide_blocked` do not overlap: a draft is one of the three
+  blockers, so `hide_blocked` would otherwise have hidden drafts and made the
+  other flag invisible.
+- Every field empty is the built-in queue exactly, so switching to `custom` and
+  saving nothing changes nothing.
+- **Toggles rather than a search string, because a search string is one forge's
+  grammar.** What a checkout configures is the question — who wrote it, what is it
+  labelled, is it ready — and each forge answers in its own words. `reviews.rs`
+  does the translating for GitHub, into the search where GitHub can express it and
+  over the rows it already parses where it cannot.
 
 **Your team's ranking wins if you have one.** Point `reviews_command` at anything
 that prints the JSON in [`docs/reviews-json.md`](docs/reviews-json.md) and the
