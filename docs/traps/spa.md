@@ -243,6 +243,25 @@ is a dead end (it multiplies before the threshold test, which reads the raw
 delta, so fixing a trackpad breaks a mouse), and **Shift+wheel** bypasses the
 whole path into xterm's own scrollback, which is in the legend now.
 
+**And the reports are paced, one per frame, because a burst is the worst way to
+spend them.** That was the second report (#42, "scrolling slowly does not scroll
+the chat"), and the handler's own `repeat(count)` was the cause. Measured against
+Claude Code itself, driving it in a real pty over a loaded transcript and reading
+the screen back with a terminal emulator: **two reports in one write move 4 rows,
+the same two a frame apart move 10, and 100ms apart they move 6.** So the agent
+coalesces what arrives together, and rewards reports that arrive like a real
+wheel's. A macOS notch is a ~180px delta, which is ~9 lines, which went out as
+nine reports in one `send` and arrived as about eleven rows rather than forty-five
+— the "at least 50% too slow" the report describes. `drainWheel` owes the lines
+instead, sends the first immediately so one notch keeps its latency, and releases
+one per `requestAnimationFrame`. A direction change drops what is still owed,
+because a reversal is a correction and not a queue to finish.
+
+Two things this does **not** fix, and both were checked: a line-mode device
+(`deltaMode !== 0`) still takes xterm's path, which sends one report per event
+whatever the delta; and the default `wheelScale` is unchanged, because the
+slowness was the burst rather than the multiplier.
+
 ## A window drag is the one call in this app that can abort the process, and it is guarded in two places.
 tao's `drag_window` hands AppKit's *current* event to
 `performWindowDragWithEvent:`, which accepts nothing but a mouse event — a keyDown

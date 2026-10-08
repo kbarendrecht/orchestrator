@@ -590,7 +590,8 @@ function openTerm(checkout, target, parent) {
    * throwing away the line count it just computed — so a fast drag under-scrolls
    * per pixel of travel. Both defects are in the one place, so both are fixed
    * here: accumulate the real pixel deltas, undamped, and emit one report per
-   * whole line.
+   * whole line, **one report per frame** — see `drainWheel`, which is where the
+   * second half of that was measured and is the reason this is not a loop.
    *
    * `scrollSensitivity` is not the fix and is worth naming as a dead end: it
    * multiplies *before* the threshold test and the test reads the raw `deltaY`,
@@ -606,6 +607,33 @@ function openTerm(checkout, target, parent) {
    * xterm's documented escape to the scrollback — `consumeWheelEvent` returns 0
    * on Shift, so that keeps working and is worth knowing about. */
   let wheelLines = 0;
+  /** Whole lines owed to the agent, signed: negative is up, the sign the pixel
+   *  delta already carries. Drained by `drainWheel`, one report per frame. */
+  let owed = 0;
+  /** The cell the last wheel event was over, carried so a paced report names the
+   *  pane the pointer is actually on rather than the one it started on. */
+  let owedCol = 1;
+  let owedRow = 1;
+  /** The pending `requestAnimationFrame`, 0 when nothing is scheduled. */
+  let draining = 0;
+
+  function drainWheel() {
+    draining = 0;
+    if (!owed) return;
+    // 64 is wheel up, 65 is wheel down — the same codes xterm's own encoder
+    // emits, in the same `ESC [ < btn ; col ; row M` shape.
+    const button = owed < 0 ? 64 : 65;
+    owed -= owed < 0 ? -1 : 1;
+    // A wheel report is transient state, not typing: dropping it while the socket
+    // is down is right, so this does not bank the way `sendInput` does.
+    if (entry.sock && entry.sock.readyState === WebSocket.OPEN) {
+      entry.sock.send(new TextEncoder().encode(`\x1b[<${button};${owedCol};${owedRow}M`));
+    }
+    // A frame is the pacing, because a frame is what the agent renders on and
+    // what a real wheel's own events are spaced by.
+    if (owed) draining = requestAnimationFrame(drainWheel);
+  }
+
   term.attachCustomWheelEventHandler((/** @type {WheelEvent} */ ev) => {
     if (!agentPane || ev.shiftKey || ev.deltaMode !== 0) return true;
     // `modes` is public API. `any`/`drag` is `?1003h`/`?1002h`, which is what an
@@ -645,18 +673,28 @@ function openTerm(checkout, target, parent) {
       Math.floor((ev.clientX - box.left) / (box.width / term.cols)) + 1));
     const row = Math.min(term.rows, Math.max(1,
       Math.floor((ev.clientY - box.top) / cell) + 1));
-    // 64 is wheel up, 65 is wheel down — the same codes xterm's own encoder
-    // emits, in the same `ESC [ < btn ; col ; row M` shape.
-    const button = lines < 0 ? 64 : 65;
+    /* **The owed lines are paced, never written as one burst**, and that is the
+     * whole of the "scrolling is too slow" report (#42). Measured against Claude
+     * Code itself, driving a real pty with a loaded transcript and reading the
+     * screen back: two reports in **one write** move 4 rows, the same two spaced
+     * a frame apart move **10**, and spaced 100ms apart they move 6. So the agent
+     * coalesces what arrives together — a burst is the *worst* way to spend the
+     * reports, and it was what this handler did. One macOS notch is a ~180px
+     * delta, which is ~9 lines, which went out as nine reports in one `send` and
+     * arrived as about eleven rows instead of forty-five.
+     *
+     * So the lines are owed rather than sent, and one report leaves per frame.
+     * The first leaves now, so a single notch has no added latency. */
+    owedCol = col;
+    owedRow = row;
+    // A reversal is a correction, not a queue to finish: whatever is still owed
+    // in the old direction would scroll against the hand that just turned round.
+    if (owed && (owed < 0) !== (lines < 0)) owed = 0;
     // A fling can bank a lot of lines. Capped at a page, because past that the
-    // reports are a burst the agent has to parse and nobody asked to travel that
-    // far in one frame.
-    const count = Math.min(Math.abs(lines), term.rows);
-    // A wheel report is transient state, not typing: dropping it while the socket
-    // is down is right, so this does not bank the way `sendInput` does.
-    if (entry.sock && entry.sock.readyState === WebSocket.OPEN) {
-      entry.sock.send(new TextEncoder().encode(`\x1b[<${button};${col};${row}M`.repeat(count)));
-    }
+    // pane keeps travelling after the hand has stopped, and nobody asked to go
+    // further than one screen for one gesture.
+    owed = Math.max(-term.rows, Math.min(term.rows, owed + lines));
+    if (!draining) drainWheel();
     return false;
   });
 
