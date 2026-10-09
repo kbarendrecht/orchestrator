@@ -324,6 +324,12 @@ try {
   await page.click('#setdiscard')
   await page.waitForTimeout(300)
   check(await page.$eval('#setdiscard', (b) => b.hidden), 'and Discard clears it')
+  /* **Putting a value back is not a change.** The flag used to latch on the first
+     edit, so undoing it by hand still said "unsaved changes" about a draft that was
+     the config. */
+  const was = await page.$eval('#setnotemain', (i) => i.value)
+  check(await dirtyAfter('#setnotemain', `${was}x`) === true && await dirtyAfter('#setnotemain', was) === false,
+    'typing a field back to what was read clears unsaved')
 
   /* **The review queue's source shows the fields it uses and no others.** Three
      sources, two of which have fields, and the fields are *hidden* rather than
@@ -376,6 +382,14 @@ try {
   await page.waitForTimeout(150)
   check(await page.$eval('#setrvsource', (s) => s.value) === 'custom',
     'and typing a rule under it switches the source to custom')
+  /* And clearing it again takes the promotion back with it: left at `custom`, the
+     draft differs from the config by a change nobody made, and stays unsaved.
+     Still unsaved here regardless, because the select above moved off `command`. */
+  await page.fill('#setrvhigh', '')
+  await page.waitForTimeout(150)
+  check(await page.$eval('#setrvsource', (s) => s.value) === 'default',
+    'and clearing it again puts the source back to default')
+  await page.fill('#setrvhigh', 'security, incident')
   /* A checkbox too, which raises `change` and not `input` in some engines — the
      same split the dirty listener is written for. */
   await page.selectOption('#setrvsource', 'default')

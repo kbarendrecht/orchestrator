@@ -40,9 +40,26 @@ const loadedArgv = new Map();
  */
 let dirty = false;
 
+/** The draft as `saveSettings` would send it, at the last read. `null` before the
+ *  first read answers, so an edit typed while it is in the air still counts. */
+let loadedBody = /** @type {string | null} */ (null);
+
+/** Whether the draft differs from what was read, worked out again on every edit.
+ *
+ *  **Compared, not latched.** It was a flag that any edit set and only Save or
+ *  Discard cleared, so typing a value and then putting it back left the pane
+ *  saying "unsaved changes" about a draft identical to the config. The body is
+ *  what Save would write, so "unsaved" means exactly "Save would change
+ *  something". */
 function markDirty() {
-  if (dirty) return;
-  dirty = true;
+  if (promoted && sameRules()) {
+    // The edit that promoted the source has been undone, so the promotion goes too:
+    // it was implied by that edit, and left behind it is a change nobody made.
+    ctl('setrvsource').value = 'default';
+    promoted = false;
+    showReviewSource();
+  }
+  dirty = loadedBody === null || JSON.stringify(draftBody()) !== loadedBody;
   showDirty();
 }
 
@@ -176,6 +193,8 @@ async function loadConfigInto(force = false) {
     was: p,
   }));
   renderProcs();
+  promoted = false;
+  loadedBody = JSON.stringify(draftBody());
 }
 
 // A labelled text input bound to one string field of a process draft.
@@ -295,10 +314,23 @@ function promoteOnEdit() {
   const sel = ctl('setrvsource');
   if (sel.value !== 'default') return;
   sel.value = 'custom';
+  promoted = true;
   showReviewSource();
 }
 
-async function saveSettings() {
+/** Whether the source is `custom` only because `promoteOnEdit` made it so. A pick
+ *  from the select clears it: that one is a choice, and is never taken back. */
+let promoted = false;
+
+/** Whether the rules are back to what was read. */
+function sameRules() {
+  if (loadedBody === null) return false;
+  return JSON.stringify(draftBody().reviews_rules)
+    === JSON.stringify(JSON.parse(loadedBody).reviews_rules);
+}
+
+/** The config the form holds, in the shape `/api/config` takes. */
+function draftBody() {
   const argv = (/** @type {string} */ s) => (s.trim() ? s.trim().split(/\s+/) : []);
   /* The value to send for an argv field: what was read, unless you edited the box.
      See `loadConfigInto` for the quoting this protects. */
@@ -308,7 +340,7 @@ async function saveSettings() {
     return was && was.join(' ') === now ? was : argv(now);
   };
   const list = (/** @type {string} */ s) => s.split(',').map((/** @type {string} */ x) => x.trim()).filter(Boolean);
-  const body = {
+  return {
     default_language: ctl('setlang').value.trim(),
     upstream_ref: ctl('setupref').value.trim(),
     upstream_remote: ctl('setupremote').value.trim(),
@@ -361,9 +393,12 @@ async function saveSettings() {
       };
     }),
   };
+}
+
+async function saveSettings() {
   let answer;
   try {
-    answer = await call('/api/config', body);
+    answer = await call('/api/config', draftBody());
   } catch (e) {
     $('setnote').textContent = reason(e);
     return;
@@ -860,7 +895,7 @@ function setupSettings() {
   }
   /* The fields follow the source at once rather than at the next read: picking
      `custom` and finding nothing under it would read as the setting not working. */
-  ctl('setrvsource').onchange = () => showReviewSource();
+  ctl('setrvsource').onchange = () => { promoted = false; showReviewSource(); };
   for (const id of RULE_FIELDS) {
     // `change` as well as `input`: a checkbox and a select raise only the first of
     // those in some engines, which is the reason the dirty listener above says.
