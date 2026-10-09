@@ -301,6 +301,9 @@ export function renderDrawer() {
        tab is where the pointer already is. */
     tab.onclick = () => {
       const toggle = collapsed || p.id === active;
+      // A shell is picked to be typed into, so it takes the cursor, unless this
+      // click is the one that folds the drawer away.
+      if (isShell && !dead && !(toggle && !collapsed)) setPendingProcFocus(p.id);
       setSelectedProc(wsId, p.id);
       setDrawerTouched(true);
       if (toggle) setDrawerCollapsed(!collapsed);

@@ -2777,6 +2777,25 @@ try {
   )
   await page.keyboard.press('Escape')
 
+  /* **Picking a shell's tab gives that shell the keyboard.** A second shell, made
+     through the API so it does not take the selection: a click on the selected
+     tab folds the drawer instead. */
+  const { process: spareShell } = await t.api('POST', `/api/workspace/${ws}/shell`)
+  await page.waitForSelector(`#dtabs .dtab[data-key="${spareShell}"][aria-selected="false"]`, { timeout: 15_000 })
+  await page.evaluate(() => /** @type {HTMLElement} */ (document.activeElement)?.blur())
+  await page.click(`#dtabs .dtab[data-key="${spareShell}"]`)
+  const typedInto = await page.waitForFunction(() => {
+    const a = document.activeElement
+    return !!a && a.classList.contains('xterm-helper-textarea')
+      && !!a.closest('#drawerbody .termhost:not([hidden])')
+  }, null, { timeout: 5000 }).then(() => true).catch(() => false)
+  check(typedInto, 'clicking a shell tab puts the cursor in that shell')
+  /* Two frames before the close: focus schedules a refresh, and disposing the
+     terminal under it throws inside xterm, which no person closing a tab is fast
+     enough to reach. */
+  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))))
+  await t.api('POST', `/api/process/${spareShell}/close`)
+
   await t.api('POST', `/api/process/${shell}/close`)
 
   /* --- a restart puts the pane back on the new process (#35) ----------------- */
