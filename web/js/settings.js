@@ -513,6 +513,7 @@ const TABS = {
   theme: 'How this window looks. Applies the moment you touch it, and is kept in this browser.',
   git: 'This checkout\'s config. A draft until Save; the upstream ref and the remote also restart the daemon.',
   tracker: 'This checkout\'s config. A draft until Save.',
+  reviews: 'This checkout\'s config. A draft until Save.',
   other: 'Wheel speed applies at once and is kept in this browser. Sessions and processes are this checkout\'s config, a draft until Save; the processes also restart the daemon.',
 };
 const TAB_KEY = 'orch.settings.tab';

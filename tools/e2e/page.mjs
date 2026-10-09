@@ -330,6 +330,7 @@ try {
      removed so a draft survives a look at another source — which is also why this
      has to assert `hidden` rather than presence. A selector that showed nothing
      would read as the setting not working at all. */
+  await page.click('.settings-tab[data-tab="reviews"]')
   const sourceShows = async (/** @type {string} */ value) => {
     await page.selectOption('#setrvsource', value)
     await page.waitForTimeout(150)
