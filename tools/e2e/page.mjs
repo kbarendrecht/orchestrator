@@ -502,6 +502,21 @@ try {
   await page.waitForTimeout(2000)
   check((await railNames()).join('|') === after.join('|'), 'the order survives a reload and the snapshots after it')
 
+  /* **A wheel speed picked on the old scale stays the speed it was.** 100% used to
+     be a multiplier of 1 and is 0.3 now, so a stored 50% has to come back as 167%,
+     and the old key has to go or the next load converts it a second time. */
+  await page.evaluate(() => { localStorage.setItem('orch.wheelScale', '0.5'); localStorage.removeItem('orch.wheelSpeed') })
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  await page.waitForFunction(() => document.body.classList.contains('ready'), null, { timeout: 15_000 })
+  const wheel = await page.evaluate(() => ({
+    shown: document.getElementById('wsval')?.textContent,
+    old: localStorage.getItem('orch.wheelScale'),
+    now: localStorage.getItem('orch.wheelSpeed'),
+  }))
+  check(JSON.stringify(wheel) === '{"shown":"167%","old":null,"now":"1.67"}',
+    `an old wheel speed moves onto the new scale, got ${JSON.stringify(wheel)}`)
+  await page.evaluate(() => localStorage.removeItem('orch.wheelSpeed'))
+
   /* **A drag shows where it will land, and a stray move does not end it.** Driven
      with dispatched events, because the order is the point: `dragover`, then a
      `pointermove` with no button held, then `drop`. That move used to clear the

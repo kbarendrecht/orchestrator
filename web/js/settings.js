@@ -1,7 +1,7 @@
 // The settings panel. The zoom control it offers lives in core, because the
 // terminals read the scale too.
 
-import { ctl, $, WHEEL, ZOOM, borrowFocus, call, callHost, caret, setUiPx, uiPx, UI_PX_MAX, UI_PX_MIN, closeLegend, el, get, MOD_LABEL, onSelection, reason, returnFocus, saveWheel, saveZoom, setWheel, setZoom, snap, uiScale, wheelScale } from './core.js';
+import { ctl, $, WHEEL, ZOOM, borrowFocus, call, callHost, caret, setUiPx, uiPx, UI_PX_MAX, UI_PX_MIN, closeLegend, el, get, MOD_LABEL, onSelection, reason, returnFocus, loadWheel, saveWheel, saveZoom, setWheel, setZoom, snap, uiScale, wheelSpeed } from './core.js';
 import { currentPreset, detectedFonts, FONTS, fontStack, onThemeChange, PRESETS, resetTheme, SEE_THROUGH, setTheme, SIZE_MAX, SIZE_MIN, theme, validFontName } from './theme.js';
 /* The arithmetic, for reading a typed hex back. A leaf with no imports of its own,
    so the module graph stays the DAG `dependency-cruiser` insists on — and the same
@@ -724,7 +724,7 @@ function showFont(/** @type {import('./theme.js').Role} */ role) {
 
 function setupSettings() {
   setZoom(Number(localStorage.getItem(ZOOM.key)) || ZOOM.def);
-  setWheel(Number(localStorage.getItem(WHEEL.key)) || WHEEL.def);
+  setWheel(loadWheel());
 
   $('gearbtn').onclick = (ev) => {
     ev.stopPropagation();
@@ -742,8 +742,11 @@ function setupSettings() {
   $('fsup').onclick = () => { saveZoom(setUiPx(uiPx() + 1)); showTheme(); };
   // No chord for these: the keyboard map's own contract says a plain letter is
   // taken only where the idiom earns it, and nobody expects one for a wheel.
-  $('wsdown').onclick = () => saveWheel(setWheel(wheelScale - WHEEL.step));
-  $('wsup').onclick = () => saveWheel(setWheel(wheelScale + WHEEL.step));
+  // Back onto the step's grid, so a speed carried over from the old scale steps to
+  // a round number rather than staying off it.
+  const stepped = (/** @type {number} */ w) => Math.round(w * 10) / 10;
+  $('wsdown').onclick = () => saveWheel(setWheel(stepped(wheelSpeed - WHEEL.step)));
+  $('wsup').onclick = () => saveWheel(setWheel(stepped(wheelSpeed + WHEEL.step)));
   $('wsreset').onclick = () => saveWheel(setWheel(WHEEL.def));
   /* A picked preset lands whole — the three colours and the opacity — because that
      is what a theme is now: a board at 72% is not Paper, so picking Paper has to

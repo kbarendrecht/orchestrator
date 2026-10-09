@@ -260,7 +260,9 @@ because a reversal is a correction and not a queue to finish.
 Two things this does **not** fix, and both were checked: a line-mode device
 (`deltaMode !== 0`) still takes xterm's path, which sends one report per event
 whatever the delta; and the default `wheelScale` is unchanged, because the
-slowness was the burst rather than the multiplier.
+slowness was the burst rather than the multiplier. **It was lowered later**, the
+other way: the old 30% is the new 100%, and `loadWheel` moves a speed somebody
+picked onto the new scale so it stays the speed it was.
 
 ## A window drag is the one call in this app that can abort the process, and it is guarded in two places.
 tao's `drag_window` hands AppKit's *current* event to

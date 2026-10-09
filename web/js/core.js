@@ -1377,10 +1377,9 @@ export function setZoom(/** @type {number} */ z) {
 
 
 /* **How far one wheel event travels in an agent pane.** A multiplier on the pixel
- * delta, defaulting to 1 — which is exactly today's behaviour, so a trackpad keeps
- * the fix that put this handler here in the first place (a slow drag needs every
- * pixel of its ~13px median delta) and nobody who has not asked for a change gets
- * one.
+ * delta, shown as a speed where 100% is `WHEEL_BASE`. A trackpad keeps the fix that
+ * put this handler here in the first place (a slow drag needs every pixel of its
+ * ~13px median delta), because the remainder is banked rather than dropped.
  *
  * It exists because a *discrete* wheel is the opposite case: macOS accelerates a
  * notch and reports it as a ~180px delta with `deltaMode === 0`, so it never takes
@@ -1394,19 +1393,50 @@ export function setZoom(/** @type {number} */ z) {
  *
  * localStorage, beside the zoom, for the reason stated there: it is this browser's
  * opinion — this machine and this mouse — not something the daemon owns. */
-export const WHEEL = { key: 'orch.wheelScale', def: 1, min: 0.1, max: 2, step: 0.1 };
+export const WHEEL = { key: 'orch.wheelSpeed', def: 1, min: 0.1, max: 7, step: 0.1 };
+
+/** The multiplier 100% stands for. It was 1, which was too fast, and the old 30%
+ *  is the new 100%. `max` is the old 200% on the new scale, so a speed somebody
+ *  had picked still fits. */
+const WHEEL_BASE = 0.3;
+
+/** Where the setting lived when 100% was a multiplier of 1. */
+const OLD_WHEEL_KEY = 'orch.wheelScale';
 
 /** The multiplier `term.js` reads. A live binding, so lowering it takes effect on
  *  the next wheel event without the terminals re-importing anything. */
-export let wheelScale = WHEEL.def;
+export let wheelScale = WHEEL.def * WHEEL_BASE;
+
+/** The speed the pane shows, where 1 is 100%. */
+export let wheelSpeed = WHEEL.def;
 
 export function setWheel(/** @type {number} */ w) {
-  const next = Math.min(WHEEL.max, Math.max(WHEEL.min, Math.round(w * 10) / 10));
-  wheelScale = next;
+  // To the percent and no further: a speed carried over from the old scale is
+  // rarely a whole step, and snapping it would change a speed somebody picked.
+  const next = Math.min(WHEEL.max, Math.max(WHEEL.min, Math.round(w * 100) / 100));
+  wheelSpeed = next;
+  wheelScale = next * WHEEL_BASE;
   $('wsval').textContent = `${Math.round(next * 100)}%`;
   ctl('wsdown').disabled = next <= WHEEL.min;
   ctl('wsup').disabled = next >= WHEEL.max;
   return next;
+}
+
+/** The stored speed, moving one saved on the old scale across first.
+ *
+ *  **Converted, so a picked speed stays the speed it was.** Only a value somebody
+ *  picked is stored at all (`saveWheel` removes the default), so the ones moved
+ *  here are exactly the custom ones, and everyone else gets the new 100%. */
+export function loadWheel() {
+  try {
+    const old = localStorage.getItem(OLD_WHEEL_KEY);
+    if (old !== null) {
+      localStorage.removeItem(OLD_WHEEL_KEY);
+      const was = Number(old);
+      if (was > 0) saveWheel(Math.round((was / WHEEL_BASE) * 100) / 100);
+    }
+    return Number(localStorage.getItem(WHEEL.key)) || WHEEL.def;
+  } catch (e) { return WHEEL.def; }
 }
 
 export function saveWheel(/** @type {number} */ w) {
