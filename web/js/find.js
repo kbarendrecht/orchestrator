@@ -66,6 +66,7 @@ const LEADIN = 40;
  *    pathsTruncated: boolean,
  *    seq: number, timer: ReturnType<typeof setTimeout> | null,
  *    inflight: AbortController | null,
+ *    error: string | null,
  *  }} */
 const state = {
   open: false,
@@ -81,6 +82,9 @@ const state = {
   seq: 0,
   timer: null,
   inflight: null,
+  /** What the last search failed with, so the foot can say it. `renderHits` owns
+   *  that element, and a write from anywhere else is erased by the next render. */
+  error: null,
 };
 
 export const isOpen = () => state.open;
@@ -176,9 +180,15 @@ function renderHead() {
   $('fnmode').title = text
     ? 'Searching file contents. Click to search file names instead (Shift Shift)'
     : `Searching file names. Click to search contents instead (${MOD_LABEL}+Shift+F)`;
-  for (const id of ['fncase', 'fnre', 'fnword']) {
-    // The three toggles ask about text. In `names` mode the ranking is the page's
-    // own, so they would be controls that do nothing.
+  for (const id of ['fncase', 'fnre', 'fnword', 'fnglob']) {
+    /* These ask about text. In `names` mode the ranking is the page's own, so they
+       would be controls that do nothing — and the path filter was exactly that:
+       visible, typable, and read only by the branch that asks the daemon. Worse
+       than dead, because what you typed there was still in the box when you
+       switched to `find contents`, which *does* read it, so a search then came
+       back silently narrowed by a filter you had watched do nothing.
+       A path filter is no loss here: `rank` matches on the whole path, so `web/`
+       in the query itself is the same search. */
     $(id).hidden = state.mode !== 'text';
   }
 }
@@ -201,6 +211,9 @@ function run() {
 async function search() {
   const q = /** @type {HTMLInputElement} */ ($('fnq')).value;
   const mine = ++state.seq;
+  // Cleared here rather than on success: a second query must not keep the first
+  // one's error on screen while it runs.
+  state.error = null;
   state.inflight?.abort();
   const ctl = new AbortController();
   state.inflight = ctl;
@@ -242,7 +255,8 @@ async function search() {
     if (/** @type {Error} */ (e).name === 'AbortError' || mine !== state.seq) return;
     state.hits = [];
     state.truncated = false;
-    $('fnfoot').textContent = reason(e);
+    // State, not a write: `renderHits` owns the foot and used to clear this.
+    state.error = reason(e);
     renderHits();
     return;
   }
@@ -326,9 +340,25 @@ function renderHits() {
   const what = state.mode === 'text'
     ? `${n} match${n === 1 ? '' : 'es'}`
     : `${n} file${n === 1 ? '' : 's'}`;
-  $('fnfoot').textContent = n
-    ? what + (state.truncated ? ' — and more; narrow the query' : '')
-    : '';
+  /* **The one place the foot is written, and it answers three things.**
+   *
+   * It used to be one ternary: a count, or the empty string. That made two
+   * failures look identical to a search still running — a query that found
+   * nothing said nothing, and an *error* said nothing either, because the catch
+   * above wrote `reason(e)` into this element and then called this function,
+   * which cleared it on the next line. A bad regex, a refused workspace and a
+   * dead socket all showed a blank bar.
+   *
+   * So the error is state rather than a write, and "nothing found" is a sentence.
+   * An empty query still says nothing: there is no question to answer yet. */
+  const asked = /** @type {HTMLInputElement} */ ($('fnq')).value.trim() !== '';
+  $('fnfoot').textContent = state.error
+    ? state.error
+    : n
+      ? what + (state.truncated ? ' — and more; narrow the query' : '')
+      : asked
+        ? (state.mode === 'text' ? 'no matches' : 'no files')
+        : '';
 }
 
 /** The matched line, with the match marked the way the viewer marks it.

@@ -1455,7 +1455,38 @@ try {
     () => document.querySelectorAll('#fnhits .fnhit').length === 2, null, { timeout: 5000 })
     .then(() => true).catch(() => false)
   check(asPattern, 'and the regex toggle makes it a pattern, rather than an error')
+
+  /* **Three ways the foot used to say nothing, and all three looked the same.**
+     It was one ternary — a count, or the empty string — so a query that found
+     nothing was indistinguishable from one still running, and an *error* was
+     too: the catch wrote `reason(e)` into this element and then rendered, which
+     cleared it on the next line. A bad regex showed a blank bar. */
+  await page.fill('#fnq', 'nothing-in-this-tree-at-all')
+  const saysNone = await page.waitForFunction(
+    () => document.getElementById('fnfoot')?.textContent === 'no matches',
+    null, { timeout: 5000 }).then(() => true).catch(() => false)
+  check(saysNone, 'a search that finds nothing says so')
+
+  await page.fill('#fnq', 'frobni[')
+  const saysWhy = await page.waitForFunction(
+    () => (document.getElementById('fnfoot')?.textContent ?? '').includes('not a pattern'),
+    null, { timeout: 5000 }).then(() => true).catch(() => false)
+  check(saysWhy, 'and a pattern the daemon refuses says why, rather than nothing')
   await page.$eval('#fnre', (b) => b.click())
+
+  /* **The path filter is a contents control, and it used to be worse than dead
+     in the other mode**: visible and typable in `find files`, read by nobody —
+     and still in the box when you switched to `find contents`, which does read
+     it, so the next search came back narrowed by a filter you had watched do
+     nothing. */
+  check(await page.$eval('#fnglob', (e) => !e.hidden),
+    'the path filter is offered while searching contents')
+  await page.$eval('#fnmode', (b) => b.click())
+  await page.waitForTimeout(200)
+  check(await page.$eval('#fnglob', (e) => e.hidden),
+    'and is put away with the toggles when searching names')
+  await page.$eval('#fnmode', (b) => b.click())
+  await page.waitForTimeout(200)
 
   // Back to one hit, which is what everything below is written about.
   fs.rmSync(path.join(tree, 'casing.txt'))
