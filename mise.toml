@@ -14,6 +14,9 @@ rust = "latest"
 # *global* mise config, so a fresh clone had a release task that could not run and
 # nothing saying why — the same class of thing as a rule derived from one repo.
 gh = "latest"
+# A task dependency for the same reason: `mise run release` ends in `mise run
+# sweep`, and this machine had it only from a `cargo install` nothing declared.
+"cargo:cargo-sweep" = "latest"
 
 # The SPA checks and the browser-driving tasks need `tools/node_modules`, and that
 # was a sentence in a comment and an error in the pre-commit hook. Declared as a
@@ -616,6 +619,14 @@ main() {
   }
   dispatch kbarendrecht/homebrew-tap bump
   dispatch kbarendrecht/apt publish
+
+  # **Cargo never prunes `target/`, and nothing ran the sweep unless somebody
+  # remembered.** It reached 97 G and filled the disk: 59 G of `incremental/` and
+  # 37 G of `deps/`, mostly test binaries from builds weeks old. A release is the
+  # one step every working week passes through, so it carries the sweep. Never
+  # fatal, for the same reason as the dispatch: the release has published.
+  step "sweeping stale build artifacts"
+  mise run sweep || printf '  the sweep failed — run it by hand: mise run sweep\\n'
 }
 
 main "$@"
