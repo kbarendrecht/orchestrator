@@ -26,6 +26,33 @@ const BROADCAST_CHUNKS: usize = 1024;
 struct RingBuffer {
     buf: std::collections::VecDeque<u8>,
     cap: usize,
+    /// Whether the last screen switch the program wrote went *into* the
+    /// alternate screen. See [`RingBuffer::replay`].
+    alt: bool,
+    /// The tail of the last write, so a switch split across two reads is still
+    /// seen. Shorter than the longest switch, so no whole one is counted twice.
+    carry: Vec<u8>,
+}
+
+/// The sequences that switch to the alternate screen and back. `1049` is what
+/// Claude Code and most programs send; `1047` and `47` are its older spellings.
+const ALT_ON: [&[u8]; 3] = [b"\x1b[?1049h", b"\x1b[?1047h", b"\x1b[?47h"];
+const ALT_OFF: [&[u8]; 3] = [b"\x1b[?1049l", b"\x1b[?1047l", b"\x1b[?47l"];
+
+/// Which way the last screen switch in `bytes` went, if there is one.
+fn last_alt_switch(bytes: &[u8]) -> Option<bool> {
+    let ends_at = |pat: &[u8]| {
+        bytes
+            .windows(pat.len())
+            .rposition(|w| w == pat)
+            .map(|i| i + pat.len())
+    };
+    let on = ALT_ON.iter().filter_map(|p| ends_at(p)).max();
+    let off = ALT_OFF.iter().filter_map(|p| ends_at(p)).max();
+    match (on, off) {
+        (None, None) => None,
+        (on, off) => Some(on > off),
+    }
 }
 
 impl RingBuffer {
@@ -33,10 +60,19 @@ impl RingBuffer {
         RingBuffer {
             buf: std::collections::VecDeque::with_capacity(cap.min(64 * 1024)),
             cap,
+            alt: false,
+            carry: Vec::new(),
         }
     }
 
     fn push(&mut self, bytes: &[u8]) {
+        let mut seen = std::mem::take(&mut self.carry);
+        seen.extend_from_slice(bytes);
+        if let Some(on) = last_alt_switch(&seen) {
+            self.alt = on;
+        }
+        let keep = ALT_ON[0].len() - 1;
+        self.carry = seen[seen.len().saturating_sub(keep)..].to_vec();
         // A single write larger than the whole buffer keeps only its tail.
         if bytes.len() >= self.cap {
             self.buf.clear();
@@ -54,6 +90,25 @@ impl RingBuffer {
         let mut out = Vec::with_capacity(a.len() + b.len());
         out.extend_from_slice(a);
         out.extend_from_slice(b);
+        out
+    }
+
+    /// What a client attaching now is sent: the tail, led by the switch to the
+    /// alternate screen when the program is still on it.
+    ///
+    /// **Because the tail loses the switch.** A full-screen program sends
+    /// `ESC[?1049h` once, at start, and then redraws in place; Claude Code under
+    /// `CLAUDE_CODE_NO_FLICKER` passes the 512 KB ring in minutes of work. A pane
+    /// attaching after that drew every redraw into the *normal* buffer, which
+    /// grew scrollback behind a scrollbar that scrolled nothing the agent showed.
+    fn replay(&self) -> Vec<u8> {
+        let tail = self.snapshot();
+        if !self.alt {
+            return tail;
+        }
+        let mut out = Vec::with_capacity(ALT_ON[0].len() + tail.len());
+        out.extend_from_slice(ALT_ON[0]);
+        out.extend_from_slice(&tail);
         out
     }
 }
@@ -397,6 +452,11 @@ impl PtyHandle {
     /// Everything the daemon still holds of this pty's output.
     pub fn snapshot(&self) -> Vec<u8> {
         self.buffer.lock().map(|b| b.snapshot()).unwrap_or_default()
+    }
+
+    /// What to send a terminal attaching to this pty. See [`RingBuffer::replay`].
+    pub fn replay(&self) -> Vec<u8> {
+        self.buffer.lock().map(|b| b.replay()).unwrap_or_default()
     }
 
     /// Queue `data` for the child. Never blocks.
@@ -745,6 +805,39 @@ pub(crate) mod tests {
         let mut r = RingBuffer::new(3);
         r.push(b"abcdefg");
         assert_eq!(r.snapshot(), b"efg");
+    }
+
+    #[test]
+    fn a_replay_keeps_the_alternate_screen_the_tail_lost() {
+        let mut r = RingBuffer::new(8);
+        r.push(b"\x1b[?1049h");
+        r.push(b"frame one, frame two");
+        assert!(
+            !r.snapshot().starts_with(b"\x1b[?1049h"),
+            "the tail has lost it"
+        );
+        assert_eq!(r.replay(), b"\x1b[?1049hrame two");
+        // Out again, and the replay says nothing about a screen it left.
+        r.push(b"\x1b[?1049lbye");
+        assert_eq!(r.replay(), r.snapshot());
+    }
+
+    #[test]
+    fn a_switch_split_across_two_reads_still_counts() {
+        let mut r = RingBuffer::new(64);
+        r.push(b"hello \x1b[?10");
+        r.push(b"49hdrawn");
+        assert!(r.alt);
+        r.push(b"\x1b[?47");
+        r.push(b"l");
+        assert!(!r.alt);
+    }
+
+    #[test]
+    fn the_last_switch_in_a_read_wins() {
+        assert_eq!(last_alt_switch(b"\x1b[?1049h..\x1b[?1049l"), Some(false));
+        assert_eq!(last_alt_switch(b"\x1b[?1049l..\x1b[?1047h"), Some(true));
+        assert_eq!(last_alt_switch(b"no switch here"), None);
     }
 
     #[test]

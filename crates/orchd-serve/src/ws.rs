@@ -232,7 +232,7 @@ async fn pty_loop(
     // Subscribe before replaying, so output produced during the replay is
     // queued rather than lost.
     let mut sub = handle.subscribe();
-    let snapshot = handle.snapshot();
+    let snapshot = handle.replay();
     if !snapshot.is_empty() && socket.send(Message::Binary(snapshot)).await.is_err() {
         return;
     }
@@ -287,7 +287,7 @@ async fn pty_loop(
                     // Resubscribing drops that backlog and starts from now, which is
                     // the same subscribe-then-snapshot order the initial attach uses.
                     sub = sub.resubscribe();
-                    if socket.send(Message::Binary(handle.snapshot())).await.is_err() {
+                    if socket.send(Message::Binary(handle.replay())).await.is_err() {
                         break;
                     }
                 }
