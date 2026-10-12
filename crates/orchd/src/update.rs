@@ -330,13 +330,36 @@ fn installed_version(running: &std::path::Path) -> Option<String> {
     let dir = exe.parent()?.to_path_buf();
     let beside = dir.join("orchd");
     let bin = if beside.is_file() { beside } else { exe };
-    let out = crate::proc::run_bounded(
-        &dir,
-        VERSION_TIMEOUT_SECS,
-        &[bin.to_string_lossy().into_owned(), "--version".into()],
-        "reading the installed version",
-    )
-    .ok()?;
+    let argv = [bin.to_string_lossy().into_owned(), "--version".into()];
+    let run = || {
+        crate::proc::run_bounded(
+            &dir,
+            VERSION_TIMEOUT_SECS,
+            &argv,
+            "reading the installed version",
+        )
+    };
+    /* **A binary just written can refuse to start**, with "text file busy": any
+    thread that forks while the writer's fd is open hands the child a copy, and
+    until that child execs, the kernel will not run the file. An upgrade writing
+    this binary a moment ago is that, and so is the test, which failed on it four
+    runs in six. A few short retries outlast the window; a real failure is the
+    same failure five times. */
+    let mut out = run();
+    for _ in 0..5 {
+        let busy = out.as_ref().err().is_some_and(|e| {
+            e.chain().any(|c| {
+                c.downcast_ref::<std::io::Error>()
+                    .is_some_and(|io| io.kind() == std::io::ErrorKind::ExecutableFileBusy)
+            })
+        });
+        if !busy {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        out = run();
+    }
+    let out = out.ok()?;
     if !out.status.success() {
         return None;
     }
