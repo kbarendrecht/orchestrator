@@ -653,8 +653,12 @@ function openTerm(checkout, target, parent) {
        default of 1 this line is what it always was.
        Why anyone would change it: macOS reports an accelerated wheel notch as a
        ~180px delta with `deltaMode === 0`, so it never takes the line-mode escape
-       above, and at a ~15px cell that is about twelve lines for one notch. */
-    wheelLines += (ev.deltaY * wheelScale) / cell;
+       above, and at a ~15px cell that is about twelve lines for one notch.
+       **A wheel's events only**, told apart by xterm's own 50px line: a trackpad
+       drag is 1 to 13px an event, and scaling those too made a slow drag at the
+       30% default bank for dozens of events before a single line moved. */
+    const scale = Math.abs(ev.deltaY) >= 50 ? wheelScale : 1;
+    wheelLines += (ev.deltaY * scale) / cell;
     // `trunc`, so the sign is kept and the remainder is banked rather than
     // rounded away. Banking is what makes a slow drag move at all: 0.7 of a line
     // is not nothing, it is the next event's head start.

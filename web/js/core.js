@@ -1377,9 +1377,10 @@ export function setZoom(/** @type {number} */ z) {
 
 
 /* **How far one wheel event travels in an agent pane.** A multiplier on the pixel
- * delta, shown as a speed where 100% is `WHEEL_BASE`. A trackpad keeps the fix that
- * put this handler here in the first place (a slow drag needs every pixel of its
- * ~13px median delta), because the remainder is banked rather than dropped.
+ * delta, shown as a speed where 100% is `WHEEL_BASE`, and applied to wheel-sized
+ * events only (50px and up, see `term.js`). A trackpad is never scaled, which keeps
+ * the fix that put this handler here in the first place: a slow drag needs every
+ * pixel of its ~13px median delta.
  *
  * It exists because a *discrete* wheel is the opposite case: macOS accelerates a
  * notch and reports it as a ~180px delta with `deltaMode === 0`, so it never takes
@@ -1395,8 +1396,8 @@ export function setZoom(/** @type {number} */ z) {
  * opinion — this machine and this mouse — not something the daemon owns. */
 export const WHEEL = { key: 'orch.wheelSpeed', def: 1, min: 0.1, max: 7, step: 0.1 };
 
-/** The multiplier 100% stands for. It was 1, which was too fast, and the old 30%
- *  is the new 100%. `max` is the old 200% on the new scale, so a speed somebody
+/** The multiplier 100% stands for. It was 1, which was too fast for a mouse
+ *  wheel, and the old 30% is the new 100%. `max` is the old 200% on the new scale, so a speed somebody
  *  had picked still fits. */
 const WHEEL_BASE = 0.3;
 

@@ -262,7 +262,9 @@ Two things this does **not** fix, and both were checked: a line-mode device
 whatever the delta; and the default `wheelScale` is unchanged, because the
 slowness was the burst rather than the multiplier. **It was lowered later**, the
 other way: the old 30% is the new 100%, and `loadWheel` moves a speed somebody
-picked onto the new scale so it stays the speed it was.
+picked onto the new scale so it stays the speed it was. **And it scales a wheel
+only**, events of 50px and up: scaling a trackpad's 1 to 13px events by 0.3 made
+a slow drag on macOS look like it did not scroll at all.
 
 ## A window drag is the one call in this app that can abort the process, and it is guarded in two places.
 tao's `drag_window` hands AppKit's *current* event to
