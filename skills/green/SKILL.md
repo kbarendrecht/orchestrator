@@ -48,13 +48,8 @@ Easy is a forced fix, yours without asking: one way to make the check pass, and 
 does not change what the code does.
 
 A judgement call is a fix that picks a behaviour, where more than one answer is
-defensible. Ask, four at a time, each carrying the failing output and the code as
-it stands. Options are real positions, never `fix it / skip it`.
-
-**Ask through `orch ask`** when it is there, which is every session the
-orchestrator started: the answer reaches a card the person clicks rather than a
-prompt in a pane they are not looking at. `AskUserQuestion` is the fallback for a
-session nobody is orchestrating. The `orch` skill covers the flags.
+defensible. Ask with `AskUserQuestion`, four at a time, each carrying the failing
+output and the code as it stands. Options are real positions, never `fix it / skip it`.
 
 Unsure which it is → a judgement call.
 

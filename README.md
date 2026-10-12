@@ -98,9 +98,9 @@ Finder, Spotlight or your application menu. `orchestrator-desktop
 --install-desktop-entry` writes it again after a move.
 
 `orch` is optional and nothing requires it: `orch new` starts a session with a
-prompt, `orch ask` puts a question in front of you and blocks, `orch ls` lists
-what is running. Every session is told it is there, so an agent reaches for it
-without being prompted.
+prompt, `orch ls` lists what is running, `orch run` starts a declared process.
+Every session is told it is there, so an agent reaches for it without being
+prompted.
 
 ## Configuring it for your repo
 
