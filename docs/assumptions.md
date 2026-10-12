@@ -204,6 +204,43 @@ the systemd user manager's, holding no checkout's variables, so `env_source` ask
 the tool per spawn. *Kind:* platform reality. *Breaks:* anything expanding a
 variable gets the empty string and fails in its own words.
 
+## Codex
+
+Measured on 0.162.1, and every one of these is Codex's behaviour rather than a
+promise it makes: hooks are a stable feature, the rest is what the binary did.
+`tools/e2e/fake-codex.mjs` refuses each one that would fail in silence, so a flow
+that passes has at least been held to them.
+
+**27. A Codex hook runs only when it is trusted by hash, and the hash is Codex's.**
+`codex::flags` asks `codex app-server` for each hook's `key` and `currentHash`
+and hands them back as one inline `hooks.state` table. *Kind:* Codex's contract.
+*Breaks:* silently. An untrusted hook is skipped with nothing in the pane, so the
+session works and the rail never moves.
+
+**28. Codex fires `SessionStart` inside the first turn, not before it.** So a
+Codex session leaves `starting` when its pty goes quiet (`spawn::watch_ready`),
+and a first prompt known at spawn goes in the argv. *Kind:* Codex's behaviour.
+*Breaks:* a session that reads `starting` until you type, and a line the daemon
+types into a pane that is not drawn yet, which is lost.
+
+**29. A resume or a fork in a new directory stops at a picker unless `-C` names
+it.** Its default is the directory the conversation last ran in. *Kind:* Codex's
+behaviour. *Breaks:* the typed line answers the picker, and a fork works in its
+parent's tree.
+
+**30. Codex's id is its own, and a hook is where the daemon learns it.**
+`hooks::learn_agent_id`, kept as `Session::agent_session_id` and handed to
+`codex resume` and `codex fork`. *Kind:* Codex's contract (there is no flag to
+choose one). *Breaks:* a session whose hooks never fired cannot be resumed, and
+starts afresh instead.
+
+**31. A Codex session finds the daemon's skills only through
+`developer_instructions`.** Repo skills need a trusted project and would sit in
+your checkout; `~/.agents/skills` would reach every Codex you run.
+*Kind:* orchd's own choice, forced by Codex having no `--plugin-dir`.
+*Breaks:* a user who sets `developer_instructions` in their own config has it
+replaced for the daemon's sessions.
+
 ## What this repo happens to do, and another will not
 
 Named separately because these look structural and are not: worktrees under

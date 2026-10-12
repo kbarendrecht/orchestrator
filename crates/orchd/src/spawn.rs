@@ -14,6 +14,8 @@ pub const PENDING_WORKTREE: &str = "\u{2026}creating";
 /// How a spawn relates to a conversation that already exists.
 #[derive(Debug, Clone, Copy)]
 pub enum Source {
+    /// A new conversation, on the agent named.
+    New(crate::agent::Agent),
     /// Carry on under the same id: one conversation, more turns. The rail row
     /// comes back to life rather than gaining a sibling.
     Resume(Uuid),
@@ -38,10 +40,10 @@ async fn spawn_session_confirmed(
     app: &Arc<AppState>,
     workspace: &str,
     pass: Option<Pass>,
-    resume: Option<Source>,
+    source: Source,
     grace: std::time::Duration,
 ) -> Result<SessionId> {
-    let id = spawn_session(app, workspace, pass, resume).await?;
+    let id = spawn_session(app, workspace, pass, source).await?;
     let handle = {
         let inner = app.inner.read().await;
         inner.sessions.get(&id).and_then(|s| s.pty.clone())
@@ -134,7 +136,7 @@ async fn relocate(
     // same id, so what the conversation *was* has to be captured now or it is
     // overwritten by defaults. The state too, and it is written rather than read:
     // the kill below makes it `Exited` before `Carried::from` ever looks.
-    let (src_cwd, src_workspace, handle, title, name, created_at, pass, recorded) = {
+    let (src_cwd, src_workspace, handle, title, name, created_at, pass, recorded, agent) = {
         let mut inner = app.inner.write().await;
         let s = inner
             .sessions
@@ -150,6 +152,7 @@ async fn relocate(
             s.created_at,
             s.pass.clone(),
             s.transcript_path.clone(),
+            s.agent,
         )
     };
     // Nothing to resume: a session that never had a turn has no conversation, and
@@ -186,7 +189,8 @@ async fn relocate(
     }
 
     if !spoke {
-        let fresh = spawn_session_confirmed(app, dest_workspace, pass, None, grace).await?;
+        let fresh =
+            spawn_session_confirmed(app, dest_workspace, pass, Source::New(agent), grace).await?;
         restore_after_relocate(app, fresh, title, name, created_at).await;
         return Ok(Relocated {
             id: fresh,
@@ -206,14 +210,8 @@ async fn relocate(
 
     // Its recorded pass, not `None`: relocating must not quietly turn a run into a
     // session the guard table counts differently.
-    let resumed = spawn_session_confirmed(
-        app,
-        dest_workspace,
-        pass.clone(),
-        Some(Source::Resume(id)),
-        grace,
-    )
-    .await;
+    let resumed =
+        spawn_session_confirmed(app, dest_workspace, pass.clone(), Source::Resume(id), grace).await;
 
     match resumed {
         Ok(id) => {
@@ -226,7 +224,7 @@ async fn relocate(
         Err(e) => {
             tracing::warn!(session = %id, "the resume in {dest_workspace} did not stay up, forking instead: {e:#}");
             let forked =
-                spawn_session_confirmed(app, dest_workspace, pass, Some(Source::Fork(id)), grace)
+                spawn_session_confirmed(app, dest_workspace, pass, Source::Fork(id), grace)
                     .await
                     .with_context(|| {
                         format!(
@@ -436,6 +434,11 @@ struct Carried {
     /// discarded it a moment later. `None` for a fresh session, which really did
     /// start now.
     created_at: Option<std::time::SystemTime>,
+    /// Both: a fork is continued by the agent that holds the conversation. The
+    /// agent's own id is resume only, since a fork is a conversation the agent
+    /// names afresh.
+    agent: crate::agent::Agent,
+    agent_session_id: Option<String>,
 }
 
 impl Carried {
@@ -463,6 +466,12 @@ impl Carried {
             // Resume only. A fork is a new conversation and started when it was
             // forked, so the files you rewrote before it existed are news to it.
             created_at: (!fork).then_some(prev.created_at),
+            agent: prev.agent,
+            agent_session_id: if fork {
+                None
+            } else {
+                prev.agent_session_id.clone()
+            },
         }
     }
 
@@ -493,6 +502,8 @@ impl Carried {
         session.spawned_by = self.spawned_by;
         session.spawn_cut_worktree = self.spawn_cut_worktree;
         session.forked_from = self.forked_from;
+        session.agent = self.agent;
+        session.agent_session_id = self.agent_session_id;
         self.branch
     }
 }
@@ -506,12 +517,12 @@ pub async fn spawn_session(
     app: &Arc<AppState>,
     workspace: &str,
     pass: Option<Pass>,
-    resume: Option<Source>,
+    source: Source,
 ) -> Result<SessionId> {
-    let id = match resume {
-        Some(Source::Resume(prev)) => prev,
+    let id = match source {
+        Source::Resume(prev) => prev,
         // A fork is a second conversation, so it needs an id of its own.
-        Some(Source::Fork(_)) | None => Uuid::new_v4(),
+        Source::Fork(_) | Source::New(_) => Uuid::new_v4(),
     };
     // Main is exclusive, and the claim is taken before anything is created so a
     // refusal costs no worktree and no pty. The claim is *given back* here rather
@@ -523,7 +534,7 @@ pub async fn spawn_session(
     if workspace == MAIN {
         app.claim_main(id).await?;
     }
-    let out = spawn_session_with_id(app, workspace, pass, resume, id).await;
+    let out = spawn_session_with_id(app, workspace, pass, source, id).await;
     if out.is_err() && workspace == MAIN {
         app.release_main(id).await;
     }
@@ -535,7 +546,7 @@ async fn spawn_session_with_id(
     app: &Arc<AppState>,
     workspace: &str,
     pass: Option<Pass>,
-    resume: Option<Source>,
+    source: Source,
     id: SessionId,
 ) -> Result<SessionId> {
     // The centre pane is empty until this returns, so this is the number people
@@ -549,46 +560,28 @@ async fn spawn_session_with_id(
         .await
         .with_context(|| format!("unknown workspace {workspace}"))?;
 
-    let mut cmd = vec!["claude".to_string()];
-    // Assigning the id keeps the daemon's session id and Claude's own the same
-    // value, so resume and transcript lookup need no mapping. `--resume` already
-    // decides the id; a fork does not, and `--session-id` is honoured alongside
-    // `--fork-session`, so the invariant survives there too.
-    match resume {
-        Some(Source::Resume(prev)) => {
-            cmd.push("--resume".into());
-            cmd.push(prev.to_string());
-        }
-        Some(Source::Fork(prev)) => {
-            cmd.push("--session-id".into());
-            cmd.push(id.to_string());
-            cmd.push("--resume".into());
-            cmd.push(prev.to_string());
-            cmd.push("--fork-session".into());
-        }
-        None => {
-            cmd.push("--session-id".into());
-            cmd.push(id.to_string());
-        }
-    }
-    cmd.extend(crate::launch::session_flags()?);
-
     phases.mark("claim");
 
     // What the previous record hands the session that continues it, read before
     // the insert below replaces it: a resume keeps the id, so the record of what
     // the conversation was doing is about to be overwritten. One read for the lot;
     // these used to be four separate lock acquisitions on the same record.
-    let (mut carried, adopting) = match resume {
-        Some(Source::Resume(prev)) | Some(Source::Fork(prev)) => {
-            let fork = matches!(resume, Some(Source::Fork(_)));
+    let (mut carried, adopting) = match source {
+        Source::Resume(prev) | Source::Fork(prev) => {
+            let fork = matches!(source, Source::Fork(_));
             let inner = app.inner.read().await;
             let prev = inner.sessions.get(&prev);
             // A resume of an id this daemon has no record of: an outside
             // conversation being adopted (`api::resume_external`).
             (Carried::from(prev, fork), !fork && prev.is_none())
         }
-        None => (Carried::default(), false),
+        Source::New(agent) => (
+            Carried {
+                agent,
+                ..Carried::default()
+            },
+            false,
+        ),
     };
     /* **The disk is the only thing that knows this one has turns in it**, and the
     answer has to be on the record before the pty is watched. `watch_session_exit`
@@ -600,8 +593,8 @@ async fn spawn_session_with_id(
     if adopting {
         let (at, id) = (
             path.clone(),
-            match resume {
-                Some(Source::Resume(prev)) => prev,
+            match source {
+                Source::Resume(prev) => prev,
                 _ => id,
             },
         );
@@ -639,7 +632,7 @@ async fn spawn_session_with_id(
     // `~/.claude/projects`, and reading the pin reads the whole file — which the
     // note below says is megabytes of turns. One hop for the lot, since the pin is
     // the only reason the file is opened.
-    if resume.is_some() {
+    if !matches!(source, Source::New(_)) && carried.agent == crate::agent::Agent::Claude {
         let (at, id_) = (path.clone(), id);
         let cleared = crate::proc::run_blocking("clearing the worktree pin", move || {
             // The id scan as a fallback, because the case that breaks the cheap slug
@@ -688,7 +681,7 @@ async fn spawn_session_with_id(
             .unwrap_or(None)
         }
     };
-    if let Some(Source::Fork(prev)) = resume {
+    if let Source::Fork(prev) = source {
         session.forked_from = Some(prev);
     }
 
@@ -711,6 +704,12 @@ async fn spawn_session_with_id(
     // Read per spawn on purpose (`env_source`), and it is a bounded run of mise
     // or direnv in a fresh worktree, so it is a cold one.
     phases.mark("env");
+    let start = match source {
+        Source::New(_) => Begin::New,
+        Source::Resume(prev) => Begin::Resume(prev),
+        Source::Fork(prev) => Begin::Fork(prev),
+    };
+    let cmd = agent_argv(&mut session, start, &path, &env, &unset).await?;
     let spawned = insert_and_spawn(app, id, session, &cmd, &path, &env, &unset).await?;
     phases.mark("pty");
     // The claim belongs to the record, so it is settled once the record is in.
@@ -829,6 +828,7 @@ fn carry_into(parent: &std::path::Path, fork: &std::path::Path, exclude: &str) -
 pub async fn spawn_worktree_session(
     app: &Arc<AppState>,
     name: Option<&str>,
+    agent: crate::agent::Agent,
     fork: Option<SessionId>,
 ) -> Result<SessionId> {
     if let Some(name) = name {
@@ -883,18 +883,20 @@ pub async fn spawn_worktree_session(
     // parent tree left — a fork is deliberately cheaper than a resume, so a
     // conversation whose worktree is long gone can still be forked; it just comes
     // back on the base branch with nothing carried, exactly as it did before.
-    let parent_tree = match fork {
+    //
+    // The parent's agent too, and its own id for the conversation: a fork is
+    // continued by the agent that holds it, whatever `agent` says.
+    let (parent_tree, agent, parent_agent_id) = match fork {
         Some(prev) => {
-            let cwd = app
-                .inner
-                .read()
-                .await
-                .sessions
-                .get(&prev)
-                .map(|s| s.cwd.clone());
-            cwd.filter(|p| p.exists())
+            let inner = app.inner.read().await;
+            let parent = inner.sessions.get(&prev);
+            (
+                parent.map(|s| s.cwd.clone()).filter(|p| p.exists()),
+                parent.map_or(agent, |s| s.agent),
+                parent.and_then(|s| s.agent_session_id.clone()),
+            )
         }
-        None => None,
+        None => (None, agent, None),
     };
     // What travelled, in words, for the arrival notice below.
     let mut carried: Option<String> = None;
@@ -954,7 +956,7 @@ pub async fn spawn_worktree_session(
     };
     let name = name.or(owned_name.as_deref());
 
-    let (spawn_cwd, cmd, made_at) = {
+    let (spawn_cwd, made_at) = {
         let name = name.context("a worktree name is required")?;
         let path = app.cfg.worktree_path(name);
         // A fork branches from the parent's HEAD, not from upstream: the point is a
@@ -1017,7 +1019,7 @@ pub async fn spawn_worktree_session(
         // travels with it: `create_worktree` may have adopted a tree the repo's hook
         // put somewhere else, and registering the path we *asked* for would leave the
         // daemon reconciling a directory that does not exist.
-        (path.clone(), vec!["claude".to_string()], Some(path))
+        (path.clone(), Some(path))
     };
     tracing::info!(
         took_ms = tree_began.elapsed().as_millis(),
@@ -1025,14 +1027,6 @@ pub async fn spawn_worktree_session(
         "worktree ready"
     );
 
-    let mut cmd = cmd;
-    if let Some(prev) = fork {
-        cmd.push("--resume".into());
-        cmd.push(prev.to_string());
-        cmd.push("--fork-session".into());
-    }
-    cmd.extend(["--session-id".to_string(), id.to_string()]);
-    cmd.extend(crate::launch::session_flags()?);
     // After the tree exists, because the environment is read in the directory the
     // session will run in — a fresh worktree is a fresh path, and `mise` answers
     // per directory.
@@ -1121,6 +1115,13 @@ pub async fn spawn_worktree_session(
             cwd.display()
         ));
     }
+    session.agent = agent;
+    session.agent_session_id = parent_agent_id;
+    let begin = match fork {
+        Some(prev) => Begin::Fork(prev),
+        None => Begin::New,
+    };
+    let cmd = agent_argv(&mut session, begin, &spawn_cwd, &env, &unset).await?;
     let spawned = insert_and_spawn(app, id, session, &cmd, &spawn_cwd, &env, &unset).await?;
 
     started(app, id, spawned.handle).await;
@@ -1144,8 +1145,12 @@ pub async fn spawn_worktree_session(
 pub struct RunSpec {
     /// The `Pass` command the session carries.
     pub command: String,
-    /// What the `SessionStart` hook types: one line, `/orchd:<command> <pr>`.
-    pub pending: String,
+    /// The skill the run is, typed as its first line with `args`
+    /// ([`crate::agent::Agent::skill_line`]).
+    pub skill: String,
+    pub args: String,
+    /// The agent it runs on.
+    pub agent: crate::agent::Agent,
     /// Whether the run takes decisions over the ask channel, and so is handed
     /// `ORCH_ASK_TOKEN`. A run with nothing to ask is given the narrower surface.
     pub asks: bool,
@@ -1167,7 +1172,8 @@ impl RunSpec {
                 command: self.command.clone(),
             }),
         );
-        session.pending_prompt = Some(self.pending.clone());
+        session.pending_prompt = Some(self.agent.skill_line(&self.skill, &self.args));
+        session.agent = self.agent;
         session
     }
 }
@@ -1218,6 +1224,64 @@ pub(crate) fn run_env(
     (env, unset)
 }
 
+/// What a spawn continues, in the daemon's ids. [`agent_argv`] turns it into the
+/// agent's own.
+#[derive(Debug, Clone, Copy)]
+enum Begin {
+    New,
+    Resume(SessionId),
+    Fork(SessionId),
+}
+
+/// The argv for `session`'s agent, once its record and environment exist.
+///
+/// **After both on purpose.** Codex's flags are asked of the `codex` that this
+/// session's `PATH` finds, and its first prompt is its argv rather than typed, so
+/// a site that built its argv first — which every one did — would hand it the
+/// daemon's `PATH` and an empty first turn.
+///
+/// The ids are translated here. Claude Code's are the daemon's. Codex's is the
+/// one it chose, learned from a hook, and a session that never had a turn has
+/// none: it starts afresh, which is also what it has to continue. A fork gets an
+/// id of its own from Codex, so the parent's is spent here and the fork's
+/// learned later.
+async fn agent_argv(
+    session: &mut Session,
+    begin: Begin,
+    cwd: &Path,
+    env: &[(String, String)],
+    unset: &[&'static str],
+) -> Result<Vec<String>> {
+    use crate::agent::{Agent, Start};
+    let agent = session.agent;
+    let theirs = match (agent, begin) {
+        (_, Begin::New) => None,
+        (Agent::Claude, Begin::Resume(p) | Begin::Fork(p)) => Some(p.to_string()),
+        (Agent::Codex, _) => session.agent_session_id.clone(),
+    };
+    if matches!(begin, Begin::Fork(_)) {
+        session.agent_session_id = None;
+    }
+    let start = match (begin, theirs.as_deref()) {
+        (Begin::Resume(_), Some(t)) => Start::Resume(t),
+        (Begin::Fork(_), Some(t)) => Start::Fork(t),
+        _ => Start::New,
+    };
+    let prompt = if agent.prompt_in_argv() {
+        session.pending_prompt.take()
+    } else {
+        None
+    };
+    let flags = {
+        let (at, env, unset) = (cwd.to_path_buf(), env.to_vec(), unset.to_vec());
+        crate::proc::run_blocking("reading the agent's flags", move || {
+            crate::launch::session_flags(agent, &at, &env, &unset)
+        })
+        .await??
+    };
+    Ok(agent.argv(session.id, start, flags, prompt.as_deref()))
+}
+
 /// Start a run over a PR in `workspace`: an ordinary session, typed one line.
 ///
 /// Headed, not `-p`: a run you can watch, answer and take over mid-flight. The
@@ -1249,17 +1313,7 @@ pub(crate) async fn spawn_run(
         .await
         .context("worktree vanished")?;
 
-    let mut cmd = vec![
-        "claude".to_string(),
-        "--session-id".to_string(),
-        id.to_string(),
-    ];
-    // Through `session_flags` like every other spawn: it carries `--settings` and
-    // the vendored skill's `--plugin-dir`, and that flag is per *invocation*, so a
-    // run that built its own argv would be the one session on the board without it.
-    cmd.extend(crate::launch::session_flags()?);
-
-    let session = spec.session(id, workspace, path.clone(), pr);
+    let mut session = spec.session(id, workspace, path.clone(), pr);
     // Minted with the session so the same value goes into the environment and onto
     // the record: the agent reads `ORCH_ASK_TOKEN`, and `/ask`/`/wait` check it
     // against `session.ask_token`.
@@ -1278,6 +1332,10 @@ pub(crate) async fn spawn_run(
         .await?
     };
 
+    // Through `agent_argv` like every other spawn: it carries the hooks and the
+    // vendored skills, and those are per *invocation*, so a run that built its own
+    // argv would be the one session on the board without them.
+    let cmd = agent_argv(&mut session, Begin::New, &path, &env, &unset).await?;
     let spawned = insert_and_spawn(app, id, session, &cmd, &path, &env, &unset).await?;
 
     started(app, id, spawned.handle).await;
@@ -1364,7 +1422,9 @@ pub async fn spawn_fix_pr_session(
     // start (§8); it never depended on the run being invisible.
     let spec = RunSpec {
         command: Pass::FIX_PR.to_string(),
-        pending: format!("/orchd:{} {pr}", Pass::FIX_PR),
+        skill: Pass::FIX_PR.to_string(),
+        args: pr.to_string(),
+        agent: app.agent_for(None).await?,
         // No ask token: a fix run has nothing to ask, which is the narrower surface
         // 942d01b chose on purpose.
         asks: false,
@@ -1953,9 +2013,76 @@ fn agent_complaint(buf: &[u8]) -> Option<String> {
 /// one reason: `spawn_session` does `reclaim_main` between the insert and this,
 /// and that ordering is load-bearing — see the comment there.
 pub(crate) async fn started(app: &Arc<AppState>, id: SessionId, handle: Arc<PtyHandle>) {
+    let codex = app
+        .inner
+        .read()
+        .await
+        .sessions
+        .get(&id)
+        .is_some_and(|s| s.agent == crate::agent::Agent::Codex);
+    if codex {
+        watch_ready(app.clone(), id, handle.clone());
+    }
     watch_session_exit(app.clone(), id, handle);
     crate::update::refresh_detached(app);
     app.notify().await;
+}
+
+/// How long a Codex pane must stay still before its prompt box is taken as up.
+const READY_QUIET: std::time::Duration = std::time::Duration::from_millis(800);
+/// And the longest it is waited for, so a pane that never settles still opens.
+const READY_AT_MOST: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// A Codex session's `SessionStart`, which Codex does not send until a prompt is.
+///
+/// Measured on 0.162.1: nothing fires while the TUI sits at an empty prompt, so a
+/// Codex session would read `starting` until you typed — and a line the daemon has
+/// to type for it (`orch new --prompt`, a run handed to a live pane) had no moment
+/// to go in at. A prompt known at spawn goes in the argv instead
+/// ([`crate::agent::Agent::prompt_in_argv`]); this is for the rest.
+///
+/// The signal is the pty: drawn, then still. **Typed too early, a line is lost**,
+/// which a probe that wrote after a fixed second showed — nothing fired at all. So
+/// it waits for the first output and then for [`READY_QUIET`] of none, bounded by
+/// [`READY_AT_MOST`] for a pane that keeps redrawing.
+fn watch_ready(app: Arc<AppState>, id: SessionId, handle: Arc<PtyHandle>) {
+    tokio::spawn(async move {
+        use tokio::sync::broadcast::error::RecvError;
+        let mut out = handle.subscribe();
+        let drew = tokio::time::timeout(std::time::Duration::from_secs(30), out.recv()).await;
+        if matches!(drew, Ok(Err(RecvError::Closed))) {
+            return;
+        }
+        let began = std::time::Instant::now();
+        loop {
+            match tokio::time::timeout(READY_QUIET, out.recv()).await {
+                Err(_) => break,
+                Ok(Err(RecvError::Closed)) => return,
+                Ok(_) if began.elapsed() > READY_AT_MOST => break,
+                Ok(_) => {}
+            }
+        }
+        if !handle.is_alive() {
+            return;
+        }
+        let typed = {
+            let mut inner = app.inner.write().await;
+            let Some(s) = inner.sessions.get_mut(&id) else {
+                return;
+            };
+            // A relocation reuses the id; only the watcher of the pty the record
+            // still holds may speak for it, the rule `watch_session_exit` keeps.
+            if !s.pty.as_ref().is_some_and(|p| Arc::ptr_eq(p, &handle)) {
+                return;
+            }
+            s.opened();
+            s.pending_prompt.take()
+        };
+        if let Some(line) = typed {
+            handle.type_and_send(line.as_bytes(), std::time::Duration::from_millis(300));
+        }
+        app.notify().await;
+    });
 }
 
 /// The one observer of a session's pty exit: it settles the record and dispatches
@@ -2721,7 +2848,9 @@ mod tests {
     fn a_run_spec_puts_the_prompt_on_the_record_before_the_spawn() {
         let spec = RunSpec {
             command: Pass::FIX_PR.to_string(),
-            pending: "/orchd:fix-pr 7".to_string(),
+            skill: "fix-pr".to_string(),
+            args: "7".to_string(),
+            agent: crate::agent::Agent::Claude,
             asks: true,
             extra_env: Vec::new(),
         };

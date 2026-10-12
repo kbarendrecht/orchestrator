@@ -199,7 +199,7 @@ fn to_pty(data: &[u8], agent: bool) -> std::borrow::Cow<'_, [u8]> {
 /// Only out of `Working`: an escape at the prompt dismisses something, an escape at
 /// a question cancels it (`api::rewind` refuses for exactly these reasons), and
 /// neither is a turn ending.
-async fn note_interrupt(app: &Arc<AppState>, id: Uuid) {
+pub(crate) async fn note_interrupt(app: &Arc<AppState>, id: Uuid) {
     {
         let mut inner = app.inner.write().await;
         match inner.sessions.get_mut(&id) {

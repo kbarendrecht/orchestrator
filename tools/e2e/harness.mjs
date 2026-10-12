@@ -199,6 +199,9 @@ export function deadPid() {
  *   daemon shells out for nothing.
  * @param {number} [opts.pollSeconds] The poll period. The daemon floors it at 30,
  *   and a flow drives `/api/prs/refresh` rather than waiting for it either way.
+ * @param {boolean} [opts.codex] Put a `codex` beside the `claude`, so the board
+ *   has two agents. Off elsewhere: with one agent the SPA offers no choice, and
+ *   every other flow is about that board.
  */
 export async function sandbox({
   delegated = false,
@@ -208,6 +211,7 @@ export async function sandbox({
   pollSeconds = 3600,
   autoResume = false,
   processes = [],
+  codex = false,
   // **The level a flow needs, asked for by the flow that needs it.** `warn` is
   // right for the suite — a flow asserts on the API and a chatty daemon is noise
   // in a failure — but `renderer.mjs` reads its answer *out of the log*, and at
@@ -259,6 +263,11 @@ export async function sandbox({
   const shim = path.join(dirs.bin, 'claude')
   fs.writeFileSync(shim, `#!/bin/sh\nexec node ${path.join(here, 'fake-claude.mjs')} "$@"\n`)
   fs.chmodSync(shim, 0o755)
+  if (codex) {
+    const cx = path.join(dirs.bin, 'codex')
+    fs.writeFileSync(cx, `#!/bin/sh\nexec node ${path.join(here, 'fake-codex.mjs')} "$@"\n`)
+    fs.chmodSync(cx, 0o755)
+  }
 
   // The GitHub shim, only for a flow that asked for a repo. It has to sit beside
   // the agent's because the daemon's only route to GitHub is `curl` — and it must

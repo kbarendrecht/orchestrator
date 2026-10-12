@@ -8,6 +8,8 @@
 //!
 //! `docs/crate-split.md` has the plan and what each step cost.
 
+pub mod agent;
+pub mod codex;
 pub mod config;
 pub mod diff;
 pub mod env_source;

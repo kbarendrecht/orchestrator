@@ -319,6 +319,13 @@ pub struct Inner {
     /// the next press either, until somebody fixes the machine. Cleared by the
     /// first session that reaches a turn.
     pub agent_error: Option<String>,
+    /// The agents this checkout's `PATH` has, in [`crate::agent::Agent::ALL`]'s
+    /// order. Claude Code alone until the boot probe answers, which is what the
+    /// board offered before there was a choice.
+    pub agents: Vec<crate::agent::Agent>,
+    /// The agent a new session gets when nobody names one: the one named last.
+    /// Persisted ([`crate::store::save_last_agent`]), so a restart keeps it.
+    pub last_agent: crate::agent::Agent,
     /// What the boot preflight found — see [`crate::machine::check`].
     ///
     /// Set once, by the caller that ran the check, and never changed: every one of
@@ -717,6 +724,59 @@ impl AppState {
         self.inner.write().await.machine = warnings;
     }
 
+    /// Find which agents this checkout can run, through its own environment.
+    ///
+    /// The checkout's `PATH` and not the daemon's, because that is the one a session
+    /// gets: a repo that pins Codex through mise has it on no other `PATH`, and a
+    /// launcher-started daemon has hardly any `PATH` at all. Once, at boot, for the
+    /// same reason as the preflight: an agent installed later is a restart away.
+    pub async fn probe_agents(self: &Arc<Self>) {
+        let (main, source) = (self.cfg.main_checkout.clone(), self.cfg.env_source);
+        let found = crate::proc::run_blocking("looking for the agents", move || {
+            let env = crate::env_source::read(source, &main);
+            crate::agent::Agent::ALL
+                .into_iter()
+                .filter(|a| crate::pty::which(a.program(), &main, &env, &[]).is_ok())
+                .collect::<Vec<_>>()
+        })
+        .await
+        .unwrap_or_default();
+        tracing::info!(?found, "agents on this checkout's PATH");
+        if !found.is_empty() {
+            self.inner.write().await.agents = found;
+            self.notify().await;
+        }
+    }
+
+    /// The agent a new session gets: the one asked for, which is then remembered,
+    /// or the one asked for last.
+    ///
+    /// Refuses one this checkout does not have, because the alternative is a pane
+    /// that opens and dies with `command not found`.
+    pub async fn agent_for(
+        &self,
+        asked: Option<crate::agent::Agent>,
+    ) -> Result<crate::agent::Agent, crate::model::Refusal> {
+        let mut inner = self.inner.write().await;
+        let Some(agent) = asked else {
+            return Ok(inner.last_agent);
+        };
+        if !inner.agents.contains(&agent) {
+            return Err(crate::model::Refusal::Missing(format!(
+                "{agent} is not on this checkout's PATH"
+            )));
+        }
+        if inner.last_agent != agent {
+            inner.last_agent = agent;
+            tokio::task::spawn_blocking(move || {
+                if let Err(e) = crate::store::save_last_agent(agent) {
+                    tracing::warn!("could not remember the agent: {e:#}");
+                }
+            });
+        }
+        Ok(agent)
+    }
+
     /// Change one thing on one session under the write lock; a session that is
     /// gone is not an error. The shape every hook handler has, written once.
     pub async fn with_session<R>(
@@ -802,6 +862,8 @@ impl AppState {
                 viewer: None,
                 pr_error: None,
                 agent_error: None,
+                agents: vec![crate::agent::Agent::Claude],
+                last_agent: crate::store::load_last_agent(),
                 machine: Vec::new(),
                 pr_fetched: None,
                 pr_poll: 0,
@@ -1381,6 +1443,8 @@ impl AppState {
             prs_ended,
             pr_error: inner.pr_error.clone(),
             agent_error: inner.agent_error.clone(),
+            agents: inner.agents.clone(),
+            last_agent: inner.last_agent,
             machine: inner.machine.clone(),
             pr_age_ms: inner
                 .pr_fetched
@@ -2105,6 +2169,11 @@ pub struct Snapshot {
     /// `Inner::agent_error`. The board shows it in a bar, since the session it
     /// happened to no longer exists.
     pub agent_error: Option<String>,
+    /// The agents a new session can be started on. The SPA offers a choice only
+    /// when there is more than one.
+    pub agents: Vec<crate::agent::Agent>,
+    /// What a plain `+` starts.
+    pub last_agent: crate::agent::Agent,
     /// What the boot preflight found; see `Inner::machine`. The board shows it in
     /// a bar, because these are the causes behind panes that read `unavailable`
     /// and `off` and there is nowhere else in the window they appear.
@@ -2420,6 +2489,8 @@ pub struct SessionView {
     /// [`Session::agent_stale`]. What the agent bar counts when it offers to
     /// restart the sessions an upgrade left behind.
     pub agent_stale: bool,
+    /// Which agent runs this conversation. The pane header names it.
+    pub agent: crate::agent::Agent,
 }
 
 impl SessionView {
@@ -2461,6 +2532,7 @@ impl SessionView {
             handed_off: s.fix_pr_on_exit,
             restart_queued: s.restart_queued,
             agent_stale: s.agent_stale,
+            agent: s.agent,
         }
     }
 }

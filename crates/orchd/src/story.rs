@@ -350,7 +350,16 @@ async fn run_filer(
     // `--allowedTools "Read Write"` runs the skill, because the allowlist gates
     // tool calls and a typed command is expanded before the model acts. Model-
     // *chosen* skills are a different question — those go through a tool.
-    cmd.extend(crate::launch::session_flags()?);
+    //
+    // **Claude Code, whichever agent the board is on.** The tracker is a server the
+    // repo declares in `.mcp.json`, which is Claude Code's file and which Codex
+    // does not read, and this run has no pane for anybody to notice it missing.
+    cmd.extend(crate::launch::session_flags(
+        crate::agent::Agent::Claude,
+        &scratch,
+        &[],
+        &[],
+    )?);
     if tracker.stub {
         // Only the stub, and nothing else: `--strict-mcp-config` ignores every
         // configured server, which is what keeps a verification run from reaching

@@ -432,6 +432,8 @@ crates/orchd-base/    the primitives. Nothing here may import anything below.
 crates/orchd-repo/    one checkout, described. No session state lives here.
   config.rs       config file, defaults, the tracker and its credential
   launch.rs       the environment and argv a session's process is built with
+  agent.rs        which agent a session runs, Claude Code or Codex, and its argv
+  codex.rs        Codex's hooks as -c overrides, their trust, its rollouts
   forge/          the Forge seam: trait + dispatch (mod.rs), agnostic model
                   (model.rs), the GitHub impl (github.rs, github_write.rs)
   diff.rs         numstat, hunk parsing, word-level LCS

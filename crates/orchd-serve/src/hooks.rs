@@ -11,7 +11,6 @@ use serde::Deserialize;
 use serde_json::json;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::SystemTime;
 use uuid::Uuid;
 
 use orchd::config::Config;
@@ -149,6 +148,35 @@ fn session_of(headers: &HeaderMap, payload: &HookPayload) -> Option<Uuid> {
         })
 }
 
+/// Codex's own id for the conversation, and its rollout, off any hook that
+/// carries them.
+///
+/// **Every hook, not the first one.** Codex fires `SessionStart` inside the first
+/// turn rather than before it, and a fork is given a new id that only its own
+/// hooks say. So `UserPromptSubmit`, `Stop` and `SessionStart` all report it, and
+/// whichever arrives first wins; the rest find nothing to change. Claude Code's id
+/// is the daemon's ([`session_of`]), so a Claude session is left alone.
+async fn learn_agent_id(app: &Arc<AppState>, id: Uuid, payload: &HookPayload) {
+    let Some(theirs) = payload.session_id.as_deref().filter(|t| !t.is_empty()) else {
+        return;
+    };
+    let mut inner = app.inner.write().await;
+    let Some(s) = inner.sessions.get_mut(&id) else {
+        return;
+    };
+    if s.agent != orchd::agent::Agent::Codex {
+        return;
+    }
+    if s.agent_session_id.as_deref() != Some(theirs) {
+        s.agent_session_id = Some(theirs.to_string());
+    }
+    // As reported, unchecked: Codex names the rollout it is writing, where Claude
+    // Code's `--worktree` reported a directory it never wrote to.
+    if let Some(tp) = payload.transcript_path.as_deref().filter(|t| !t.is_empty()) {
+        s.transcript_path = Some(PathBuf::from(tp));
+    }
+}
+
 /// Every handler returns 200 with an empty body and never blocks a turn.
 type HookResult = (StatusCode, Json<serde_json::Value>);
 
@@ -222,6 +250,7 @@ pub async fn session_start(
     let Some(id) = session_of(&headers, &payload) else {
         return ok();
     };
+    learn_agent_id(&app, id, &payload).await;
     /* A worktree the daemon did not name only reveals its path here, so this is
     where it gets adopted.
 
@@ -307,18 +336,12 @@ pub async fn session_start(
             if let Some(cwd) = cwd {
                 s.cwd = cwd;
             }
-            if matches!(s.state, State::Starting) {
-                // Started, but nothing is running: the prompt box is empty and
-                // waiting for you. `Working` here made a brand-new session look
-                // busy and blocked actions that only fight a running agent. A
-                // respawn under the same id goes back to where it stood instead,
-                // clock and all (`Session::comes_back_as`).
-                let rest = s.comes_back_as.take().unwrap_or(State::YourTurn {
-                    since: SystemTime::now(),
-                    reason: TurnReason::Ready,
-                });
-                s.set_state(rest);
-            }
+            // Started, but nothing is running: the prompt box is empty and
+            // waiting for you. `Working` here made a brand-new session look
+            // busy and blocked actions that only fight a running agent. A
+            // respawn under the same id goes back to where it stood instead,
+            // clock and all (`Session::comes_back_as`).
+            s.opened();
             s.pending_prompt.take().map(|p| (p, s.pty.clone()))
         })
     };
@@ -353,6 +376,7 @@ pub async fn user_prompt_submit(
     Json(payload): Json<HookPayload>,
 ) -> HookResult {
     if let Some(id) = session_of(&headers, &payload) {
+        learn_agent_id(&app, id, &payload).await;
         // Sending the next prompt is one of exactly two ways YourTurn
         // clears (§2). Both change the underlying reality.
         app.with_session(id, |s| s.set_state(State::Working)).await;
@@ -475,6 +499,22 @@ pub async fn notification(
     ok()
 }
 
+/// Codex's `Interrupt`: the turn you cut short, said by the agent itself.
+///
+/// The pane's escape already says it ([`crate::ws::note_interrupt`]), and both
+/// arrive for one escape. That is safe because the move is out of `Working` only,
+/// so whichever lands second finds nothing to do.
+pub async fn interrupt(
+    AxState(app): AxState<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<HookPayload>,
+) -> HookResult {
+    if let Some(id) = session_of(&headers, &payload) {
+        crate::ws::note_interrupt(&app, id).await;
+    }
+    ok()
+}
+
 /// The primary attention event (§3).
 pub async fn stop(
     AxState(app): AxState<Arc<AppState>>,
@@ -484,6 +524,7 @@ pub async fn stop(
     let Some(id) = session_of(&headers, &payload) else {
         return ok();
     };
+    learn_agent_id(&app, id, &payload).await;
 
     let workspace = {
         let inner = app.inner.read().await;
@@ -923,6 +964,21 @@ fn push_guard_hook(
     main: &std::path::Path,
     worktrees: &std::path::Path,
 ) -> Option<serde_json::Value> {
+    let command = push_guard_command(base_branch, main, worktrees)?;
+    Some(json!({ "matcher": "Bash", "hooks": [{
+        "type": "command",
+        "command": command,
+        "timeout": 5,
+    }]}))
+}
+
+/// The guard's command line, which both agents run as it is: Codex hands a
+/// `PreToolUse` the payload Claude Code does, under the same `Bash` tool name.
+fn push_guard_command(
+    base_branch: Option<&str>,
+    main: &std::path::Path,
+    worktrees: &std::path::Path,
+) -> Option<String> {
     let orch = orch_binary()?;
     let mut command = format!("{} guard push", sh_quote(&orch.to_string_lossy()));
     if let Some(b) = base_branch {
@@ -933,11 +989,51 @@ fn push_guard_hook(
         " --worktrees {}",
         sh_quote(&worktrees.to_string_lossy())
     ));
-    Some(json!({ "matcher": "Bash", "hooks": [{
-        "type": "command",
-        "command": command,
-        "timeout": 5,
-    }]}))
+    Some(command)
+}
+
+/// The same hooks for Codex, as `-c` overrides ([`orchd::codex`]).
+///
+/// **Every one is `orch hook <route>`**, onto the routes Claude Code posts to,
+/// because Codex runs command hooks only and hands them Claude Code's payloads.
+/// What differs is the events. `Notification` does not exist, and
+/// `PermissionRequest` is the permission prompt it stood for. `Interrupt` does
+/// exist, which Claude Code never told the daemon about (`ws::note_interrupt`).
+/// And `SessionStart` arrives with the first prompt rather than before it, which
+/// is why a Codex session's first prompt is its argv
+/// ([`orchd::agent::Agent::prompt_in_argv`]).
+///
+/// Five seconds where Claude Code's are one: these are a process and a `curl`
+/// each, and `orch hook` bounds the request itself.
+fn codex_overrides(
+    base_branch: Option<&str>,
+    main: &std::path::Path,
+    worktrees: &std::path::Path,
+) -> Vec<String> {
+    let Some(orch) = orch_binary() else {
+        return Vec::new();
+    };
+    let orch = sh_quote(&orch.to_string_lossy());
+    let hook = |route: &str| vec![(format!("{orch} hook {route}"), 5)];
+    let mut pre: Vec<orchd::codex::HookGroup> = vec![(None, hook("pre-edit"))];
+    if let Some(guard) = push_guard_command(base_branch, main, worktrees) {
+        pre.push((Some("Bash"), vec![(guard, 5)]));
+    }
+    use orchd::codex::hook_override as o;
+    vec![
+        o("SessionStart", &[(None, hook("session-start"))]),
+        o("UserPromptSubmit", &[(None, hook("user-prompt-submit"))]),
+        o("PreToolUse", &pre),
+        o("PostToolUse", &[(None, hook("post-tool-use"))]),
+        o(
+            "PermissionRequest",
+            &[(None, hook("notification/permission_prompt"))],
+        ),
+        o("Stop", &[(None, hook("stop"))]),
+        o("SubagentStop", &[(None, hook("subagent-stop"))]),
+        o("Interrupt", &[(None, hook("interrupt"))]),
+        o("SessionEnd", &[(None, hook("session-end"))]),
+    ]
 }
 
 /// Write the daemon-owned settings file handed to every spawned session.
@@ -1069,12 +1165,16 @@ pub fn write_settings(
         std::fs::create_dir_all(dir)?;
     }
     std::fs::write(&path, serde_json::to_string_pretty(&settings)?)?;
+    // Codex's twin, on the same restart boundary, so the two agents are never
+    // guarded by different rules.
+    orchd::codex::write_hooks(&codex_overrides(base_branch, main, worktrees))?;
     Ok(path)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::SystemTime;
 
     /// A `SessionEnd` from the process a relocation killed must not settle the
     /// live session that took its id.
@@ -1449,6 +1549,49 @@ mod tests {
         assert!(inner.sessions.get(&id).unwrap().pending_prompt.is_none());
 
         let _ = spawned.handle.kill();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Codex's own id arrives on a hook and is kept beside the daemon's, which is
+    /// what `codex resume` is handed. A Claude Code session's id already is the
+    /// daemon's, so the same payload changes nothing there.
+    #[tokio::test]
+    async fn a_codex_session_learns_its_own_id_from_a_hook() {
+        let dir = orchd::testutil::scratch("learn-id");
+        let app = orchd::testutil::app_at(&dir, "");
+        let (codex, claude) = (Uuid::new_v4(), Uuid::new_v4());
+        {
+            let mut inner = app.inner.write().await;
+            let mut s = Session::new(codex, MAIN.to_string(), dir.clone(), None);
+            s.agent = orchd::agent::Agent::Codex;
+            inner.sessions.insert(codex, s);
+            inner.sessions.insert(
+                claude,
+                Session::new(claude, MAIN.to_string(), dir.clone(), None),
+            );
+        }
+        let payload = || HookPayload {
+            session_id: Some("01a13038-c5d8-7cd0-b9b8-7c877e5c58ff".into()),
+            transcript_path: Some("/h/.codex/sessions/rollout-x.jsonl".into()),
+            ..HookPayload::default()
+        };
+        for id in [codex, claude] {
+            let mut headers = HeaderMap::new();
+            headers.insert("x-orch-session", id.to_string().parse().unwrap());
+            let _ = user_prompt_submit(AxState(app.clone()), headers, Json(payload())).await;
+        }
+        let inner = app.inner.read().await;
+        let s = &inner.sessions[&codex];
+        assert_eq!(
+            s.agent_session_id.as_deref(),
+            Some("01a13038-c5d8-7cd0-b9b8-7c877e5c58ff")
+        );
+        assert_eq!(
+            s.transcript_path.as_deref(),
+            Some(std::path::Path::new("/h/.codex/sessions/rollout-x.jsonl"))
+        );
+        assert!(inner.sessions[&claude].agent_session_id.is_none());
+        drop(inner);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

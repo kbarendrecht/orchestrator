@@ -153,14 +153,14 @@ async fn spawn_posting_run(
     `/api/pr/:n/triage-context` answers. The command string is the skill's
     directory name — `skills::a_skill_is_named_after_the_command_that_types_it`
     is what keeps those two spellings together. */
-    let pending = format!("/orchd:{} {pr}", kind.command);
-
     // The post token is minted by `spawn_run`, because both posting runs spawn
     // there and `posts_proposals` names them; the ask token only when the run has
     // somebody to ask.
     let spec = crate::spawn::RunSpec {
         command: kind.command.to_string(),
-        pending,
+        skill: kind.command.to_string(),
+        args: pr.to_string(),
+        agent: app.agent_for(None).await?,
         asks: kind.asks,
         extra_env: Vec::new(),
     };
@@ -215,15 +215,13 @@ pub(crate) async fn hand_to_live_session(
     `type_user_turn` carries the three refusals with it (mid-turn, a
     permission prompt, an open question), which is exactly right here: each
     is a keystroke that would mean something other than a prompt. */
-    let run = {
+    let (run, agent) = {
         let inner = app.inner.read().await;
-        inner
+        let s = inner
             .sessions
             .get(id)
-            .ok_or_else(|| crate::state::no_such_session(*id))?
-            .pass
-            .as_ref()
-            .map(|p| p.command.clone())
+            .ok_or_else(|| crate::state::no_such_session(*id))?;
+        (s.pass.as_ref().map(|p| p.command.clone()), s.agent)
     };
     match run.as_deref() {
         // Already doing this, so the press is "show me" and nothing else.
@@ -238,7 +236,7 @@ pub(crate) async fn hand_to_live_session(
         }
         // An ordinary conversation, which is the case the button is for.
         None => {
-            app.type_user_turn(*id, &format!("/orchd:{command} {pr}"))
+            app.type_user_turn(*id, &agent.skill_line(command, &pr.to_string()))
                 .await?;
             /* Working from the moment it is typed, not from when Claude Code's
             prompt hook says so. A double press otherwise typed the command twice:
@@ -329,7 +327,9 @@ async fn start_with_prompt(
     daemon's own skills rather than whatever the repo happens to define. */
     let spec = crate::spawn::RunSpec {
         command: command.to_string(),
-        pending: format!("/orchd:{command} {pr}"),
+        skill: command.to_string(),
+        args: pr.to_string(),
+        agent: app.agent_for(None).await?,
         asks: true,
         extra_env: vec![
             (crate::skills::VAR_PR.to_string(), pr.to_string()),

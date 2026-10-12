@@ -103,8 +103,9 @@ pub fn session_env(
     (set, vec!["CLAUDE_CODE_CHILD_SESSION"])
 }
 
-/// The argv every spawned `claude` carries whatever the run is: the daemon's hook
-/// settings, and the plugin dir its vendored skills live in.
+/// The argv every spawned agent carries whatever the run is: for Claude Code the
+/// daemon's hook settings and the plugin dir its vendored skills live in, for
+/// Codex the same two as `-c` overrides ([`crate::codex::flags`]).
 ///
 /// The pair beside [`session_env`], and here for the same reason. Both halves are
 /// per *process*, not per conversation — a resume that omits either gets a session
@@ -114,16 +115,30 @@ pub fn session_env(
 ///
 /// It cannot be made un-forgettable the way `session_env`'s signature was: an argv
 /// tail a site simply never appends is invisible to the compiler. The e2e fake
-/// agent checks it for that reason.
-pub fn session_flags() -> Result<Vec<String>> {
-    let mut v = vec![
-        "--settings".to_string(),
-        Config::hooks_settings_path()?
-            .to_string_lossy()
-            .into_owned(),
-    ];
-    v.extend(crate::skills::flag());
-    Ok(v)
+/// agents check it for that reason.
+///
+/// **Blocking for Codex**, which is asked for its hook hashes the first time a
+/// binary is seen, so callers reach this off the runtime. `cwd`, `env` and
+/// `unset` are the session's, for that reason too.
+pub fn session_flags(
+    agent: crate::agent::Agent,
+    cwd: &Path,
+    env: &[(String, String)],
+    unset: &[&str],
+) -> Result<Vec<String>> {
+    match agent {
+        crate::agent::Agent::Claude => {
+            let mut v = vec![
+                "--settings".to_string(),
+                Config::hooks_settings_path()?
+                    .to_string_lossy()
+                    .into_owned(),
+            ];
+            v.extend(crate::skills::flag());
+            Ok(v)
+        }
+        crate::agent::Agent::Codex => Ok(crate::codex::flags(cwd, env, unset)),
+    }
 }
 
 /// The directory the running executable sits in, when `orch` is really there.

@@ -1603,6 +1603,9 @@ export async function copyText(/** @type {string} */ text) {
   }
 }
 
+/** What a menu calls an agent, and the pane header beside the session's name. */
+export const AGENT_LABEL = /** @type {Record<import('../repo').Agent, string>} */ ({ claude: 'Claude Code', codex: 'Codex' });
+
 export function openMenu(/** @type {MouseEvent} */ ev, /** @type {MenuItem[]} */ items) {
   ev.preventDefault();
   const menu = $('ctxmenu');
@@ -1956,13 +1959,14 @@ async function asTheOnlyCreate(/** @type {string} */ what, /** @type {Target} */
 }
 
 /** @param {string} workspace
- *  @param {Target} [where] the checkout to create in; the active one by default */
-export async function newSession(workspace, where) {
+ *  @param {Target} [where] the checkout to create in; the active one by default
+ *  @param {import('../repo').Agent} [agent] which agent; the one picked last when absent */
+export async function newSession(workspace, where, agent) {
   const target = where ?? activeCheckout();
   const intoMain = workspace === mainWorkspace(snapshotOf(target.path) ?? snap)?.id;
   await asTheOnlyCreate('starting a session', target, intoMain, async () => {
     try {
-      const r = await callOn(target, '/api/session', { workspace });
+      const r = await callOn(target, '/api/session', agent ? { workspace, agent } : { workspace });
       if (startingWatched || startingFollow) setPendingSelect(r.session);
     } catch (e) {
       toast(reason(e), true);
@@ -1974,8 +1978,9 @@ export async function newSession(workspace, where) {
  *  Naming one every time is friction for something you rarely refer to by
  *  name, and an unnamed one cannot collide with an archived worktree either. */
 /** @param {boolean} [named]
- *  @param {Target} [where] the checkout to cut the worktree in */
-export async function newWorktree(named, where) {
+ *  @param {Target} [where] the checkout to cut the worktree in
+ *  @param {import('../repo').Agent} [agent] which agent; the one picked last when absent */
+export async function newWorktree(named, where, agent) {
   let name = null;
   if (named) {
     name = await promptBox('Worktree name', {
@@ -1992,7 +1997,7 @@ export async function newWorktree(named, where) {
   const target = where ?? activeCheckout();
   await asTheOnlyCreate(name ? `creating worktree ${name}` : 'creating a worktree', target, false, async () => {
     try {
-      const r = await callOn(target, '/api/worktree', name ? { name } : {});
+      const r = await callOn(target, '/api/worktree', { ...(name ? { name } : {}), ...(agent ? { agent } : {}) });
       /* **Only if you are still watching it.** Landing you on what you asked for is
          right when you waited for it and wrong when you did not: a worktree cut is
          ten seconds, being able to work in those ten seconds is the point, and a

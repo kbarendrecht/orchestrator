@@ -126,6 +126,12 @@ pub struct SessionRecord {
     pub spawned_by: Option<SessionId>,
     #[serde(default)]
     pub spawn_cut_worktree: bool,
+    /// See [`crate::model::Session::agent`]. A record from before the choice
+    /// existed is Claude Code's, which the default says.
+    #[serde(default)]
+    pub agent: crate::agent::Agent,
+    #[serde(default)]
+    pub agent_session_id: Option<String>,
 }
 
 impl SessionRecord {
@@ -151,6 +157,8 @@ impl SessionRecord {
             arrival_notice: s.arrival_notice.clone(),
             spawned_by: s.spawned_by,
             spawn_cut_worktree: s.spawn_cut_worktree,
+            agent: s.agent,
+            agent_session_id: s.agent_session_id.clone(),
         }
     }
 
@@ -173,6 +181,8 @@ impl SessionRecord {
         s.arrival_notice = self.arrival_notice;
         s.spawned_by = self.spawned_by;
         s.spawn_cut_worktree = self.spawn_cut_worktree;
+        s.agent = self.agent;
+        s.agent_session_id = self.agent_session_id;
         // After the fields, not before: `resumable` reads `recovery` and
         // `had_a_turn`, so computing it on a half-built session answers about the
         // defaults.
@@ -396,6 +406,20 @@ fn stories_path() -> Result<PathBuf> {
     Ok(Config::config_dir()?.join("stories.json"))
 }
 
+fn last_agent_path() -> Result<PathBuf> {
+    Ok(Config::config_dir()?.join("agent.json"))
+}
+
+/// The agent you named last, which a plain `+` starts. A preference, so a
+/// missing or unreadable file is Claude Code and nothing else.
+pub fn save_last_agent(agent: crate::agent::Agent) -> Result<()> {
+    save_json(&last_agent_path()?, &agent)
+}
+
+pub fn load_last_agent() -> crate::agent::Agent {
+    load_json(last_agent_path())
+}
+
 fn spare_path() -> Result<PathBuf> {
     Ok(Config::config_dir()?.join("spare.json"))
 }
@@ -593,7 +617,11 @@ pub fn has_conversation(id: uuid::Uuid, cwd: &Path, recorded: Option<&Path>) -> 
     };
     // The pattern holds no newline, so searching the buffer whole is the same
     // search as scanning it by line, without the split.
-    String::from_utf8_lossy(&head).contains(r#""type":"user""#)
+    //
+    // A Codex rollout is written from the first turn on, and that turn opens with
+    // `task_started`; nothing in a Claude Code transcript is spelled that way.
+    let head = String::from_utf8_lossy(&head);
+    head.contains(r#""type":"user""#) || head.contains(r#""type":"task_started""#)
 }
 
 /// Whether a conversation was ever written to disk.
@@ -1039,6 +1067,11 @@ const TITLE_MAX: usize = 120;
 /// caller falls back to the workspace name, which is what the rail showed before
 /// this existed.
 pub fn ai_title(id: uuid::Uuid, cwd: &Path, recorded: Option<&Path>) -> Option<String> {
+    // A Codex rollout carries no title; Codex keeps names in an index of its own.
+    if let Some(theirs) = recorded.and_then(crate::codex::rollout_id) {
+        return crate::codex::thread_name(&theirs)
+            .map(|t| t.chars().take(TITLE_MAX).collect::<String>());
+    }
     let path = transcript_file(id, cwd, recorded)?;
     let tail = read_tail(&path, TITLE_TAIL_BYTES).ok()?;
     let text = String::from_utf8_lossy(&tail);
@@ -1101,6 +1134,40 @@ fn contains_ci(hay: &str, needle_lower: &str) -> bool {
 /// rather than "this scrolled past once".
 fn spoken_text(v: &serde_json::Value) -> Vec<&str> {
     let kind = v.get("type").and_then(|t| t.as_str()).unwrap_or_default();
+    // A Codex rollout says it as a `response_item` message, whose user turns
+    // include the context Codex injects ahead of yours. That is not something
+    // anybody said, and it names the cwd, so every search for a path would match.
+    if kind == "response_item" {
+        let Some(p) = v.get("payload") else {
+            return Vec::new();
+        };
+        let role = p.get("role").and_then(|r| r.as_str()).unwrap_or_default();
+        if p.get("type").and_then(|t| t.as_str()) != Some("message")
+            || !matches!(role, "user" | "assistant")
+        {
+            return Vec::new();
+        }
+        return p
+            .get("content")
+            .and_then(|c| c.as_array())
+            .map(|blocks| {
+                blocks
+                    .iter()
+                    .filter(|b| {
+                        matches!(
+                            b.get("type").and_then(|t| t.as_str()),
+                            Some("input_text" | "output_text")
+                        )
+                    })
+                    .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                    .filter(|t| {
+                        !t.starts_with("<environment_context>")
+                            && !t.starts_with("# AGENTS.md instructions")
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+    }
     if kind != "user" && kind != "assistant" {
         return Vec::new();
     }
@@ -1475,6 +1542,8 @@ mod tests {
                 arrival_notice: None,
                 spawned_by: None,
                 spawn_cut_worktree: false,
+                agent: crate::agent::Agent::Claude,
+                agent_session_id: None,
             }
         };
 
@@ -1610,6 +1679,39 @@ mod tests {
             got.as_deref(),
             Some("Fix Ctrl+P not showing all filled pages")
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A Codex rollout: what you typed and what it answered are found, the context
+    /// Codex injects ahead of your first turn and a command's output are not, and
+    /// the file counts as a conversation from its first turn.
+    #[test]
+    fn a_codex_rollout_is_searched_for_what_was_said() {
+        let dir = std::env::temp_dir().join(format!("orchd-cxsearch-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let id = uuid::Uuid::new_v4();
+        let rollout = dir.join(format!("rollout-2026-10-12T15-06-29-{id}.jsonl"));
+        std::fs::write(
+            &rollout,
+            concat!(
+                r#"{"type":"session_meta","payload":{"cwd":"/repo/swap"}}"#,
+                "\n",
+                r#"{"type":"event_msg","payload":{"type":"task_started"}}"#,
+                "\n",
+                r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>\n<cwd>/repo/swap</cwd>"}]}}"#,
+                "\n",
+                r#"{"type":"response_item","payload":{"type":"function_call_output","output":"git rebase failed"}}"#,
+                "\n",
+                r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"please Rebase onto develop"}]}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        assert_eq!(super::first_spoken_match(&rollout, "swap"), None);
+        assert!(super::first_spoken_match(&rollout, "rebase")
+            .unwrap()
+            .contains("Rebase onto develop"));
+        assert!(super::has_conversation(id, &dir, Some(&rollout)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -728,7 +728,7 @@ pub enum Look {
 pub async fn mark_stale(app: &Arc<AppState>, look: Look) {
     let live: Vec<(
         crate::model::SessionId,
-        std::path::PathBuf,
+        (std::path::PathBuf, crate::agent::Agent),
         std::path::PathBuf,
     )> = {
         let inner = app.inner.read().await;
@@ -736,7 +736,7 @@ pub async fn mark_stale(app: &Arc<AppState>, look: Look) {
             .sessions
             .values()
             .filter(|s| s.state.is_live() && !s.agent_stale)
-            .filter_map(|s| Some((s.id, s.cwd.clone(), s.agent_exe.clone()?)))
+            .filter_map(|s| Some((s.id, (s.cwd.clone(), s.agent), s.agent_exe.clone()?)))
             .collect()
     };
     if live.is_empty() {
@@ -744,17 +744,22 @@ pub async fn mark_stale(app: &Arc<AppState>, look: Look) {
     }
     let cfg = app.cfg.clone();
     let stale = crate::proc::run_blocking("asking which sessions run an old claude", move || {
-        let mut now: std::collections::HashMap<std::path::PathBuf, Option<std::path::PathBuf>> =
-            std::collections::HashMap::new();
+        // Per tree *and* agent: each session is measured against its own program,
+        // or every Codex session reads as running an old `claude`.
+        let mut now: std::collections::HashMap<
+            (std::path::PathBuf, crate::agent::Agent),
+            Option<std::path::PathBuf>,
+        > = std::collections::HashMap::new();
         live.into_iter()
-            .filter(|(_, cwd, exe)| {
+            .filter(|(_, at, exe)| {
                 if !exe.exists() {
                     return true;
                 }
                 if look == Look::Exists {
                     return false;
                 }
-                let current = now.entry(cwd.clone()).or_insert_with(|| {
+                let (cwd, agent) = at;
+                let current = now.entry(at.clone()).or_insert_with(|| {
                     /* **The checkout's own variables, not `launch::session_env`.**
                     That is refused here by `clippy.toml`, and rightly: it builds a
                     *spawn's* environment, and one built outside `spawn` is how a run
@@ -764,7 +769,7 @@ pub async fn mark_stale(app: &Arc<AppState>, look: Look) {
                     the app's own directory first, which holds `orch` and never
                     `claude`, so the two cannot disagree about the agent. */
                     let env = crate::env_source::read(cfg.env_source, cwd);
-                    orchd_base::pty::which("claude", cwd, &env, &[]).ok()
+                    orchd_base::pty::which(agent.program(), cwd, &env, &[]).ok()
                 });
                 // A tree where `claude` cannot be found says nothing about this
                 // session, so it is not called stale on the strength of that.

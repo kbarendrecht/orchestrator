@@ -449,6 +449,9 @@ pub async fn set_config(
 #[derive(Deserialize)]
 pub struct NewSession {
     pub workspace: String,
+    /// Absent means the agent named last ([`AppState::agent_for`]).
+    #[serde(default)]
+    pub agent: Option<crate::agent::Agent>,
 }
 
 /// Refuse if a workspace already holds a live session.
@@ -498,7 +501,8 @@ pub async fn new_session(
     Json(body): Json<NewSession>,
 ) -> ApiResult<serde_json::Value> {
     refuse_if_occupied(&app, &body.workspace).await?;
-    let id = spawn::spawn_session(&app, &body.workspace, None, None).await?;
+    let agent = app.agent_for(body.agent).await?;
+    let id = spawn::spawn_session(&app, &body.workspace, None, spawn::Source::New(agent)).await?;
     Ok(Json(json!({ "session": id })))
 }
 
@@ -507,6 +511,9 @@ pub struct NewWorktree {
     /// Absent means let Claude Code name it, which is the common case.
     #[serde(default)]
     pub name: Option<String>,
+    /// Absent means the agent named last ([`AppState::agent_for`]).
+    #[serde(default)]
+    pub agent: Option<crate::agent::Agent>,
 }
 
 pub async fn new_worktree(
@@ -518,7 +525,8 @@ pub async fn new_worktree(
         .as_deref()
         .map(str::trim)
         .filter(|n| !n.is_empty());
-    let id = spawn::spawn_worktree_session(&app, name, None).await?;
+    let agent = app.agent_for(body.agent).await?;
+    let id = spawn::spawn_worktree_session(&app, name, agent, None).await?;
     Ok(Json(json!({ "session": id })))
 }
 
@@ -1402,12 +1410,14 @@ pub async fn spawn_from_session(
 ) -> ApiResult<serde_json::Value> {
     ask_token_ok(&app, id, &headers).await?;
 
-    let mine = {
+    // The caller's agent as well: a session handing work on hands it to its own
+    // kind, which is the one whose skills and habits the prompt was written for.
+    let (mine, agent) = {
         let inner = app.inner.read().await;
         inner
             .sessions
             .get(&id)
-            .map(|s| s.workspace.clone())
+            .map(|s| (s.workspace.clone(), s.agent))
             .ok_or_else(|| crate::state::no_such_session(id))?
     };
 
@@ -1450,9 +1460,9 @@ pub async fn spawn_from_session(
         .filter(|n| !n.is_empty());
     let cut = body.worktree || (named.is_none() && mine == MAIN);
     let child = match named {
-        Some(w) => spawn::spawn_session(&app, w, None, None).await?,
-        None if cut => spawn::spawn_worktree_session(&app, name, None).await?,
-        None => spawn::spawn_session(&app, &mine, None, None).await?,
+        Some(w) => spawn::spawn_session(&app, w, None, spawn::Source::New(agent)).await?,
+        None if cut => spawn::spawn_worktree_session(&app, name, agent, None).await?,
+        None => spawn::spawn_session(&app, &mine, None, spawn::Source::New(agent)).await?,
     };
     {
         let mut inner = app.inner.write().await;
@@ -1825,8 +1835,7 @@ pub async fn resume_external(
         );
     }
     refuse_if_occupied(&app, &workspace).await?;
-    let new_id =
-        spawn::spawn_session(&app, &workspace, None, Some(spawn::Source::Resume(id))).await?;
+    let new_id = spawn::spawn_session(&app, &workspace, None, spawn::Source::Resume(id)).await?;
     let now_on = {
         let mut inner = app.inner.write().await;
         /* Out of the list the moment it has a record, or the rail draws it twice —
@@ -1879,13 +1888,13 @@ pub async fn fork_session(
     State(app): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
 ) -> ApiResult<serde_json::Value> {
-    let had_a_turn = {
+    let (had_a_turn, agent) = {
         let inner = app.inner.read().await;
-        inner
+        let s = inner
             .sessions
             .get(&id)
-            .ok_or_else(|| crate::state::no_such_session(id))?
-            .had_a_turn
+            .ok_or_else(|| crate::state::no_such_session(id))?;
+        (s.had_a_turn, s.agent)
     };
     // Refuse before a worktree is cut, not after the fork dies in it. A fork
     // replays the conversation with `--resume`, so a session that never had a turn
@@ -1899,7 +1908,7 @@ pub async fn fork_session(
             crate::model::short_id(&id)
         );
     }
-    let new_id = spawn::spawn_worktree_session(&app, None, Some(id)).await?;
+    let new_id = spawn::spawn_worktree_session(&app, None, agent, Some(id)).await?;
     Ok(Json(
         json!({ "session": new_id, "warning": None::<String> }),
     ))
@@ -1956,8 +1965,7 @@ async fn revive(app: &Arc<AppState>, id: Uuid) -> ApiResult<serde_json::Value> {
         let inner = app.inner.read().await;
         inner.sessions.get(&id).and_then(|s| s.pass.clone())
     };
-    let new_id =
-        spawn::spawn_session(app, &workspace, pass, Some(spawn::Source::Resume(id))).await?;
+    let new_id = spawn::spawn_session(app, &workspace, pass, spawn::Source::Resume(id)).await?;
     Ok(Json(json!({ "session": new_id, "warning": warning })))
 }
 

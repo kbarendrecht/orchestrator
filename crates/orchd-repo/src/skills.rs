@@ -177,6 +177,42 @@ pub fn flag() -> Vec<String> {
     }
 }
 
+/// What tells a Codex session the daemon's skills are there.
+///
+/// **Codex has no `--plugin-dir`.** It finds skills in a repo's `.agents/skills`,
+/// which it reads only for a project it trusts and which would put the daemon's
+/// files in your checkout, and in `~/.agents/skills`, which would hand them to
+/// every Codex you run. Its plugins install into a cache that outlives the
+/// process. So the skills stay where [`write_plugin`] puts them for Claude Code,
+/// and these instructions name each one and its file — handed to the process as
+/// `developer_instructions`, the per-invocation layer Codex does have. Measured on
+/// 0.162.1: told the path that way, it reads the file and follows it.
+///
+/// The line a run types is [`crate::agent::Agent::skill_line`]'s, which is what
+/// the first sentence teaches it to recognise.
+pub fn codex_instructions() -> Option<String> {
+    let dir = plugin_dir().ok()?.join("skills");
+    let mut out = String::from(
+        "You are running inside orchd, the orchestrator that started this session. \
+         It carries skills of its own as files. When a message is `orchd:<name>` \
+         followed by arguments, or a task matches one of the descriptions below, read \
+         that skill's file and follow it, taking the arguments as its input.\n",
+    );
+    for (name, body) in VENDORED {
+        let description = body
+            .split("---")
+            .nth(1)
+            .and_then(|head| head.lines().find_map(|l| l.strip_prefix("description:")))
+            .map(str::trim)
+            .unwrap_or("");
+        out.push_str(&format!(
+            "- orchd:{name} ({}): {description}\n",
+            dir.join(name).join("SKILL.md").display()
+        ));
+    }
+    Some(out)
+}
+
 /// Write the plugin directory, returning where it went.
 ///
 /// Every start and always overwriting, because this is the daemon's file the way
@@ -222,6 +258,24 @@ mod tests {
                 "{name}'s frontmatter must name it {name}"
             );
             assert!(head.contains("description:"), "{name} needs a description");
+        }
+    }
+
+    /// Codex is told each skill by name, file and description, and a skill
+    /// whose description did not make it is one the model never reaches for.
+    #[test]
+    fn codex_is_told_every_skill_and_what_it_is_for() {
+        let text = codex_instructions().expect("a plugin dir in a test");
+        for (name, _) in VENDORED {
+            let line = text
+                .lines()
+                .find(|l| l.starts_with(&format!("- orchd:{name} (")))
+                .unwrap_or_else(|| panic!("{name} is not named"));
+            assert!(line.contains(&format!("/skills/{name}/SKILL.md): ")));
+            assert!(
+                line.len() > format!("- orchd:{name} ()").len() + 40,
+                "{name} has no description: {line}"
+            );
         }
     }
 

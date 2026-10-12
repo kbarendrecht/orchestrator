@@ -273,7 +273,8 @@ pub async fn open_pr(
     // pressing this twice would otherwise stack a second session in it. (The `main`
     // arm already refused an occupied main inside `switch_main_to_pr`.)
     refuse_if_occupied(&app, &workspace).await?;
-    let id = spawn::spawn_session(&app, &workspace, None, None).await?;
+    let agent = app.agent_for(None).await?;
+    let id = spawn::spawn_session(&app, &workspace, None, spawn::Source::New(agent)).await?;
     /* Named for the PR (#36). Until Claude Code titled it, the row fell back to the
     workspace, which is `pr-1234` — the number again and nothing else. A name and
     not a title, so Claude Code's own does not replace it a turn later; the same

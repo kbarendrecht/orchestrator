@@ -1,7 +1,7 @@
 // The rail: what is running, what is waiting on you, and the PRs beside it.
 // Twenty-four names, three out; the rest is how a row decides what it says.
 
-import { $, activeCheckout, ageLabel, bandOf, byNewest, call, callFor, callHost, callOn, caret, checkoutOf, CHECKOUTS, chooseBox, clock, confirmBox, copyText, creating, creatingIn, creatingIntoMain, dotClass, el, enterCheckout, getHost, getOn, handedToPr, hasPr, inTrouble, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, QUEUE_MAX, reason, refreshButton, repoSummary, safeHref, selected, sessionDot, sessionsOf, sessionOrder, setPendingSelect, setSelected, setSessionOrder, snap, snapshotFor, snapshotOf, startingShown, stateClass, stateLabel, terms, toast, paintSig, reconcile, unchanged, watchStarting } from './core.js';
+import { $, activeCheckout, AGENT_LABEL, ageLabel, bandOf, byNewest, call, callFor, callHost, callOn, caret, checkoutOf, CHECKOUTS, chooseBox, clock, confirmBox, copyText, creating, creatingIn, creatingIntoMain, dotClass, el, enterCheckout, getHost, getOn, handedToPr, hasPr, inTrouble, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, QUEUE_MAX, reason, refreshButton, repoSummary, safeHref, selected, sessionDot, sessionsOf, sessionOrder, setPendingSelect, setSelected, setSessionOrder, snap, snapshotFor, snapshotOf, startingShown, stateClass, stateLabel, terms, toast, paintSig, reconcile, unchanged, watchStarting } from './core.js';
 import * as Open from './open.js';
 import * as Review from './review.js';
 import * as Term from './term.js';
@@ -1597,6 +1597,17 @@ function addRow(c, state) {
      stays in this tooltip because that is the only place it is ever discovered. */
   tree.title = cutting || `New worktree session · ${MOD_LABEL} N (shift-click to name it)`;
   tree.onclick = (/** @type {MouseEvent} */ ev) => void newWorktree(ev.shiftKey, liveTarget(c));
+  /* **A plain press is the agent picked last, and the menu is where you pick.**
+     Only when this checkout has more than one: with one agent there is nothing to
+     choose, and a menu holding one item is a click that asks a question with one
+     answer. The pick is remembered by the daemon, so the next plain press and the
+     keyboard chords follow it. */
+  const agents = state.agents ?? ['claude'];
+  if (agents.length > 1) {
+    tree.title += ' · right-click to pick the agent';
+    tree.oncontextmenu = (ev) => openMenu(ev, agents.map((a) => /** @type {import('./core.js').MenuItem} */ (
+      [agentItem(a, state.last_agent), null, cutting ? null : () => void newWorktree(false, liveTarget(c), a)])));
+  }
   row.appendChild(tree);
 
   row.appendChild(el('span', 'addsep', '\u00b7'));
@@ -1622,6 +1633,11 @@ function addRow(c, state) {
   // `void` is how this file says fire-and-forget out loud; the row lands on the
   // next snapshot either way.
   inMain.onclick = () => { if (main) void newSession(main.id, liveTarget(c)); };
+  if (agents.length > 1) {
+    if (!inMain.disabled) inMain.title += ' · right-click to pick the agent';
+    inMain.oncontextmenu = (ev) => openMenu(ev, agents.map((a) => /** @type {import('./core.js').MenuItem} */ (
+      [agentItem(a, state.last_agent), null, inMain.disabled || !main ? null : () => void newSession(main.id, liveTarget(c), a)])));
+  }
   row.appendChild(inMain);
 
   /* Hard right, so the row says one thing about the list above it rather than two:
@@ -1632,6 +1648,10 @@ function addRow(c, state) {
 
   return row;
 }
+
+/** A menu row for starting on `a`, marking the one a plain press starts. */
+const agentItem = (/** @type {import('../repo').Agent} */ a, /** @type {import('../repo').Agent | undefined} */ last) =>
+  `new ${AGENT_LABEL[a]} session${a === (last ?? 'claude') ? ' · default' : ''}`;
 
 /** The checkout's target as it is now. `setCheckouts` replaces every target on
  *  each snapshot, and one captured by a node the rail kept holds a base and a

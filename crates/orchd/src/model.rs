@@ -679,6 +679,16 @@ pub struct Session {
     /// cleared the same way a restart clears [`Session::restart_queued`]: the
     /// respawn's fresh record carries `false`.
     pub agent_stale: bool,
+    /// Which agent this conversation is, carried across a resume and a fork:
+    /// a conversation cannot change agents, only be continued by its own.
+    pub agent: crate::agent::Agent,
+    /// The agent's own id for this conversation, when it is not [`Session::id`].
+    ///
+    /// Codex chooses its id and takes none, so it is read off the first hook that
+    /// carries one and `codex resume` is given it. `None` for Claude Code, whose id
+    /// is the daemon's, and for a Codex session that never had a turn — which has
+    /// no conversation to resume either.
+    pub agent_session_id: Option<String>,
 }
 
 impl Session {
@@ -718,6 +728,8 @@ impl Session {
             restart_queued: false,
             agent_exe: None,
             agent_stale: false,
+            agent: crate::agent::Agent::Claude,
+            agent_session_id: None,
             // Always a real one, so an empty stored token can never match an
             // empty header.
             ask_token: crate::secret::random_token(),
@@ -790,6 +802,22 @@ impl Session {
             tracing::debug!(session = %self.id, from = ?self.state, to = ?state, "state");
             self.state = state;
             self.state_since = SystemTime::now();
+        }
+    }
+
+    /// The agent is up and its prompt box is empty: out of `Starting`, into
+    /// `Ready`, or back to where a respawn under the same id stood
+    /// ([`Session::comes_back_as`]). Nothing for a session already past it.
+    ///
+    /// Claude Code says so with `SessionStart`; Codex says nothing until a prompt
+    /// is sent, so for Codex it is the pty going quiet (`spawn::watch_ready`).
+    pub fn opened(&mut self) {
+        if matches!(self.state, State::Starting) {
+            let rest = self.comes_back_as.take().unwrap_or(State::YourTurn {
+                since: SystemTime::now(),
+                reason: TurnReason::Ready,
+            });
+            self.set_state(rest);
         }
     }
 

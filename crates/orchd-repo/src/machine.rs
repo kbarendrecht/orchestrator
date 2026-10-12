@@ -302,9 +302,14 @@ fn trust_accepted_in(home: &Path, dir: &Path) -> Option<bool> {
 pub fn check(cfg: &Config, tracker_server: Option<&str>) -> Vec<Warning> {
     let mut out = Vec::new();
 
-    if !on_path("claude") {
+    // Any agent will do: a checkout with only Codex is a working checkout, and the
+    // board offers what `AppState::probe_agents` finds.
+    if !crate::agent::Agent::ALL
+        .iter()
+        .any(|a| on_path(a.program()))
+    {
         out.push(Warning {
-            what: "`claude` is not on PATH".into(),
+            what: "neither `claude` nor `codex` is on PATH".into(),
             cost: "every session will exit the moment it spawns".into(),
         });
     }

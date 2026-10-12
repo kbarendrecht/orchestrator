@@ -366,6 +366,12 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
     // Before the first snapshot anyone can read, so a board that opens on a broken
     // machine says so on its first paint rather than after the next poll.
     app.set_machine_warnings(warnings).await;
+    // Off the boot path: until it answers, the board offers Claude Code alone,
+    // which is what it offered before there was a choice.
+    {
+        let app = app.clone();
+        tokio::spawn(async move { app.probe_agents().await });
+    }
     // Before anything can spawn a session, `auto_resume` included: a run whose
     // exit nobody is listening for is a verdict that never lands.
     app.observe_runs(settle_run);
@@ -820,6 +826,7 @@ fn observer_hooks() -> Router<Arc<AppState>> {
         .route("/hooks/subagent-stop", post(hooks::subagent_stop))
         .route("/hooks/stop-failure", post(hooks::stop_failure))
         .route("/hooks/session-end", post(hooks::session_end))
+        .route("/hooks/interrupt", post(hooks::interrupt))
         .route("/hooks/boundary-block", post(hooks::boundary_block))
         .layer(axum::middleware::from_fn(hooks::detach))
 }
@@ -1475,7 +1482,7 @@ fn auto_resume(app: Arc<AppState>, records: Vec<store::SessionRecord>) {
                 &app,
                 &workspace,
                 r.kind.clone().pass(),
-                Some(spawn::Source::Resume(r.id)),
+                spawn::Source::Resume(r.id),
             )
             .await
             {

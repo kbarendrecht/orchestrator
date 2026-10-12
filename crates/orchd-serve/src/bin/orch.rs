@@ -51,6 +51,9 @@ orch — talk to the orchestrator you are running inside
   orch guard push [--base <branch>] [--main <path>] [--worktrees <path>]
       Not for you to call — the daemon registers this as a PreToolUse hook.
 
+  orch hook <route>
+      Not for you to call — how a Codex session's hooks reach the daemon.
+
 `orch <command> --help` for the flags each one takes.
 
 Environment (set for you): ORCH_URL, ORCH_SESSION_ID, ORCH_ASK_TOKEN
@@ -201,6 +204,14 @@ out of the area the session works in.
                       it that half is skipped.
 ";
 
+const HELP_HOOK: &str = "\
+orch hook <route>
+
+Not for you to call. The daemon registers this as each of a Codex session's hooks:
+it posts the payload on stdin to the daemon's `/hooks/<route>` and prints the
+answer, if there is one, for Codex to read. Always exits 0.
+";
+
 /// The states `--state` will accept, which are the ones `model::State` has.
 ///
 /// Checked rather than passed through, because an unknown state filters everything
@@ -225,6 +236,7 @@ fn help_for(cmd: &str) -> Option<&'static str> {
         "run" => HELP_RUN,
         "outside" => HELP_OUTSIDE,
         "guard" => HELP_GUARD,
+        "hook" => HELP_HOOK,
         _ => return None,
     })
 }
@@ -276,6 +288,7 @@ fn spec(cmd: &str) -> Option<&'static [(&'static str, Arity)]> {
             ("--main", Arity::Value),
             ("--worktrees", Arity::Value),
         ],
+        "hook" => &[],
         _ => return None,
     })
 }
@@ -292,6 +305,7 @@ fn words_wanted(cmd: &str) -> (usize, &'static str) {
         "outside" => (1, "outside needs the path you were refused"),
         // `guard push`: the sub-verb is a word, and `guard` checks which one.
         "guard" => (1, "the only guard is `orch guard push`"),
+        "hook" => (1, "hook needs the route it posts to"),
         _ => (0, ""),
     }
 }
@@ -645,6 +659,10 @@ fn main() -> ExitCode {
     if cmd == "guard" {
         return guard(&parsed);
     }
+    // The same for a hook, which never carries an ask token.
+    if cmd == "hook" {
+        return hook(&parsed);
+    }
     match run(cmd, &parsed) {
         Ok(out) => {
             if !out.is_empty() {
@@ -659,6 +677,78 @@ fn main() -> ExitCode {
             ExitCode::from(e.code)
         }
     }
+}
+
+/// `orch hook <route>` — one of a Codex session's hooks, handed to the daemon.
+///
+/// **Codex runs only command hooks**, where Claude Code posts to the daemon over
+/// HTTP itself, so this is that HTTP hook as a process: the same route, the same
+/// `X-Orch-Session` correlation, and the daemon's answer on stdout, which Codex
+/// reads in Claude Code's own `hookSpecificOutput` shape.
+///
+/// The command line is the same for every session, the session coming from the
+/// environment. That is what keeps Codex's trust in it stable: Codex hashes each
+/// hook's definition and runs only one whose hash it was told to trust, so a
+/// session id in the argv would be a new hash, and a new trust, per session.
+///
+/// An observer like the rest: a missing variable, a dead daemon and a refusal all
+/// exit 0 with nothing printed, because a hook that fails would fail the turn.
+fn hook(a: &Parsed) -> ExitCode {
+    use std::io::{Read, Write};
+    let route = &a.words[0];
+    // A route, never a URL fragment: this goes into a URL unescaped.
+    if !route
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || matches!(c, '-' | '_' | '/'))
+    {
+        return ExitCode::SUCCESS;
+    }
+    let get = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+    let (Some(url), Some(me)) = (get("ORCH_URL"), get("ORCH_SESSION_ID")) else {
+        return ExitCode::SUCCESS;
+    };
+    let mut payload = Vec::new();
+    if std::io::stdin().read_to_end(&mut payload).is_err() {
+        return ExitCode::SUCCESS;
+    }
+    let child = std::process::Command::new("curl")
+        .args([
+            // `-f`: a refusal's `{"error": …}` is not an answer Codex can read.
+            "-fsS",
+            // The daemon answers every observer on arrival (`hooks::detach`), so
+            // this is a bound on a daemon that is not there, not on the work.
+            "-m",
+            "2",
+            "-X",
+            "POST",
+            "-H",
+            "content-type: application/json",
+            "-H",
+            &format!("x-orch-session: {me}"),
+            "--data-binary",
+            "@-",
+            &format!("{url}/hooks/{route}"),
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    let Ok(mut child) = child else {
+        return ExitCode::SUCCESS;
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(&payload);
+    }
+    let Ok(out) = child.wait_with_output() else {
+        return ExitCode::SUCCESS;
+    };
+    let body = String::from_utf8_lossy(&out.stdout);
+    let body = body.trim();
+    // `{}` is every observer's answer, and it says nothing to Codex either.
+    if out.status.success() && !body.is_empty() && body != "{}" {
+        println!("{body}");
+    }
+    ExitCode::SUCCESS
 }
 
 /// `orch guard push` — the `PreToolUse` hook body.
