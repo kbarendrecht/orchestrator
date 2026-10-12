@@ -28,7 +28,7 @@ const MARGIN = 80;
 const HUGE = 512 * 1024;
 /** Files shown as a picture rather than as lines: what the daemon's image route
  *  serves, so the two cannot disagree about which files are pictures. */
-const IMAGE = /\.(png|jpe?g|gif|webp|avif|svg|ico|bmp)$/i;
+export const IMAGE = /\.(png|jpe?g|gif|webp|avif|svg|ico|bmp)$/i;
 
 /**
  * @typedef {{ line: number, last?: number, col: number, len: number }} Spot
@@ -198,6 +198,8 @@ export function create(on) {
     const a = /** @type {HTMLElement | null} */ (/** @type {HTMLElement} */ (ev.target).closest?.('a.md-file'));
     if (!a || !on.onFile || !view.file) return;
     ev.preventDefault();
+    // A scratchpad file has no workspace for its links to be in.
+    if (!view.ws) return;
     const [target = '', frag = ''] = (a.dataset.file ?? '').split('#');
     let wanted = target;
     try {
@@ -446,7 +448,8 @@ export function create(on) {
   const kind = () => {
     const path = view.file?.path ?? '';
     if (/\.(md|markdown)$/i.test(path)) return 'markdown';
-    if (/\.html?$/i.test(path)) return 'html';
+    // A preview runs on a workspace's token, and a scratchpad file has none.
+    if (/\.html?$/i.test(path) && view.ws) return 'html';
     return null;
   };
 
@@ -459,6 +462,24 @@ export function create(on) {
 
     /** Show an image from its own route; see [`paintImageFrom`]. */
     image: paintImageFrom,
+
+    /** Show text that is in no workspace, a scratchpad file, under `label`.
+     *  With no workspace there is no ruler and no blame: `askChanges` and
+     *  `askBlame` both ask git about a workspace path, and stop on a null `ws`.
+     *
+     *  @param {string} label @param {string} content */
+    showText(label, content) {
+      ++view.seq;
+      view.ws = null;
+      const plain = content.length > HUGE;
+      view.file = { path: label, lines: content.split('\n'), lang: plain ? null : langFor(label), plain };
+      view.rowH = 0;
+      blame = new Map();
+      blameAsked = new Set();
+      changed = [];
+      hits = [];
+      paint({ line: 1, last: 0, col: 0, len: 0 });
+    },
 
     /** Whether a picture is on screen, which has no source to edit. */
     isImage: () => view.mode === 'image',

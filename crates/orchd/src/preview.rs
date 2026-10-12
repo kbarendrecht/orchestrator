@@ -219,7 +219,7 @@ fn image_response(kind: &'static str, bytes: Vec<u8>) -> Response {
 #[derive(Deserialize)]
 pub struct ScratchpadQuery {
     pub session: uuid::Uuid,
-    /// Absolute, as the agent printed it.
+    /// As the agent printed it: absolute, or `scratchpad/<file>`.
     pub path: String,
 }
 
@@ -243,16 +243,62 @@ pub async fn scratchpad_image(
     if !kind.starts_with("image/") {
         return StatusCode::NOT_FOUND.into_response();
     }
+    let Some(bytes) = scratchpad_read(&app, q).await else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let mut response = image_response(kind, bytes);
+    let headers = response.headers_mut();
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
+/// A text file out of a session's scratchpad, as `/api/file` answers one: the
+/// handoffs and notes an agent writes there, under the same bound as its images.
+/// Refused when it is not UTF-8, the way `/api/file` refuses a binary file.
+pub async fn scratchpad_file(
+    State(app): State<Arc<AppState>>,
+    Query(q): Query<ScratchpadQuery>,
+) -> Response {
+    if content_type(&q.path).starts_with("image/") {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let Some(content) = scratchpad_read(&app, q)
+        .await
+        .and_then(|b| String::from_utf8(b).ok())
+    else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let mut response = Json(serde_json::json!({ "content": content })).into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
+/// The bytes of the scratchpad file `q` names, or `None` for anything else.
+///
+/// The file is resolved first, links and all, and only then checked against
+/// [`in_scratchpad`]. **`scratchpad/<file>` is taken too**: an agent names its
+/// own scratchpad that way in prose, so it is resolved against this session's
+/// folder rather than the workspace, and then held to the same check.
+async fn scratchpad_read(app: &AppState, q: ScratchpadQuery) -> Option<Vec<u8>> {
     let cwd = {
         let inner = app.inner.read().await;
         inner.sessions.get(&q.session).map(|s| s.cwd.clone())
-    };
-    let Some(cwd) = cwd else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
+    }?;
     let session = q.session;
-    let read = crate::proc::run_blocking("reading a scratchpad image", move || {
-        let at = std::fs::canonicalize(&q.path).ok()?;
+    crate::proc::run_blocking("reading a scratchpad file", move || {
+        let named = match q.path.strip_prefix("scratchpad/") {
+            Some(rest) => {
+                use std::os::unix::fs::MetadataExt;
+                // The same folder `drop_file` writes to, named for the uid.
+                let home = std::env::var_os("HOME").unwrap_or_else(|| "/".into());
+                let uid = std::fs::metadata(&home).ok()?.uid();
+                drop_path(Path::new("/tmp"), uid, &cwd, session, "x", 0).with_file_name(rest)
+            }
+            None => q.path.into(),
+        };
+        let at = std::fs::canonicalize(&named).ok()?;
         /* Both bases resolved the way the file was. On macOS `/tmp` is a link to
         `/private/tmp`, so a resolved file never started with the plain `/tmp`
         and its own image answered 404, caught by `check` on macos-14. */
@@ -269,14 +315,9 @@ pub async fn scratchpad_image(
         }
         std::fs::read(&at).ok()
     })
-    .await;
-    let Ok(Some(bytes)) = read else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    let mut response = image_response(kind, bytes);
-    let headers = response.headers_mut();
-    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    response
+    .await
+    .ok()
+    .flatten()
 }
 
 /// Whether `at`, already resolved, is inside this session's scratchpad:

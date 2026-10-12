@@ -4,6 +4,8 @@
 // path and it was never even underlined. `preview::scratchpad_image` serves that
 // one folder for the session it belongs to, resolved first and checked after;
 // this holds the route, and `preview::in_scratchpad`'s own test holds the shape.
+// A text file there is served by `preview::scratchpad_file`, also by the
+// `scratchpad/<file>` an agent writes in prose.
 
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -44,6 +46,19 @@ export async function run(t) {
     assert.equal(head.status, 200, 'HEAD answers for the underline')
     assert.equal((await get(b, shot)).status, 404, "another session's scratchpad is not")
     assert.equal((await get(a, outside)).status, 404, 'a file outside the scratchpad is not')
+
+    fs.writeFileSync(path.join(dir, 'handoff.md'), '# handoff\n')
+    const text = (session, p) => fetch(`http://127.0.0.1:${t.port}/api/scratchpad/file?`
+      + new URLSearchParams({ session, path: p }))
+    const long = await text(a, path.join(dir, 'handoff.md'))
+    assert.equal(long.status, 200, 'a text file in its own scratchpad is served')
+    assert.equal((await long.json()).content, '# handoff\n')
+    const short = await text(a, 'scratchpad/handoff.md')
+    assert.equal(short.status, 200, 'the scratchpad/<file> shorthand resolves to its own scratchpad')
+    assert.equal((await short.json()).content, '# handoff\n')
+    assert.equal((await text(b, 'scratchpad/handoff.md')).status, 404, "not in another session's")
+    assert.equal((await text(a, 'scratchpad/../../../../../../etc/hostname')).status, 404, 'the shorthand cannot climb out')
+    assert.equal((await text(a, shot)).status, 404, 'an image is not text')
   } finally {
     // The slug folder too: it is this flow's, and an empty one was left per run.
     fs.rmSync(path.join('/tmp', `claude-${process.getuid()}`, slug), { recursive: true, force: true })

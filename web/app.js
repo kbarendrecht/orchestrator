@@ -1048,7 +1048,7 @@ Term.onPathClick(({ checkout, target, path, line, last, ev }) => {
     const scratch = scratchpadOf(state, target, path);
     if (scratch) {
       const own = CHECKOUTS.find((c) => c.path === checkout) ?? activeCheckout();
-      return void FileView.openScratch(scratch.workspace, scratch.session, scratch.abs, own.base);
+      return void FileView.openScratch(scratch.workspace, scratch.session, scratch.abs, own);
     }
     // Refused rather than opened and failed: `/etc/hosts` is a real file and not
     // this workspace's, and a viewer that answers "no such file" would be lying
@@ -1062,8 +1062,12 @@ Term.onPathClick(({ checkout, target, path, line, last, ev }) => {
     if (found.length) return FileView.open(at.workspace, found, line, last, ev);
     // No file by that name, so it may be a folder, and a click lists what is in it.
     const dirs = await FileView.foldersOf(at.workspace, at.rel);
-    if (!dirs.length) return toast(`no ${at.rel} in this workspace`, true);
-    FileView.openFolder(at.workspace, dirs, ev);
+    if (dirs.length) return FileView.openFolder(at.workspace, dirs, ev);
+    // `scratchpad/<file>` is how an agent names its own scratchpad in prose.
+    const scratch = scratchpadOf(state, target, path);
+    if (!scratch) return toast(`no ${at.rel} in this workspace`, true);
+    const own = CHECKOUTS.find((c) => c.path === checkout) ?? activeCheckout();
+    void FileView.openScratch(scratch.workspace, scratch.session, scratch.abs, own);
   });
 });
 
@@ -1077,15 +1081,18 @@ Term.onPathCheck(({ checkout, target, paths }) => {
   if (!where) return Promise.resolve(paths.map(() => false));
   const at = CHECKOUTS.find((c) => c.path === checkout) ?? activeCheckout();
   return Promise.all(paths.map((path) => {
-    const hit = locate(state, where, path);
-    if (hit) return FileView.known(at, hit.workspace, hit.rel);
-    /* A scratchpad image is underlined only if it is there: a HEAD to the route
+    /* A scratchpad file is underlined only if it is there: a HEAD to the route
        that serves it, which reads no body and refuses anything outside the
        session's own scratchpad. */
     const scratch = scratchpadOf(state, target, path);
-    if (!scratch) return Promise.resolve(false);
-    return fetch(FileView.scratchUrl(at.base, scratch.session, scratch.abs), { method: 'HEAD' })
-      .then((r) => r.ok, () => false);
+    const inScratch = () => (scratch
+      ? fetch(FileView.scratchUrl(at.base, scratch.session, scratch.abs), { method: 'HEAD' })
+        .then((r) => r.ok, () => false)
+      : Promise.resolve(false));
+    const hit = locate(state, where, path);
+    if (!hit) return inScratch();
+    // A workspace file by that name wins over the scratchpad shorthand.
+    return FileView.known(at, hit.workspace, hit.rel).then((k) => k || inScratch());
   }));
 });
 
@@ -1107,7 +1114,7 @@ Term.onPathMenu(({ checkout, target, path, line, last, ev }) => {
     if (!scratch) return toast(`${path} is outside this workspace`, true);
     const own = CHECKOUTS.find((c) => c.path === checkout) ?? activeCheckout();
     return openMenu(ev, [
-      ['Open here', null, () => void FileView.openScratch(scratch.workspace, scratch.session, scratch.abs, own.base)],
+      ['Open here', null, () => void FileView.openScratch(scratch.workspace, scratch.session, scratch.abs, own)],
       ['Copy path', null, () => void copyText(scratch.abs)],
     ]);
   }
@@ -1222,20 +1229,24 @@ function locate(state, where, path) {
   return best;
 }
 
-/** The image an agent printed from its own Claude Code scratchpad, if that is
- *  what `path` is: `<tmp>/claude-<uid>/<slug of its cwd>/<id>/scratchpad/…`.
+/** The file an agent printed from its own Claude Code scratchpad, if that is
+ *  what `path` is: `<tmp>/claude-<uid>/<slug of its cwd>/<id>/scratchpad/…`, or
+ *  `scratchpad/…`, which is how an agent names that folder in prose. The daemon
+ *  resolves the short form, since the page does not know the uid.
  *
  *  **Outside every workspace, so `locate` refuses it, and that was the whole
  *  answer**: the screenshots an agent takes land there and could not be clicked.
- *  Only a session's own pane, only its own scratchpad, only an image; the daemon
- *  checks the same shape again on the resolved file (`preview::in_scratchpad`).
+ *  Only a session's own pane, only its own scratchpad; the daemon checks the
+ *  same shape again on the resolved file (`preview::in_scratchpad`).
  *
  *  @param {any} state @param {string} target @param {string} path */
 function scratchpadOf(state, target, path) {
-  if (!target.startsWith('session:') || !path.startsWith('/')) return null;
+  if (!target.startsWith('session:')) return null;
   const id = target.slice('session:'.length);
   const s = state.sessions.find((/** @type {any} */ x) => x.id === id);
-  if (!s?.cwd || !/\.(png|jpe?g|gif|webp|svg|avif|bmp|ico)$/i.test(path)) return null;
+  if (!s?.cwd) return null;
+  if (path.startsWith('scratchpad/')) return { session: id, workspace: s.workspace, abs: path };
+  if (!path.startsWith('/')) return null;
   const abs = resolvePath(path);
   const slug = s.cwd.replace(/[/.]/g, '-');
   const at = abs.indexOf(`/${slug}/${id}/scratchpad/`);

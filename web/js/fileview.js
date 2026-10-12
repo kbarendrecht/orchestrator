@@ -39,11 +39,14 @@ import * as Viewer from './viewer.js';
  *  last: **a link opens above the page it is in**, and backing out lands on that
  *  page where it was scrolled to, rather than closing the pane and losing it.
  *
+ *  `scratch` is a file from a session's scratchpad ([`openScratch`]), which no
+ *  workspace holds and so the editor cannot write.
+ *
  *  @type {{ open: boolean, ws: string | null, path: string | null, rendered: boolean,
- *           line: number, asked: number, last: number, pinned: boolean,
+ *           line: number, asked: number, last: number, pinned: boolean, scratch: boolean,
  *           trail: { path: string, asked: number, last: number, scroll: number }[] }} */
 const state = {
-  open: false, ws: null, path: null, rendered: true, line: 1, asked: 0, last: 0, pinned: false,
+  open: false, ws: null, path: null, rendered: true, line: 1, asked: 0, last: 0, pinned: false, scratch: false,
   trail: [],
 };
 
@@ -122,31 +125,45 @@ export async function openToEdit(/** @type {string} */ ws, /** @type {string} */
   if (line > 0) Editor.goTo(line);
 }
 
-/** Where a session's scratchpad image is served, on the daemon at `base`.
+/** Where a session's scratchpad file is served, on the daemon at `base`: an
+ *  image for the `<img>` itself, anything else as text.
  *  @param {string} base @param {string} session @param {string} abs */
 export const scratchUrl = (base, session, abs) =>
-  `${base}/api/scratchpad/image?session=${encodeURIComponent(session)}&path=${encodeURIComponent(abs)}`;
+  `${base}/api/scratchpad/${Viewer.IMAGE.test(abs) ? 'image' : 'file'}`
+  + `?session=${encodeURIComponent(session)}&path=${encodeURIComponent(abs)}`;
 
-/** Open an image from a session's Claude Code scratchpad, which is outside every
- *  workspace and so has its own route (`preview::scratchpad_image`). Shown in the
- *  same pane, held to the session's own workspace so switching away closes it the
- *  way it closes any file.
+/** Open a file from a session's Claude Code scratchpad, which is outside every
+ *  workspace and so has routes of its own (`preview::scratchpad_image` and
+ *  `preview::scratchpad_file`). Shown in the same pane, held to the session's own
+ *  workspace so switching away closes it the way it closes any file. Read-only:
+ *  the editor writes to a workspace.
  *
  *  @param {string} ws the session's workspace
  *  @param {string} session
  *  @param {string} abs the path as the agent printed it
- *  @param {string} [base] the daemon of the terminal it was printed in */
-export async function openScratch(ws, session, abs, base = activeCheckout().base) {
+ *  @param {import('./core.js').Endpoint} [at] the daemon of the terminal it was printed in */
+export async function openScratch(ws, session, abs, at = activeCheckout()) {
   if (Editor.isOpen() && !await Editor.close()) return;
   if (state.open && state.ws !== ws && !await close()) return;
+  /** @type {string | null} */
+  let content = null;
+  if (!Viewer.IMAGE.test(abs)) {
+    try {
+      content = String((await getOn(at, scratchUrl('', session, abs))).content ?? '');
+    } catch {
+      return toast(`${abs} could not be read`, true);
+    }
+  }
   state.trail = [];
   state.open = true;
   state.pinned = false;
+  state.scratch = true;
   state.ws = ws;
   state.path = abs;
   borrowFocus('fileview');
   $('fvoverlay').classList.add('on');
-  viewer().image(abs, scratchUrl(base, session, abs));
+  if (content == null) viewer().image(abs, scratchUrl(at.base, session, abs));
+  else viewer().showText(abs, content);
   renderHead(true);
 }
 
@@ -209,6 +226,7 @@ async function show(ws, path, line, last, pinned = false, onTrail = false) {
   if (!onTrail) state.trail = [];
   state.open = true;
   state.pinned = pinned;
+  state.scratch = false;
   state.ws = ws;
   state.path = path;
   state.asked = line;
@@ -240,7 +258,7 @@ function renderHead(/** @type {boolean} */ drawn) {
   const can = drawn && viewer().renderable();
   $('fvmode').hidden = !can;
   // A picture has no source to edit, and the editor's refusal would say so late.
-  $('fvedit').hidden = drawn && viewer().isImage();
+  $('fvedit').hidden = (drawn && viewer().isImage()) || state.scratch;
   const html = viewer().kind() === 'html';
   $('fvmode').textContent = state.rendered ? 'Source' : html ? 'Preview' : 'Rendered';
   $('fvmode').title = state.rendered
@@ -435,7 +453,7 @@ function listed(at, ws, ttl, under = '') {
  *  to sit beside it.
  */
 function edit() {
-  if (!state.path || !state.ws) return toast('nothing to edit here', true);
+  if (!state.path || !state.ws || state.scratch) return toast('nothing to edit here', true);
   // Read before the buffer replaces the rows it is measured from.
   const looking = viewer().middleLine();
   return Editor.open({
