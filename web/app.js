@@ -1366,6 +1366,14 @@ $('killbtn').onclick = () => {
   const s = currentSession();
   if (s) Rail.closeSession(s.id);
 };
+// The worktree and branch names are what you paste into a shell or a PR, so a
+// click copies them.
+for (const id of ['ctxws', 'ctxbranch']) {
+  $(id).onclick = () => {
+    const text = $(id).textContent;
+    if (text) void copyText(text).then((ok) => { if (ok) toast(`copied ${text}`); });
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Keyboard (§9)
@@ -2298,7 +2306,7 @@ function setupChrome() {
       // swallowed clicks on the session name or the close button would make
       // the header unusable.
       if (e.button !== 0) return;
-      if (/** @type {HTMLElement} */ (e.target).closest('button, input, a, kbd, .ctx-btn')) return;
+      if (/** @type {HTMLElement} */ (e.target).closest('button, input, a, kbd, .ctx-btn, .ctx-copy')) return;
       // A double-click is the OS gesture for maximise, so it must not also
       // start a drag; the compositor keeps the drag alive past mouseup, which
       // would eat the second click.
@@ -2340,7 +2348,7 @@ function setupChrome() {
     });
     document.addEventListener('dblclick', (e) => {
       if (!/** @type {HTMLElement} */ (e.target).closest?.(TITLEBARS)) return;
-      if (/** @type {HTMLElement} */ (e.target).closest('button, input, a, kbd, .ctx-btn')) return;
+      if (/** @type {HTMLElement} */ (e.target).closest('button, input, a, kbd, .ctx-btn, .ctx-copy')) return;
       void wcmd('toggle-maximize');
     });
   }
