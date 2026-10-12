@@ -586,9 +586,11 @@ main() {
   # That alone used to be the whole filter, on the reasoning that a tag names one
   # run — which is true until `--retry` reuses the name, and then the newest run
   # under it is the failed one being replaced. `$prev_run` is that run, and the
-  # wait disregards it until the new one registers. An hour, because the macOS leg
-  # builds a bundle, drives it, and then `verify` drives what was published.
-  wait_for release.yml "the release workflow" "--branch $tag" 3600 \\
+  # wait disregards it until the new one registers. Two hours, because the macOS
+  # leg builds a bundle, waits on Apple's notarization twice (27 minutes for the
+  # app alone the first time), drives it, and then `verify` drives what was
+  # published.
+  wait_for release.yml "the release workflow" "--branch $tag" 7200 \\
     "fix it, then: mise run release --retry" "$prev_run"
 
   # **A green workflow is still not an installable release.** mise and ubi resolve a

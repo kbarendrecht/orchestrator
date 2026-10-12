@@ -22,9 +22,10 @@ jobs:
     # `timeout-minutes` runs to GitHub's 360-minute default, so v2026.10.1 sat
     # blocked on a runner waiting for a mirror. Both legs build in about ten
     # minutes, so this is wide enough for a cold cache and narrow enough that a
-    # hang is a failure you can act on the same hour. 60 since the macOS leg
-    # waits on Apple twice, for the app and the dmg, and each wait is minutes.
-    timeout-minutes: 60
+    # hang is a failure you can act on the same hour. 90 since the macOS leg
+    # waits on Apple twice, for the app and the dmg: the first notarization of
+    # v2026.10.8 took 27 minutes on its own.
+    timeout-minutes: 90
     strategy:
       # Not cancelled on a failure, because "Linux built, macOS did not" is the
       # answer worth having — and it is safe to let the other finish now that
@@ -262,9 +263,12 @@ jobs:
           app=target/release/bundle/macos/Orchestrator.app
           codesign --verify --deep --strict "$app"
           for bin in orchestrator-desktop orchd orch; do
-            codesign -dv "$app/Contents/MacOS/$bin" 2>&1 | grep -q '^Authority=Developer ID Application' || {
+            # `-dvv`: one `v` prints the team and the flags but no `Authority=`
+            # lines, and that is how v2026.10.8's first attempt failed a bundle
+            # Apple had just accepted.
+            codesign -dvv "$app/Contents/MacOS/$bin" 2>&1 | grep -q '^Authority=Developer ID Application' || {
               echo "::error::$bin is not Developer ID signed"
-              codesign -dv "$app/Contents/MacOS/$bin" 2>&1 || true
+              codesign -dvv "$app/Contents/MacOS/$bin" 2>&1 || true
               exit 1
             }
           done
