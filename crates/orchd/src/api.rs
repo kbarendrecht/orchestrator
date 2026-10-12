@@ -2409,6 +2409,10 @@ pub async fn definitions(
 #[derive(Deserialize)]
 pub struct PathsQuery {
     pub workspace: String,
+    /// One folder the full list left out as too big, listed on its own. See
+    /// [`crate::search::left_out`].
+    #[serde(default)]
+    pub under: Option<String>,
 }
 
 /// Every file in one workspace, for the name search.
@@ -2423,8 +2427,9 @@ pub async fn paths(
     let (root, exclude) = searchable(&app, &q.workspace).await?;
     // Off the runtime: a whole-tree walk.
     Ok(Json(
-        crate::proc::run_blocking("listing the paths", move || {
-            crate::search::paths(&root, exclude.as_deref())
+        crate::proc::run_blocking("listing the paths", move || match q.under.as_deref() {
+            Some(under) => crate::search::paths_under(&root, exclude.as_deref(), under),
+            None => crate::search::paths(&root, exclude.as_deref()),
         })
         .await??,
     ))

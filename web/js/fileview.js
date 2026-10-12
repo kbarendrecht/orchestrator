@@ -293,12 +293,32 @@ export const shownPath = () => viewer().shownPath();
 export async function candidates(ws, path) {
   let list = [];
   try {
-    list = (await get(`/api/paths?workspace=${encodeURIComponent(ws)}`)).paths ?? [];
+    list = await pathsFor(ws, path);
   } catch (e) {
     toast(reason(e), true);
     return [];
   }
   return matching(list, path);
+}
+
+/** The left-out folder `path` is inside, if any: one the list named as too big
+ *  to hold (#44), so a path into it is asked of that folder's own list. */
+function leftOutOf(/** @type {string[]} */ dirs, /** @type {string} */ path) {
+  return dirs.find((d) => path === d || path.startsWith(`${d}/`)) ?? null;
+}
+
+/** The workspace's files, and the left-out folder's too when `path` is in one.
+ *
+ *  **Asked only then**, because a big folder was left out for being big: a
+ *  `.plan` of 3,209 notes beside 19,000 tracked files would push real files out
+ *  of the cap if it were listed every time. */
+async function pathsFor(/** @type {string} */ ws, /** @type {string} */ path) {
+  const url = `/api/paths?workspace=${encodeURIComponent(ws)}`;
+  const all = await get(url);
+  const dir = leftOutOf(all.left_out ?? [], path);
+  if (!dir) return all.paths ?? [];
+  const inside = await get(`${url}&under=${encodeURIComponent(dir)}`);
+  return [...(all.paths ?? []), ...(inside.paths ?? [])];
 }
 
 /** The folders a printed path could mean, with every file under each, when it
@@ -308,7 +328,7 @@ export async function candidates(ws, path) {
  *  @param {string} path workspace-relative, as the click resolved it */
 export async function foldersOf(ws, path) {
   try {
-    return folders((await get(`/api/paths?workspace=${encodeURIComponent(ws)}`)).paths ?? [], path);
+    return folders(await pathsFor(ws, path), path);
   } catch (e) {
     toast(reason(e), true);
     return [];
@@ -326,12 +346,16 @@ const HOVER_TTL = 2_000;
  *  second after the last hover, with no underline. A sweep over lines with no file
  *  in them costs two walks a second at this, not one per line. */
 const MISS_TTL = 500;
+/** @typedef {{ at: number | null, got?: string[], leftOut?: string[],
+ *               list: Promise<{ paths: string[], truncated: boolean, leftOut: string[] }> }} Listed */
 /** `at` is when the answer landed, and `null` while it is still on its way, so a
  *  slow walk is joined rather than started twice. `got` is the same answer once it
  *  is in, for a caller that has to decide inside an event.
  *
- *  @type {Map<string, { at: number | null, got?: string[],
- *                       list: Promise<{ paths: string[], truncated: boolean }> }>} */
+ *  Keyed by checkout, workspace and the left-out folder asked for, `''` for the
+ *  whole list.
+ *
+ *  @type {Map<string, Listed>} */
 const hovered = new Map();
 
 /** Whether a click on `path` would find anything, which is what earns it an
@@ -349,7 +373,11 @@ const hovered = new Map();
 export async function known(at, ws, path) {
   const has = (/** @type {{ paths: string[], truncated: boolean }} */ l) =>
     l.truncated || matching(l.paths, path).length > 0 || folders(l.paths, path).length > 0;
-  if (has(await listed(at, ws, HOVER_TTL))) return true;
+  const first = await listed(at, ws, HOVER_TTL);
+  if (has(first)) return true;
+  // In a folder the list left out as too big: that folder's own list is the answer.
+  const dir = leftOutOf(first.leftOut, path);
+  if (dir) return has(await listed(at, ws, HOVER_TTL, dir));
   return has(await listed(at, ws, MISS_TTL));
 }
 
@@ -362,7 +390,9 @@ export async function known(at, ws, path) {
  *  @param {string} ws
  *  @param {string} path workspace-relative */
 export function isFolder(checkout, ws, path) {
-  const got = hovered.get(`${checkout}\0${ws}`)?.got;
+  const whole = hovered.get(`${checkout}\0${ws}\0`);
+  const dir = whole ? leftOutOf(whole.leftOut ?? [], path) : null;
+  const got = dir ? hovered.get(`${checkout}\0${ws}\0${dir}`)?.got : whole?.got;
   return !!got && !matching(got, path).length && folders(got, path).length > 0;
 }
 
@@ -372,19 +402,25 @@ export function isFolder(checkout, ws, path) {
  *
  *  @param {import('./core.js').Target} at
  *  @param {string} ws
- *  @param {number} ttl */
-function listed(at, ws, ttl) {
-  const key = `${at.path}\0${ws}`;
+ *  @param {number} ttl
+ *  @param {string} [under] a left-out folder, for that folder's own list */
+function listed(at, ws, ttl, under = '') {
+  const key = `${at.path}\0${ws}\0${under}`;
   const entry = hovered.get(key);
   if (entry && (entry.at === null || Date.now() - entry.at <= ttl)) return entry.list;
-  /** @type {{ at: number | null, got?: string[], list: Promise<{ paths: string[], truncated: boolean }> }} */
-  const made = { at: null, list: Promise.resolve({ paths: [], truncated: false }) };
-  made.list = getOn(at, `/api/paths?workspace=${encodeURIComponent(ws)}`)
+  /** @type {Listed} */
+  const made = { at: null, list: Promise.resolve({ paths: [], truncated: false, leftOut: [] }) };
+  const url = `/api/paths?workspace=${encodeURIComponent(ws)}`
+    + (under ? `&under=${encodeURIComponent(under)}` : '');
+  made.list = getOn(at, url)
     .then((a) => {
       made.at = Date.now();
       const paths = a.paths ?? [];
       made.got = paths;
-      return { paths, truncated: !!a.truncated };
+      /** @type {string[]} */
+      const leftOut = a.left_out ?? [];
+      made.leftOut = leftOut;
+      return { paths, truncated: !!a.truncated, leftOut };
     });
   hovered.set(key, made);
   // A failure is not cached: the next hover asks again.

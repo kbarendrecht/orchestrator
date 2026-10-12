@@ -156,6 +156,10 @@ pub struct Matches {
 pub struct Paths {
     pub paths: Vec<String>,
     pub truncated: bool,
+    /// The ignored folders too big to list, repo-relative. Each can still be
+    /// listed on its own, with [`paths_under`], or searched by naming it in the
+    /// path filter. Empty for a list that is itself one of those.
+    pub left_out: Vec<String>,
 }
 
 /// `web/` means everything under `web`, which as a glob is `web/**`.
@@ -232,15 +236,27 @@ fn small_ignored_dirs(root: &Path, exclude: Option<&str>) -> Vec<std::path::Path
     search. That is the leak `exclude` exists to prevent, and this file's own
     test asks both ways of one tempdir microseconds apart, well inside the
     window. */
-    static SEEN: std::sync::OnceLock<Mutex<Remembered>> = std::sync::OnceLock::new();
+    ignored_dirs(root, exclude).fits
+}
+
+/// What the ignored-directory scan decided: the ones to search, and the ones too
+/// big to, which the page is told about rather than left to wonder.
+#[derive(Clone, Default)]
+struct IgnoredDirs {
+    fits: Vec<std::path::PathBuf>,
+    refused: Vec<std::path::PathBuf>,
+}
+
+fn ignored_dirs(root: &Path, exclude: Option<&str>) -> IgnoredDirs {
+    static SEEN: std::sync::OnceLock<Mutex<Remembered<IgnoredDirs>>> = std::sync::OnceLock::new();
     remembered(&SEEN, root, exclude, || {
-        discover_small_ignored_dirs(root, exclude)
+        discover_ignored_dirs(root, exclude)
     })
 }
 
 /// One tree's answer to one question, for [`IGNORED_TTL`].
 type Key = (std::path::PathBuf, Option<String>);
-type Remembered = std::collections::HashMap<Key, (std::time::Instant, Vec<std::path::PathBuf>)>;
+type Remembered<T> = std::collections::HashMap<Key, (std::time::Instant, T)>;
 
 /// The memo both ignore lists share: ask once per tree, trust it for a while.
 ///
@@ -252,12 +268,12 @@ type Remembered = std::collections::HashMap<Key, (std::time::Instant, Vec<std::p
 /// The key carries `exclude` as well as the root for the reason
 /// [`small_ignored_dirs`] gives: main excludes its worktrees and a worktree
 /// excludes nothing, so one tree is asked two different questions.
-fn remembered(
-    store: &'static std::sync::OnceLock<Mutex<Remembered>>,
+fn remembered<T: Clone>(
+    store: &'static std::sync::OnceLock<Mutex<Remembered<T>>>,
     root: &Path,
     exclude: Option<&str>,
-    fresh: impl FnOnce() -> Vec<std::path::PathBuf>,
-) -> Vec<std::path::PathBuf> {
+    fresh: impl FnOnce() -> T,
+) -> T {
     let seen = store.get_or_init(|| Mutex::new(Remembered::new()));
     let key: Key = (root.to_path_buf(), exclude.map(str::to_string));
     if let Ok(map) = seen.lock() {
@@ -298,7 +314,18 @@ fn remembered(
 /// the set this wants. Everything ending in `/` is dropped here; the directories
 /// are [`small_ignored_dirs`]'s question, asked with its own cap.
 fn loose_ignored_files(root: &Path, exclude: Option<&str>) -> Vec<std::path::PathBuf> {
-    static SEEN: std::sync::OnceLock<Mutex<Remembered>> = std::sync::OnceLock::new();
+    loose_ignored(root, exclude).files
+}
+
+/// The loose ignored files, and the linked folders among them too big to search.
+#[derive(Clone, Default)]
+struct LooseIgnored {
+    files: Vec<std::path::PathBuf>,
+    refused: Vec<std::path::PathBuf>,
+}
+
+fn loose_ignored(root: &Path, exclude: Option<&str>) -> LooseIgnored {
+    static SEEN: std::sync::OnceLock<Mutex<Remembered<LooseIgnored>>> = std::sync::OnceLock::new();
     remembered(&SEEN, root, exclude, || {
         let argv: Vec<String> = [
             "git",
@@ -326,10 +353,10 @@ fn loose_ignored_files(root: &Path, exclude: Option<&str>) -> Vec<std::path::Pat
                 // Not fatal, for the reason `ask_git_which_are_ignored` gives: the
                 // search still answers, it just cannot see these files.
                 tracing::debug!("could not list the ignored files: {e:#}");
-                return Vec::new();
+                return LooseIgnored::default();
             }
         };
-        let mut found: Vec<std::path::PathBuf> = String::from_utf8_lossy(&out.stdout)
+        let listed: Vec<std::path::PathBuf> = String::from_utf8_lossy(&out.stdout)
             .split('\0')
             .filter(|l| !l.is_empty())
             // A directory is the other question, and git marks one with a slash.
@@ -350,8 +377,10 @@ fn loose_ignored_files(root: &Path, exclude: Option<&str>) -> Vec<std::path::Pat
             every link lost it from search and from the terminal's links. So a
             linked folder stays when it fits under `IGNORED_CAP`, the same weight
             `small_ignored_dirs` puts on a real one, and only a big one goes. */
-            .filter(|p| !p.is_dir() || subtree_fits(p, IGNORED_CAP))
             .collect();
+        let (mut found, refused): (Vec<_>, Vec<_>) = listed
+            .into_iter()
+            .partition(|p| !p.is_dir() || subtree_fits(p, IGNORED_CAP));
         /* **A cap, because 15 is this monorepo's number and not a contract.** The
         repo in front of you is the only live test there is, and a tree that
         ignores generated sources file by file could name thousands — which would
@@ -365,7 +394,10 @@ fn loose_ignored_files(root: &Path, exclude: Option<&str>) -> Vec<std::path::Pat
             found.sort();
             found.truncate(LOOSE_IGNORED_CAP);
         }
-        found
+        LooseIgnored {
+            files: found,
+            refused,
+        }
     })
 }
 
@@ -377,10 +409,10 @@ const LOOSE_IGNORED_CAP: usize = 500;
 /// are still wondering why.
 const IGNORED_TTL: std::time::Duration = std::time::Duration::from_secs(30);
 
-fn discover_small_ignored_dirs(root: &Path, exclude: Option<&str>) -> Vec<std::path::PathBuf> {
+fn discover_ignored_dirs(root: &Path, exclude: Option<&str>) -> IgnoredDirs {
     let mut candidates = dirs_to_depth(root, exclude, IGNORED_SCAN_DEPTH);
     if candidates.is_empty() {
-        return Vec::new();
+        return IgnoredDirs::default();
     }
     if candidates.len() > IGNORED_CANDIDATES {
         tracing::debug!(
@@ -423,7 +455,8 @@ fn discover_small_ignored_dirs(root: &Path, exclude: Option<&str>) -> Vec<std::p
     route. The `build/notes` shape this exists for is one or two directories.
     Counted over the candidates rather than over what has been accepted so
     far, or the first `IGNORED_SIBLINGS` of a thousand get in. */
-    fits.iter()
+    let kept = fits
+        .iter()
         .filter(|at| {
             refused
                 .iter()
@@ -433,6 +466,76 @@ fn discover_small_ignored_dirs(root: &Path, exclude: Option<&str>) -> Vec<std::p
                 })
         })
         .cloned()
+        .collect();
+    // Only the outermost: `node_modules/foo` is inside a folder already named.
+    let mut outer: Vec<std::path::PathBuf> = Vec::new();
+    for at in refused {
+        if !outer.iter().any(|o| at.starts_with(o)) {
+            outer.push(at);
+        }
+    }
+    IgnoredDirs {
+        fits: kept,
+        refused: outer,
+    }
+}
+
+/// The ignored folders too big to list, repo-relative and sorted.
+///
+/// **Named rather than dropped, because a silent drop is what #44 was.** `.plan`
+/// grew past [`IGNORED_CAP`] in a few weeks of agents writing into it, and
+/// every path into it then read as missing. The folder is still too big to list
+/// beside the tracked files, since `MAX_PATHS` would push real files out, but
+/// saying so lets the page ask for it on its own, with [`paths_under`].
+pub fn left_out(root: &Path, exclude: Option<&str>) -> Vec<String> {
+    let mut out: Vec<String> = ignored_dirs(root, exclude)
+        .refused
+        .into_iter()
+        .chain(loose_ignored(root, exclude).refused)
+        .map(|p| rel(root, &p))
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// A walk of one left-out folder, with the ignore machinery off: the folder is
+/// ignored as a whole, and asking the ignore files again would drop all of it.
+fn left_out_walker(root: &Path, dir: &str) -> WalkBuilder {
+    let mut w = WalkBuilder::new(root.join(dir));
+    w.hidden(false)
+        .threads(0)
+        .git_ignore(false)
+        .git_global(false)
+        .git_exclude(false)
+        .ignore(false)
+        .parents(false)
+        .filter_entry(|e| e.file_name() != ".git");
+    w
+}
+
+/// The walks a path filter asks for by naming a left-out folder.
+///
+/// **Typing the folder is the intent, so nothing has to be configured.** `.plan/`
+/// in the filter means "in `.plan`", and a folder too big for every search is
+/// exactly the right size for one that asked for it.
+fn named_walkers(root: &Path, exclude: Option<&str>, glob: Option<&str>) -> Vec<WalkBuilder> {
+    let Some(g) = glob.map(as_glob).filter(|g| !g.is_empty()) else {
+        return Vec::new();
+    };
+    left_out(root, exclude)
+        .into_iter()
+        .filter(|dir| g.starts_with(&format!("{dir}/")))
+        .map(|dir| {
+            let mut w = left_out_walker(root, &dir);
+            let mut ov = OverrideBuilder::new(root);
+            if ov.add(&g).is_ok() {
+                if let Ok(built) = ov.build() {
+                    w.overrides(built);
+                }
+            }
+            w
+        })
         .collect()
 }
 
@@ -697,6 +800,7 @@ pub fn search(root: &Path, exclude: Option<&str>, q: &Query) -> Result<Matches> 
     let (shared, stop) = (&found, &truncated);
     let mut walks = vec![walker(root, exclude, q.glob.as_deref())?];
     walks.extend(ignored_walkers(root, exclude, q.glob.as_deref()));
+    walks.extend(named_walkers(root, exclude, q.glob.as_deref()));
     for w in walks {
         w.build_parallel().run(|| {
             let matcher = matcher.clone();
@@ -793,6 +897,37 @@ pub fn paths(root: &Path, exclude: Option<&str>) -> Result<Paths> {
     Ok(Paths {
         paths: out,
         truncated,
+        left_out: left_out(root, exclude),
+    })
+}
+
+/// Every file in one left-out folder, with a [`MAX_PATHS`] of its own.
+///
+/// **Only a folder [`left_out`] named**, so this cannot become a way to list an
+/// arbitrary path: `under` is checked against that list rather than resolved.
+pub fn paths_under(root: &Path, exclude: Option<&str>, under: &str) -> Result<Paths> {
+    let under = under.trim_end_matches('/');
+    if !left_out(root, exclude).iter().any(|d| d == under) {
+        anyhow::bail!("{under} is not a folder left out of the file list");
+    }
+    let base = root.join(under);
+    let mut out: Vec<String> = Vec::new();
+    for entry in left_out_walker(root, under).build().flatten() {
+        if entry.file_type().is_some_and(|t| t.is_file()) {
+            // Named through the folder, not through where a link points.
+            out.push(format!("{under}/{}", rel(&base, entry.path())));
+            if out.len() > MAX_PATHS {
+                break;
+            }
+        }
+    }
+    let truncated = out.len() > MAX_PATHS;
+    out.truncate(MAX_PATHS);
+    out.sort();
+    Ok(Paths {
+        paths: out,
+        truncated,
+        left_out: Vec::new(),
     })
 }
 
@@ -1182,6 +1317,79 @@ mod tests {
         );
         let _ = fs::remove_dir_all(&notes);
         let _ = fs::remove_dir_all(&small);
+    }
+
+    /// A notes folder past the cap is named, listed on its own, and searched
+    /// when the path filter names it (#44).
+    ///
+    /// **Both shapes the report has**: the real folder in main, and the link to it
+    /// that a worktree holds, which the loose list weighs and used to drop in
+    /// silence. Each its own repository, because the answer is remembered per
+    /// folder for half a minute.
+    #[test]
+    fn a_big_ignored_folder_is_named_and_reachable_by_name() {
+        let main = orchd_base::testutil::scratch_repo("search-left-out");
+        fs::write(main.join(".gitignore"), ".plan\n").unwrap();
+        fs::create_dir_all(main.join(".plan/old")).unwrap();
+        for i in 0..(IGNORED_CAP + 5) {
+            fs::write(main.join(format!(".plan/old/n{i:05}.md")), "a note\n").unwrap();
+        }
+        fs::write(main.join(".plan/plan.md"), "the needle is here\n").unwrap();
+        fs::write(main.join("tracked.txt"), "the needle too\n").unwrap();
+
+        let listed = paths(&main, None).unwrap();
+        assert_eq!(listed.left_out, vec![".plan"], "named, not dropped");
+        assert!(!listed.paths.iter().any(|p| p.starts_with(".plan/")));
+
+        let under = paths_under(&main, None, ".plan/").unwrap();
+        assert_eq!(under.paths.len(), IGNORED_CAP + 6);
+        assert!(under.paths.contains(&".plan/plan.md".to_string()));
+        assert!(under.left_out.is_empty());
+
+        // Only a folder the list named: this is not a way to walk any path.
+        assert!(paths_under(&main, None, "tracked.txt").is_err());
+        assert!(paths_under(&main, None, "..").is_err());
+
+        let everywhere: Vec<String> = find(&main, "needle")
+            .hits
+            .into_iter()
+            .map(|h| h.path)
+            .collect();
+        assert_eq!(
+            everywhere,
+            vec!["tracked.txt"],
+            "an unnamed search leaves it out"
+        );
+        let named = search(
+            &main,
+            None,
+            &Query {
+                pattern: "needle".into(),
+                glob: Some(".plan/".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let got: Vec<&str> = named.hits.iter().map(|h| h.path.as_str()).collect();
+        assert_eq!(
+            got,
+            vec![".plan/plan.md"],
+            "and the filter that names it reaches it"
+        );
+
+        let tree = orchd_base::testutil::scratch_repo("search-left-out-link");
+        std::os::unix::fs::symlink(main.join(".plan"), tree.join(".plan")).unwrap();
+        fs::write(tree.join(".gitignore"), ".plan\n").unwrap();
+        let listed = paths(&tree, None).unwrap();
+        assert_eq!(listed.left_out, vec![".plan"], "a big link is named too");
+        let under = paths_under(&tree, None, ".plan").unwrap();
+        assert!(
+            under.paths.contains(&".plan/plan.md".to_string()),
+            "named through the link: {:?}",
+            &under.paths[..under.paths.len().min(3)],
+        );
+        let _ = fs::remove_dir_all(&tree);
+        let _ = fs::remove_dir_all(&main);
     }
 
     /// A path filter is the caller's question, and it has to reach these too.

@@ -63,7 +63,8 @@ const LEADIN = 40;
  *    hits: { path: string, line: number, last?: number, col: number, len: number, text?: string }[],
  *    truncated: boolean, cursor: number,
  *    paths: string[] | null, pathsFor: string | null, pathsAt: number,
- *    pathsTruncated: boolean,
+ *    pathsTruncated: boolean, leftOut: string[],
+ *    under: { ws: string | null, dir: string, paths: string[], at: number } | null,
  *    seq: number, timer: ReturnType<typeof setTimeout> | null,
  *    inflight: AbortController | null,
  *    error: string | null,
@@ -79,6 +80,10 @@ const state = {
   pathsFor: null,
   pathsAt: 0,
   pathsTruncated: false,
+  /** The ignored folders the list named as too big to hold (#44). */
+  leftOut: [],
+  /** The one of those the query is typed into, listed on its own. */
+  under: null,
   seq: 0,
   timer: null,
   inflight: null,
@@ -222,7 +227,12 @@ async function search() {
     if (state.mode === 'names') {
       await loadPaths(ctl.signal);
       if (mine !== state.seq) return;
-      state.hits = rank(state.paths ?? [], q).map((path) => ({ path, line: 1, col: 0, len: 0 }));
+      /* **A left-out folder is searched once the query names it.** It was left
+         out for being big, so it is listed only for the query that asked. */
+      const dir = state.leftOut.find((d) => q.trim().startsWith(`${d}/`));
+      const inside = dir ? await loadUnder(dir, ctl.signal) : [];
+      if (mine !== state.seq) return;
+      state.hits = rank([...(state.paths ?? []), ...inside], q).map((path) => ({ path, line: 1, col: 0, len: 0 }));
       /* **The daemon's own flag, not `false`.** `MAX_PATHS` is 20,000 and this
          repo lists 19,043 of them, so the cap is reachable — and past it the
          footer said nothing while the list was quietly short. Worse, a path click
@@ -280,6 +290,30 @@ async function loadPaths(/** @type {AbortSignal | undefined} */ signal) {
   state.pathsFor = state.ws;
   state.pathsAt = Date.now();
   state.pathsTruncated = !!answer.truncated;
+  state.leftOut = answer.left_out ?? [];
+}
+
+/** One left-out folder's files, kept for as long as the whole list is. */
+async function loadUnder(/** @type {string} */ dir, /** @type {AbortSignal} */ signal) {
+  const u = state.under;
+  if (u && u.ws === state.ws && u.dir === dir && Date.now() - u.at < PATHS_TTL) return u.paths;
+  const url = `/api/paths?workspace=${encodeURIComponent(state.ws ?? '')}&under=${encodeURIComponent(dir)}`;
+  /** @type {string[]} */
+  const paths = (await get(url, signal)).paths ?? [];
+  state.under = { ws: state.ws, dir, paths, at: Date.now() };
+  return paths;
+}
+
+/** What the foot says about the left-out folders, when it says anything.
+ *
+ *  **Said rather than silent, because a silent drop is what #44 was.** Only in
+ *  the names mode, and only before a query or after one that found nothing:
+ *  that is when a missing folder is the likely reason. */
+function leftOutNote() {
+  if (state.mode !== 'names' || !state.leftOut.length) return '';
+  const shown = state.leftOut.slice(0, 3).map((d) => `${d}/`).join(', ');
+  const more = state.leftOut.length > 3 ? ` +${state.leftOut.length - 3}` : '';
+  return `too big to list: ${shown}${more}. Type one to search in it`;
 }
 
 /** Rank paths against a query, best first.
@@ -357,8 +391,8 @@ function renderHits() {
     : n
       ? what + (state.truncated ? ' — and more; narrow the query' : '')
       : asked
-        ? (state.mode === 'text' ? 'no matches' : 'no files')
-        : '';
+        ? (state.mode === 'text' ? 'no matches' : ['no files', leftOutNote()].filter(Boolean).join(' · '))
+        : leftOutNote();
 }
 
 /** The matched line, with the match marked the way the viewer marks it.

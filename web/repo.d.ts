@@ -88,7 +88,13 @@ export type Matches = { hits: Array<Hit>, truncated: boolean, };
 /**
  * The workspace's files, for the name search.
  */
-export type Paths = { paths: Array<string>, truncated: boolean, };
+export type Paths = { paths: Array<string>, truncated: boolean, 
+/**
+ * The ignored folders too big to list, repo-relative. Each can still be
+ * listed on its own, with [`paths_under`], or searched by naming it in the
+ * path filter. Empty for a list that is itself one of those.
+ */
+left_out: Array<string>, };
 
 export type Pr = { number: number, title: string, url: string, head_ref: string, 
 /**

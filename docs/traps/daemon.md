@@ -422,6 +422,18 @@ own* is not — measured, it abandons `src`, `tests`, `libraries` and `projects`
 too, because real source directories are big as well. So the rule is: ask git
 which directories are ignored, then keep the ones under `IGNORED_CAP`.
 
+**And there was a middle after all: a notes folder grows.** A colleague's `.plan`
+reached 3,209 files in a few weeks of agents writing into it, went past the cap,
+and every path into it then read as missing, with nothing said (#44). Listing it
+anyway is not the fix, because `MAX_PATHS` would then push tracked files out. So
+a folder over the cap is **named** instead: `Paths::left_out` carries it, and
+`/api/paths?under=<folder>` lists that one folder with a budget of its own, for
+a folder the list named and nothing else. A printed path inside it asks that list
+before it says "no such file", a path filter that names it searches it, and the
+finder's foot says which folders were left out. No setting, for the reason
+above: typing the folder is the intent. Big *linked* folders count too, because
+a worktree's `.plan` is a link to main's and the loose list weighs it the same way.
+
 Three things this cost. **No path filter reaches past an ignore rule**, measured
 against every spelling (`.plan/**`, `**/.plan/**`, `.plan`), because an override
 whitelist does not un-ignore what a `.gitignore` excluded — the only lever is the

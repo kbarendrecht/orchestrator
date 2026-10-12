@@ -2991,6 +2991,46 @@ try {
   }, wasOn, { timeout: 10_000 }).then((h) => h.jsonValue()).catch(() => null)
   check(!!landedOn, 'and the new session takes the screen when it is up')
 
+  /* --- a big ignored folder is named, and a path into it still opens (#44) --- */
+
+  /* **Its own worktree, made here**, because the daemon remembers which ignored
+     folders a tree has for half a minute, and every tree above has been asked
+     already. Over the 200-file cap, so it is left out of the list: a printed path
+     into it used to toast "no … in this workspace" about a file that is there. */
+  const { session: leftSession } = await t.api('POST', '/api/worktree', { name: 'notes' })
+  await t.settled(leftSession)
+  const leftTree = (await t.session(leftSession)).cwd
+  fs.writeFileSync(path.join(leftTree, '.gitignore'), '.notes/\n')
+  fs.mkdirSync(path.join(leftTree, '.notes/old'), { recursive: true })
+  for (let i = 0; i < 205; i++) fs.writeFileSync(path.join(leftTree, `.notes/old/n${i}.md`), 'a note\n')
+  fs.writeFileSync(path.join(leftTree, '.notes/target.md'), 'the target\n')
+  const leftWs = (await t.state()).sessions.find((/** @type {any} */ x) => x.id === leftSession).workspace
+  const leftOpened = await page.evaluate(async (ws) => {
+    const fv = await import('/js/fileview.js')
+    return { file: await fv.candidates(ws, '.notes/target.md'), folder: (await fv.foldersOf(ws, '.notes/old')).length }
+  }, leftWs)
+  check(JSON.stringify(leftOpened.file) === '[".notes/target.md"]' && leftOpened.folder > 0,
+    `a path into a left-out folder still finds its file and its folder, got ${JSON.stringify(leftOpened)}`)
+
+  // And the finder says what it left out, then searches it once the query names it.
+  await page.click(`#rail .sess[data-id="${leftSession}"]`)
+  await page.keyboard.press('Escape')
+  if (await doubleShift()) {
+    await page.waitForFunction(
+      () => (document.getElementById('fnfoot')?.textContent ?? '').includes('.notes/'),
+      null, { timeout: 5000 }).catch(() => {})
+    const leftFoot = await page.$eval('#fnfoot', (f) => f.textContent)
+    check(/too big to list: .*\.notes\//.test(leftFoot ?? ''), `the finder names the left-out folder, got "${leftFoot}"`)
+    await page.fill('#fnq', '.notes/target')
+    const leftHit = await page.waitForFunction(
+      () => document.querySelector('#fnhits .fnhit')?.textContent ?? null,
+      null, { timeout: 5000 }).then((h) => h.jsonValue()).catch(() => null)
+    check(leftHit === '.notes/target.md', `and typing it searches in it, got ${leftHit}`)
+    await page.keyboard.press('Escape')
+  } else {
+    check(false, 'Shift Shift leftOpened the finder for the left-out folder')
+  }
+
   /* **Restart from a row's menu selects that row.** You restart a session to
      watch it come back, and a menu opened on another row left the old one on
      screen. Last, because the restart respawns that session's agent. */
