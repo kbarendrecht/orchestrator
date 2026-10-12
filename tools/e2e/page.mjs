@@ -2790,11 +2790,25 @@ try {
       && !!a.closest('#drawerbody .termhost:not([hidden])')
   }, null, { timeout: 5000 }).then(() => true).catch(() => false)
   check(typedInto, 'clicking a shell tab puts the cursor in that shell')
-  /* Two frames before the close: focus schedules a refresh, and disposing the
-     terminal under it throws inside xterm, which no person closing a tab is fast
-     enough to reach. */
-  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))))
-  await t.api('POST', `/api/process/${spareShell}/close`)
+
+  /* **⌘W closes what has the keyboard, and only that.** The macOS menu evals
+     `orchClose`; Tauri's own item closed the window and the app with it. Called
+     here rather than through a menu, which no runner can click. Focus off every
+     pane first: there it must stop nothing. */
+  await page.evaluate(() => /** @type {HTMLElement} */ (document.activeElement)?.blur())
+  await page.evaluate(() => window.orchClose())
+  await page.waitForTimeout(500)
+  const stillThere = await page.$$eval(`#dtabs .dtab[data-key="${spareShell}"]`, (x) => x.length) === 1
+    && (await t.state()).sessions.find((/** @type {any} */ x) => x.id === session)?.alive === true
+  check(stillThere, 'Cmd+W with no pane focused closes nothing')
+  // The textarea, not the tab: the tab is selected, and a click on it folds the drawer.
+  await focusTerm()
+  await page.evaluate(() => window.orchClose())
+  const closed = await page.waitForFunction(
+    (key) => !document.querySelector(`#dtabs .dtab[data-key="${key}"]`),
+    spareShell, { timeout: 10_000 }).then(() => true).catch(() => false)
+  check(closed, 'and with a drawer shell focused, it closes that shell')
+  await t.api('POST', `/api/process/${spareShell}/close`).catch(() => {})
 
   await t.api('POST', `/api/process/${shell}/close`)
 

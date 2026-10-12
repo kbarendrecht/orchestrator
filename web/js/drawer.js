@@ -188,6 +188,14 @@ function paneMenu(target, label) {
   ];
 }
 
+/** Close the process the drawer is showing, the same as its tab's ✕. */
+export function closeShown() {
+  const id = selectedProc[wsKey(currentWorkspaceId())];
+  if (!id) return;
+  Term.close(activeCheckout(), `proc:${id}`);
+  call(`/api/process/${encodeURIComponent(id)}/close`).catch((e) => toast(e.message, true));
+}
+
 export function renderDrawer() {
   if (tabDrag !== null) return;
   const wsId = currentWorkspaceId();

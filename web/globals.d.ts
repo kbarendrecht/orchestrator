@@ -33,6 +33,8 @@ interface Window {
   orchTeardown: (wsId: string) => void;
   /** The macOS menu bar's Settings item, which is native and evals this name. */
   orchSettings: () => void;
+  /** The macOS menu bar's Close, on ⌘W, which is native and evals this name. */
+  orchClose: () => void;
   /** Read the paint-guard counters; with `true`, zero them and start naming what
    *  moved — see `core.unchanged`. Driven from a console or from
    *  `tools/paint-check.mjs`, never from a pane. */

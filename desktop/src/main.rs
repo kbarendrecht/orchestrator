@@ -247,7 +247,7 @@ fn main() {
         clippy::expect_used,
         reason = "a window that will not build is a launch that has already failed"
     )]
-    let app = with_settings_item(tauri::Builder::default().plugin(tauri_plugin_dialog::init()))
+    let app = with_app_menu(tauri::Builder::default().plugin(tauri_plugin_dialog::init()))
         .setup(move |app| {
             let app_handle = app.handle().clone();
             let rt = handle.clone();
@@ -330,9 +330,13 @@ fn deliver_link(host: &orchd_serve::host::Host, url: &str) {
     }
 }
 
-/// The id the Settings item is recognised by in [`with_settings_item`].
+/// The id the Settings item is recognised by in [`with_app_menu`].
 #[cfg(target_os = "macos")]
 const SETTINGS_ITEM: &str = "settings";
+
+/// The id of the ⌘W item that replaces Tauri's Close Window, in [`with_app_menu`].
+#[cfg(target_os = "macos")]
+const CLOSE_ITEM: &str = "close";
 
 /// Put `Settings…` in the macOS application menu, where the platform says it lives.
 ///
@@ -346,10 +350,17 @@ const SETTINGS_ITEM: &str = "settings";
 /// first two, which is why the pair goes in at 2: About, separator, `Settings…`,
 /// separator, Services, as every other Mac application reads.
 ///
+/// **And ⌘W is ours, not the window's.** The default menu carries Close Window
+/// twice, in File and in Window, and closing the one window quits the app with
+/// every session in it and nothing said. Both go, and one `Close` in File hands
+/// the chord to the page, which closes what has the keyboard (`web/app.js`).
+/// Found by its text, because a predefined item's id is random; a failure to
+/// find it leaves Tauri's item where it was, which is the old behaviour.
+///
 /// A failure anywhere here loses the item, not the menu: the window matters more
 /// than the shortcut to a panel that has a button.
 #[cfg(target_os = "macos")]
-fn with_settings_item(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
+fn with_app_menu(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
     use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 
     builder
@@ -364,29 +375,58 @@ fn with_settings_item(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tau
                 MenuItem::with_id(app, SETTINGS_ITEM, "Settings\u{2026}", true, Some("Cmd+,"))?;
             app_menu.insert(&PredefinedMenuItem::separator(app)?, 2)?;
             app_menu.insert(&item, 2)?;
+
+            let mut file = None;
+            for sub in items.iter().filter_map(|i| i.as_submenu()) {
+                let Ok(entries) = sub.items() else { continue };
+                // From the end, so a removal does not move the ones still to look at.
+                for (at, entry) in entries.iter().enumerate().rev() {
+                    let close = entry
+                        .as_predefined_menuitem()
+                        .and_then(|p| p.text().ok())
+                        .is_some_and(|t| t.replace('&', "") == "Close Window");
+                    if close {
+                        sub.remove_at(at)?;
+                    }
+                }
+                if sub.text().is_ok_and(|t| t == "File") {
+                    file = Some(sub.clone());
+                }
+            }
+            match file {
+                Some(file) => {
+                    let close = MenuItem::with_id(app, CLOSE_ITEM, "Close", true, Some("Cmd+W"))?;
+                    file.insert(&close, 0)?;
+                }
+                None => tracing::warn!("no File submenu to hang Close on"),
+            }
             Ok(menu)
         })
         .on_menu_event(|app, event| {
-            if event.id() != SETTINGS_ITEM {
+            let call = if event.id() == SETTINGS_ITEM {
+                "window.orchSettings && window.orchSettings()"
+            } else if event.id() == CLOSE_ITEM {
+                "window.orchClose && window.orchClose()"
+            } else {
                 return;
-            }
+            };
             let Some(win) = app.get_webview_window("main") else {
                 return;
             };
             /* The page is a remote origin, so there is no IPC to call: this crate
             exposes none on purpose (see the module docs). `eval` is the whole
-            channel, and the name is `web/app.js`'s. Guarded because the same
+            channel, and the names are `web/app.js`'s. Guarded because the same
             window shows the splash and the first-run page, neither of which
             has an SPA in it. */
-            if let Err(e) = win.eval("window.orchSettings && window.orchSettings()") {
-                tracing::warn!("could not open settings from the menu: {e}");
+            if let Err(e) = win.eval(call) {
+                tracing::warn!("could not run {call} from the menu: {e}");
             }
         })
 }
 
 /// No menu bar off macOS: the window is frameless and the SPA draws its own chrome.
 #[cfg(not(target_os = "macos"))]
-fn with_settings_item(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
+fn with_app_menu(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
     builder
 }
 

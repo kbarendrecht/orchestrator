@@ -1067,9 +1067,13 @@ function closeTerm(/** @type {import('../serve').Checkout} */ checkout, /** @typ
   entry.closed = true;
   if (entry.reconnectTimer) clearTimeout(entry.reconnectTimer);
   try { entry.sock?.close(); } catch (e) { /* already gone */ }
-  entry.term.dispose();
   entry.host.remove();
   terms.delete(entry.key);
+  /* **Two frames late, because xterm 6 throws otherwise.** A focused terminal
+     always has a refresh queued (the cursor blinks), and disposing under it makes
+     the viewport's sync read a renderer that is gone. Closing from the keyboard
+     (⌘W) is exactly a close with the terminal focused. */
+  requestAnimationFrame(() => requestAnimationFrame(() => entry.term.dispose()));
 }
 
 /** Tab switch replays the daemon buffer; it never respawns (§9).

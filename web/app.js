@@ -1344,6 +1344,8 @@ for (const dt of document.querySelectorAll('[data-mod]')) {
     if (n.nodeValue) n.nodeValue = n.nodeValue.replace(/MOD/g, MOD_LABEL);
   }
 }
+// A chord only a Mac has, which is the menu bar's ⌘W; see `orchClose`.
+for (const row of document.querySelectorAll('[data-maconly]')) /** @type {HTMLElement} */ (row).hidden = !IS_MAC;
 $('dcollapse').onclick = () => setDrawerCollapsed(!drawerCollapsed);
 /* The bar itself is the second way in, on a double-click: the same gesture the
    splitter above it already takes, and the header is mostly empty space that
@@ -2607,4 +2609,18 @@ window.orchTeardown = teardown;
    request to close it. Absent on the splash and the first-run page, where the
    item therefore does nothing. */
 window.orchSettings = Settings.open;
+/* The macOS menu's Close, on ⌘W, evalled the same way. Tauri's own item closed
+   the window, and with it the app, with nothing said. **It closes what has the
+   keyboard**: the drawer's process, the same as its tab's ✕, or the session, the
+   same as the header's ✕. Anywhere else (an overlay, settings, the rail) it does
+   nothing, so it never stops a session you were not looking at. */
+window.orchClose = () => {
+  const at = document.activeElement;
+  if (!at) return;
+  if ($('drawerbody').contains(at)) return Drawer.closeShown();
+  if ($('termwrap').contains(at)) {
+    const s = currentSession();
+    if (s) Rail.closeSession(s.id);
+  }
+};
 
