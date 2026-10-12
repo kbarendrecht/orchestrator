@@ -22,8 +22,9 @@ jobs:
     # `timeout-minutes` runs to GitHub's 360-minute default, so v2026.10.1 sat
     # blocked on a runner waiting for a mirror. Both legs build in about ten
     # minutes, so this is wide enough for a cold cache and narrow enough that a
-    # hang is a failure you can act on the same hour.
-    timeout-minutes: 45
+    # hang is a failure you can act on the same hour. 60 since the macOS leg
+    # waits on Apple twice, for the app and the dmg, and each wait is minutes.
+    timeout-minutes: 60
     strategy:
       # Not cancelled on a failure, because "Linux built, macOS did not" is the
       # answer worth having — and it is safe to let the other finish now that
@@ -48,16 +49,12 @@ jobs:
           # system WKWebView, so unlike Linux there are no libraries to install.
           - os: macos-14
             slug: aarch64-macos
-            # **Ad hoc signed, by `signingIdentity` in tauri.conf.json.** Not
-            # signing at all is what this comment used to describe, and it did
-            # not produce the "Gatekeeper asks the first time" it promised: the
-            # bundle carries `Resources/Orchestrator.icns`, so the linker
-            # signature on the binary does not cover it, `codesign --verify
-            # --deep --strict` fails, and macOS 27 refuses the app as *damaged*
-            # rather than asking. v2026.9.22 shipped a dmg nobody could open
-            # (#26). An ad hoc signature costs nothing and no secret; the paid
-            # Developer ID is what would remove the remaining warning, and is a
-            # separate decision.
+            # **Developer ID signed and notarized here, ad hoc everywhere else.**
+            # `signingIdentity` in tauri.conf.json stays `-`, which is what
+            # `bundle.yml` and a fork PR get: no secrets, and still a bundle
+            # macOS opens rather than calls damaged (#26). This job overrides it
+            # with `APPLE_SIGNING_IDENTITY`, and the bundler notarizes when the
+            # API key is in its env. See the signing steps below.
             #
             # **`app` as well as `dmg`, and that is not a second artifact.** The
             # bundler treats `Orchestrator.app` as scratch when only `dmg` is
@@ -160,7 +157,7 @@ jobs:
       - name: Check what this will ship
         run: node tools/check-ship.mjs
 
-      - name: Build
+      - name: Build the daemon and the CLI
         run: |
           # The CLI *and* the daemon, before the bundler: every bundle copies both
           # in beside the app (the per-bundle `files` maps in tauri.conf.json), so
@@ -173,6 +170,53 @@ jobs:
           # `--bins`, not a list: a fourth binary would otherwise be missing here
           # and nowhere else, and `mise run check-ship` holds the other end.
           cargo build --release -p orchd-serve --bins
+
+      # **`orchd` and `orch` are signed here because the bundler does not.** It
+      # signs its own binary, `externalBin` sidecars and frameworks, and then the
+      # `.app` without `--deep`; what `bundle.macOS.files` copies in keeps the
+      # linker's ad hoc signature, and notarization refuses a bundle holding one.
+      # Signed in place, so the bundler copies them in as they are.
+      #
+      # **Its own keychain, because the bundler's is gone by then.** Given
+      # `APPLE_CERTIFICATE` the bundler imports into a keychain it deletes on the
+      # way out, so nothing after it could sign. This one is on the search list,
+      # and the bundler is given only the identity, which it finds here.
+      #
+      # A release with no identity is refused rather than shipped ad hoc: the
+      # notarized app is what the cask and the dmg promise.
+      - name: Sign the daemon and the CLI
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          set -eu
+          [ -n "$APPLE_SIGNING_IDENTITY" ] || {
+            echo "::error::no APPLE_SIGNING_IDENTITY secret, and a release is Developer ID signed"
+            exit 1
+          }
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          pass=$(openssl rand -hex 24)
+          security create-keychain -p "$pass" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$pass" "$keychain"
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/cert.p12"
+          # Without this codesign stops at a dialog nobody on a runner can answer.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$pass" "$keychain"
+          # shellcheck disable=SC2046 # one keychain path per word is the point
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          for bin in orchd orch; do
+            codesign --force --options runtime --timestamp \
+              --sign "$APPLE_SIGNING_IDENTITY" --keychain "$keychain" "target/release/$bin"
+          done
+
+      - name: Bundle
+        if: runner.os != 'macOS'
+        run: |
           # The npm CLI ships a prebuilt binary; `cargo install tauri-cli` would
           # spend minutes compiling one on every release. This also builds
           # `orchestrator-desktop --release`, which is why that step is gone.
@@ -183,14 +227,49 @@ jobs:
           # toolchain.
           npx -y @tauri-apps/cli@2.11.4 build --bundles ${{ matrix.bundles }}
 
+      # The same build, signed and notarized: the identity overrides the config's
+      # `-`, and the API key is what makes the bundler submit the `.app`, wait
+      # for Apple and staple the ticket before it packs the dmg around it. Its own
+      # step so the Linux leg never has the secrets in its env.
+      - name: Bundle, signed and notarized
+        if: runner.os == 'macOS'
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          BUNDLES: ${{ matrix.bundles }}
+        run: |
+          set -eu
+          printf '%s' "$APPLE_API_KEY_P8" > "$RUNNER_TEMP/AuthKey.p8"
+          export APPLE_API_KEY_PATH="$RUNNER_TEMP/AuthKey.p8"
+          npx -y @tauri-apps/cli@2.11.4 build --bundles "$BUNDLES"
+
       # **The signature, before the app is driven and long before it is packed.**
       # The bundler signs only when `signingIdentity` is set, and a config that
       # loses that key fails nowhere else: the app still builds, still starts on
       # the runner, and is refused as damaged on the first machine that mounts
       # the dmg. `--deep --strict` is the check that machine runs, so run it here.
+      #
+      # **And by whom, which `--verify` does not say.** An ad hoc bundle passes it
+      # too, so each binary is asked for its authority, and `spctl` asks the
+      # question Gatekeeper asks a download: an app that is signed but not
+      # notarized is `rejected` there.
       - name: The bundle is signed
         if: runner.os == 'macOS'
-        run: codesign --verify --deep --strict target/release/bundle/macos/Orchestrator.app
+        run: |
+          set -eu
+          app=target/release/bundle/macos/Orchestrator.app
+          codesign --verify --deep --strict "$app"
+          for bin in orchestrator-desktop orchd orch; do
+            codesign -dv "$app/Contents/MacOS/$bin" 2>&1 | grep -q '^Authority=Developer ID Application' || {
+              echo "::error::$bin is not Developer ID signed"
+              codesign -dv "$app/Contents/MacOS/$bin" 2>&1 || true
+              exit 1
+            }
+          done
+          xcrun stapler validate "$app"
+          spctl --assess --type execute -vv "$app"
 
       # The packed app, driven before anything is uploaded. `check-ship` reads the
       # config and says the bundle *should* carry `orchd`; this opens the bundle
@@ -214,6 +293,23 @@ jobs:
             exit 1
           }
           node tools/app-check.mjs "$app"
+
+      # **The dmg is notarized here, because the bundler does not.** It signs the
+      # dmg and leaves it at that. Gatekeeper checks the dmg itself when a
+      # downloaded one is opened, so its ticket is stapled too. Before `Package`,
+      # which sums what it ships.
+      - name: Notarize the dmg
+        if: runner.os == 'macOS'
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -eu
+          dmg=$(ls target/release/bundle/dmg/*.dmg | head -1)
+          xcrun notarytool submit "$dmg" --key "$RUNNER_TEMP/AuthKey.p8" \
+            --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER" --wait
+          xcrun stapler staple "$dmg"
+          xcrun stapler validate "$dmg"
 
       - name: Package
         run: |
@@ -253,6 +349,14 @@ jobs:
           name: dist-${{ matrix.slug }}
           path: dist/
           if-no-files-found: error
+
+      # The runner is thrown away, but a key file is not left lying about for the
+      # rest of a job to read, however short that rest is.
+      - name: Drop the signing keychain and the API key
+        if: always() && runner.os == 'macOS'
+        run: |
+          security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/AuthKey.p8" "$RUNNER_TEMP/cert.p12"
 
   # **One release, made once, only if every platform built.**
   #
@@ -442,6 +546,11 @@ jobs:
           rm -rf "$HOME/Applications/Orchestrator.app"
           cp -R /tmp/mnt/Orchestrator.app "$HOME/Applications/Orchestrator.app"
           hdiutil detach -quiet /tmp/mnt
+          # What Gatekeeper asks of a download, asked of what was published: the
+          # tickets travel with the files, so this needs no network and no secret.
+          xcrun stapler validate "$dmg"
+          xcrun stapler validate "$HOME/Applications/Orchestrator.app"
+          spctl --assess --type execute -vv "$HOME/Applications/Orchestrator.app"
           node tools/app-check.mjs "$HOME/Applications/Orchestrator.app/Contents/MacOS/orchestrator-desktop"
 
 

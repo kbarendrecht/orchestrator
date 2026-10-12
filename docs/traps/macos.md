@@ -261,6 +261,33 @@ because it runs on Linux on every push rather than once per tag.
 never assessed, so every machine that installs that way — including the one this
 repo is developed on — sees nothing wrong.
 
+**The release is Developer ID signed and notarized now, and the `-` stays.**
+`signingIdentity: "-"` is what `bundle.yml` and a fork PR build with, since
+neither has the secrets. `release.yml` overrides it with `APPLE_SIGNING_IDENTITY`,
+and the bundler notarizes and staples the `.app` when the App Store Connect API
+key is in its env. Three things it does not do, each read in the bundler's source
+at `@tauri-apps/cli-v2.11.4`, and each a step of its own in the workflow:
+
+- **It does not sign what `bundle.macOS.files` copies in.** It signs its own
+  binary, `externalBin` sidecars and frameworks, then the `.app` without
+  `--deep`. So `orchd` and `orch` kept the linker's ad hoc signature, which
+  notarization refuses. They are signed with the hardened runtime before the
+  bundler runs, and it copies them in as they are.
+- **It deletes its keychain on the way out.** Given `APPLE_CERTIFICATE`, it imports
+  into a keychain of its own and drops it when the `.app` is done. So the
+  workflow imports the certificate once, into a keychain on the search list, and
+  gives the bundler only the identity.
+- **It does not notarize the dmg.** It signs it. Gatekeeper checks a downloaded
+  dmg itself, so the dmg is submitted and stapled after the bundler, before the
+  sums are taken.
+
+`--verify --deep --strict` passes an ad hoc bundle too, so the gate also asks each
+binary for its `Authority=Developer ID Application` and runs `spctl --assess`,
+which is the question Gatekeeper asks. `verify` asks it again of the published
+dmg. The secrets: `APPLE_CERTIFICATE` (the base64 `.p12`),
+`APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_API_KEY` (the key
+id), `APPLE_API_ISSUER` and `APPLE_API_KEY_P8` (the `.p8` itself).
+
 ## A process outside a bundle is a window macOS will not manage.
 
 Rectangle moved and resized every window on the reporter's machine except this
