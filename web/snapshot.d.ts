@@ -11,7 +11,11 @@ export type AgentUpdate = {
  * checkout pins. Carried rather than assumed so the button upgrades the tool
  * that actually provides the binary.
  */
-tool: string, current: string, latest: string, };
+tool: string, current: string, latest: string, 
+/**
+ * Which agent that tool is, so the bar names it.
+ */
+agent: Agent, };
 
 /**
  * How to rebuild a torn-down worktree so an archived session can be resumed (§2).
@@ -125,7 +129,7 @@ last_used_ms: number,
  * fresh as the last scan, so the two can disagree for up to a poll — the
  * daemon's own check at the moment of the call is the one that decides.
  */
-may_be_live: boolean, };
+may_be_live: boolean, agent: Agent, };
 
 /**
  * Why a triage run cannot start.
@@ -639,7 +643,12 @@ to: string, running: boolean,
  * says "update available" reads as a button that did nothing. It is reported,
  * and dismissed like any other.
  */
-tail: string, };
+tail: string, 
+/**
+ * The agent being upgraded, carried for the same reason as `to`; `None` for
+ * the app's own upgrade.
+ */
+agent: Agent | null, };
 
 export type WorkspaceKind = { "kind": "main" } | { "kind": "worktree", name: string, };
 

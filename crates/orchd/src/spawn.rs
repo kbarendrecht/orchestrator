@@ -591,18 +591,34 @@ async fn spawn_session_with_id(
     after the spawn returned lost that race whenever the agent died on the way up:
     a resume that cannot start took the file with it. */
     if adopting {
-        let (at, id) = (
-            path.clone(),
-            match source {
-                Source::Resume(prev) => prev,
-                _ => id,
-            },
-        );
+        // Whose it is comes from the scan that listed it. A Codex conversation is
+        // listed under Codex's own id, so that id is what `codex resume` is given,
+        // and its rollout is the transcript.
+        let outside = app
+            .inner
+            .read()
+            .await
+            .external
+            .iter()
+            .find(|c| c.id == id)
+            .cloned();
+        let rollout = outside
+            .as_ref()
+            .filter(|c| c.agent == crate::agent::Agent::Codex)
+            .map(|c| c.transcript.clone());
+        if rollout.is_some() {
+            carried.agent = crate::agent::Agent::Codex;
+            carried.agent_session_id = Some(id.to_string());
+        }
+        let at = path.clone();
         carried.had_a_turn =
-            crate::proc::run_blocking("reading an adopted conversation", move || {
-                crate::store::has_conversation(id, &at, None)
-                    || crate::store::find_transcript(id)
-                        .is_some_and(|p| crate::store::has_conversation(id, &at, Some(&p)))
+            crate::proc::run_blocking("reading an adopted conversation", move || match rollout {
+                Some(r) => crate::store::has_conversation(id, &at, Some(&r)),
+                None => {
+                    crate::store::has_conversation(id, &at, None)
+                        || crate::store::find_transcript(id)
+                            .is_some_and(|p| crate::store::has_conversation(id, &at, Some(&p)))
+                }
             })
             .await
             .unwrap_or(false);
@@ -2862,6 +2878,16 @@ mod tests {
             &s.pass,
             Some(Pass { pr: 7, command }) if command == Pass::FIX_PR
         ));
+
+        // The same run on Codex is a Codex session, typed in the form its
+        // instructions teach, since Codex refuses a slash command it does not know.
+        let codex = RunSpec {
+            agent: crate::agent::Agent::Codex,
+            ..spec
+        }
+        .session(id, "pr-7", PathBuf::from("/tmp"), 7);
+        assert_eq!(codex.agent, crate::agent::Agent::Codex);
+        assert_eq!(codex.pending_prompt.as_deref(), Some("orchd:fix-pr 7"));
     }
 
     /// Every field a resume carries actually lands on the record that continues it.

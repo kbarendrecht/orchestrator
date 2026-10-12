@@ -542,17 +542,20 @@ function renderAgentUpdate() {
   // `u` is only read in the last arm, and that is the only arm reachable with no
   // update pending: the check is refreshed when a run ends, so a run in flight can
   // outlive the nudge that started it.
+  // The agent the run or the offer is about. A session left behind is named by
+  // its own, and is Claude Code's when nothing else says.
+  const who = AGENT_LABEL[/** @type {import('./repo').Agent} */ (run?.agent ?? u?.agent ?? stale[0]?.session.agent ?? 'claude')];
   const n = stale.length;
   const behind = `${n} session${n === 1 ? '' : 's'} still on the old one`;
   const msg = failed
-    ? `Claude Code ${run.to} did not install: ${run.tail.split('\n')[0]}`
+    ? `${who} ${run.to} did not install: ${run.tail.split('\n')[0]}`
     : done
-      ? n ? `Claude Code ${run.to} installed \u2014 ${behind}` : `Claude Code ${run.to} installed`
+      ? n ? `${who} ${run.to} installed \u2014 ${behind}` : `${who} ${run.to} installed`
       : run
-        ? `installing Claude Code ${run.to}\u2026`
+        ? `installing ${who} ${run.to}\u2026`
         : !u && n
-          ? `Claude Code was upgraded \u2014 ${behind}`
-          : `Claude Code ${u?.latest} available (you have ${u?.current})`;
+          ? `${who} was upgraded \u2014 ${behind}`
+          : `${who} ${u?.latest} available (you have ${u?.current})`;
   if (agentDismissed === msg) { bar.hidden = true; return; }
 
   $('agentmsg').textContent = msg;

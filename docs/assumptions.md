@@ -241,6 +241,13 @@ your checkout; `~/.agents/skills` would reach every Codex you run.
 *Breaks:* a user who sets `developer_instructions` in their own config has it
 replaced for the daemon's sessions.
 
+**32. A mise tool's install folder is not always its name, and `outdated` will
+not say so.** `npm:@openai/codex` installs to `npm-openai-codex/`, and
+`mise outdated` answers `{}` for a name it does not know exactly as it does for a
+current tool. `update::agent_providing_tool` reads the name back from `mise ls`.
+*Kind:* mise's behaviour. *Breaks:* silently. The agent is never offered an
+upgrade.
+
 ## What this repo happens to do, and another will not
 
 Named separately because these look structural and are not: worktrees under

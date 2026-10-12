@@ -8,11 +8,12 @@
 // before it, and a line the daemon types has to wait for the pane to settle.
 
 import assert from 'node:assert/strict'
+import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { until } from '../harness.mjs'
 
-export const name = 'a codex session starts, forks, takes a typed prompt and resumes'
+export const name = 'a codex session starts, forks, is typed into, adopted, moved and resumed'
 export const options = { codex: true, autoResume: true }
 
 /** What the fake was last started with, for the daemon session `id`. */
@@ -76,6 +77,44 @@ export async function run(t) {
   await t.settled(idle, ['your_turn'])
   assert.equal((await t.session(idle)).state.reason, 'ready', 'up, and waiting for you')
   t.setTurns(1)
+
+  // A Codex conversation from a terminal in this checkout is listed beside the
+  // daemon's own and adopted on Codex, while the daemon's own Codex sessions —
+  // filed under the ids Codex chose — are not mistaken for outside ones.
+  const outside = crypto.randomUUID()
+  const day = path.join(t.home, '.codex/sessions/2026/10/11')
+  fs.mkdirSync(day, { recursive: true })
+  fs.writeFileSync(path.join(day, `rollout-2026-10-11T09-00-00-${outside}.jsonl`), [
+    { type: 'session_meta', payload: { id: outside, cwd: t.repo } },
+    { type: 'event_msg', payload: { type: 'task_started' } },
+    { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hi' }] } },
+  ].map((r) => JSON.stringify(r)).join('\n') + '\n')
+  fs.appendFileSync(path.join(t.home, '.codex/session_index.jsonl'),
+    `${JSON.stringify({ id: outside, thread_name: 'from a terminal' })}\n`)
+  await t.api('POST', '/api/external/refresh')
+  const listed = (await t.state()).external
+  const ext = listed.find((c) => c.id === outside)
+  assert.ok(ext, 'the outside Codex conversation is listed')
+  assert.equal(ext.agent, 'codex')
+  assert.equal(ext.title, 'from a terminal')
+  assert.equal(ext.workspace, 'main')
+  assert.ok(!listed.some((c) => c.id === first.id), "the daemon's own Codex session is not outside")
+  const { session: adopted } = await t.api('POST', `/api/external/${outside}/resume`, { force: true })
+  await t.settled(adopted)
+  assert.equal((await t.session(adopted)).agent, 'codex', 'adopted on the agent it belongs to')
+  assert.deepEqual(
+    (({ verb, continues }) => ({ verb, continues }))(argvOf(t, adopted)),
+    { verb: 'resume', continues: outside },
+  )
+
+  // Moved out of main, which is a kill and a resume in another directory: the
+  // case Codex answers with a directory picker unless `-C` names the new one, and
+  // the fake refuses a `-C` that is not where it was started.
+  const moved = await t.api('POST', `/api/session/${adopted}/out-of-main`)
+  assert.equal(moved.session.degraded, false, 'resumed, not forked')
+  const there = await t.settled(moved.session.session)
+  assert.equal(there.workspace, moved.workspace)
+  assert.equal(argvOf(t, moved.session.session).continues, outside, 'the same Codex conversation')
 
   // And back after a restart, on `codex resume` with the id Codex chose.
   await t.restart()

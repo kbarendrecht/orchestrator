@@ -48,7 +48,15 @@ use orchd_base::install::Install;
 /// project, `claude` not installed by mise at all — because this drives a nudge.
 /// Something that cannot answer must be silent rather than shout.
 pub fn check(main: &Path) -> Option<AgentUpdate> {
-    let tool = agent_providing_tool(main)?;
+    // Each agent in turn, Claude Code first. The bar holds one update at a time,
+    // and the second is offered once the first is installed.
+    crate::agent::Agent::ALL
+        .into_iter()
+        .find_map(|agent| check_one(main, agent))
+}
+
+fn check_one(main: &Path, agent: crate::agent::Agent) -> Option<AgentUpdate> {
+    let tool = agent_providing_tool(main, agent)?;
     // `--json` rather than the table: the human output is columns of padded
     // text, and `{}` for "nothing outdated" is unambiguous where an empty table
     // is not.
@@ -63,7 +71,9 @@ pub fn check(main: &Path) -> Option<AgentUpdate> {
         &["outdated", "--json", &tool],
         "the agent version check",
     )?;
-    parse(&out.stdout, &tool)
+    let mut u = parse(&out.stdout, &tool)?;
+    u.agent = agent;
+    Some(u)
 }
 
 /// How long a `mise` query may take before it is killed. These reach mise's
@@ -100,13 +110,44 @@ pub(crate) fn mise(main: &Path, args: &[&str], label: &str) -> Option<std::proce
 /// whose `installs/<tool>/<version>/` component names the tool. Anything else —
 /// no mise, a `claude` from npm — yields `None` and no nudge, which is right: this
 /// cannot offer to upgrade something it does not know how to.
-fn agent_providing_tool(main: &Path) -> Option<String> {
+///
+/// **The folder is not always the name.** mise files a backend's tool under its
+/// name with the punctuation folded — `npm:@openai/codex` lives in
+/// `installs/npm-openai-codex/` — and `outdated` answers `{}` for a name it does
+/// not know, exactly as it does for a tool that is current. Asked by its folder,
+/// Codex would never be nudged and nothing would say so. So the name is read back
+/// from `mise ls`, which lists each tool beside the folder it installed.
+fn agent_providing_tool(main: &Path, agent: crate::agent::Agent) -> Option<String> {
     let out = mise(
         main,
-        &["which", "claude"],
+        &["which", agent.program()],
         "resolving the agent's mise tool",
     )?;
-    tool_of_install_path(String::from_utf8_lossy(&out.stdout).trim())
+    let at = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let folder = tool_of_install_path(&at)?;
+    let listed = mise(
+        main,
+        &["ls", "--current", "--json"],
+        "naming the agent's mise tool",
+    );
+    Some(
+        listed
+            .and_then(|l| tool_installed_at(&l.stdout, &at))
+            .unwrap_or(folder),
+    )
+}
+
+/// The tool whose install folder holds `path`, out of `mise ls --json`.
+fn tool_installed_at(ls: &[u8], path: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_slice(ls).ok()?;
+    v.as_object()?.iter().find_map(|(name, entries)| {
+        entries
+            .as_array()?
+            .iter()
+            .filter_map(|e| e.get("install_path")?.as_str())
+            .any(|dir| path.starts_with(&format!("{dir}/")))
+            .then(|| name.clone())
+    })
 }
 
 /// The directory mise installs every version under: `…/installs/<tool>/<version>/`.
@@ -145,6 +186,7 @@ fn parse(stdout: &[u8], tool: &str) -> Option<AgentUpdate> {
         tool: tool.to_string(),
         current,
         latest,
+        agent: crate::agent::Agent::Claude,
     })
 }
 
@@ -473,10 +515,15 @@ pub async fn start_upgrade(
             return Err("that upgrade is already running".to_string());
         }
         let (plan, version) = subject.offer(&inner, install, have_pkexec)?;
+        let agent = match subject {
+            Subject::Agent => inner.agent_update.as_ref().map(|u| u.agent),
+            Subject::App => None,
+        };
         *subject.run_slot(&mut inner) = Some(UpgradeRun {
             to: version.to.clone(),
             running: true,
             tail: String::new(),
+            agent,
         });
         (plan, version)
     };
@@ -585,10 +632,12 @@ fn run_upgrade(
             }
             // Reported rather than cleared: see `tail`. An empty tail on a
             // finished run is the success.
+            let agent = subject.run_slot(&mut inner).as_ref().and_then(|r| r.agent);
             *subject.run_slot(&mut inner) = Some(UpgradeRun {
                 to,
                 running: false,
                 tail: failure.unwrap_or_default(),
+                agent,
             });
         }
         app.notify().await;
@@ -1571,6 +1620,29 @@ mod tests {
         );
         // Not a mise install — an npm global, say. Nothing to offer.
         assert_eq!(tool_of_install_path("/usr/local/bin/claude"), None);
+    }
+
+    /// The folder `npm-openai-codex` is the tool `npm:@openai/codex`, and only
+    /// `mise ls` says so. `outdated` asked by the folder answers `{}` for ever.
+    #[test]
+    fn a_backend_tool_is_named_by_mise_ls_not_by_its_folder() {
+        let ls = br#"{
+            "claude-code": [{"version": "2.1.296", "install_path": "/m/installs/claude-code/2.1.296"}],
+            "npm:@openai/codex": [{"version": "0.162.1", "install_path": "/m/installs/npm-openai-codex/0.162.1"}]
+        }"#;
+        assert_eq!(
+            tool_installed_at(ls, "/m/installs/npm-openai-codex/0.162.1/bin/codex").as_deref(),
+            Some("npm:@openai/codex")
+        );
+        assert_eq!(
+            tool_installed_at(ls, "/m/installs/claude-code/2.1.296/claude").as_deref(),
+            Some("claude-code")
+        );
+        // A prefix of the folder name is not the folder.
+        assert_eq!(
+            tool_installed_at(ls, "/m/installs/claude-code/2.1.29/claude"),
+            None
+        );
         assert_eq!(tool_of_install_path(""), None);
     }
 

@@ -1022,6 +1022,8 @@ pub struct AgentUpdate {
     pub tool: String,
     pub current: String,
     pub latest: String,
+    /// Which agent that tool is, so the bar names it.
+    pub agent: crate::agent::Agent,
 }
 
 /// An upgrade the daemon is running, or the failure it left behind.
@@ -1053,6 +1055,9 @@ pub struct UpgradeRun {
     /// says "update available" reads as a button that did nothing. It is reported,
     /// and dismissed like any other.
     pub tail: String,
+    /// The agent being upgraded, carried for the same reason as `to`; `None` for
+    /// the app's own upgrade.
+    pub agent: Option<crate::agent::Agent>,
 }
 
 /// A release newer than what is running.

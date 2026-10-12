@@ -724,6 +724,9 @@ pub struct ExternalConversation {
     /// checked out for something else since, which is the one thing `revive` warns
     /// about that an outside conversation would otherwise never hear.
     pub branch: Option<String>,
+    /// Whose conversation this is. A Codex one is resumed through `codex resume`
+    /// under the id it carries, which is Codex's own.
+    pub agent: crate::agent::Agent,
 }
 
 /// How recently a transcript must have been appended to for the daemon to suspect
@@ -779,6 +782,9 @@ pub fn external_conversations(
             continue;
         };
         out.extend(external_in(&dir, workspace, path, known, previous));
+    }
+    if let Some(sessions) = crate::codex::home().map(|h| h.join("sessions")) {
+        out.extend(external_codex(&sessions, workspaces, known, previous));
     }
     // Newest first, and the id breaks the tie: the page decides whether to
     // repaint by comparing snapshot text, so an order that depends on what
@@ -851,6 +857,7 @@ fn external_in(
             branch: last_git_branch(&path),
             transcript: path,
             last_used,
+            agent: crate::agent::Agent::Claude,
         });
     }
     // Newest first, then capped, so what a busy directory drops is its oldest and
@@ -858,6 +865,101 @@ fn external_in(
     out.sort_by(|a, b| b.last_used.cmp(&a.last_used).then(a.id.cmp(&b.id)));
     out.truncate(EXTERNAL_MAX);
     out
+}
+
+/// The Codex conversations whose cwd is one of `workspaces`, and that no session
+/// of this daemon holds.
+///
+/// **Codex files by date, not by directory**: `sessions/YYYY/MM/DD/rollout-…`, with
+/// the cwd on the first line. So the walk is every rollout, and what keeps it cheap
+/// is the same mtime cache [`external_in`] uses — an unchanged file is the previous
+/// answer, read for nothing — plus reading only the head of a new one. Capped per
+/// workspace like the Claude Code list, newest first.
+fn external_codex(
+    sessions: &Path,
+    workspaces: &[(WorkspaceId, PathBuf)],
+    known: &std::collections::HashSet<SessionId>,
+    previous: &[ExternalConversation],
+) -> Vec<ExternalConversation> {
+    let mut files = Vec::new();
+    let mut dirs = vec![sessions.to_path_buf()];
+    while let Some(d) = dirs.pop() {
+        let Ok(entries) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            if e.file_type().is_ok_and(|t| t.is_dir()) {
+                dirs.push(p);
+            } else if crate::codex::rollout_id(&p).is_some() {
+                files.push((p, e));
+            }
+        }
+    }
+    let mut out: Vec<ExternalConversation> = Vec::new();
+    for (path, entry) in files {
+        let Some(id) = crate::codex::rollout_id(&path).and_then(|i| uuid::Uuid::parse_str(&i).ok())
+        else {
+            continue;
+        };
+        if known.contains(&id) {
+            continue;
+        }
+        let Some(last_used) = entry.metadata().ok().and_then(|m| m.modified().ok()) else {
+            continue;
+        };
+        if let Some(prev) = previous
+            .iter()
+            .find(|c| c.id == id && c.transcript == path && c.last_used == last_used)
+        {
+            out.push(prev.clone());
+            continue;
+        }
+        let Some(cwd) = rollout_cwd(&path) else {
+            continue;
+        };
+        let Some((workspace, at)) = workspaces.iter().find(|(_, p)| *p == cwd) else {
+            continue;
+        };
+        if !has_conversation(id, at, Some(&path)) {
+            continue;
+        }
+        out.push(ExternalConversation {
+            id,
+            workspace: workspace.clone(),
+            title: ai_title(id, at, Some(&path)),
+            branch: None,
+            transcript: path,
+            last_used,
+            agent: crate::agent::Agent::Codex,
+        });
+    }
+    out.sort_by(|a, b| b.last_used.cmp(&a.last_used).then(a.id.cmp(&b.id)));
+    let mut per: std::collections::HashMap<WorkspaceId, usize> = Default::default();
+    out.retain(|c| {
+        let n = per.entry(c.workspace.clone()).or_default();
+        *n += 1;
+        *n <= EXTERNAL_MAX
+    });
+    out
+}
+
+/// The cwd a rollout's `session_meta` records, off its first line.
+fn rollout_cwd(path: &Path) -> Option<PathBuf> {
+    use std::io::BufRead;
+    let f = std::fs::File::open(path).ok()?;
+    let mut line = String::new();
+    // Bounded: the first record holds the base instructions, which are long but
+    // not unbounded, and a file that is something else must not be read whole.
+    std::io::BufReader::new(std::io::Read::take(f, 1 << 20))
+        .read_line(&mut line)
+        .ok()?;
+    let v: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
+    if v.get("type")?.as_str()? != "session_meta" {
+        return None;
+    }
+    let cwd = PathBuf::from(v.pointer("/payload/cwd")?.as_str()?);
+    Some(std::fs::canonicalize(&cwd).unwrap_or(cwd))
 }
 
 /// The branch the tree was on when this conversation last spoke.

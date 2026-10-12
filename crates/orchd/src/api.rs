@@ -3103,6 +3103,7 @@ mod tests {
             to: "2026.9.2".into(),
             running: true,
             tail: String::new(),
+            agent: None,
         });
         assert!(
             upgrade_app(State(app.clone())).await.is_err(),

@@ -917,10 +917,19 @@ impl AppState {
                     .values()
                     .map(|w| (w.id.clone(), w.path.clone()))
                     .collect::<Vec<_>>(),
+                // Codex's ids as well as the daemon's: a Codex session the daemon
+                // started is filed under the id Codex chose, and without this it
+                // would be listed as somebody else's conversation.
                 inner
                     .sessions
-                    .keys()
-                    .copied()
+                    .values()
+                    .flat_map(|s| {
+                        let theirs = s
+                            .agent_session_id
+                            .as_deref()
+                            .and_then(|t| Uuid::parse_str(t).ok());
+                        std::iter::once(s.id).chain(theirs)
+                    })
                     .collect::<std::collections::HashSet<_>>(),
                 inner.external.clone(),
             )
@@ -1430,6 +1439,7 @@ impl AppState {
                     .map(|d| d.as_millis() as u64)
                     .unwrap_or(0),
                 may_be_live: crate::store::recently_active(c.last_used),
+                agent: c.agent,
             })
             .collect();
 
@@ -2277,6 +2287,7 @@ pub struct ExternalView {
     /// fresh as the last scan, so the two can disagree for up to a poll — the
     /// daemon's own check at the moment of the call is the one that decides.
     pub may_be_live: bool,
+    pub agent: crate::agent::Agent,
 }
 
 #[derive(Debug, Serialize)]
