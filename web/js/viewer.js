@@ -14,7 +14,7 @@
 // document is as tall as the band and scrolling stops after 320 lines, which
 // reads as a truncated file rather than a broken viewer.
 
-import { activeCheckout, call, copyText, el, get, openMenu, reason, safeHref, toast } from './core.js';
+import { activeCheckout, appMod, call, copyText, el, get, openMenu, reason, safeHref, toast } from './core.js';
 import { byteRange, charRanges, hlTokens, langFor, paintRanges } from './source.js';
 import { parse } from './markdown.js';
 
@@ -133,6 +133,41 @@ export function create(on) {
    *  rows over it and the pane went empty; a blame answer or the ruler's marks
    *  landing late would have done the same. */
   const held = () => !!on.mount.querySelector(':scope > .editwrap, :scope > .editarea');
+
+  /* **The select-all chord selects the file, not the page.** Nothing in the pane
+     takes focus, so the browser's own select-all took the whole window with it.
+     A text field keeps its own; the editor's buffer gets it even when the focus
+     was elsewhere. The rows are a band, so the selection can only cover what is
+     drawn, and `all` is what lets the copy below hand over every line. */
+  let all = false;
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key.toLowerCase() !== 'a' || !appMod(ev) || ev.shiftKey) return;
+    if (!on.mount.offsetParent) return;
+    const t = /** @type {HTMLElement} */ (ev.target);
+    if (t.closest?.('input, textarea, [contenteditable]')) return;
+    ev.preventDefault();
+    const ta = /** @type {HTMLTextAreaElement | null} */ (on.mount.querySelector('.editarea'));
+    if (ta) {
+      ta.focus();
+      ta.select();
+      return;
+    }
+    const range = document.createRange();
+    range.selectNodeContents(on.mount);
+    const sel = getSelection();
+    sel?.removeAllRanges();
+    sel?.addRange(range);
+    all = view.mode === 'source';
+  });
+  document.addEventListener('copy', (ev) => {
+    // By its ends, not by identity: WebKit hands back a copy of the range.
+    const r = getSelection()?.rangeCount ? getSelection()?.getRangeAt(0) : null;
+    const still = all && r && r.startContainer === on.mount && r.endContainer === on.mount
+      && r.startOffset === 0 && r.endOffset === on.mount.childNodes.length;
+    if (!still || !view.file || !ev.clipboardData) return;
+    ev.preventDefault();
+    ev.clipboardData.setData('text/plain', view.file.lines.join('\n'));
+  });
 
   /** Swap the ruler alone when its marks arrive. **Not the band**: a rebuilt
    *  band can move the pane's scroll, and a scroll closes an open menu, so the

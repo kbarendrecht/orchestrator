@@ -1720,6 +1720,19 @@ try {
   check(keptBuffer, 'turning blame on while editing leaves the buffer on screen')
   await press('#fvedit')
   await page.waitForFunction(() => !!document.querySelector('#fvsrc .fnrow'), null, { timeout: 5000 })
+  /* **Select-all takes the file, not the window**, and the copy carries every
+     line, not only the band that is drawn. */
+  await page.evaluate(() => /** @type {HTMLElement} */ (document.activeElement)?.blur())
+  await page.keyboard.press(chord('a'))
+  const selAll = await page.evaluate(() => {
+    const r = getSelection()?.getRangeAt(0)
+    const m = document.getElementById('fvsrc')
+    const dt = new DataTransfer()
+    document.dispatchEvent(new ClipboardEvent('copy', { clipboardData: dt, bubbles: true, cancelable: true }))
+    return { inPane: !!r && m?.contains(r.commonAncestorContainer) || r?.commonAncestorContainer === m, lines: dt.getData('text/plain').split('\n').length }
+  })
+  check(selAll.inPane && selAll.lines === 301,
+    `select-all in the viewer selects the file and copies all of it, got ${JSON.stringify(selAll)}`)
   // The file pane, then the finder under it.
   await page.keyboard.press('Escape')
   await page.waitForFunction(() => !document.getElementById('fvoverlay')?.classList.contains('on'), null, { timeout: 5000 })
