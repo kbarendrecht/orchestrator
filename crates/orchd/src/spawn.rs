@@ -732,7 +732,7 @@ async fn spawn_session_with_id(
     // A resume rebuilds the environment from nothing, so the run's own credential
     // has to be re-handed here as well as at a fresh spawn: through the same seam,
     // because this is the path that forgot it once. See [`post_token_for`].
-    let post = post_token_for(app, &session.pass).await;
+    let post = post_token_for(app, id, &session.pass).await;
     // Off the runtime. `session_env` asks the checkout's own env source, which is a
     // bounded child process (`mise env`, `direnv export`) that `run_bounded` polls
     // with `thread::sleep` for up to five seconds — on *every* spawn. Parked on a
@@ -1230,10 +1230,14 @@ impl RunSpec {
 /// proposals, reporting `ORCH_POST_TOKEN is absent from this environment` after it
 /// had read every thread. Re-minted rather than persisted, like the ask token: the
 /// value is only ever compared against the record this write updates.
-pub(crate) async fn post_token_for(app: &Arc<AppState>, pass: &Option<Pass>) -> Option<String> {
+pub(crate) async fn post_token_for(
+    app: &Arc<AppState>,
+    id: SessionId,
+    pass: &Option<Pass>,
+) -> Option<String> {
     match pass {
         Some(Pass { pr, command }) if Pass::posts_proposals(command) => {
-            Some(app.mint_post_token(*pr).await)
+            Some(app.mint_post_token(id, *pr).await)
         }
         _ => None,
     }
@@ -1348,7 +1352,7 @@ pub(crate) async fn spawn_run(
     // session, proposals against this PR. Neither opens anything else, which is
     // what keeps "the daemon owns outward writes" an API rule rather than a
     // sentence in a prompt this run's own input could argue with.
-    let post = post_token_for(app, &session.pass).await;
+    let post = post_token_for(app, id, &session.pass).await;
     // Off the runtime — see the note in `spawn_session`.
     let (env, unset) = {
         let (app, at, extra) = (app.clone(), path.clone(), spec.extra_env.clone());
@@ -2175,6 +2179,9 @@ pub(crate) fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<
                     return;
                 }
             }
+            // Its post token goes with the process: keyed by session now, nothing
+            // else would ever drop it, and a resume mints a fresh one.
+            inner.proposal_tokens.remove(&id);
             match inner.sessions.get_mut(&id) {
                 Some(s) => {
                     if s.state.is_live() {

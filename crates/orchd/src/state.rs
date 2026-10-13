@@ -296,7 +296,8 @@ pub struct Inner {
     /// and come back. Its absence after a run exits is how a failed run is
     /// detected: the agent reports by POSTing, not by its exit code.
     pub proposals: HashMap<u64, crate::proposal::ProposalSet>,
-    /// The credential the triage run for this PR may post its proposals with.
+    /// The credential each posting run may post its proposals with, by session,
+    /// with the PR it is good for.
     ///
     /// Minted per run and good for **one route on one PR**. It replaced handing
     /// those runs `app.token`, which was the whole API — and they are the runs
@@ -307,7 +308,7 @@ pub struct Inner {
     ///
     /// Deliberately **not** persisted: a run does not survive a restart, so a
     /// token that outlived one could only ever be a key nobody is holding.
-    pub proposal_tokens: HashMap<u64, String>,
+    pub proposal_tokens: HashMap<SessionId, (u64, String)>,
     /// Stories already filed for a review thread, so a retry reuses one rather
     /// than filing a second. A cache, not a ledger — `crate::story` explains why
     /// losing it costs latency and not correctness.
@@ -1852,21 +1853,20 @@ impl AppState {
     /// Re-minted rather than persisted, exactly like [`crate::model::Session::ask_token`]:
     /// the value is only ever compared against this record, so a new pair costs
     /// nothing, and the record is dropped with the process that minted it.
-    /// **Keyed by PR, and that is safe only because of a rule kept elsewhere.**
-    /// A second mint for the same PR replaces the first, so any earlier holder is
-    /// silently locked out. Nothing can reach that today: every run over a PR lives
-    /// in that PR's own worktree, and `api::refuse_if_occupied` admits one live
-    /// session per workspace — so two holders of one PR's token cannot coexist.
-    /// The ask token is keyed per session and needs no such argument.
-    /// Move a run for a PR out of that PR's worktree and this key is wrong. Key it
-    /// by session id then, or refuse the second mint while the first run is live.
-    pub async fn mint_post_token(&self, pr: u64) -> String {
+    /// **Keyed by session, with the PR it opens beside it.** It was keyed by PR,
+    /// on the argument that two holders of one PR's token could not coexist
+    /// because a worktree admits one live session — and `orch new` breaks that on
+    /// purpose, putting a helper in the caller's live tree. A second mint for the
+    /// same PR then replaced the first and silently locked the earlier run out of
+    /// the one route it exists to call. By session, each run holds its own, and
+    /// what the token opens is unchanged: that PR's proposals and nothing else.
+    pub async fn mint_post_token(&self, session: SessionId, pr: u64) -> String {
         let token = crate::secret::random_token();
         self.inner
             .write()
             .await
             .proposal_tokens
-            .insert(pr, token.clone());
+            .insert(session, (pr, token.clone()));
         token
     }
 

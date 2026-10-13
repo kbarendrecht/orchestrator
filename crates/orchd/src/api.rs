@@ -972,11 +972,18 @@ pub(crate) async fn proposal_token_ok(
         return Ok(());
     }
     let inner = app.inner.read().await;
-    match inner.proposal_tokens.get(&pr) {
-        Some(want) if !given.is_empty() && given == want => Ok(()),
-        _ => Err(ApiError(anyhow::anyhow!(
+    // Any run's token for *this* PR. Keyed by session so two runs on one PR each
+    // keep theirs; the PR beside it is what keeps each one to its own route.
+    let held = inner
+        .proposal_tokens
+        .values()
+        .any(|(for_pr, want)| *for_pr == pr && !given.is_empty() && given == want);
+    if held {
+        Ok(())
+    } else {
+        Err(ApiError(anyhow::anyhow!(
             "bad proposals token for PR #{pr}"
-        ))),
+        )))
     }
 }
 
@@ -3733,12 +3740,7 @@ mod tests {
     async fn a_run_posts_proposals_on_a_token_that_opens_nothing_else() {
         let (app, dir) = crate::testutil::app("proposaltok");
         let pr = 10001u64;
-        let narrow = crate::secret::random_token();
-        app.inner
-            .write()
-            .await
-            .proposal_tokens
-            .insert(pr, narrow.clone());
+        let narrow = app.mint_post_token(Uuid::new_v4(), pr).await;
 
         let hdr = |v: &str| {
             let mut h = axum::http::HeaderMap::new();
@@ -3760,6 +3762,36 @@ mod tests {
         assert!(proposal_token_ok(&app, 999, &hdr(&narrow)).await.is_err());
         // And a PR with no run recorded authenticates nobody but the app.
         assert!(proposal_token_ok(&app, 999, &hdr(&app.token)).await.is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Two runs on one PR each keep their own token.
+    ///
+    /// It was keyed by PR, so the second mint replaced the first and locked the
+    /// earlier run out of the one route it exists to call — reachable because `orch
+    /// new` puts a helper into the caller's live tree on purpose, which is the case
+    /// the old "one live session per worktree" argument ruled out.
+    #[tokio::test]
+    async fn a_second_run_on_a_pr_does_not_lock_the_first_out() {
+        let (app, dir) = crate::testutil::app("proposaltok-two");
+        let pr = 10002u64;
+        let (first, second) = (Uuid::new_v4(), Uuid::new_v4());
+        let a = app.mint_post_token(first, pr).await;
+        let b = app.mint_post_token(second, pr).await;
+        let hdr = |v: &str| {
+            let mut h = axum::http::HeaderMap::new();
+            h.insert("x-orch-token", v.parse().unwrap());
+            h
+        };
+        assert!(
+            proposal_token_ok(&app, pr, &hdr(&a)).await.is_ok(),
+            "the first run was locked out by the second"
+        );
+        assert!(proposal_token_ok(&app, pr, &hdr(&b)).await.is_ok());
+        // A resume re-mints under the same id, and the old value stops working.
+        let a2 = app.mint_post_token(first, pr).await;
+        assert!(proposal_token_ok(&app, pr, &hdr(&a)).await.is_err());
+        assert!(proposal_token_ok(&app, pr, &hdr(&a2)).await.is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
