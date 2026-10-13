@@ -550,6 +550,50 @@ pub async fn spawn_session(
         // A fork is a second conversation, so it needs an id of its own.
         Source::Fork(_) | Source::New(_) => Uuid::new_v4(),
     };
+    /* **A resumed fix run is the same run, so it takes its record back** — before
+    the process exists, on `fix_pr::start`'s rule that a `claude` dying at once
+    must find a record to settle. Boot used to demote every running record and
+    auto-resume then brought the run back with none: `evaluate` would start a
+    second run beside it, the review gate could not see it, and its exit settled
+    nothing. Refused when another run holds the PR, which is the one-run rule. */
+    let fix_run = match (&source, &pass) {
+        (Source::Resume(_), Some(p)) if p.command == Pass::FIX_PR => Some(p.pr),
+        _ => None,
+    };
+    if let Some(pr) = fix_run {
+        let held = app
+            .inner
+            .write()
+            .await
+            .take_back_fix_run(pr, id, "a fix run resumed");
+        if let Err(other) = held {
+            bail!(
+                "#{pr} already has a fix-pr session running ({}); stop it before resuming this one",
+                crate::model::short_id(&other)
+            );
+        }
+    }
+    let out = spawn_session_claimed(app, workspace, pass, source, id).await;
+    if out.is_err() {
+        if let Some(pr) = fix_run {
+            // Nothing is running, so nothing may claim to be.
+            app.inner
+                .write()
+                .await
+                .with_automation("a fix run's resume failed", |a| a.let_go(pr, id));
+        }
+    }
+    out
+}
+
+/// [`spawn_session`], with a resumed fix run's record already taken back.
+async fn spawn_session_claimed(
+    app: &Arc<AppState>,
+    workspace: &str,
+    pass: Option<Pass>,
+    source: Source,
+    id: SessionId,
+) -> Result<SessionId> {
     // Main is exclusive, and the claim is taken before anything is created so a
     // refusal costs no worktree and no pty. The claim is *given back* here rather
     // than in the body, because everything below this line is fallible — the env
@@ -2273,8 +2317,8 @@ pub(crate) fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<
                     // conversation: keeping its row and header file would only
                     // offer a resume that exits instantly and a fork that dies in a
                     // fresh worktree. A session started as a pass is exempt — a run
-                    // that never got going is tracked as `Exhausted`, not deleted
-                    // (§8).
+                    // that never got going keeps its row and its pane, so what it
+                    // printed on the way down can still be read.
                     if s.pass.is_none() && !s.had_a_turn {
                         forget = Some((s.cwd.clone(), s.transcript_path.clone()));
                         inner.sessions.remove(&id);
@@ -2417,6 +2461,52 @@ pub fn worktree_name_of(path: &Path, worktrees_dir: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A resumed fix run is held to the one-run-per-PR rule and leaves no record
+    /// behind when it cannot start.
+    ///
+    /// Boot demoted every running record while auto-resume brought the run back,
+    /// so a resumed run had none: a second run could start beside it and its exit
+    /// settled nothing. Now the resume takes the record back — refused while
+    /// another run holds the PR, and let go again when the spawn fails, because a
+    /// record naming a run that is not going refuses every press on that PR.
+    #[tokio::test]
+    async fn a_resumed_fix_run_takes_its_record_back_or_leaves_none() {
+        let (app, dir) = crate::testutil::app("resume-fix");
+        let pass = Pass {
+            pr: 7,
+            command: Pass::FIX_PR.to_string(),
+        };
+        let id = Uuid::new_v4();
+        let other = Uuid::new_v4();
+        let resume = || spawn_session(&app, "nowhere", Some(pass.clone()), Source::Resume(id));
+
+        // Another run holds #7: refused, and that run's record is untouched.
+        let _ = app
+            .inner
+            .write()
+            .await
+            .take_back_fix_run(7, other, "a test");
+        let err = format!("{:#}", resume().await.expect_err("a second run on #7"));
+        assert!(
+            err.contains("already has a fix-pr session running"),
+            "{err}"
+        );
+        assert!(matches!(
+            app.inner.read().await.automation.get(7),
+            Some(PrAutomation::Running { session, .. }) if *session == other
+        ));
+
+        // Nobody holds it, and the spawn fails (no such workspace): no record.
+        app.inner
+            .write()
+            .await
+            .with_automation("a test", |a| a.let_go(7, other));
+        let err = format!("{:#}", resume().await.expect_err("no workspace"));
+        assert!(err.contains("unknown workspace"), "{err}");
+        assert!(app.inner.read().await.automation.get(7).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// A per-PR run rebases onto the PR's own base, not the daemon's global one.
     ///

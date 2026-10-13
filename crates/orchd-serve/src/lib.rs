@@ -1313,29 +1313,6 @@ fn start_pr_poller(app: Arc<AppState>) {
                                 tracing::info!(login = %viewer, "github viewer");
                                 inner.viewer = Some(viewer);
                             }
-                            // Exhaustion clears when a head moves with no run
-                            // alive. Through `with_automation` so the write is not
-                            // a thing this poller has to remember — it used to
-                            // drop the error entirely.
-                            let heads: Vec<(u64, Option<String>)> =
-                                prs.iter().map(|p| (p.number, p.head_sha.clone())).collect();
-                            inner.with_automation("pr poll", |a| {
-                                let mut changed = false;
-                                for (number, head) in heads {
-                                    let alive = matches!(
-                                        a.get(number),
-                                        Some(model::PrAutomation::Running { .. })
-                                    );
-                                    if !alive {
-                                        // Reported rather than assumed, so a poll
-                                        // that changed nothing does not rewrite
-                                        // `automation.json` — and the poll that
-                                        // adopts a baseline does.
-                                        changed |= a.reconcile_head(number, head.as_deref());
-                                    }
-                                }
-                                changed
-                            });
                             /* **What left the open list, and why that is a
                             question at all.** The search is
                             `is:pr is:open author:@me`, so a PR that merges or
@@ -1505,6 +1482,7 @@ fn auto_resume(app: Arc<AppState>, records: Vec<store::SessionRecord>) {
         let candidates: Vec<store::SessionRecord> =
             records.into_iter().filter(|r| r.was_live).collect();
         if candidates.is_empty() {
+            prune_fix_runs(&app, &std::collections::HashSet::new()).await;
             return;
         }
 
@@ -1528,6 +1506,7 @@ fn auto_resume(app: Arc<AppState>, records: Vec<store::SessionRecord>) {
         // path is where it holds — and it also defends a `sessions.json` written
         // before that invariant existed, where two records shared one worktree.
         let to_resume = first_per_workspace(resumable, app.settings().allow_several_in_main);
+        prune_fix_runs(&app, &to_resume.iter().map(|r| r.id).collect()).await;
         /* **Declared before the first spawn, because the window is the bug** (#33).
         These sessions are coming back and none of them is live yet; a shutdown
         between two spawns reads live state and would write `was_live: false` for
@@ -1582,6 +1561,23 @@ fn auto_resume(app: Arc<AppState>, records: Vec<store::SessionRecord>) {
             app.notify().await;
         }
     });
+}
+
+/// Drop every recorded fix run that is not coming back.
+///
+/// Every run's process died with the last daemon. The ones in the resume set keep
+/// their record, so a press before the stagger reaches them is refused rather
+/// than starting a second run on the branch, and each takes it back as it
+/// resumes. The rest are not running, and a record saying otherwise would refuse
+/// every press on that PR for good. A resume that then fails lets its record go
+/// in `spawn::spawn_session`.
+async fn prune_fix_runs(app: &Arc<AppState>, coming_back: &std::collections::HashSet<uuid::Uuid>) {
+    app.inner
+        .write()
+        .await
+        .with_automation("boot: fix runs not resumed", |a| {
+            a.keep_runs(|s| coming_back.contains(s))
+        });
 }
 
 /// Own timer, offset from the PR poll so the two do not burst together (§6b).

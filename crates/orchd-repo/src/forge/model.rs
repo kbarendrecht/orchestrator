@@ -103,8 +103,8 @@ pub struct Pr {
     pub merge_state: String,
     pub checks: Checks,
     /// Head commit. `fix-pr` amends and rebases, so this moves on every
-    /// internal attempt — it is an identity for "has the branch changed since
-    /// the run gave up", not a provenance record (§8).
+    /// internal attempt — it says where the branch is now, never which run put
+    /// it there (§8). The review checks a force-push against it.
     pub head_sha: Option<String>,
     /// GitHub's sense of resolved — a conversation the comment author closed.
     /// Not to be confused with `/api/pr/:number/resolve-run`, which is *our* flow for

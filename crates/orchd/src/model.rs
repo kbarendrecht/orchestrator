@@ -1324,12 +1324,24 @@ impl Cache {
 // and `state` may not import the module that fills it. `fix_pr` keeps the guards,
 // the verdict and the run.
 
-/// Per-PR automation state (§8).
+/// Per-PR automation state (§8): a `fix-pr` run that is going.
 ///
 /// Retry lives in the prompt, not here: `fix-pr` amends and rebases, so the head
 /// SHA changes on every internal attempt and SHA-based provenance is impossible
-/// *and* unnecessary. The daemon's job is only to avoid starting a second run
-/// and to be honest about a run that gave up.
+/// *and* unnecessary. The daemon's job is only to avoid starting a second run.
+///
+/// **There was a second state, `Exhausted`, and nothing read it.** A run that
+/// ended red was recorded as having given up, with a head the poller kept
+/// reconciling — but `fix_pr::evaluate` refuses only `Running`, the review gate
+/// ignored it on purpose, and the rail had stopped drawing it because a restart
+/// made it lie: boot demoted every live `Running` to `Exhausted` while
+/// auto-resume brought the same runs back, so three working runs read as given
+/// up, and their exits then settled nothing. A state with no reader is one only a
+/// test keeps honest, so it went. An old `automation.json` still loads: the store
+/// drops a record it cannot read (`store::load_automation`).
+///
+/// An enum of one, so the wire shape (`{"state":"running",…}`) the page and old
+/// files carry stays what it was.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "state", rename_all = "snake_case")]
 #[cfg_attr(
@@ -1346,25 +1358,6 @@ pub enum PrAutomation {
         )]
         started: SystemTime,
     },
-    /// The run stopped without turning the PR green. It wants you.
-    Exhausted {
-        /// The head this exhaustion is measured against, once anything knows it.
-        ///
-        /// `None` means "not established yet", and the next poll adopts whatever
-        /// it finds. Two things wrote a wrong answer here before, and both
-        /// cleared the record on the very next poll — erasing the "gave up, wants
-        /// you" signal the run had just set. `settle` copied the head from the
-        /// *previous* poll, which the run's own force-push had already moved past;
-        /// and a crashed run was demoted with `""`, which can never equal a real
-        /// sha. Neither could be told apart from you moving the branch.
-        #[serde(default)]
-        at_head: Option<String>,
-        #[cfg_attr(
-            any(test, feature = "test-util"),
-            ts(type = "{ secs_since_epoch: number, nanos_since_epoch: number }")
-        )]
-        at: SystemTime,
-    },
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1378,40 +1371,56 @@ impl AutomationStore {
         self.by_pr.get(&pr)
     }
 
-    /// Exhaustion clears when the head moves while no run is alive: nothing of
-    /// the daemon's was running and the branch changed, therefore you did it.
-    /// No commit markers, no timestamps, no provenance (§8).
+    /// A resumed fix run takes its record back: `Ok(true)` written, `Ok(false)`
+    /// already its own, `Err` with the session of another run holding the PR.
     ///
-    /// A record with no head yet **adopts** this one rather than clearing. That is
-    /// what makes the rule mean what it says: the daemon cannot know the head a
-    /// run left — the run's last act is a force-push, after the poll that could
-    /// have seen it — so the first poll afterwards establishes the baseline and
-    /// only a move *after* that is yours. The cost is one poll interval of grace:
-    /// a push of yours landing in that window is absorbed into the baseline
-    /// instead of clearing the record. Worth it, since the bug it replaces
-    /// cleared the record every single time.
-    ///
-    /// Returns whether anything changed, so the caller can carry the write.
-    pub fn reconcile_head(&mut self, pr: u64, head: Option<&str>) -> bool {
-        let Some(head) = head else { return false };
-        // Decided before acting, because clearing takes the map mutably while the
-        // record it is deciding about is still borrowed.
-        let moved = match self.by_pr.get(&pr) {
-            Some(PrAutomation::Exhausted {
-                at_head: Some(h), ..
-            }) => h != head,
-            Some(PrAutomation::Exhausted { at_head: None, .. }) => false,
-            _ => return false,
-        };
-        if moved {
-            self.by_pr.remove(&pr);
-        } else if let Some(PrAutomation::Exhausted { at_head, .. }) = self.by_pr.get_mut(&pr) {
-            if at_head.is_some() {
-                return false;
+    /// **A resume is the same run**, so it is held to the same one-run-per-PR rule
+    /// and settles on its own exit like the first spawn. Without this a resumed
+    /// run had no record: `evaluate` would start a second run on the same branch
+    /// beside it, the review gate could not see it, and `settle` ignored its exit.
+    pub fn take_back(&mut self, pr: u64, session: SessionId) -> Result<bool, SessionId> {
+        match self.by_pr.get(&pr) {
+            Some(PrAutomation::Running { session: s, .. }) if *s == session => Ok(false),
+            Some(PrAutomation::Running { session: s, .. }) => Err(*s),
+            None => {
+                self.by_pr.insert(
+                    pr,
+                    PrAutomation::Running {
+                        session,
+                        started: SystemTime::now(),
+                    },
+                );
+                Ok(true)
             }
-            *at_head = Some(head.to_string());
         }
-        true
+    }
+
+    /// Forget `session`'s run on `pr`, and only that run. Whether anything changed.
+    ///
+    /// The record is keyed on the PR and a second run replaces it, so dropping
+    /// whatever is there when the *first* run exits would unguard the live one.
+    pub fn let_go(&mut self, pr: u64, session: SessionId) -> bool {
+        let ours = matches!(
+            self.by_pr.get(&pr),
+            Some(PrAutomation::Running { session: s, .. }) if *s == session
+        );
+        if ours {
+            self.by_pr.remove(&pr);
+        }
+        ours
+    }
+
+    /// Keep only the runs whose session `keep` names. Whether anything changed.
+    ///
+    /// For boot, where every recorded run's process died with the last daemon:
+    /// the ones auto-resume will bring back keep their record — so a press in the
+    /// seconds before their turn in the stagger is still refused — and the rest
+    /// are not running and must not block the PR.
+    pub fn keep_runs(&mut self, keep: impl Fn(&SessionId) -> bool) -> bool {
+        let before = self.by_pr.len();
+        self.by_pr
+            .retain(|_, a| matches!(a, PrAutomation::Running { session, .. } if keep(session)));
+        self.by_pr.len() != before
     }
 }
 
@@ -1862,68 +1871,35 @@ mod tests {
     // A PR the daemon is fixing
     // -----------------------------------------------------------------------
 
+    /// A resumed run takes its record back, and a second run on the same PR is
+    /// what it refuses — the one-run-per-PR rule, held across a restart.
     #[test]
-    fn exhaustion_clears_only_when_the_head_moves() {
+    fn a_resumed_run_takes_its_record_back_unless_another_holds_the_pr() {
+        let (mine, other) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
         let mut store = AutomationStore::default();
-        store.by_pr.insert(
-            7,
-            PrAutomation::Exhausted {
-                at_head: Some("abc".into()),
-                at: SystemTime::now(),
-            },
-        );
-        store.reconcile_head(7, Some("abc"));
-        assert!(store.get(7).is_some(), "same head must stay exhausted");
-        store.reconcile_head(7, Some("def"));
-        assert!(store.get(7).is_none(), "a moved head means you touched it");
-    }
+        assert_eq!(store.take_back(7, mine), Ok(true), "written");
+        assert_eq!(store.take_back(7, mine), Ok(false), "already its own");
+        assert_eq!(store.take_back(7, other), Err(mine), "another run holds #7");
 
-    #[test]
-    fn an_unknown_head_does_not_clear_exhaustion() {
-        let mut store = AutomationStore::default();
-        store.by_pr.insert(
-            7,
-            PrAutomation::Exhausted {
-                at_head: Some("abc".into()),
-                at: SystemTime::now(),
-            },
-        );
-        store.reconcile_head(7, None);
+        // Only the run that holds it lets go of it.
+        assert!(!store.let_go(7, other));
         assert!(store.get(7).is_some());
-    }
-
-    /// A record with no head yet is the *normal* end of a run, and the next poll
-    /// gives it one instead of throwing it away.
-    ///
-    /// This is the whole of the bug: the run's last act is a force-push, so the
-    /// head every already-taken poll knows is one the branch has left. Recording
-    /// that stale sha — or the `""` a crashed run used to be demoted with — made
-    /// the next poll read "the head moved, therefore you moved it" and erase the
-    /// only signal saying the run gave up.
-    #[test]
-    fn a_run_that_left_an_unknown_head_adopts_the_next_poll_rather_than_clearing() {
-        let mut store = AutomationStore::default();
-        store.by_pr.insert(
-            7,
-            PrAutomation::Exhausted {
-                at_head: None,
-                at: SystemTime::now(),
-            },
-        );
-        assert!(
-            store.reconcile_head(7, Some("post-push")),
-            "the baseline is news"
-        );
-        assert!(store.get(7).is_some(), "adopting must not clear the record");
-        // Adopted, so it is now the thing a later move is judged against — and a
-        // second poll at the same head changes nothing and writes nothing.
-        assert!(!store.reconcile_head(7, Some("post-push")));
-        assert!(store.get(7).is_some());
-        assert!(
-            store.reconcile_head(7, Some("yours")),
-            "now it really moved"
-        );
+        assert!(store.let_go(7, mine));
         assert!(store.get(7).is_none());
+    }
+
+    /// Boot keeps the runs auto-resume will bring back and drops the rest, which
+    /// died with the last daemon and must not refuse the next press.
+    #[test]
+    fn boot_keeps_only_the_runs_coming_back() {
+        let (back, gone) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        let mut store = AutomationStore::default();
+        let _ = store.take_back(1, back);
+        let _ = store.take_back(2, gone);
+        assert!(store.keep_runs(|s| *s == back));
+        assert!(store.get(1).is_some());
+        assert!(store.get(2).is_none());
+        assert!(!store.keep_runs(|s| *s == back), "nothing left to drop");
     }
 
     // -----------------------------------------------------------------------

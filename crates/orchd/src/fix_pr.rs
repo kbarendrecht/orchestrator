@@ -86,9 +86,7 @@ fn no(reason: String) -> Verdict {
     Verdict::No { reason }
 }
 
-/// Whether a finished run left the PR in a state that counts as exhausted.
-///
-/// A run that ends with the PR still red means the run is asking for you (§8).
+/// Whether the PR is red: failing checks, or a conflict with its base.
 fn ended_red(pr: &Pr) -> bool {
     pr.checks == Checks::Failing || pr.mergeable == "CONFLICTING"
 }
@@ -232,11 +230,12 @@ pub async fn start(
     // Recorded *before* the process can exist, under the id it will spawn with:
     // `spawn::spawn_run` says why. A `claude` that dies at once is reaped before a
     // write placed after the spawn, and the exit watcher then finds no run of its
-    // own to close — so the record named a corpse as running until a restart
-    // demoted it, and `evaluate` refused every press in between.
+    // own to close — so the record named a corpse as running until a restart,
+    // and `evaluate` refused every press in between.
     //
-    // If this never reaches disk, a restart forgets the run started and the
-    // one-run-per-PR cap can re-fire, so the write is not optional.
+    // If this never reaches disk, a restart forgets the run started: auto-resume
+    // brings the run back with nothing guarding it, and the one-run-per-PR rule
+    // can start a second beside it. So the write is not optional.
     let session = uuid::Uuid::new_v4();
     app.inner
         .write()
@@ -264,16 +263,19 @@ pub async fn start(
         return Err(e);
     }
 
-    // Exhaustion is recorded by the session's own exit watcher, which is the
-    // one place that sees a pty end (`settle`).
+    // The record is cleared by the session's own exit watcher, which is the one
+    // place that sees a pty end (`settle`).
     app.notify().await;
     Ok(session)
 }
 
-/// Write down how a finished run left the PR.
+/// Forget a finished run, so the PR may be run on again.
 ///
 /// Called by the session's own exit watcher, which is the *one* observer of a pty
-/// ending. This used to be a second `pty.wait()` on the same handle from inside
+/// ending — for a resumed run too, which takes its record back on the way up
+/// (`AutomationStore::take_back`), so its exit settles here like the first one's.
+/// A run that ended red is not remembered: nothing read that record, and the rail's
+/// `fix` button and the PR's own checks say what there is to say. This used to be a second `pty.wait()` on the same handle from inside
 /// the HTTP layer: both saw the same real event, so it worked, but "is this run
 /// over" had two answers maintained independently and the automation record lived
 /// nowhere in particular.
@@ -285,53 +287,12 @@ pub async fn settle(app: &std::sync::Arc<crate::state::AppState>, pr: u64, sessi
 /// [`settle`] under a lock the caller already holds.
 ///
 /// **Only this session's run.** The record is keyed on the PR, and a second run
-/// on the same PR replaces it: stamping the exit of the one it replaced onto the
-/// live one would bury a running run under a verdict.
+/// on the same PR replaces it: clearing it on the exit of the one it replaced
+/// would leave the live run unguarded.
 fn settle_in(inner: &mut crate::state::Inner, pr: u64, session: SessionId) {
-    let ours = matches!(
-        inner.automation.get(pr),
-        Some(PrAutomation::Running { session: s, .. }) if *s == session
-    );
-    if !ours {
-        return;
-    }
-    let found = inner.pr(pr).cloned();
-    let v = verdict(found.as_ref());
-    // The write rides with the mutation: a lost one makes a restart mis-remember
-    // whether this PR is exhausted, which defeats the one-run-per-PR cap.
-    inner.with_automation(&format!("PR #{pr} at run end"), |a| {
-        match v {
-            Some(v) => {
-                a.by_pr.insert(pr, v);
-            }
-            None => {
-                a.by_pr.remove(&pr);
-            }
-        }
-        true
-    });
-}
-
-/// What a finished run means for the record: `Some` to remember, `None` to forget.
-///
-/// Split from [`settle`] so the decision can be tested without an `AppState` — and
-/// without a test writing `automation.json` into the real config directory, which
-/// is what `settle` does by design and what a unit test must never do.
-///
-/// `None` covers two different clean endings: the PR went green, or it left the
-/// poll entirely (merged, closed, no longer yours). Neither is evidence a run gave
-/// up, so neither is worth remembering.
-fn verdict(found: Option<&Pr>) -> Option<PrAutomation> {
-    match found {
-        // No head: the poll that produced `p` ran *before* the run's last
-        // force-push, so `p.head_sha` is a sha this branch has already left. The
-        // next poll establishes the real one — see `reconcile_head`.
-        Some(p) if ended_red(p) => Some(PrAutomation::Exhausted {
-            at_head: None,
-            at: SystemTime::now(),
-        }),
-        _ => None,
-    }
+    // The write rides with the mutation: a lost one leaves a finished run looking
+    // live after a restart, refusing every press until boot prunes it.
+    inner.with_automation(&format!("PR #{pr} at run end"), |a| a.let_go(pr, session));
 }
 
 #[cfg(test)]
@@ -494,48 +455,24 @@ mod tests {
 
     #[test]
     fn a_draft_is_treated_as_a_normal_pr() {
-        // Single-run-per-PR and exhaustion carry the load instead (§8).
+        // Single-run-per-PR carries the load instead (§8).
         let mut p = pr(1);
         p.is_draft = true;
         assert!(matches!(evaluate(&input(&p)), Verdict::Go));
     }
 
-    /// The verdict a finished run leaves behind. Moved here out of a second
-    /// `pty.wait()` in the HTTP layer, so it is worth pinning where it now lives.
-    /// Tested through `verdict` rather than `settle`: `settle` persists, and a unit
-    /// test has no business writing the real `automation.json`.
+    /// A finished run is forgotten however it ended, and only that run: red used
+    /// to leave an `Exhausted` record nothing read. Through `AutomationStore`
+    /// rather than `settle`, which persists — and a unit test has no business
+    /// writing the real `automation.json`.
     #[test]
-    fn a_run_that_ends_red_is_remembered_as_exhausted() {
-        let p = pr(7); // `pr()` is red: checks Failing
-        match verdict(Some(&p)) {
-            // Deliberately *not* `p.head_sha`: that is the pre-push poll's answer.
-            Some(PrAutomation::Exhausted { at_head, .. }) => assert_eq!(at_head, None),
-            other => panic!("red at the end must be remembered, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn a_conflicting_pr_counts_as_exhausted_too() {
-        let mut p = pr(7);
-        p.checks = Checks::Passing;
-        p.mergeable = "CONFLICTING".into();
-        assert!(
-            verdict(Some(&p)).is_some(),
-            "green checks but unmergeable is still stuck"
-        );
-    }
-
-    #[test]
-    fn a_run_that_ends_green_is_forgotten() {
-        let mut p = pr(7);
-        p.checks = Checks::Passing;
-        assert_eq!(verdict(Some(&p)), None, "green leaves nothing to remember");
-    }
-
-    /// A PR that fell out of the poll while the run was going is not evidence of
-    /// exhaustion — merged, closed, or simply not ours any more.
-    #[test]
-    fn a_pr_gone_from_the_poll_is_forgotten_too() {
-        assert_eq!(verdict(None), None);
+    fn a_finished_run_is_forgotten_and_a_newer_one_is_not() {
+        let (first, second) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        let mut store = crate::model::AutomationStore::default();
+        let _ = store.take_back(7, second);
+        assert!(!store.let_go(7, first), "the replaced run's exit");
+        assert!(store.get(7).is_some(), "left the live run unguarded");
+        assert!(store.let_go(7, second));
+        assert!(store.get(7).is_none());
     }
 }

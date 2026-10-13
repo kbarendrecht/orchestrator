@@ -125,8 +125,8 @@ head_pushable: boolean | null, base_ref: string, is_draft: boolean,
 mergeable: string, merge_state: string, checks: Checks, 
 /**
  * Head commit. `fix-pr` amends and rebases, so this moves on every
- * internal attempt — it is an identity for "has the branch changed since
- * the run gave up", not a provenance record (§8).
+ * internal attempt — it says where the branch is now, never which run put
+ * it there (§8). The review checks a force-push against it.
  */
 head_sha: string | null, 
 /**

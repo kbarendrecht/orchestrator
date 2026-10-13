@@ -634,6 +634,24 @@ impl Inner {
     /// Reads still go straight at the fields: they are many, harmless, and requiring
     /// an accessor for each would be noise. It is *mutation* that has to carry the
     /// write with it. `with_stories` below is the same shape.
+    /// [`crate::model::AutomationStore::take_back`], carrying its own write.
+    pub fn take_back_fix_run(
+        &mut self,
+        pr: u64,
+        session: crate::model::SessionId,
+        why: &str,
+    ) -> Result<(), crate::model::SessionId> {
+        let mut out = Ok(());
+        self.with_automation(why, |a| match a.take_back(pr, session) {
+            Ok(wrote) => wrote,
+            Err(other) => {
+                out = Err(other);
+                false
+            }
+        });
+        out
+    }
+
     pub fn with_automation(
         &mut self,
         why: &str,
@@ -2923,9 +2941,9 @@ mod tests {
             ] {
                 inner.automation.0.by_pr.insert(
                     pr,
-                    crate::model::PrAutomation::Exhausted {
-                        at_head: None,
-                        at: std::time::UNIX_EPOCH,
+                    crate::model::PrAutomation::Running {
+                        session: uuid::Uuid::nil(),
+                        started: std::time::UNIX_EPOCH,
                     },
                 );
             }

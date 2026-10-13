@@ -326,30 +326,45 @@ pub fn save_automation(store: &crate::model::AutomationStore) -> Result<()> {
     save_json(&automation_path()?, store)
 }
 
-/// A restart must not resurrect a `Running` state whose session is gone (§8).
+/// The runs recorded at the last shutdown, every one of them `Running`.
+///
+/// **Kept, not demoted.** This turned each into `Exhausted` — "the run is not
+/// going to finish" — while auto-resume brought the same runs straight back, so a
+/// resumed run had no record guarding it and its exit settled nothing. Boot now
+/// prunes this to the runs it will resume (`AutomationStore::keep_runs`, in
+/// `orchd-serve`'s auto-resume) and a resume takes its record back
+/// (`AutomationStore::take_back`), so a record means a run that is, or is about to
+/// be, going.
 pub fn load_automation() -> crate::model::AutomationStore {
-    let mut store: crate::model::AutomationStore = load_json(automation_path());
-    // Orphaned Running is demoted to Exhausted: the run is not going to finish,
-    // and pretending it might would block the PR forever. With no head — nobody
-    // knows what the crashed run left, and the `""` this used to write matched no
-    // real sha, so the next poll read it as "you moved the branch" and threw the
-    // record away.
-    for state in store.by_pr.values_mut() {
-        match state {
-            crate::model::PrAutomation::Running { .. } => {
-                *state = crate::model::PrAutomation::Exhausted {
-                    at_head: None,
-                    at: std::time::SystemTime::now(),
-                };
+    automation_from(load_json(automation_path()))
+}
+
+/// What `automation.json` holds, read one record at a time.
+#[derive(Default, Deserialize)]
+struct RawAutomation {
+    #[serde(default)]
+    by_pr: std::collections::HashMap<u64, serde_json::Value>,
+}
+
+/// Keep every record this build can read, and drop the rest.
+///
+/// One at a time because a file written before `Exhausted` went still carries
+/// some, and reading the store as a whole would fail on the first of them — which
+/// `load_json` answers by moving the whole file aside, live runs included. A
+/// record nobody reads any more is worth nothing, so it goes quietly.
+fn automation_from(raw: RawAutomation) -> crate::model::AutomationStore {
+    let mut store = crate::model::AutomationStore::default();
+    let mut dropped = 0usize;
+    for (pr, v) in raw.by_pr {
+        match serde_json::from_value(v) {
+            Ok(a) => {
+                store.by_pr.insert(pr, a);
             }
-            // The old sentinel, from a file written before `at_head` could say
-            // "unknown". Read as what it meant rather than as a sha.
-            crate::model::PrAutomation::Exhausted { at_head, .. } => {
-                if at_head.as_deref() == Some("") {
-                    *at_head = None;
-                }
-            }
+            Err(_) => dropped += 1,
         }
+    }
+    if dropped > 0 {
+        tracing::info!("automation: dropped {dropped} record(s) this build no longer keeps");
     }
     store
 }
@@ -590,6 +605,7 @@ pub fn has_conversation(id: uuid::Uuid, cwd: &Path, recorded: Option<&Path>) -> 
 /// so a file that is something else is never read whole.
 fn rollout_has_turn(path: &Path) -> bool {
     use std::io::{BufRead, Read};
+
     let Ok(f) = std::fs::File::open(path) else {
         return false;
     };
@@ -1496,6 +1512,30 @@ mod tests {
         assert_eq!(reap_orphans(std::slice::from_ref(&r)), 1);
         let _ = bystander.kill();
         let _ = bystander.wait();
+    }
+
+    /// An `automation.json` written while `Exhausted` existed still loads: the
+    /// running record survives, and the ones nothing reads any more are dropped
+    /// rather than failing the file — which would move it aside, live run and all.
+    #[test]
+    fn an_old_automation_file_with_exhausted_records_still_loads() {
+        let session = uuid::Uuid::new_v4();
+        let raw = format!(
+            r#"{{"by_pr":{{
+                "7":{{"state":"running","session":"{session}",
+                      "started":{{"secs_since_epoch":1,"nanos_since_epoch":0}}}},
+                "8":{{"state":"exhausted","at_head":"abc",
+                      "at":{{"secs_since_epoch":1,"nanos_since_epoch":0}}}},
+                "9":{{"state":"exhausted","at_head":null,
+                      "at":{{"secs_since_epoch":1,"nanos_since_epoch":0}}}}
+            }}}}"#
+        );
+        let store = automation_from(serde_json::from_str(&raw).expect("the file parses"));
+        assert!(matches!(
+            store.get(7),
+            Some(crate::model::PrAutomation::Running { session: s, .. }) if *s == session
+        ));
+        assert!(store.get(8).is_none() && store.get(9).is_none());
     }
 
     /// A background shell that never reported back is work the restart stopped;

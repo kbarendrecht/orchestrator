@@ -224,26 +224,26 @@ export type Offer = { "kind": "button", command: string, } | { "kind": "advice",
 export type Pass = { pr: number, command: string, };
 
 /**
- * Per-PR automation state (§8).
+ * Per-PR automation state (§8): a `fix-pr` run that is going.
  *
  * Retry lives in the prompt, not here: `fix-pr` amends and rebases, so the head
  * SHA changes on every internal attempt and SHA-based provenance is impossible
- * *and* unnecessary. The daemon's job is only to avoid starting a second run
- * and to be honest about a run that gave up.
- */
-export type PrAutomation = { "state": "running", session: string, started: { secs_since_epoch: number, nanos_since_epoch: number }, } | { "state": "exhausted", 
-/**
- * The head this exhaustion is measured against, once anything knows it.
+ * *and* unnecessary. The daemon's job is only to avoid starting a second run.
  *
- * `None` means "not established yet", and the next poll adopts whatever
- * it finds. Two things wrote a wrong answer here before, and both
- * cleared the record on the very next poll — erasing the "gave up, wants
- * you" signal the run had just set. `settle` copied the head from the
- * *previous* poll, which the run's own force-push had already moved past;
- * and a crashed run was demoted with `""`, which can never equal a real
- * sha. Neither could be told apart from you moving the branch.
+ * **There was a second state, `Exhausted`, and nothing read it.** A run that
+ * ended red was recorded as having given up, with a head the poller kept
+ * reconciling — but `fix_pr::evaluate` refuses only `Running`, the review gate
+ * ignored it on purpose, and the rail had stopped drawing it because a restart
+ * made it lie: boot demoted every live `Running` to `Exhausted` while
+ * auto-resume brought the same runs back, so three working runs read as given
+ * up, and their exits then settled nothing. A state with no reader is one only a
+ * test keeps honest, so it went. An old `automation.json` still loads: the store
+ * drops a record it cannot read (`store::load_automation`).
+ *
+ * An enum of one, so the wire shape (`{"state":"running",…}`) the page and old
+ * files carry stays what it was.
  */
-at_head: string | null, at: { secs_since_epoch: number, nanos_since_epoch: number }, };
+export type PrAutomation = { "state": "running", session: string, started: { secs_since_epoch: number, nanos_since_epoch: number }, };
 
 export type PrView = { rank: number, 
 /**
@@ -281,8 +281,8 @@ head_pushable: boolean | null, base_ref: string, is_draft: boolean,
 mergeable: string, merge_state: string, checks: Checks, 
 /**
  * Head commit. `fix-pr` amends and rebases, so this moves on every
- * internal attempt — it is an identity for "has the branch changed since
- * the run gave up", not a provenance record (§8).
+ * internal attempt — it says where the branch is now, never which run put
+ * it there (§8). The review checks a force-push against it.
  */
 head_sha: string | null, 
 /**
