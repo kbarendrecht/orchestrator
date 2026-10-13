@@ -17,6 +17,14 @@ import { branchOf, until } from '../harness.mjs'
 
 export const name = 'a swap that cannot finish is undone'
 
+// `debug` for the daemon's own crates, because this flow fails only on CI runners
+// (macos-14 on 2026-10-06, ubuntu-22.04 on 2026-10-13, never locally in 8 of 8),
+// and those keep no sandbox. What the undo did is the evidence, and at the suite's
+// `warn` most of it is never written.
+export const options = {
+  log: 'warn,orchd=debug,orchd_serve=debug,orchd_base=debug,orchd_repo=debug',
+}
+
 export async function run(t) {
   const { session: inMain } = await t.api('POST', '/api/session', { workspace: 'main' })
   await t.settled(inMain)
@@ -32,6 +40,10 @@ export async function run(t) {
   // A new file travels with the branch, so the undo has to bring it back too.
   fs.mkdirSync(path.join(dir, 'made'), { recursive: true })
   fs.writeFileSync(path.join(dir, 'made/new.txt'), 'the worktree made this\n')
+
+  // Where this flow's own story starts in the two logs, for the timeout below.
+  const logFrom = t.log().length
+  const agentFrom = t.agentLog().length
 
   t.dieOnResume(1, 2)
   let refused
@@ -83,8 +95,19 @@ export async function run(t) {
         return x ? `${x.workspace}/${x.alive ? 'alive' : 'stopped'}` : 'no record'
       }
       const main = s.workspaces.find((w) => w.id === 'main')
+      /* **And both sides of the undo, since the swap.** The state above says which
+         session did not come home; it cannot say why, and on a runner nothing of
+         the sandbox survives the job. So the daemon's log and the agent's notes
+         go into the failure itself. The tail only: a whole debug log is noise. */
+      // The daemon colours its log even into a file; a failure is read as text.
+      const plain = (text) => text.replace(/\x1b\[[0-9;]*m/g, '')
+      const tail = (text, n) => plain(text).trimEnd().split('\n').slice(-n).join('\n')
+      const agent = t.agentLog().slice(agentFrom)
       return `main's ${where(inMain)}, the worktree's ${where(inTree)}, `
-        + `main held by ${main?.occupant?.slice(0, 8) ?? 'nobody'}`
+        + `main held by ${main?.occupant?.slice(0, 8) ?? 'nobody'} `
+        + `(main's session is ${inMain.slice(0, 8)}, the worktree's ${inTree.slice(0, 8)})`
+        + `\n--- the agents, since the swap ---\n${tail(agent, 40) || '(nothing)'}`
+        + `\n--- the daemon, since the swap ---\n${tail(t.log().slice(logFrom), 120) || '(nothing)'}`
     },
   })
   const s = await t.state()

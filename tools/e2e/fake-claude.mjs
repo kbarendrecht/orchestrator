@@ -64,11 +64,16 @@ if (!pluginDir || !fs.existsSync(path.join(pluginDir, 'skills/orch/SKILL.md'))) 
 // swap fails, fail its fork fallback as well, and still let the undo's own resumes
 // through.
 const dieFile = process.env.ORCH_E2E_DIR && path.join(process.env.ORCH_E2E_DIR, 'die-on-resume')
+// Every start and how it began, so a move that does not land can be read off the
+// agent's side as well as the daemon's: which resumes came, in which tree, and
+// which of them were told to die.
+note(`${forking ? 'fork of' : resumeOf ? 'resume of' : 'new'}${resumeOf ? ` ${resumeOf.slice(0, 8)}` : ''} in ${process.cwd()}`)
 if (resumeOf && dieFile && fs.existsSync(dieFile)) {
   const [skip, die] = fs.readFileSync(dieFile, 'utf8').trim().split(',').map(Number)
   if (skip > 0) fs.writeFileSync(dieFile, `${skip - 1},${die}`)
   else if (die > 0) {
     fs.writeFileSync(dieFile, `0,${die - 1}`)
+    note('dying on resume, as die-on-resume asked')
     process.exit(1)
   }
 }
@@ -295,7 +300,7 @@ function note(line) {
   try {
     fs.appendFileSync(
       path.join(process.env.ORCH_E2E_DIR, 'agent.log'),
-      `${sessionId.slice(0, 8)} ${line}\n`,
+      `${(sessionId ?? 'no-id').slice(0, 8)} ${line}\n`,
     )
   } catch { /* the log is a convenience, never a dependency */ }
 }
