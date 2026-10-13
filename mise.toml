@@ -3,6 +3,11 @@
 # but a monorepo may pin it under this name, so one `mise up` there covers the agent
 # this daemon spawns instead of leaving a second copy to drift.
 claude-code = "latest"
+# The second agent the daemon can spawn, declared for the same reason: what a
+# Codex session does — which hooks it fires, with which `SessionEnd` reasons, what
+# an in-pane `/new` does to the process — is only measurable against the binary,
+# and a guess about it is exactly the rule the daemon then gets wrong quietly.
+codex = "latest"
 node = "latest"
 rust = "latest"
 # `gh` is a *task* dependency, not the daemon's: the review flow reaches GitHub
