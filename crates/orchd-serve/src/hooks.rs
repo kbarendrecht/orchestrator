@@ -148,25 +148,44 @@ fn session_of(headers: &HeaderMap, payload: &HookPayload) -> Option<Uuid> {
         })
 }
 
-/// Codex's own id for the conversation, and its rollout, off any hook that
+/// The agent's own id for the conversation, and Codex's rollout, off a hook that
 /// carries them.
 ///
-/// **Every hook, not the first one.** Codex fires `SessionStart` inside the first
-/// turn rather than before it, and a fork is given a new id that only its own
-/// hooks say. So `UserPromptSubmit`, `Stop` and `SessionStart` all report it, and
-/// whichever arrives first wins; the rest find nothing to change. Claude Code's id
-/// is the daemon's ([`session_of`]), so a Claude session is left alone.
-async fn learn_agent_id(app: &Arc<AppState>, id: Uuid, payload: &HookPayload) {
+/// **Codex: every hook, not the first one.** Codex fires `SessionStart` inside
+/// the first turn rather than before it, and a fork is given a new id that only
+/// its own hooks say. So `UserPromptSubmit`, `Stop` and `SessionStart` all report
+/// it, and whichever arrives first wins; the rest find nothing to change.
+///
+/// **Claude Code: `SessionStart` only** (`at_start`). Its id is the daemon's
+/// ([`session_of`]) until `/clear` or an in-pane `/resume` puts another
+/// conversation in the pane, and the `SessionStart` that follows is the one
+/// statement of which. Recorded only when it differs, so a session that never
+/// moved keeps `None` and a resume back onto the daemon's id clears it. The other
+/// hooks are left out because nothing says every one of them carries the main
+/// conversation's id rather than a subagent's, and a wrong id here is a resume
+/// into somebody else's conversation.
+async fn learn_agent_id(app: &Arc<AppState>, id: Uuid, payload: &HookPayload, at_start: bool) {
     let Some(theirs) = payload.session_id.as_deref().filter(|t| !t.is_empty()) else {
         return;
     };
     let tp = payload.transcript_path.as_deref().filter(|t| !t.is_empty());
+    let differs = theirs != id.to_string();
+    // What the record should hold, or `None` when this hook says nothing about it.
+    let wanted = |s: &orchd::model::Session| -> Option<Option<String>> {
+        if s.agent.names_its_own_session() {
+            Some(Some(theirs.to_string()))
+        } else if at_start {
+            Some(differs.then(|| theirs.to_string()))
+        } else {
+            None
+        }
+    };
     // Asked under a read guard first: this runs on three hooks a turn for every
     // session, and nearly always there is nothing to write.
     let news = app.inner.read().await.sessions.get(&id).is_some_and(|s| {
-        s.agent.names_its_own_session()
-            && (s.agent_session_id.as_deref() != Some(theirs)
-                || tp.is_some_and(|t| s.transcript_path.as_deref() != Some(Path::new(t))))
+        wanted(s).is_some_and(|w| w != s.agent_session_id)
+            || (s.agent.names_its_own_session()
+                && tp.is_some_and(|t| s.transcript_path.as_deref() != Some(Path::new(t))))
     });
     if !news {
         return;
@@ -175,10 +194,13 @@ async fn learn_agent_id(app: &Arc<AppState>, id: Uuid, payload: &HookPayload) {
     let Some(s) = inner.sessions.get_mut(&id) else {
         return;
     };
-    s.agent_session_id = Some(theirs.to_string());
+    if let Some(w) = wanted(s) {
+        s.agent_session_id = w;
+    }
     // As reported, unchecked: Codex names the rollout it is writing, where Claude
-    // Code's `--worktree` reported a directory it never wrote to.
-    if let Some(tp) = tp {
+    // Code's `--worktree` reported a directory it never wrote to. Claude Code's
+    // is `session_start`'s to take, which checks.
+    if let Some(tp) = tp.filter(|_| s.agent.names_its_own_session()) {
         s.transcript_path = Some(PathBuf::from(tp));
     }
 }
@@ -256,7 +278,7 @@ pub async fn session_start(
     let Some(id) = session_of(&headers, &payload) else {
         return ok();
     };
-    learn_agent_id(&app, id, &payload).await;
+    learn_agent_id(&app, id, &payload, true).await;
     /* A worktree the daemon did not name only reveals its path here, so this is
     where it gets adopted.
 
@@ -382,7 +404,7 @@ pub async fn user_prompt_submit(
     Json(payload): Json<HookPayload>,
 ) -> HookResult {
     if let Some(id) = session_of(&headers, &payload) {
-        learn_agent_id(&app, id, &payload).await;
+        learn_agent_id(&app, id, &payload, false).await;
         // Sending the next prompt is one of exactly two ways YourTurn
         // clears (§2). Both change the underlying reality.
         app.with_session(id, |s| s.set_state(State::Working)).await;
@@ -530,7 +552,7 @@ pub async fn stop(
     let Some(id) = session_of(&headers, &payload) else {
         return ok();
     };
-    learn_agent_id(&app, id, &payload).await;
+    learn_agent_id(&app, id, &payload, false).await;
 
     let workspace = {
         let inner = app.inner.read().await;
@@ -1598,6 +1620,59 @@ mod tests {
         );
         assert!(inner.sessions[&claude].agent_session_id.is_none());
         drop(inner);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `/clear` keeps the process and moves the pane to a conversation Claude Code
+    /// names, so the `SessionStart` after it is what a resume has to be handed.
+    /// Only that hook: an ordinary hook carrying another id says nothing about
+    /// which conversation is in the pane.
+    #[tokio::test]
+    async fn a_claude_session_follows_its_conversation_through_a_clear() {
+        let dir = orchd::testutil::scratch("learn-clear");
+        let app = orchd::testutil::app_at(&dir, "");
+        let id = Uuid::new_v4();
+        app.inner
+            .write()
+            .await
+            .sessions
+            .insert(id, Session::new(id, MAIN.to_string(), dir.clone(), None));
+        let headers = || {
+            let mut h = HeaderMap::new();
+            h.insert("x-orch-session", id.to_string().parse().unwrap());
+            h
+        };
+        let says = |sid: String| HookPayload {
+            session_id: Some(sid),
+            ..HookPayload::default()
+        };
+        let held = || async {
+            app.inner.read().await.sessions[&id]
+                .agent_session_id
+                .clone()
+        };
+
+        let _ = session_start(AxState(app.clone()), headers(), Json(says(id.to_string()))).await;
+        assert_eq!(held().await, None, "the daemon's id needs no second copy");
+
+        let cleared = Uuid::new_v4().to_string();
+        let _ =
+            user_prompt_submit(AxState(app.clone()), headers(), Json(says(cleared.clone()))).await;
+        assert_eq!(held().await, None, "only SessionStart moves it");
+
+        let _ = session_start(AxState(app.clone()), headers(), Json(says(cleared.clone()))).await;
+        assert_eq!(
+            held().await,
+            Some(cleared),
+            "a resume reopens what /clear left"
+        );
+
+        let _ = session_start(AxState(app.clone()), headers(), Json(says(id.to_string()))).await;
+        assert_eq!(
+            held().await,
+            None,
+            "an in-pane /resume back onto the first one"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

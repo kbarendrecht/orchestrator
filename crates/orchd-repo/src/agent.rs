@@ -9,8 +9,9 @@
 //! serves both and only the delivery differs.
 //!
 //! The daemon's session id is its own. For Claude Code it is also the agent's,
-//! because `--session-id` lets the daemon choose; Codex picks its own UUIDv7 and
-//! has no flag to take one, so its id is learned from the first hook and kept
+//! because `--session-id` lets the daemon choose, until `/clear` moves the pane to
+//! a conversation of Claude Code's choosing; Codex picks its own UUIDv7 and has
+//! no flag to take one. Either way the agent's id is learned from a hook and kept
 //! beside the daemon's (`Session::agent_session_id`).
 
 use serde::{Deserialize, Serialize};

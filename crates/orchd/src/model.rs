@@ -685,9 +685,15 @@ pub struct Session {
     /// The agent's own id for this conversation, when it is not [`Session::id`].
     ///
     /// Codex chooses its id and takes none, so it is read off the first hook that
-    /// carries one and `codex resume` is given it. `None` for Claude Code, whose id
-    /// is the daemon's, and for a Codex session that never had a turn, which has
-    /// no conversation to resume either.
+    /// carries one and `codex resume` is given it. `None` for a Codex session that
+    /// never had a turn, which has no conversation to resume either.
+    ///
+    /// **Claude Code's too, once it has moved off the daemon's.** `/clear` and an
+    /// in-pane `/resume` start or open another conversation in the same process,
+    /// and announce it with a `SessionStart` under its id. The record stays (the
+    /// pty, the env and every hook still carry the daemon's id, which is how the
+    /// hooks keep finding it), so a resume handed the daemon's id reopened the
+    /// conversation you had cleared away. `None` while the two are one value.
     pub agent_session_id: Option<String>,
 }
 

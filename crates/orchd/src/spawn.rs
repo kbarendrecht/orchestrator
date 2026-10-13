@@ -456,7 +456,8 @@ struct Carried {
     agent: crate::agent::Agent,
     /// Both, and a fork is why. A Codex fork is `codex fork <their id>`, and the
     /// id is the parent's, so it travels until [`agent_argv`] has read it and
-    /// cleared it: a fork's own id is the one Codex picks.
+    /// cleared it: a fork's own id is the one Codex picks. A Claude Code one after
+    /// `/clear` travels the same way.
     agent_session_id: Option<String>,
     /// A Codex rollout, on a resume. Codex sends no hook until the next prompt,
     /// so until then nothing else can name the file, and a move in that window
@@ -967,7 +968,8 @@ pub async fn spawn_worktree_session(
     // conversation whose worktree is long gone can still be forked; it just comes
     // back on the base branch with nothing carried, exactly as it did before.
     //
-    // The parent's own id for the conversation too, which `codex fork` is given.
+    // The parent's own id for the conversation too, which `codex fork` is given, and
+    // `claude --resume` once `/clear` has moved the parent off the daemon's id.
     // `agent` is the parent's on a fork: `api::fork_session` passes it.
     let (parent_tree, parent_agent_id) = match fork {
         Some(prev) => {
@@ -1321,11 +1323,12 @@ pub(crate) fn run_env(
 /// a site that built its argv first (every one did) would hand it the
 /// daemon's `PATH` and an empty first turn.
 ///
-/// The ids are translated here. Claude Code's are the daemon's. Codex's is the
-/// one it chose, learned from a hook, and a session that never had a turn has
-/// none: it starts afresh, which is also what it has to continue. A fork gets an
-/// id of its own from Codex, so the parent's is spent here and the fork's
-/// learned later.
+/// The ids are translated here. Claude Code's are the daemon's until `/clear` or
+/// an in-pane `/resume` moves it to another, which `SessionStart` reports. Codex's
+/// is the one it chose, learned from a hook, and a session that never had a turn
+/// has none: it starts afresh, which is also what it has to continue. A fork gets
+/// an id of its own from either, so the parent's is spent here and the fork's is
+/// the daemon's (Claude Code) or learned later (Codex).
 async fn agent_argv(
     session: &mut Session,
     begin: Source,
@@ -1337,8 +1340,10 @@ async fn agent_argv(
     let agent = session.agent;
     let theirs = match begin {
         Source::New(_) => None,
-        _ if agent.names_its_own_session() => session.agent_session_id.clone(),
-        Source::Resume(p) | Source::Fork(p) => Some(p.to_string()),
+        Source::Resume(p) | Source::Fork(p) => session
+            .agent_session_id
+            .clone()
+            .or_else(|| (!agent.names_its_own_session()).then(|| p.to_string())),
     };
     if matches!(begin, Source::Fork(_)) {
         session.agent_session_id = None;

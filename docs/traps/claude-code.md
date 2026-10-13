@@ -46,6 +46,14 @@ Every spawn passes
 `--session-id`, which is what makes `--resume`, transcript lookup and hook
 correlation need no mapping. A fork passes `--session-id <new> --resume <old>
 --fork-session`, which is honoured. Keep that invariant.
+**Except after `/clear`, and the hooks are why that is safe.** `/clear` and an
+in-pane `/resume` keep the process and put another conversation in the pane, under
+an id Claude Code chooses, announced by a `SessionStart` with that `session_id`. The
+record is not replaced: hooks find their session by the `X-Orch-Session` header,
+interpolated from `$ORCH_SESSION_ID`, which is still the daemon's id, and the body's
+`session_id` is only the fallback. So `hooks::session_start` records the new id as
+`agent_session_id` — the same field Codex's id lives in — and a resume hands that to
+`--resume`. Before it, a resume reopened the conversation you had cleared away.
 
 ## Transcript paths slug both `/` and `.`.
 `.claude/worktrees/x` becomes
