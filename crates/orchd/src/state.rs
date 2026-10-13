@@ -201,6 +201,11 @@ pub struct AppState {
     /// it. A failed spawn stays in — the next start should try again rather than
     /// forget the session, and the pre-filters have already dropped the ones no
     /// start can fix (a `cwd` that is gone, a conversation with no turn).
+    ///
+    /// **Any spawn or exit of the session ends the intent**, not only auto-resume's
+    /// own success — see [`AppState::resume_settled`]. Once something else has
+    /// started or stopped it, the session's own state is the truth, and an id left
+    /// in here forced `true` over it for the life of the process.
     pub pending_resume: std::sync::Mutex<std::collections::HashSet<SessionId>>,
     /// True while auto-resume is still working through `pending_resume`.
     ///
@@ -1635,6 +1640,16 @@ impl AppState {
                 live.first().map(|s| s.id)
             })
             .or_else(|| self.waiting_in_main(&inner))
+    }
+
+    /// Auto-resume's intent for this session is over: it has been spawned or has
+    /// exited, so its own state says whether it is live. See
+    /// [`AppState::pending_resume`].
+    pub fn resume_settled(&self, id: SessionId) {
+        self.pending_resume
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&id);
     }
 
     /// The session in main that auto-resume has not reached yet, if there is one.

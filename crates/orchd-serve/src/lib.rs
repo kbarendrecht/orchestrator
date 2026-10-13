@@ -1507,14 +1507,10 @@ fn auto_resume(app: Arc<AppState>, records: Vec<store::SessionRecord>) {
             .await
             {
                 Ok(id) => {
-                    /* Live now, so its own state says what the set was standing in
-                    for. Removed on success only: a spawn that failed should be
-                    tried again by the next start rather than dropped, and the
-                    filters above have already taken out the ones no start can fix. */
-                    app.pending_resume
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .remove(&id);
+                    /* Out of `pending_resume` already: the spawn took it out, the
+                    way every spawn does. A spawn that failed stays in, so the next
+                    start tries again rather than dropping it, and the filters above
+                    have already taken out the ones no start can fix. */
                     tracing::info!(session = %id, %workspace, "auto-resumed");
                     resumed += 1;
                     // Staggered: half a dozen Claude processes starting at once

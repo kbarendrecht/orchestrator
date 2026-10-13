@@ -521,6 +521,13 @@ spawn stays in, so the next start tries again rather than forgetting the session
 the candidates whose `cwd` is gone or which never had a turn are already filtered
 out before the set is built.
 
+**Any spawn or exit of the session takes it out, not only auto-resume's own
+success.** It was auto-resume's alone at first, so a resume that failed stayed in
+the set for the life of the process — and a session you then resumed by hand and
+stopped was still written `was_live: true`, and came back on the next start.
+`AppState::resume_settled` is called from `insert_and_spawn` and the exit watcher,
+the two places every session passes.
+
 **Both writers go through `records_of`, and that is the half worth keeping.**
 Overriding in `shutdown` alone fixes a graceful quit and leaves the same loss
 behind a crash or a hard kill: the ordinary `persist` runs on a timer *during* the

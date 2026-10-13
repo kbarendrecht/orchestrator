@@ -341,6 +341,12 @@ pub(crate) async fn insert_and_spawn(
             // What this process *is*, for the day the agent is upgraded under it.
             s.agent_exe = Some(spawned.program.clone());
         }
+        // Live now, so its own state speaks for it from here — whoever started it.
+        // Taken out here rather than by auto-resume alone because auto-resume is
+        // not the only way back: a resume it failed and you then pressed would
+        // otherwise be written `was_live: true` for the life of the process, and a
+        // session you had since stopped came back on the next start.
+        app.resume_settled(id);
     }
     Ok(spawned)
 }
@@ -2150,6 +2156,9 @@ pub(crate) fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<
                     // to hand out again — and the next start kills whatever a
                     // record's pid names. See `store::SessionRecord::pid`.
                     s.pid = None;
+                    // An exit is an answer too: whatever auto-resume meant for
+                    // this session, it has run and stopped since.
+                    app.resume_settled(id);
                     if let Some(pass) = &s.pass {
                         if Pass::posts_proposals(&pass.command) {
                             posting_for = Some(pass.pr);
@@ -2622,6 +2631,55 @@ mod tests {
         assert_eq!(s.pid, spawned.pid);
         drop(inner);
         let _ = spawned.handle.kill();
+    }
+
+    /// A session auto-resume could not bring back stays in `pending_resume`, which
+    /// writes it `was_live: true`. Any later spawn or exit has to end that, or a
+    /// session you resumed by hand and then stopped is still recorded as live for
+    /// the life of the process, and comes back on the next start.
+    #[tokio::test]
+    async fn a_spawn_and_an_exit_each_end_auto_resume_s_intent() {
+        let (app, dir) = crate::testutil::app("pendingend");
+        let id = Uuid::new_v4();
+        let pending = |app: &Arc<AppState>| {
+            app.pending_resume
+                .lock()
+                .expect("the pending set")
+                .contains(&id)
+        };
+
+        app.pending_resume
+            .lock()
+            .expect("the pending set")
+            .insert(id);
+        let mut session = Session::new(id, MAIN.to_string(), dir.clone(), None);
+        // A turn, so the exit archives the row rather than forgetting it.
+        session.set_state(State::Working);
+        let spawned = insert_and_spawn(&app, id, session, &["cat".to_string()], &dir, &[], &[])
+            .await
+            .expect("spawn cat");
+        assert!(!pending(&app), "a spawn ends the intent, whoever made it");
+
+        // Back in, as if the spawn had been auto-resume's and had failed; the exit
+        // of what is running must end it too.
+        app.pending_resume
+            .lock()
+            .expect("the pending set")
+            .insert(id);
+        watch_session_exit(app.clone(), id, spawned.handle.clone());
+        spawned.handle.kill_gracefully().await;
+        for _ in 0..200 {
+            if !pending(&app) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(!pending(&app), "an exit ends the intent");
+        assert!(
+            !app.session_records().await[0].was_live,
+            "a stopped session is written as stopped"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// And a spawn that never happened leaves nothing behind: the record would
