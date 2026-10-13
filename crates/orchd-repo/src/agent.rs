@@ -75,6 +75,18 @@ impl Agent {
         matches!(self, Agent::Codex)
     }
 
+    /// Whether a turn that fails says so only in the transcript.
+    ///
+    /// Claude Code fires `StopFailure`. Codex fires nothing at all: measured on
+    /// 0.162.1, a turn that gave up on a 401 after five reconnects sent no `Stop`
+    /// and no other hook, so the rail went on reading `Working` until the next
+    /// prompt. The rollout does record it, as a `task_complete` carrying an
+    /// `error`, so for this agent the daemon watches the rollout for the end of
+    /// each turn (`hooks::watch_turn_end`).
+    pub fn fails_a_turn_silently(self) -> bool {
+        matches!(self, Agent::Codex)
+    }
+
     /// Whether the daemon can open the agent's own rewind picker, by typing two
     /// escapes at its prompt (`api::rewind_session`).
     ///

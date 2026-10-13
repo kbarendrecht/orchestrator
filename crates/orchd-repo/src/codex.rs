@@ -329,9 +329,85 @@ fn state_table(listed: &[(String, String)]) -> String {
     format!("{{{}}}", entries.join(","))
 }
 
+/// How a turn ended, as its rollout records it.
+#[derive(Debug, PartialEq, Eq)]
+pub enum TurnEnd {
+    Completed,
+    /// Ended on an error, with Codex's own sentence for it.
+    Failed(String),
+    /// Interrupted, which the `Interrupt` hook already reports.
+    Aborted,
+}
+
+/// The end of turn `turn_id` among these rollout lines, if they hold it.
+///
+/// A turn ends in one of two `event_msg` lines, both carrying its `turn_id`
+/// (measured on 0.162.1): `task_complete`, whose `error` is set when the turn
+/// failed, or `turn_aborted` when it was interrupted. Keyed on the id rather than
+/// on "the last one", because a watcher reads from the top of a rollout that holds
+/// every earlier turn of the conversation.
+pub fn turn_end(lines: &str, turn_id: &str) -> Option<TurnEnd> {
+    lines.lines().find_map(|line| {
+        let v: serde_json::Value = serde_json::from_str(line).ok()?;
+        if v.get("type")?.as_str()? != "event_msg" {
+            return None;
+        }
+        let p = v.get("payload")?;
+        if p.get("turn_id")?.as_str()? != turn_id {
+            return None;
+        }
+        match p.get("type")?.as_str()? {
+            "turn_aborted" => Some(TurnEnd::Aborted),
+            "task_complete" => Some(match p.get("error").filter(|e| !e.is_null()) {
+                None => TurnEnd::Completed,
+                Some(e) => TurnEnd::Failed(
+                    e.get("message")
+                        .and_then(|m| m.as_str())
+                        .map(str::to_string)
+                        .unwrap_or_else(|| e.to_string()),
+                ),
+            }),
+            _ => None,
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The three endings, off lines shaped like 0.162.1's, and an earlier turn's
+    /// ending is not this one's.
+    #[test]
+    fn a_turn_s_end_is_read_off_its_own_rollout_line() {
+        let line = |kind: &str, turn: &str, extra: &str| {
+            format!(
+                r#"{{"type":"event_msg","payload":{{"type":"{kind}","turn_id":"{turn}"{extra}}}}}"#
+            )
+        };
+        let failed = line(
+            "task_complete",
+            "t2",
+            r#","last_agent_message":null,"error":{"message":"unexpected status 401 Unauthorized"}"#,
+        );
+        let rollout = [
+            r#"{"type":"session_meta","payload":{}}"#.to_string(),
+            line("task_started", "t1", ""),
+            line("task_complete", "t1", r#","error":null"#),
+            line("task_started", "t2", ""),
+            failed,
+            line("turn_aborted", "t3", r#","reason":"interrupted""#),
+        ]
+        .join("\n");
+        assert_eq!(turn_end(&rollout, "t1"), Some(TurnEnd::Completed));
+        assert_eq!(
+            turn_end(&rollout, "t2"),
+            Some(TurnEnd::Failed("unexpected status 401 Unauthorized".into()))
+        );
+        assert_eq!(turn_end(&rollout, "t3"), Some(TurnEnd::Aborted));
+        assert_eq!(turn_end(&rollout, "t4"), None);
+        assert_eq!(turn_end("{not json\n", "t1"), None);
+    }
 
     #[test]
     fn a_hook_is_one_inline_value_codex_parses() {

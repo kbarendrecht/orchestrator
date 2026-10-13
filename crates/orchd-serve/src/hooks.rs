@@ -58,6 +58,10 @@ pub struct HookPayload {
     /// What is still in flight when a `Stop` fires ([`waits_on_agents`]).
     #[serde(default)]
     pub background_tasks: Vec<BackgroundTask>,
+    /// The turn a Codex hook belongs to, which is how [`watch_turn_end`] finds
+    /// that turn's end in the rollout. Claude Code sends none.
+    #[serde(default)]
+    pub turn_id: Option<String>,
 }
 
 /// One entry of `Stop`'s `background_tasks`, as far as the daemon reads it.
@@ -407,10 +411,110 @@ pub async fn user_prompt_submit(
         learn_agent_id(&app, id, &payload, false).await;
         // Sending the next prompt is one of exactly two ways YourTurn
         // clears (§2). Both change the underlying reality.
-        app.with_session(id, |s| s.set_state(State::Working)).await;
+        let silent = app
+            .with_session(id, |s| {
+                s.set_state(State::Working);
+                s.agent.fails_a_turn_silently()
+            })
+            .await
+            .unwrap_or(false);
+        if silent {
+            if let (Some(rollout), Some(turn)) = (
+                payload.transcript_path.as_deref().filter(|t| !t.is_empty()),
+                payload.turn_id.as_deref().filter(|t| !t.is_empty()),
+            ) {
+                watch_turn_end(app.clone(), id, PathBuf::from(rollout), turn.to_string());
+            }
+        }
     }
     app.notify().await;
     ok()
+}
+
+/// How often [`watch_turn_end`] reads the rollout again. A second is the scale
+/// the rail is read on, and each read is only the bytes appended since the last.
+const TURN_END_POLL: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Follow one Codex turn's rollout until the turn ends, and turn a failure into
+/// the `Error` that Claude Code's `StopFailure` gives.
+///
+/// The gap it closes: Codex fires no hook when a turn fails (see
+/// [`Agent::fails_a_turn_silently`](orchd::agent::Agent::fails_a_turn_silently)),
+/// so a session whose turn died on an API error read `Working` until the next
+/// prompt — the one colour on the rail that says "leave it alone".
+///
+/// **Only the failure is acted on.** A turn that completes is `Stop`'s to report,
+/// and an aborted one `Interrupt`'s; both still fire, so taking them here as well
+/// would be a second writer of a state that already has one. Either way the
+/// watcher ends there, and it ends sooner whenever the session leaves `Working`,
+/// which is every way a turn can be over from the daemon's side: a `Stop`, an
+/// interrupt, the process exiting, the record going.
+///
+/// It reads from the top of the file the first time, not from its length when
+/// the prompt arrived: the turn's lines may already be on disk by the time this
+/// task first runs, and matching on `turn_id` is what keeps an earlier turn's
+/// ending from being read as this one's.
+fn watch_turn_end(app: Arc<AppState>, id: Uuid, rollout: PathBuf, turn: String) {
+    tokio::spawn(async move {
+        let mut offset = 0u64;
+        // A line written in two pieces is held back until it is whole.
+        let mut partial = String::new();
+        loop {
+            let working = app
+                .inner
+                .read()
+                .await
+                .sessions
+                .get(&id)
+                .is_some_and(|s| matches!(s.state, State::Working));
+            if !working {
+                return;
+            }
+            let path = rollout.clone();
+            let read = orchd::proc::run_blocking("reading a codex rollout", move || {
+                read_from(&path, offset)
+            })
+            .await;
+            if let Ok(Ok(bytes)) = read {
+                offset += bytes.len() as u64;
+                partial.push_str(&String::from_utf8_lossy(&bytes));
+                let whole = partial.rfind('\n').map(|i| i + 1).unwrap_or(0);
+                let lines: String = partial.drain(..whole).collect();
+                match orchd::codex::turn_end(&lines, &turn) {
+                    Some(orchd::codex::TurnEnd::Failed(message)) => {
+                        app.with_session(id, |s| {
+                            // Re-asked under the write lock: a `Stop` or an
+                            // interrupt that landed since the read above owns it.
+                            if matches!(s.state, State::Working) {
+                                s.set_state(State::Error { message });
+                            }
+                        })
+                        .await;
+                        app.notify().await;
+                        return;
+                    }
+                    Some(_) => return,
+                    None => {}
+                }
+            }
+            tokio::time::sleep(TURN_END_POLL).await;
+        }
+    });
+}
+
+/// The bytes of `path` past `offset`. A rollout that is not there yet reads as
+/// empty: Codex may not have created it when the first prompt's hook arrives.
+fn read_from(path: &Path, offset: u64) -> std::io::Result<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
+    f.seek(SeekFrom::Start(offset))?;
+    let mut buf = Vec::new();
+    f.read_to_end(&mut buf)?;
+    Ok(buf)
 }
 
 pub async fn post_tool_use(
@@ -1623,6 +1727,73 @@ mod tests {
         );
         assert!(inner.sessions[&claude].agent_session_id.is_none());
         drop(inner);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A Codex turn that fails sends no hook, so its end is read off the rollout:
+    /// the session goes to `Error` with Codex's sentence, as a `StopFailure` takes
+    /// Claude Code's. An earlier turn's failure in the same file is not this
+    /// turn's, and a line arriving in two writes is read once it is whole.
+    #[tokio::test]
+    async fn a_codex_turn_that_fails_without_a_hook_is_read_off_its_rollout() {
+        let dir = orchd::testutil::scratch("turn-end");
+        let app = orchd::testutil::app_at(&dir, "");
+        let id = Uuid::new_v4();
+        {
+            let mut inner = app.inner.write().await;
+            let mut s = Session::new(id, MAIN.to_string(), dir.clone(), None);
+            s.agent = orchd::agent::Agent::Codex;
+            inner.sessions.insert(id, s);
+        }
+        let rollout =
+            dir.join("rollout-2026-10-13T20-54-59-01a1369e-faa7-78f0-adc0-c622283ff026.jsonl");
+        let failed = |turn: &str, why: &str| {
+            format!(
+                r#"{{"type":"event_msg","payload":{{"type":"task_complete","turn_id":"{turn}","error":{{"message":"{why}"}}}}}}"#
+            )
+        };
+        std::fs::write(&rollout, failed("t1", "an older turn") + "\n").unwrap();
+
+        let mut headers = HeaderMap::new();
+        headers.insert("x-orch-session", id.to_string().parse().unwrap());
+        let payload = HookPayload {
+            session_id: Some("01a1369e-faa7-78f0-adc0-c622283ff026".into()),
+            transcript_path: Some(rollout.to_string_lossy().into_owned()),
+            turn_id: Some("t2".into()),
+            ..HookPayload::default()
+        };
+        let _ = user_prompt_submit(AxState(app.clone()), headers, Json(payload)).await;
+
+        let state = || async { app.inner.read().await.sessions[&id].state.clone() };
+        tokio::time::sleep(TURN_END_POLL * 2).await;
+        assert!(
+            matches!(state().await, State::Working),
+            "another turn's failure ended this one"
+        );
+
+        let line = failed("t2", "unexpected status 401 Unauthorized");
+        let (head, tail) = line.split_at(line.len() / 2);
+        let append = |text: &str| {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&rollout)
+                .unwrap();
+            f.write_all(text.as_bytes()).unwrap();
+        };
+        append(head);
+        tokio::time::sleep(TURN_END_POLL * 2).await;
+        append(&format!("{tail}\n"));
+
+        let mut ended = None;
+        for _ in 0..50 {
+            if let State::Error { message } = state().await {
+                ended = Some(message);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert_eq!(ended.as_deref(), Some("unexpected status 401 Unauthorized"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
