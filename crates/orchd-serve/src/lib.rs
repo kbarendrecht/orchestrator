@@ -1090,15 +1090,33 @@ async fn reconcile_all(app: &Arc<AppState>, scope: Scope) {
 /// later in this process (a `revive`, a PR flow rebuilding one) gets its strip back
 /// on the next start rather than the moment it appears. Worth knowing before
 /// trusting the strip to be the whole truth; `git for-each-ref refs/orchd/wip` is.
+///
+/// **A carry ref is reported here too, and only reported.** A swap or a move of
+/// main puts one on the work it lifts out of a tree (`git::carry_ref`) and drops it
+/// once the work is back, so one still standing at boot is work a previous run
+/// captured and never re-applied: it died in between, or the apply failed and said
+/// so. Nothing re-applies it, because which tree it belongs in now is not something
+/// a restart can know — its branch may have moved since — and an apply into the
+/// wrong tree is worse than a warning naming the ref and the branch it came from.
 async fn adopt_banked_work(app: &Arc<AppState>) {
     let main = app.cfg.main_checkout.clone();
-    let Ok(found) = orchd::proc::run_blocking("looking for banked work", move || {
-        orchd::git::all_banked(&main)
+    let Ok((found, carried)) = orchd::proc::run_blocking("looking for banked work", move || {
+        (
+            orchd::git::all_banked(&main),
+            orchd::git::all_carried(&main),
+        )
     })
     .await
     else {
         return;
     };
+    for (at, subject) in carried {
+        tracing::warn!(
+            "{at} holds uncommitted work a move of main lifted out and never put back \
+             ({subject}); `git stash apply {at}` in the tree that holds that branch \
+             recovers it, then `git update-ref -d {at}`"
+        );
+    }
     if found.is_empty() {
         return;
     }

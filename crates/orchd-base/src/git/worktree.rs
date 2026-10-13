@@ -763,22 +763,49 @@ pub fn swap_branches(main: &Path, worktree: &Path) -> Result<Swap> {
     // checked out. Same base both sides, so an apply cannot conflict — that is what
     // makes this safe rather than hopeful.
     let main_wip = capture_wip(main)?;
-    let tree_wip = capture_wip(worktree)?;
+    /* **Every way out before the exchange puts the work back where it was.** Each
+    of these returned with the trees reset and the work never re-applied, which
+    the carry ref now keeps from being a loss — but a refusal that says "nothing
+    happened" has to leave the edits in the tree, not in a ref. Each tree is on its
+    own branch again by then, so the apply is onto the commit it was taken from. */
+    let home = |e: anyhow::Error, tree_wip: &Option<String>| -> anyhow::Error {
+        let mut e = e;
+        for (cwd, wip) in [(main, &main_wip), (worktree, tree_wip)] {
+            if let Some(sha) = wip {
+                if let Err(back) = apply_carry(cwd, sha, "the swap was refused") {
+                    e = e.context(format!("{back:#}"));
+                }
+            }
+        }
+        e
+    };
+    let tree_wip = match capture_wip(worktree) {
+        Ok(wip) => wip,
+        Err(e) => return Err(home(e, &None)),
+    };
 
     // Detaching is the only free move: it takes a branch out of use without
     // needing another one to be available.
-    switch_detach(worktree)?;
+    if let Err(e) = switch_detach(worktree) {
+        return Err(home(e, &tree_wip));
+    }
 
     if let Err(e) = switch_branch(main, &tree_branch) {
         // Undo the detach, or the worktree is left off its branch for a failure
         // that changed nothing else.
         if let Err(back) = switch_branch(worktree, &tree_branch) {
-            bail!(
-                "{e:#} — and {} could not be put back on {tree_branch}: {back:#}",
-                worktree.display()
-            );
+            return Err(home(
+                anyhow::anyhow!(
+                    "{e:#} — and {} could not be put back on {tree_branch}: {back:#}",
+                    worktree.display()
+                ),
+                &tree_wip,
+            ));
         }
-        return Err(e.context(format!("{} could not take {tree_branch}", main.display())));
+        return Err(home(
+            e.context(format!("{} could not take {tree_branch}", main.display())),
+            &tree_wip,
+        ));
     }
 
     if let Err(e) = switch_branch(worktree, &main_branch) {
@@ -786,10 +813,13 @@ pub fn swap_branches(main: &Path, worktree: &Path) -> Result<Swap> {
         // worktree can return to it and the pair is where it started.
         let _ = switch_branch(main, &main_branch);
         let _ = switch_branch(worktree, &tree_branch);
-        return Err(e.context(format!(
-            "{} could not take {main_branch}; both were put back",
-            worktree.display()
-        )));
+        return Err(home(
+            e.context(format!(
+                "{} could not take {main_branch}; both were put back",
+                worktree.display()
+            )),
+            &tree_wip,
+        ));
     }
 
     // Crosswise, and after both branches are in place. A failure here is reported,
@@ -801,10 +831,10 @@ pub fn swap_branches(main: &Path, worktree: &Path) -> Result<Swap> {
     // has happened. See `Swap::wip_error`.
     let mut carried = Ok(());
     if let Some(wip) = &tree_wip {
-        carried = carried.and(apply_wip(main, wip, "the branches swapped"));
+        carried = carried.and(apply_carry(main, wip, "the branches swapped"));
     }
     if let Some(wip) = &main_wip {
-        carried = carried.and(apply_wip(worktree, wip, "the branches swapped"));
+        carried = carried.and(apply_carry(worktree, wip, "the branches swapped"));
     }
 
     Ok(Swap {
@@ -865,7 +895,7 @@ pub fn move_branch_out(main: &Path, dest: &Path, base: &str, new_branch: &str) -
             let mut err = e.context(format!("no worktree could be cut for {branch}"));
             // Nothing moved but the work, so putting that back is the whole undo.
             if let Some(sha) = &wip {
-                if let Err(back) = apply_wip(main, sha, "the branches swapped") {
+                if let Err(back) = apply_carry(main, sha, "the branches swapped") {
                     err = err.context(format!(
                         "and its uncommitted work is still in commit {sha}: {back:#}"
                     ));
@@ -874,7 +904,7 @@ pub fn move_branch_out(main: &Path, dest: &Path, base: &str, new_branch: &str) -
             return Err(err);
         }
         let wip_error = match &wip {
-            Some(sha) => apply_wip(dest, sha, "the branches swapped")
+            Some(sha) => apply_carry(dest, sha, "the branches swapped")
                 .err()
                 .map(|e| format!("{e:#}")),
             None => None,
@@ -893,7 +923,7 @@ pub fn move_branch_out(main: &Path, dest: &Path, base: &str, new_branch: &str) -
             return err.context(format!("and main is left on {base}: {back:#}"));
         }
         if let Some(sha) = &wip {
-            if let Err(back) = apply_wip(main, sha, "the branches swapped") {
+            if let Err(back) = apply_carry(main, sha, "the branches swapped") {
                 err = err.context(format!(
                     "and its uncommitted work is still in commit {sha}: {back:#}"
                 ));
@@ -906,7 +936,7 @@ pub fn move_branch_out(main: &Path, dest: &Path, base: &str, new_branch: &str) -
         let e = e.context(format!("the main checkout could not go back to {base}"));
         // Nothing to switch back — it never left — so only the work needs restoring.
         if let Some(sha) = &wip {
-            if let Err(back) = apply_wip(main, sha, "the branches swapped") {
+            if let Err(back) = apply_carry(main, sha, "the branches swapped") {
                 return Err(e.context(format!(
                     "and its uncommitted work is still in commit {sha}: {back:#}"
                 )));
@@ -922,7 +952,7 @@ pub fn move_branch_out(main: &Path, dest: &Path, base: &str, new_branch: &str) -
     }
 
     let wip_error = match &wip {
-        Some(sha) => apply_wip(dest, sha, "the branches swapped")
+        Some(sha) => apply_carry(dest, sha, "the branches swapped")
             .err()
             .map(|e| format!("{e:#}")),
         None => None,
@@ -952,13 +982,16 @@ pub fn move_branch_back(main: &Path, dest: &Path, moved: &MovedOut) -> Result<()
     // Where the work is, for every error below: a stash commit is unreachable, so an
     // error that does not name it has lost the work as surely as a delete.
     let named = |e: anyhow::Error| match &wip {
-        Some(sha) => e.context(format!("the uncommitted work is in commit {sha}")),
+        Some(sha) => e.context(format!(
+            "the uncommitted work is in commit {sha}, held at {}",
+            carry_ref(sha)
+        )),
         None => e,
     };
     // Back into the tree it came from, for a failure that leaves the tree standing.
     let restore = |e: anyhow::Error| -> anyhow::Error {
         match &wip {
-            Some(sha) => match apply_wip(dest, sha, "the move was being undone") {
+            Some(sha) => match apply_carry(dest, sha, "the move was being undone") {
                 Ok(()) => e,
                 Err(back) => e.context(format!(
                     "and its uncommitted work is still in commit {sha}: {back:#}"
@@ -999,7 +1032,7 @@ pub fn move_branch_back(main: &Path, dest: &Path, moved: &MovedOut) -> Result<()
             restore(e)
         } else {
             match &wip {
-                Some(sha) => match apply_wip(main, sha, "the move was undone") {
+                Some(sha) => match apply_carry(main, sha, "the move was undone") {
                     Ok(()) => e,
                     Err(back) => named(e.context(format!("{back:#}"))),
                 },
@@ -1009,7 +1042,7 @@ pub fn move_branch_back(main: &Path, dest: &Path, moved: &MovedOut) -> Result<()
     }
 
     if let Some(sha) = &wip {
-        apply_wip(main, sha, "the move was undone").map_err(named)?;
+        apply_carry(main, sha, "the move was undone").map_err(named)?;
     }
     // Last, because it is the one step that can fail with the work already home: a
     // branch cut for the move and left behind costs a name and nothing else.
@@ -1132,12 +1165,81 @@ pub fn carry_untracked(from: &Path, to: &Path, paths: &[String]) -> Carried {
 /// Tracked changes only, staged and unstaged. `stash create` has no
 /// `--include-untracked`, so untracked files stay where they are; the caller says
 /// so rather than pretending they moved.
+///
+/// **A ref goes on the work before the reset**, at [`carry_ref`], and comes off
+/// only in [`apply_carry`] after a clean apply. Without it the work existed only
+/// as a sha in the daemon's memory between the reset and the re-apply — so a crash
+/// or an in-app update landing there, or a failure path that returned before the
+/// apply, left the edits in an unreachable object nothing named. `bank_wip` was
+/// already built this way for the same reason; this is its twin for a carry.
 pub(super) fn capture_wip(cwd: &Path) -> Result<Option<String>> {
     let Some(sha) = create_wip(cwd)? else {
         return Ok(None);
     };
+    let at = carry_ref(&sha);
+    git(cwd, &["update-ref", &at, &sha])
+        .with_context(|| format!("holding this tree's work at {at}"))?;
     git(cwd, &["reset", "--hard", "-q"])?;
     Ok(Some(sha))
+}
+
+/// Where carried work waits between its capture and its re-apply.
+///
+/// **Keyed by the WIP commit, not by a workspace**: the carry is plain git and
+/// knows trees by path only, and a name derived from a path would need the
+/// mangling `wip_ref` already regrets. The commit says which branch it was taken
+/// from (`stash create` writes `WIP on <branch>`), which is what the boot report
+/// prints. Its own namespace beside `refs/orchd/wip`, because a bank is something
+/// a person pressed and owns a strip in the pane, and this is not.
+pub fn carry_ref(sha: &str) -> String {
+    format!("refs/orchd/carry/{sha}")
+}
+
+/// Re-apply carried work, and let go of its ref only once it is back.
+///
+/// A failed apply — a conflict leaves both sides in the tree as `UU` — keeps the
+/// ref and names it, because it is then the one durable record of the work.
+pub(super) fn apply_carry(cwd: &Path, sha: &str, what_happened: &str) -> Result<()> {
+    let at = carry_ref(sha);
+    apply_wip(cwd, sha, what_happened).with_context(|| format!("the work is held at {at}"))?;
+    drop_carry(cwd, sha);
+    Ok(())
+}
+
+/// Forget a carry ref. Best effort: a ref left over after a clean apply costs a
+/// boot-time warning about work that is already home, and failing the move for it
+/// would report a loss that did not happen.
+fn drop_carry(cwd: &Path, sha: &str) {
+    let at = carry_ref(sha);
+    if let Err(e) = git(cwd, &["update-ref", "-d", &at]) {
+        tracing::warn!("the carried work is back, but {at} could not be dropped: {e:#}");
+    }
+}
+
+/// Every carry ref still standing, as `(ref, subject of the WIP commit)`.
+///
+/// A ref here means a move captured work and never put it back: the daemon died
+/// between the reset and the apply, or the apply failed and said so. One exec for
+/// the repo, like `all_banked`.
+pub fn all_carried(main: &Path) -> Vec<(String, String)> {
+    let Ok(out) = git(
+        main,
+        &[
+            "for-each-ref",
+            "--format=%(refname) %(contents:subject)",
+            "refs/orchd/carry",
+        ],
+    ) else {
+        return Vec::new();
+    };
+    out.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(|line| {
+            let (name, subject) = line.split_once(' ').unwrap_or((line, ""));
+            (name.to_string(), subject.to_string())
+        })
+        .collect()
 }
 
 /// The banking half on its own: write the WIP commit and prove it resolves.

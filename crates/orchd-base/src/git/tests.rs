@@ -665,6 +665,60 @@ fn a_wip_that_cannot_reapply_still_leaves_the_branches_swapped() {
         std::fs::read_to_string(tree.join("x.txt")).unwrap(),
         "already here, untracked\n"
     );
+    // And banked under a name, not only a sha in a message: the ref stands
+    // because the apply failed, and the message says where it is.
+    let standing = all_carried(&main);
+    assert_eq!(standing.len(), 1, "one carry did not land: {standing:?}");
+    assert!(
+        why.contains(&standing[0].0),
+        "the message names the ref: {why}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Work lifted out of a tree is held by a ref from before the reset, so a daemon
+/// that dies before the re-apply has left it somewhere nameable.
+///
+/// It used to exist only as a sha in memory between `reset --hard` and the apply,
+/// and a crash or an in-app update in that window lost it. The capture is driven
+/// on its own here because that is the state a crash leaves: captured, reset, and
+/// nothing after.
+#[test]
+fn a_captured_carry_is_held_by_a_ref_until_it_is_applied() {
+    let dir = crate::testutil::scratch("carry-ref");
+    let main = dir.join("repo");
+    git(&dir, &["init", "-q", "-b", "main", "repo"]).unwrap();
+    git(&main, &["config", "user.email", "t@t"]).unwrap();
+    git(&main, &["config", "user.name", "t"]).unwrap();
+    std::fs::write(main.join("f.txt"), "base\n").unwrap();
+    git(&main, &["add", "-A"]).unwrap();
+    git(&main, &["commit", "-qm", "base"]).unwrap();
+    std::fs::write(main.join("f.txt"), "edited\n").unwrap();
+
+    let sha = capture_wip(&main).unwrap().expect("there was work");
+    assert_eq!(
+        std::fs::read_to_string(main.join("f.txt")).unwrap(),
+        "base\n",
+        "the tree was cleaned"
+    );
+    // The crash happens here. The work is reachable by name.
+    let standing = all_carried(&main);
+    assert_eq!(standing.len(), 1);
+    assert_eq!(standing[0].0, carry_ref(&sha));
+    assert!(
+        standing[0].1.contains("main"),
+        "the subject says which branch it came from: {:?}",
+        standing[0].1
+    );
+
+    // And a clean apply puts the work back and lets go of the name.
+    apply_carry(&main, &sha, "the test").unwrap();
+    assert_eq!(
+        std::fs::read_to_string(main.join("f.txt")).unwrap(),
+        "edited\n"
+    );
+    assert!(all_carried(&main).is_empty(), "the ref outlived its apply");
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -706,6 +760,10 @@ fn moving_a_branch_out_of_main_carries_its_work_and_leaves_main_on_base() {
         moved.wip_error.is_none(),
         "the carry: {:?}",
         moved.wip_error
+    );
+    assert!(
+        all_carried(&main).is_empty(),
+        "a carry that landed lets go of its ref"
     );
 
     assert_eq!(current_branch(&main).unwrap(), "develop");
