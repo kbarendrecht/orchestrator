@@ -30,7 +30,7 @@ curl -sS "$ORCH_URL/api/pr/$PR/triage-context" -H "x-orch-token: $ORCH_POST_TOKE
   "answerable": ["PRRT_…"],    // the threads still waiting on you — the set you work
   "language": "…",             // what to write replies and stories in
   "tracker": true,             // false: never propose `story+reply`
-  "tracker_host": "…",         // the host a story URL you report must be on
+  "tracker_host": "…",         // the tracker's host: never link to it yourself
   "upstream": "…",             // the ref this branch is measured against
   "proposals_url": "…"         // where phase 1 ends
 }
@@ -144,14 +144,16 @@ curl -sS -X POST '$PROPOSALS_URL' \
 }
 ```
 
-- `stance` is what you say back: `agree` (make the change, thumbs up, no words), `reply` (words), or
-  `story` (file a follow-up and reply with its id). An `agree` option carries no `reply`;
-  a `reply` or `story` option must have one; a `story` option must have a `story`.
+- `stance` is what you say back: `agree` (make the change, thumbs up, no words), `reply`
+  (words), or `story` (a follow-up the daemon files, and a reply with its link). An
+  `agree` option carries no `reply`; a `reply` or `story` option must have one; a `story`
+  option must have a `story`.
 - **No patches.** You are not writing code in this phase.
-- A `story+reply` reply must contain the literal `{story}`, replaced once the story exists
-  with a markdown link to it — `[sc-12345](<url>)`, never a bare id. `$TRACKER` false means
-  **never propose `story+reply`**: there is nowhere to file one and the daemon would refuse
-  it, so a fair but out-of-scope point goes in a plain reply rather than a promised story.
+- A `story+reply` reply must contain the literal `{story}`. The daemon files the story and
+  replaces it with a markdown link when it posts — you never file one and never write a
+  tracker link yourself. `$TRACKER` false means **never propose `story+reply`**: there is
+  nowhere to file one and the daemon would refuse it, so a fair but out-of-scope point goes
+  in a plain reply rather than a promised story.
 - A `story` is `title` and `body` only, in $LANGUAGE, no em dashes and no internal path
   or label references. Every thread in `$ANSWERABLE` needs an entry, and no other:
   the daemon refuses a set with one missing or one extra.
@@ -207,7 +209,7 @@ Now do **only** what each decision says:
   branch — those denials are correct. A `note` is the human's own instruction; follow it. Some
   reply solutions change no code (a pushback, an explanation) — then there is nothing to
   build, only the reply to post in phase 3.
-- **story** — file it now (below), so the reply can carry the id.
+- **story** — nothing yet. The daemon files it in phase 3, before it posts the reply.
 
 Prove each change landed by the reviewer's own claim, not by your edit succeeding: "called
 twice" → grep it, show it is called once; "these tests miss X" → run the test, show it
@@ -215,31 +217,17 @@ fails without the fix. A claim you cannot re-prove is one to report and hold, no
 
 Keep each change to the thread it answers. Do not touch a thread the human skipped.
 
-## Out of scope: file the story, don't promise it
+## Out of scope: the daemon files the story
 
-A `story` decision gets a story **now**, before the reply — the reply carries the id.
-Search first, with the thread's own URL as the query, so a retry cannot file a second
-one; then create with a name, a description and whatever this repo calls its backlog.
+A `story` decision gets a story, and **the daemon files it**, not you: it is filed when
+you post that thread's reply in phase 3, from the title and body the human approved on
+the card, before the reply goes out with `{story}` replaced by a markdown link to it.
+The daemon appends the `Source:` line that lets a retry find the story rather than file
+a second one, and checks the link it puts in against `$TRACKER_HOST`.
 
-Which tools those are depends on the tracker, and this file deliberately does not name
-them: the repo's own tracker skill does, and tool names differ per tracker and change
-without either of us noticing. Follow it for the team, the story type, the state and
-the epic too — it holds the ids and the routing.
-
-The description ends exactly with `Source: review of #$PR — <thread url>` (the dedup
-key). One story per thread; a refused create is retried as the *same* create, never a
-second.
-
-Then substitute `{story}` with a **markdown link, never a bare id** — `[ENG-123](<the
-URL the create returned>)`. A colleague reading the thread has to be able to click it,
-and a naked id is a dead end to anyone outside the tracker. Both halves come from the
-create response — never assemble the URL yourself, since the path shape and any
-workspace slug in it are the tracker's and guessing produces a link to nothing. The
-daemon checks that the URL is on `$TRACKER_HOST` and that a path segment in it is the
-id's number or the whole id; it is the same rule it applies for itself in
-`story::StoryRef::consistent`.
-
-If it fails twice, say so on the thread and leave it open.
+So do not call the tracker, do not search it, and do not write a tracker link into any
+reply: the daemon refuses a reply that links to `$TRACKER_HOST` itself, and one that
+names `{story}` without a story to file.
 
 # Phase 3 — Post
 
@@ -264,14 +252,20 @@ curl -sS -X POST -H "x-orch-ask: $ORCH_ASK_TOKEN" -H 'content-type: application/
 - **agree** — send `{}`, with no `reply` at all. The change it agreed to was made and
   pushed in phase 2, so a 👍 is the whole of what is said. The daemon puts it on the
   thread's last comment, which is the one "answered" reads.
-- **reply** and **story** — send the reply from `$DECISIONS`, verbatim. A story reply
-  already carries its link: you filed the story and substituted `{story}` in phase 2.
+- **reply** — send the reply from `$DECISIONS`, verbatim.
+- **story** — send the reply from `$DECISIONS` verbatim, `{story}` and all, with the
+  story from the option you proposed for that thread beside it:
+  `{"reply":"…{story}…","story":{"title":"…","body":"…"}}`. The daemon files it, puts
+  the link in and posts. The card's own draft wins where it still has it, so the story is
+  the one the human approved. An answer of `held` with a reason means no story could be
+  filed and nothing was said; report it and leave the thread.
 
 **Not `gh`, and the reason is not tidiness.** The daemon appends `(via orchestrator)` to
-every reply, and that exact string is how it recognises its own — `post::mine_by_footer`
-— so a reply posted without it leaves the thread reading unanswered for ever. It also
-refuses words already on the thread, so a retry says nothing twice. Neither is yours to
-remember.
+every reply and compares the footed text against what is already on the thread, so a
+retry says nothing twice — a reply posted without the footer is one the next retry posts
+again. It also files the story a reply links to. Neither is yours to remember. (Whether a
+thread still waits on you is not read off the footer: it is the last comment's author and
+your 👍 on it.)
 
 The answer says what happened: `posted`, `reacted`, `already` (those words were already
 there, which is a success and not a retry to make), and `held` with the reason when

@@ -12,6 +12,11 @@
 //!   posts nothing rather than posting twice.
 //! - **A story is filed before the reply that links to it**, and [`STORY_TOKEN`]
 //!   never reaches GitHub.
+//! - **The daemon is the only thing that files one**, so the only tracker link a
+//!   reply carries is the one it substituted. The agent's words are refused if
+//!   they hold `{story}` with no story to file or a link to the tracker of their
+//!   own: either is a story the skill filed itself — or invented — and nothing
+//!   here checked that the link is the story it claims to be.
 //!
 //! [`STORY_TOKEN`]: crate::proposal::STORY_TOKEN
 
@@ -58,6 +63,8 @@ pub(crate) async fn post_one(
     story: Option<&crate::proposal::StoryDraft>,
     fresh: &Threads,
 ) -> Result<Posted> {
+    let host = app.cfg.tracker.as_ref().map(|t| t.host.as_str());
+    words_are_the_agents_own(reply, story.is_some(), host)?;
     let text = match story {
         None => reply.to_string(),
         Some(draft) => {
@@ -83,6 +90,52 @@ pub(crate) async fn post_one(
         }
     };
     send_reply_once(forge, at, thread_id, &text, fresh).await
+}
+
+/// Refuse words that carry a story the daemon did not file.
+///
+/// Two shapes, both from the time the review skill filed its own stories and
+/// substituted the link itself while saying "the daemon checks the URL" — which
+/// nothing on this path did. `{story}` with no story to file would reach GitHub
+/// as the literal token, and a link to the tracker in the agent's own words is a
+/// story nobody here filed or checked: [`StoryRef::new`] is what holds an id and
+/// its URL together, and only a link the daemon substitutes has been through it.
+///
+/// [`StoryRef::new`]: crate::model::StoryRef::new
+fn words_are_the_agents_own(reply: &str, has_story: bool, host: Option<&str>) -> Result<()> {
+    if !has_story && reply.contains(crate::proposal::STORY_TOKEN) {
+        anyhow::bail!(
+            "the reply names {} but no story came with it; send the story and the daemon \
+             files it and puts its link in",
+            crate::proposal::STORY_TOKEN
+        );
+    }
+    if let Some(host) = host.filter(|h| !h.is_empty()) {
+        if links_to(reply, host) {
+            anyhow::bail!(
+                "the reply links to {host} itself; a story link is the daemon's to put in — \
+                 send the story with {} in the reply instead",
+                crate::proposal::STORY_TOKEN
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Whether `text` holds a URL on exactly `host`.
+///
+/// Matched on `://host` followed by the end of the authority, so a host that merely
+/// starts with this one (`linear.app.example`) is not taken for it.
+fn links_to(text: &str, host: &str) -> bool {
+    let (text, needle) = (
+        text.to_ascii_lowercase(),
+        format!("://{}", host.to_ascii_lowercase()),
+    );
+    text.match_indices(&needle).any(|(at, m)| {
+        text[at + m.len()..].chars().next().is_none_or(|c| {
+            matches!(c, '/' | ':' | '?' | '#' | ')' | ']' | '>') || c.is_whitespace()
+        })
+    })
 }
 
 /// Put the filed story's id into a reply.
@@ -316,6 +369,29 @@ mod tests {
             .await
             .expect("an answered thread is not an error");
         assert!(!reacted);
+    }
+
+    /// The two shapes of a story the daemon did not file, refused before anything
+    /// is fetched or written. Both used to pass: the skill filed and linked its own
+    /// stories, and the route posted whatever words it was given.
+    #[test]
+    fn a_reply_may_not_carry_a_story_the_daemon_did_not_file() {
+        let host = Some("app.shortcut.com");
+        let token = format!("Tracked as {}.", crate::proposal::STORY_TOKEN);
+        assert!(words_are_the_agents_own(&token, false, host).is_err());
+        assert!(words_are_the_agents_own(&token, true, host).is_ok());
+
+        let linked = "Tracked as [sc-1](https://app.shortcut.com/acme/story/1).";
+        let err = words_are_the_agents_own(linked, false, host).unwrap_err();
+        assert!(err.to_string().contains("app.shortcut.com"), "{err}");
+        assert!(words_are_the_agents_own(linked, true, host).is_err());
+
+        // A host that only begins with the tracker's is not the tracker.
+        let other = "See https://app.shortcut.com.example/x for the spec.";
+        assert!(words_are_the_agents_own(other, false, host).is_ok());
+        // And no tracker means there is no host to recognise.
+        assert!(words_are_the_agents_own(linked, false, None).is_ok());
+        assert!(words_are_the_agents_own("Fixed.", false, host).is_ok());
     }
 
     /// A thread the fetch no longer carries has no comment to answer, and that is

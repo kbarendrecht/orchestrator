@@ -417,8 +417,10 @@ pub struct ThreadReply {
     /// gets when it was applied exactly as asked and there is nothing to add.
     #[serde(default)]
     pub reply: Option<String>,
-    /// Filed before the reply, so the reply can carry the id. The reply must then
-    /// contain `{story}`, which is substituted once the story exists.
+    /// Filed by the daemon before the reply, so the reply can carry the id. The
+    /// reply must then contain `{story}`, which is substituted once the story
+    /// exists. The draft the human approved on the card wins over this one when
+    /// the proposals still hold it; see `approved_story`.
     #[serde(default)]
     pub story: Option<crate::proposal::StoryDraft>,
 }
@@ -434,7 +436,8 @@ pub struct ThreadReply {
 /// footer. Three of those are idempotency, and the fourth is load-bearing for
 /// something else entirely — `post::already_replied` compares `with_footer(body)`
 /// against what is already on the thread, so a reply posted without the footer is
-/// one a retry posts a second time.
+/// one a retry posts a second time. And it refuses words carrying a story it did
+/// not file (`post::words_are_the_agents_own`): stories are the daemon's to file.
 /// **It is not what decides whether a thread awaits you.** `forge::acknowledged`
 /// never reads the footer: it compares the last comment's author against the
 /// viewer and looks for your 👍 (`forge/github.rs`'s `acknowledged`). This comment
@@ -486,6 +489,9 @@ pub async fn thread_reply(
         ));
     };
 
+    let story = approved_story(&app, number, &thread_id, reply)
+        .await
+        .or(body.story);
     let posted = crate::post::post_one(
         &app,
         &forge,
@@ -493,7 +499,7 @@ pub async fn thread_reply(
         number,
         &thread_id,
         reply,
-        body.story.as_ref(),
+        story.as_ref(),
         &fresh,
     )
     .await?;
@@ -509,6 +515,38 @@ pub async fn thread_reply(
             _ => serde_json::Value::Null,
         },
     })))
+}
+
+/// The story draft the card showed for this thread, when the reply asks for one.
+///
+/// **The daemon files the story, and from the text you approved.** The skill used
+/// to file it through the tracker itself and paste the link in, so the title and
+/// body were whatever the agent typed at the time and the link was checked by
+/// nothing. Read from the proposals for the same reason the module's words are: a
+/// payload is what a client echoed back, the proposals are what was on screen.
+/// `None` when the reply names no story, when the proposals are gone (a restart),
+/// or when the thread had no story position — the caller's own draft then stands.
+async fn approved_story(
+    app: &Arc<AppState>,
+    pr: u64,
+    thread_id: &str,
+    reply: &str,
+) -> Option<crate::proposal::StoryDraft> {
+    if !reply.contains(crate::proposal::STORY_TOKEN) {
+        return None;
+    }
+    let inner = app.inner.read().await;
+    let proposal = inner
+        .proposals
+        .get(&pr)?
+        .proposals
+        .iter()
+        .find(|p| p.thread_id == thread_id)?;
+    let mut stories = proposal.positions.iter().filter_map(|p| p.story.clone());
+    // One story position is the only unambiguous answer. Two would mean guessing
+    // which one the human picked, and the decision carries a label, not an index.
+    let first = stories.next()?;
+    stories.next().is_none().then_some(first)
 }
 
 /// Ask each reviewer to look again, once every thread of theirs is answered.

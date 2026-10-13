@@ -173,17 +173,23 @@ state and the epic too. No tracker configured means there is nowhere to file —
 so plainly in a reply rather than promising a story.
 
 - The description ends with the dedup key, exactly: `Source: review of #$ORCH_PR —
-  <thread url>`. That URL is what a later search finds, here and in the daemon's own
-  story pass.
+  <thread url>`, where the thread URL is the `url` of its **first** comment. That is
+  the line the daemon writes when it files a story for the overlay, so a later search
+  from either flow finds what the other filed instead of filing a second.
 - Title and body in the thread's language, and about the work itself: nobody outside
   this session knows which thread this was.
 - One story per thread. A refused create is retried as the *same* create once what
   it named is fixed, never worked around with a second story.
 
 Then reply with the id, not with a plan to get one — and as a markdown link rather
-than a bare id, since a naked id is a dead end to anyone outside the tracker. If the
-create fails twice, say so on the thread and leave it open: an unfiled story with a
-reply promising one is the state this exists to prevent.
+than a bare id, since a naked id is a dead end to anyone outside the tracker. Both the
+id and the URL come from the create response, never assembled by hand, and the URL is
+on the tracker's own host. If the create fails twice, say so on the thread and leave it
+open: an unfiled story with a reply promising one is the state this exists to prevent.
+
+This pane files its own stories because it posts its own replies, with `gh`, and nobody
+reads a card here. The overlay's `review` session does neither: the daemon files and
+posts for it.
 
 ## After posting
 
