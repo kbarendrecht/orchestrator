@@ -54,26 +54,33 @@ impl Gate {
     pub fn say(&self) -> String {
         match self {
             Gate::Dirty { files } => format!(
-                "{} uncommitted file(s) in this worktree — commit or stash first",
+                "{} uncommitted file(s) in the tree on this branch — commit or stash first",
                 files.len()
             ),
-            Gate::Rebasing => "a rebase is stopped part-way in this worktree".into(),
+            Gate::Rebasing => "a rebase is stopped part-way in the tree on this branch".into(),
             Gate::FixPrRunning => "fix-pr is rewriting this branch".into(),
         }
     }
 }
 
-/// Whether the worktree is ready to be written into.
+/// Whether the PR's tree is ready to be written into.
 ///
-/// Checked once, where the session is spawned. **It used to be checked twice and
-/// shown as a screen**: the overlay fetched it with `/review` and drew a gate with
-/// `commit…` and `stash` buttons in front of the intake, and the batch re-checked
-/// it immediately before writing because a review could sit open for hours. Both
-/// are gone with the batch's screens — the only thing a gate stops now is a spawn,
-/// and the spawn refuses with [`Gate::say`] in the toast.
-pub async fn gate(app: &Arc<AppState>, pr: u64, workspace: &str) -> Result<Option<Gate>> {
-    // Only a *running* fix-pr holds the worktree. An exhausted or finished one
-    // has a record but has let go, so it must not gate.
+/// Checked once, where the run is spawned, and **before anything changes the
+/// tree** — on every path that writes into it: both review flows here and
+/// `fix_pr::start`. It used to run after `ensure_pr_worktree`, and that call is not
+/// read-only: when main holds the PR's branch it moves the branch *and main's
+/// uncommitted work* into a new worktree, so the gate then inspected a tree the
+/// flow had just made and found it clean, with somebody's work carried along
+/// under a run that amends and force-pushes. `fix_pr::start` never gated at all,
+/// and the pane flow skipped it whenever the tree had to be cut.
+///
+/// **It used to be checked twice and shown as a screen**: the overlay fetched it
+/// with `/review` and drew a gate with `commit…` and `stash` buttons in front of
+/// the intake. That went with the batch's screens; the spawn refuses with
+/// [`Gate::say`] in the toast.
+pub async fn gate(app: &Arc<AppState>, pr: u64, head_ref: &str) -> Result<Option<Gate>> {
+    // Only a *running* fix-pr holds the tree. A finished one has let go, so it
+    // must not gate.
     let fix_pr_running = matches!(
         app.inner.read().await.automation.get(pr),
         Some(crate::model::PrAutomation::Running { .. })
@@ -81,14 +88,24 @@ pub async fn gate(app: &Arc<AppState>, pr: u64, workspace: &str) -> Result<Optio
     if fix_pr_running {
         return Ok(Some(Gate::FixPrRunning));
     }
-    let Some(path) = app.workspace_path(workspace).await else {
+    tree_gate(app, head_ref).await
+}
+
+/// [`gate`] without the fix-pr half, for the fix run itself: its own guard table
+/// refuses a second run, and by the time it asks this its record is not written
+/// yet, so the two halves would only ever disagree about nothing.
+///
+/// The tree is the one [`crate::spawn::pr_tree`] names: the worktree the flow
+/// would reuse. Main is not gated here, because a flow that finds main on the
+/// branch carries its work out with it by design.
+pub async fn tree_gate(app: &Arc<AppState>, head_ref: &str) -> Result<Option<Gate>> {
+    let Some(at) = crate::spawn::pr_tree(app, head_ref).await? else {
         return Ok(None);
     };
-    // Both of these read the worktree from disk, and `dirty_paths` is a full
+    // Both of these read the tree from disk, and `dirty_paths` is a full
     // `git status` — on the monorepo that is a whole-tree scan per worktree, since
     // `configure_repo` sets fsmonitor on main only. One `spawn_blocking` for the
     // pair rather than two, because they are asked together.
-    let at = path.clone();
     let gate = crate::proc::run_blocking("the triage gate's git checks", move || {
         if crate::git::rebase_in_progress(&at) {
             return Ok(Some(Gate::Rebasing));
@@ -162,11 +179,11 @@ async fn spawn_posting_run(
     head_ref: &str,
     kind: RunKind,
 ) -> Result<SessionId> {
-    let workspace = ensure_pr_worktree(app, pr, head_ref).await?;
-
-    if let Some(g) = gate(app, pr, &workspace).await? {
+    // Before `ensure_pr_worktree`, which may move main's branch and its work.
+    if let Some(g) = gate(app, pr, head_ref).await? {
         anyhow::bail!("{}", g.say());
     }
+    let workspace = ensure_pr_worktree(app, pr, head_ref).await?;
 
     /* Both posting runs are skills now, so the first turn is one typed line and
     `FirstTurn` went with the last rendered prompt: what a template substituted,
@@ -306,33 +323,31 @@ pub async fn spawn_command_session(
     may_push(app, pr).await?;
     // If the branch already has a worktree with a live session, take you there
     // rather than spawning a second one (§8). Only when the branch by that name is
-    // this PR's: otherwise `ensure_pr_worktree` below refuses and says why.
-    let holding = match app.pr_head(pr).await.refusal {
-        None => app.worktree_holding(head_ref).await,
-        Some(_) => None,
-    };
-    if let Some(ws) = holding {
+    // this PR's: otherwise `ensure_pr_worktree` below refuses and says why, and a
+    // same-named tree that is not this PR's is neither handed to nor gated on.
+    let ours = app.pr_head(pr).await.refusal.is_none();
+    if ours {
         if let Some(id) = hand_to_live_session(app, pr, head_ref, command).await? {
             return Ok(id);
         }
-        /* **The same worktree gates as the other review verb**, because the pass
-        writes into that tree: a rebase stopped part-way cannot take a commit, a
-        running `fix-pr` is rewriting the same history, and a dirty tree means
-        the first thing this agent amends is work somebody else left there.
+    }
+    /* **The same gates as the other review verb**, because the pass writes into
+    that tree: a rebase stopped part-way cannot take a commit, a running `fix-pr`
+    is rewriting the same history, and a dirty tree means the first thing this
+    agent amends is work somebody else left there.
 
-        Here rather than at the route, and after the live-session branch above
-        for the reason that branch exists: landing on the pane already doing this
-        is not a refusal case. The route used to re-derive both reads to decide
-        the same thing, which is two spellings of "is anyone on this branch" —
-        the pair `branch_busy` was written to be the only definition of. */
-        if let Some(g) = gate(app, pr, &ws).await? {
+    After the live-session branch above for the reason that branch exists: landing
+    on the pane already doing this is not a refusal case. And before
+    `ensure_pr_worktree`, so the tree it reuses is asked about before anything
+    is written into it rather than after. */
+    if ours {
+        if let Some(g) = gate(app, pr, head_ref).await? {
             bail!("{}", g.say());
         }
-        return start_with_prompt(app, &ws, pr, command).await;
     }
 
-    // Otherwise pin a worktree to that branch. `git worktree add` directly,
-    // because the WorktreeCreate hook always cuts a new branch from
+    // Reuse the worktree holding the branch, or pin one to it. `git worktree add`
+    // directly, because the WorktreeCreate hook always cuts a new branch from
     // upstream/develop; `worktree-link` still runs at SessionStart.
     //
     // No name-reuse refusal here, deliberately, and it was removed rather than
@@ -533,6 +548,51 @@ mod tests {
             let err = format!("{err:#}");
             assert!(err.contains("acme/repo, which you cannot push to"), "{err}");
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A dirty worktree already holding the PR's branch is refused by every flow
+    /// that writes into it, `fix_pr::start` included — which never gated at all.
+    ///
+    /// Main on the branch is deliberately not this case: a flow that finds main
+    /// there carries the branch and its work out into the PR's tree (e2e flows 19
+    /// and 41). Asserted on what matters — the work still in the tree and no run
+    /// recorded — not only on the refusal.
+    #[tokio::test]
+    async fn a_dirty_pr_worktree_is_refused_before_a_flow_writes_into_it() {
+        let dir = crate::testutil::scratch_repo("gate-tree");
+        let app = crate::testutil::app_at(&dir, "");
+        let tree = app.cfg.worktree_path("pr-4");
+        crate::testutil::git(
+            &dir,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "feature/x",
+                &tree.to_string_lossy(),
+            ],
+        );
+        std::fs::write(tree.join("wip.txt"), "somebody's work\n").unwrap();
+        crate::testutil::git(&tree, &["add", "wip.txt"]);
+        app.register_worktree("pr-4", tree.clone(), Some("feature/x".into()))
+            .await;
+        pushable(&app, 4, true).await;
+
+        let review = spawn_review(&app, 4, "feature/x").await;
+        let pane = spawn_command_session(&app, 4, "feature/x", Pass::HANDLE_REVIEW).await;
+        let fix = crate::fix_pr::start(&app, 4, crate::fix_pr::Asked::ByPress).await;
+        for (what, out) in [("review", review), ("pane", pane), ("fix-pr", fix)] {
+            let err = format!("{:#}", out.expect_err(what));
+            assert!(err.contains("uncommitted"), "{what}: {err}");
+        }
+
+        assert!(
+            tree.join("wip.txt").exists(),
+            "the tree's work went somewhere"
+        );
+        assert!(app.inner.read().await.automation.get(4).is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

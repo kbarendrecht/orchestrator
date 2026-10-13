@@ -219,6 +219,16 @@ pub async fn start(
         }
     }
 
+    /* **The tree is gated before anything touches it**, like the review flows. A
+    fix run rebases, amends and force-pushes, so a worktree that already holds
+    the branch with somebody's work in it was handed to a run that rewrites it.
+    This never gated at all. After the press hand-off above, which
+    changes no tree: the session there is yours, and its own skill stops on a
+    dirty tree. */
+    if let Some(g) = crate::triage::tree_gate(app, &pr.head_ref).await? {
+        anyhow::bail!("{}", g.say());
+    }
+
     // Recorded *before* the process can exist, under the id it will spawn with:
     // `spawn::spawn_run` says why. A `claude` that dies at once is reaped before a
     // write placed after the spawn, and the exit watcher then finds no run of its

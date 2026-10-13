@@ -1907,6 +1907,22 @@ pub async fn ensure_pr_worktree(app: &Arc<AppState>, pr: u64, head_ref: &str) ->
     Ok(name)
 }
 
+/// The worktree a PR flow for `head_ref` would reuse and write into, if one exists.
+///
+/// The first of [`ensure_pr_worktree`]'s arms, so the gate asks about exactly the
+/// tree the flow is about to write into. **Not main**, though main on the branch is
+/// the second arm: that arm moves the branch *and* its uncommitted work into a new
+/// tree on purpose — a dirty main on a PR's branch is the state it exists to get
+/// out of, and refusing it there would make every PR flow for that branch
+/// impossible again (e2e flows 19 and 41). A stopped rebase in main is refused by
+/// the move itself. `None` covers both other arms.
+pub async fn pr_tree(app: &Arc<AppState>, head_ref: &str) -> Result<Option<std::path::PathBuf>> {
+    Ok(recorded_worktree_for(app, head_ref)
+        .await
+        .map(|(_, path)| path)
+        .filter(|path| path.is_dir()))
+}
+
 /// Whether the main checkout has this branch checked out right now.
 async fn main_is_on(app: &Arc<AppState>, head_ref: &str) -> Result<bool> {
     let main = app.cfg.main_checkout.clone();
