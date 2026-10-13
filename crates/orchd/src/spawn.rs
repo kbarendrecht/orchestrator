@@ -2235,7 +2235,22 @@ pub(crate) fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<
             has it false, which is exactly the population this is for. The
             preflight is the authorisation instead. Same switch as the timer:
             `0` means the daemon never removes a worktree by itself. */
-            if app.settings().worktree_retention_days > 0 {
+            /* **Only when no other record points at the tree.** A worktree outlives
+            the conversations in it, and teardown archives every one it finds there
+            before it removes the tree — so an empty pane opened beside a stopped
+            conversation took that conversation's tree with it, unasked. A tree
+            somebody else's record names is `reap_old`'s to judge, on its clock. */
+            let shared = match workspace.as_deref() {
+                Some(ws) => app
+                    .inner
+                    .read()
+                    .await
+                    .sessions
+                    .values()
+                    .any(|s| s.workspace == ws),
+                None => false,
+            };
+            if app.settings().worktree_retention_days > 0 && !shared {
                 if let Some(ws) = workspace.as_deref() {
                     if ws != MAIN && ws != PENDING_WORKTREE {
                         match crate::worktree::teardown(&app, ws).await {

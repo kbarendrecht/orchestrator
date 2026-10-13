@@ -1425,6 +1425,72 @@ mod tests {
         let _ = std::fs::remove_dir_all(main.parent().unwrap());
     }
 
+    /// An empty pane closed in a tree takes the tree only when nothing else lives
+    /// there.
+    ///
+    /// The exit watcher forgets a turnless session and tears its tree down, and
+    /// teardown archives every record it finds in the tree before removing it — so
+    /// opening a pane beside a stopped conversation and closing it again archived
+    /// that conversation and deleted its tree. Both halves are driven: with a
+    /// neighbour the tree stays, and without one it still goes.
+    #[tokio::test]
+    async fn a_turnless_exit_leaves_a_tree_another_conversation_is_in() {
+        use crate::model::Session;
+        use crate::pty::PtyHandle;
+
+        async fn close_an_empty_pane(app: &Arc<AppState>, ws: &str, wt: &std::path::Path) {
+            let spawned = PtyHandle::spawn(&["true".to_string()], wt, &[], &[], (24, 80)).unwrap();
+            let id = uuid::Uuid::new_v4();
+            {
+                let mut inner = app.inner.write().await;
+                let mut s = Session::new(id, ws.to_string(), wt.to_path_buf(), None);
+                s.pty = Some(spawned.handle.clone());
+                inner.sessions.insert(id, s);
+            }
+            crate::spawn::watch_session_exit(app.clone(), id, spawned.handle.clone());
+            // The watcher forgets the record first and tears down after, so wait
+            // for the workspace to settle rather than for the record to go.
+            for _ in 0..300 {
+                let gone = !app.inner.read().await.sessions.contains_key(&id);
+                if gone && !wt.exists() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        }
+
+        let (main, wt, _) = repo_with_a_worktree("turnless");
+        let app = crate::testutil::app_at(
+            &main,
+            r#""worktree_retention_days":60,"upstream_ref":"develop","upstream_remote":"origin""#,
+        );
+        app.register_worktree("shared", wt.clone(), Some("worktree-old".into()))
+            .await;
+        let neighbour = uuid::Uuid::new_v4();
+        {
+            let mut inner = app.inner.write().await;
+            let mut s = Session::new(neighbour, "shared".to_string(), wt.clone(), None);
+            s.had_a_turn = true;
+            s.set_state(State::Exited);
+            inner.sessions.insert(neighbour, s);
+        }
+
+        close_an_empty_pane(&app, "shared", &wt).await;
+        assert!(wt.exists(), "the neighbour's tree went with the empty pane");
+        assert!(
+            app.inner.read().await.sessions[&neighbour]
+                .recovery
+                .is_none(),
+            "and the neighbour was archived for a teardown it never asked for"
+        );
+
+        // Without the neighbour, the tree is the empty pane's alone and still goes.
+        app.inner.write().await.sessions.remove(&neighbour);
+        close_an_empty_pane(&app, "shared", &wt).await;
+        assert!(!wt.exists(), "a tree nobody else is in is still cleaned up");
+        let _ = std::fs::remove_dir_all(main.parent().unwrap());
+    }
+
     /// A conversation you worked in for a long time is not old the day you stop.
     ///
     /// The reason retention counts from the transcript's last write rather than from
