@@ -57,7 +57,7 @@ what keeps transcripts out of your `~/.claude/projects`.
 **The move from the old single `config.json` is a one-shot in `host.rs`, not a
 `migrate.rs` rule**, for two reasons that are easy to get wrong. That table's
 `apply` is `fn(&mut Map<String, Value>) -> bool` and `config_file` ends in one
-`fs::write`, so a rule there cannot create a directory or write a sibling file.
+write of that file, so a rule there cannot create a directory or write a sibling file.
 And its shape would have been wrong anyway: `main_checkout` **stays** at the root
 of every per-checkout file, so a rule keyed on that key re-fires on every start of
 every daemon, forever. The shape recognised instead is a *location* — this

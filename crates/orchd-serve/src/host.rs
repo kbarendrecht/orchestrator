@@ -943,11 +943,22 @@ fn host_file() -> anyhow::Result<PathBuf> {
 
 /// The host file as it stands, or `None` when there is none to read.
 ///
-/// A file that will not parse reads as absent, deliberately: the cost is one
-/// forgotten list, and refusing to start over it would cost the window.
+/// A file that will not parse is **moved aside** and then reads as absent: the
+/// cost is one forgotten list, and refusing to start over it would cost the
+/// window. Moved rather than ignored because [`remember_checkouts`] writes
+/// `read_host_file().unwrap_or_default()` — so ignoring it in place meant the
+/// next add or close overwrote the only copy of the list and every hand-set key
+/// with defaults. `host.json.corrupt` is there to recover from.
 fn read_host_file() -> Option<HostFile> {
-    let raw = std::fs::read_to_string(host_file().ok()?).ok()?;
-    serde_json::from_str(&raw).ok()
+    let path = host_file().ok()?;
+    let raw = std::fs::read_to_string(&path).ok()?;
+    match serde_json::from_str(&raw) {
+        Ok(file) => Some(file),
+        Err(e) => {
+            orchd::atomic::set_aside(&path, &e);
+            None
+        }
+    }
 }
 
 /// The checkouts to open at launch.
@@ -1021,12 +1032,8 @@ pub fn remember_checkouts(checkouts: &[PathBuf]) {
         .map(|p| p.to_string_lossy().into_owned())
         .collect();
     let write = || -> anyhow::Result<()> {
-        let path = host_file()?;
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        std::fs::write(&path, serde_json::to_string_pretty(&file)? + "\n")?;
-        Ok(())
+        let text = serde_json::to_string_pretty(&file)? + "\n";
+        orchd::atomic::write(&host_file()?, text.as_bytes())
     };
     if let Err(e) = write() {
         tracing::error!("could not record the open checkouts: {e:#}");
@@ -1284,7 +1291,7 @@ const SEED_MARKER: &str = ".seeded";
 ///
 /// **The layout move is a one-shot here rather than a `migrate.rs` rule**, and the
 /// reason is worth keeping: that table's `apply` is
-/// `fn(&mut Map<String, Value>) -> bool` and `config_file` ends in one `fs::write`,
+/// `fn(&mut Map<String, Value>) -> bool` and `config_file` ends in one write of that file,
 /// so a rule there can rewrite keys inside one file and cannot create a directory
 /// or write a sibling. Its shape would have been wrong too — `main_checkout` stays
 /// at the root of every per-checkout file, so a rule keyed on that key would

@@ -404,8 +404,7 @@ fn rewrite_main_checkout(path: &Path, raw: &str, main: &Path) -> Result<()> {
         "main_checkout".into(),
         serde_json::Value::String(main.to_string_lossy().into_owned()),
     );
-    std::fs::write(path, serde_json::to_string_pretty(&v)? + "\n")?;
-    Ok(())
+    orchd_base::atomic::write(path, (serde_json::to_string_pretty(&v)? + "\n").as_bytes())
 }
 
 /// Per-workspace-kind notes handed to an arriving agent. See
@@ -537,8 +536,7 @@ impl Settings {
     pub fn write(&self) -> Result<()> {
         let path = Config::path()?;
         let raw = std::fs::read_to_string(&path).unwrap_or_else(|_| "{}".to_string());
-        std::fs::write(&path, self.merge_into(&raw)?)?;
-        Ok(())
+        orchd_base::atomic::write(&path, self.merge_into(&raw)?.as_bytes())
     }
 
     /// Set these keys on a raw `config.json` string, returning the new file
@@ -1175,8 +1173,7 @@ impl Config {
         let main = main_checkout
             .context("no config yet — pass --main <path to the main checkout> on first run")?;
         let cfg = Config::default_for(main);
-        std::fs::create_dir_all(Self::config_dir()?)?;
-        std::fs::write(&path, serde_json::to_string_pretty(&cfg)?)?;
+        orchd_base::atomic::write(&path, serde_json::to_string_pretty(&cfg)?.as_bytes())?;
         tracing::info!("wrote default config to {}", path.display());
         Ok(cfg)
     }

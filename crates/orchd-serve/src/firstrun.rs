@@ -107,11 +107,11 @@ fn record_recent_in(dir: &Path, path: &Path) -> Result<()> {
     );
     list.truncate(MAX_RECENT);
 
-    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     let file = recent_file_in(dir);
-    std::fs::write(&file, serde_json::to_string_pretty(&list)? + "\n")
-        .with_context(|| format!("writing {}", file.display()))?;
-    Ok(())
+    orchd::atomic::write(
+        &file,
+        (serde_json::to_string_pretty(&list)? + "\n").as_bytes(),
+    )
 }
 
 /// Whether a chosen folder can host a session board, and its display name.
@@ -481,7 +481,7 @@ fn write_config_to(file: &Path, path: &Path, ov: &Overrides) -> Result<()> {
             tracing::warn!("could not keep {}: {e}", bak.display());
         }
     }
-    std::fs::write(file, raw).with_context(|| format!("writing {}", file.display()))
+    orchd::atomic::write(file, raw.as_bytes())
 }
 
 #[cfg(test)]

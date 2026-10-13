@@ -79,19 +79,19 @@ pub fn config_file(path: &Path) {
         return;
     };
     if let Some(dir) = path.parent() {
-        if let Err(e) = std::fs::write(dir.join(BACKUP), &raw) {
+        if let Err(e) = orchd_base::atomic::write(&dir.join(BACKUP), raw.as_bytes()) {
             // Said, and not fatal: a config dir we cannot write is a config we
             // cannot migrate, and the reader's own tolerance is what boots then.
             tracing::warn!("could not keep {BACKUP} beside the config: {e}");
         }
     }
-    match std::fs::write(path, &text) {
+    match orchd_base::atomic::write(path, text.as_bytes()) {
         Ok(()) => tracing::info!(
             "migrated {}: {} (the previous file is {BACKUP})",
             path.display(),
             applied.join(", ")
         ),
-        Err(e) => tracing::warn!("could not migrate {}: {e}", path.display()),
+        Err(e) => tracing::warn!("could not migrate {}: {e:#}", path.display()),
     }
 }
 

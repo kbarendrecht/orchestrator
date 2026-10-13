@@ -13,6 +13,7 @@
 //! `docs/crate-split.md` has the plan this is step one of, and the measurements
 //! that say the next three are legal today.
 
+pub mod atomic;
 pub mod child;
 pub mod edit;
 pub mod git;

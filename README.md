@@ -420,6 +420,8 @@ crates/orchd-base/    the primitives. Nothing here may import anything below.
   pty.rs          portable-pty host, and the scrollback ring every pty keeps
   proc.rs         run a child with a deadline, portably (no coreutils `timeout`)
   child.rs        the protocol for a checkout's daemon: launch, ready line, observer
+  atomic.rs       write-and-rename for every durable file, and setting aside one
+                  that will not parse
   model.rs        the shared value types: ChangedFile, FileSet, DiffFile, Bank
   proposal.rs     what a review session proposes: Stance × Mode, positions, stories
   guard.rs        the git rules (push blast radius, reach), run by `orch guard push`

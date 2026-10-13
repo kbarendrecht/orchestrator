@@ -1,8 +1,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
 use crate::config::Config;
@@ -295,48 +293,10 @@ fn automation_path() -> Result<PathBuf> {
     Ok(Config::config_dir()?.join("automation.json"))
 }
 
-/// Write a store under the config dir. Write-and-rename so a crash mid-write
-/// cannot leave a truncated file that would lose every record at once — one
-/// discipline for every store, so a change to it lands everywhere.
+/// Write a store under the config dir, through [`crate::atomic::write`] — one
+/// discipline for every durable file, so a change to it lands everywhere.
 fn save_json<T: Serialize + ?Sized>(p: &Path, value: &T) -> Result<()> {
-    if let Some(dir) = p.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    /* **A tmp name unique to this write.** Every store shared one
-    `<name>.json.tmp`, so two overlapping writers used the same scratch file:
-    both wrote it, the first rename moved it away, and the second failed
-    `ENOENT` — surfacing as "could not persist session records" for a write that
-    had nothing wrong with it. The counter is per process and the pid is in the
-    name, so neither two writers here nor two daemons can collide. */
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-    let tmp = p.with_extension(format!(
-        "json.tmp.{}.{}",
-        std::process::id(),
-        SEQ.fetch_add(1, Ordering::Relaxed)
-    ));
-
-    let write = || -> Result<()> {
-        let mut f =
-            std::fs::File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
-        f.write_all(serde_json::to_string_pretty(value)?.as_bytes())
-            .with_context(|| format!("writing {}", tmp.display()))?;
-        // The rename is atomic in the directory, but it does not promise the
-        // *contents* are on disk first: without this, a power loss can leave the
-        // real name pointing at a file whose blocks were never written — which is
-        // the truncated-store case the write-and-rename exists to prevent.
-        f.sync_all()
-            .with_context(|| format!("flushing {}", tmp.display()))?;
-        Ok(())
-    };
-    if let Err(e) = write() {
-        // Never leave scratch behind; the name is unique, so nothing else will
-        // clean it up.
-        let _ = std::fs::remove_file(&tmp);
-        return Err(e);
-    }
-    std::fs::rename(&tmp, p)
-        .with_context(|| format!("replacing {} with {}", p.display(), tmp.display()))?;
-    Ok(())
+    crate::atomic::write(p, serde_json::to_string_pretty(value)?.as_bytes())
 }
 
 /// Read a store, or its default when the file is missing or corrupt. A corrupt
@@ -352,26 +312,9 @@ fn load_json<T: serde::de::DeserializeOwned + Default>(p: Result<PathBuf>) -> T 
     match serde_json::from_str(&raw) {
         Ok(v) => v,
         Err(e) => {
-            /* **Move the unparseable file aside before handing back a default.**
-            The default is what the next `save_*` writes, so defaulting in place
-            did not merely lose the reading — it *overwrote the only copy* with
-            `[]` moments later. For `sessions.json` that is every record of every
-            conversation, which is not what "a corrupt store only costs the
-            resume offers" meant. Renamed rather than copied, so there is exactly
-            one of it and the daemon still boots. */
-            let aside = p.with_extension("json.corrupt");
-            match std::fs::rename(&p, &aside) {
-                Ok(()) => tracing::error!(
-                    "could not parse {}: {e} — kept it at {} and starting from the default",
-                    p.display(),
-                    aside.display()
-                ),
-                Err(move_err) => tracing::error!(
-                    "could not parse {}: {e} — and could not move it aside ({move_err}), \
-                     so the next write will overwrite it",
-                    p.display()
-                ),
-            }
+            // For `sessions.json` the default written over it would be every record
+            // of every conversation — see `atomic::set_aside`.
+            crate::atomic::set_aside(&p, &e);
             T::default()
         }
     }
