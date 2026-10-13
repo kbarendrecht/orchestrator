@@ -625,6 +625,11 @@ pub async fn rewind_session(
             .sessions
             .get(&id)
             .ok_or_else(|| crate::state::no_such_session(id))?;
+        // Two escapes are Claude Code's gesture, typed blind into whatever the
+        // pane is running.
+        if !s.agent.can_rewind() {
+            refuse!("{} has no rewind picker the daemon can open", s.agent);
+        }
         // Nothing to rewind to. The picker opens on an empty conversation and has
         // nothing to offer, which reads as a broken button.
         if !s.had_a_turn {
@@ -3579,6 +3584,26 @@ mod tests {
                 .0
         );
         assert!(said.contains("no conversation to rewind"), "{said}");
+
+        // And an agent whose two escapes the daemon never measured, at the one
+        // state Claude Code would open its picker in.
+        let id = Uuid::new_v4();
+        {
+            let mut inner = app.inner.write().await;
+            let mut s = Session::new(id, MAIN.to_string(), dir.clone(), None);
+            s.agent = crate::agent::Agent::Codex;
+            s.had_a_turn = true;
+            s.state = at(R::TurnComplete);
+            inner.sessions.insert(id, s);
+        }
+        let said = format!(
+            "{:#}",
+            rewind_session(State(app.clone()), Path(id))
+                .await
+                .expect_err("codex must refuse")
+                .0
+        );
+        assert!(said.contains("Codex has no rewind picker"), "{said}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

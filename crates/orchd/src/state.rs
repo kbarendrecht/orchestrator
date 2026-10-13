@@ -2681,6 +2681,13 @@ pub struct SessionView {
     pub agent_stale: bool,
     /// Which agent runs this conversation. The pane header names it.
     pub agent: crate::agent::Agent,
+    /// The id the agent knows this conversation by ([`Session::conversation_id`]),
+    /// which "copy id" copies: `id` is the daemon's, and Codex has never heard of
+    /// it. `None` for a Codex session that has not said its id yet.
+    pub conversation_id: Option<String>,
+    /// Whether the rail may offer rewind ([`crate::agent::Agent::can_rewind`]).
+    /// The daemon refuses on the same answer; this only decides the menu.
+    pub can_rewind: bool,
 }
 
 impl SessionView {
@@ -2723,6 +2730,8 @@ impl SessionView {
             restart_queued: s.restart_queued,
             agent_stale: s.agent_stale,
             agent: s.agent,
+            conversation_id: s.conversation_id(),
+            can_rewind: s.agent.can_rewind(),
         }
     }
 }

@@ -797,6 +797,15 @@ impl Session {
         self.has_conversation() && !matches!(self.recovery, Some(ArchiveState::TranscriptOnly))
     }
 
+    /// The id the agent itself knows this conversation by: what `--resume` takes
+    /// and what its transcript is named after. The daemon's for Claude Code until
+    /// `/clear` moves it, Codex's own once a hook has said it, else `None`.
+    pub fn conversation_id(&self) -> Option<String> {
+        self.agent_session_id
+            .clone()
+            .or_else(|| (!self.agent.names_its_own_session()).then(|| self.id.to_string()))
+    }
+
     /// Whether there is a conversation the agent can be pointed back at: a turn
     /// happened, and the agent's own id for it is known.
     ///
@@ -1612,6 +1621,23 @@ mod tests {
         assert!(red(TurnReason::TurnComplete).safe_to_restart());
         assert!(!red(TurnReason::AskedAQuestion).safe_to_restart());
         assert!(!red(TurnReason::NeedsPermission).safe_to_restart());
+    }
+
+    /// "Copy id" copies what the agent would answer to: the daemon's id for
+    /// Claude Code until `/clear` moves it, and Codex's own or nothing.
+    #[test]
+    fn the_conversation_id_is_the_one_the_agent_knows() {
+        let id = uuid::Uuid::new_v4();
+        let mut s = Session::new(id, "main".into(), std::path::PathBuf::from("/tmp"), None);
+        assert_eq!(s.conversation_id(), Some(id.to_string()));
+        s.agent_session_id = Some("after-clear".into());
+        assert_eq!(s.conversation_id().as_deref(), Some("after-clear"));
+
+        s.agent = crate::agent::Agent::Codex;
+        s.agent_session_id = None;
+        assert_eq!(s.conversation_id(), None, "codex has never heard of ours");
+        s.agent_session_id = Some("019a".into());
+        assert_eq!(s.conversation_id().as_deref(), Some("019a"));
     }
 
     /// A turn that ends while the build is red has still ended.

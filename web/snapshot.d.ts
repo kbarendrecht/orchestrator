@@ -411,7 +411,18 @@ agent_stale: boolean,
 /**
  * Which agent runs this conversation. The pane header names it.
  */
-agent: Agent, };
+agent: Agent, 
+/**
+ * The id the agent knows this conversation by ([`Session::conversation_id`]),
+ * which "copy id" copies: `id` is the daemon's, and Codex has never heard of
+ * it. `None` for a Codex session that has not said its id yet.
+ */
+conversation_id: string | null, 
+/**
+ * Whether the rail may offer rewind ([`crate::agent::Agent::can_rewind`]).
+ * The daemon refuses on the same answer; this only decides the menu.
+ */
+can_rewind: boolean, };
 
 /**
  * What the SPA receives on every tick.

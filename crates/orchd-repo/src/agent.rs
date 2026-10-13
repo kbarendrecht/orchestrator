@@ -75,6 +75,17 @@ impl Agent {
         matches!(self, Agent::Codex)
     }
 
+    /// Whether the daemon can open the agent's own rewind picker, by typing two
+    /// escapes at its prompt (`api::rewind_session`).
+    ///
+    /// Claude Code's alone: the gesture, its timing and the states where it means
+    /// something else were measured in Claude Code's binary, and the bytes are
+    /// written into the pane blind. In another agent two escapes at the prompt are
+    /// whatever that agent makes of them, so the row does not offer it.
+    pub fn can_rewind(self) -> bool {
+        matches!(self, Agent::Claude)
+    }
+
     /// The line that runs one of the daemon's skills with `args`.
     ///
     /// Claude Code namespaces a plugin's skills, so it is the slash command. Codex

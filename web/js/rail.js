@@ -1802,7 +1802,7 @@ function archivedRow(/** @type {import('../snapshot').SessionView} */ s, /** @ty
     // worktree, so a conversation whose branch is gone can still be branched off.
     ['fork', null, s.has_transcript && agentHere(s) ? () => forkSession(s) : null],
     ['copy', null, [
-      ['id', null, () => copyId(s)],
+      ['id', null, s.conversation_id ? () => copyId(s) : null],
       ['branch', null, sessionBranch(s) ? () => copyBranch(s) : null],
     ]],
     ['delete', 'bad', () => deleteSession(s)],
@@ -2006,7 +2006,7 @@ function sessionRow(/** @type {import('../snapshot').SessionView} */ s, /** @typ
      watching clears and reattaches for no reason you can see. */
   if (s.restart_queued) {
     const q = sub.appendChild(el('span', 'sess-restart', 'restarts when idle'));
-    q.title = 'Respawns on the installed Claude Code once this turn ends — cancel it from the menu';
+    q.title = `Respawns on the installed ${AGENT_LABEL[s.agent]} once this turn ends — cancel it from the menu`;
   }
   // The waiting duration is the number to optimise down (§2). A start has a
   // clock for a different reason: the daemon cuts the worktree and runs the
@@ -2091,7 +2091,8 @@ function sessionRow(/** @type {import('../snapshot').SessionView} */ s, /** @typ
     ['rename', null, () => renameSession(s)],
     // Nothing to branch off until the conversation has had a turn.
     ['fork', null, s.has_transcript && agentHere(s) ? () => forkSession(s) : null],
-    // Claude Code's own picker, reached rather than rebuilt. Greyed in the states
+    // The agent's own picker, reached rather than rebuilt — Claude Code's, the one
+    // agent that has one the daemon can open. Greyed in the states
     // where the daemon refuses it — mid-turn an escape interrupts the turn, and at
     // a question or a permission prompt it answers instead of rewinding.
     ['rewind', null, isRewindable(s) ? () => rewindSession(s) : null],
@@ -2102,7 +2103,7 @@ function sessionRow(/** @type {import('../snapshot').SessionView} */ s, /** @typ
       ? ['cancel the restart', null, () => restartSession(s, true)]
       : ['restart', null, s.alive && agentHere(s) ? () => restartSession(s, false) : null],
     ['copy', null, [
-      ['id', null, () => copyId(s)],
+      ['id', null, s.conversation_id ? () => copyId(s) : null],
       ['branch', null, sessionBranch(s) ? () => copyBranch(s) : null],
     ]],
     // The worktree, not the session: the row is the only place a worktree is
@@ -2114,14 +2115,15 @@ function sessionRow(/** @type {import('../snapshot').SessionView} */ s, /** @typ
   return btn;
 }
 
-/** The session's uuid, on the clipboard.
+/** The conversation's id, as its agent knows it, on the clipboard.
  *
- *  It is Claude Code's session id as well as the daemon's — every spawn passes
- *  `--session-id` — so it is what `claude --resume`, a transcript path and a hook
- *  correlation all key on. The rail is the only place it is visible, and it is
- *  not selectable text there. */
+ *  Not the row's `id`, which is the daemon's: Codex picks its own and has never
+ *  heard of that one, and Claude Code's moves off it at `/clear`. This is what
+ *  `claude --resume` and `codex resume` take and what the transcript is named
+ *  after. The rail is the only place it is visible, and it is not selectable text
+ *  there. `null` until a Codex session has said it, which greys the item. */
 async function copyId(/** @type {import('../snapshot').SessionView} */ s) {
-  if (await copyText(s.id)) toast('id copied');
+  if (s.conversation_id && await copyText(s.conversation_id)) toast('id copied');
 }
 
 /** What the session's directory has checked out (#31).
@@ -2164,7 +2166,8 @@ async function copyBranch(/** @type {import('../snapshot').SessionView} */ s) {
  *  permission prompt. The daemon refuses the same three, so this only decides
  *  whether the item is offered, never whether it is safe. */
 const isRewindable = (/** @type {import('../snapshot').SessionView} */ s) =>
-  s.alive
+  s.can_rewind
+  && s.alive
   && s.state.state === 'your_turn'
   && s.state.reason !== 'asked_a_question'
   && s.state.reason !== 'needs_permission'
@@ -2477,7 +2480,7 @@ async function deleteSession(/** @type {import('../snapshot').SessionView} */ s)
   const name = railName(s, { id: s.workspace });
   const ending = s.alive ? 'It is still running, so this ends it first. ' : '';
   if (!await confirmBox(`Delete "${name}"${inCheckout(s)}?\n\n${ending}The row and orchd's copy of the `
-    + "transcript go for good. Claude Code's own transcript is left where it is.",
+    + `transcript go for good. ${AGENT_LABEL[s.agent]}'s own transcript is left where it is.`,
   { ok: 'Delete' })) return;
   callFor(s.id, `/api/session/${s.id}/delete`)
     .then(() => toast('deleted'))
