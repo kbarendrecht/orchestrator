@@ -524,12 +524,31 @@ pub async fn teardown(app: &Arc<AppState>, workspace: &str) -> Result<Preflight>
     run_repo_hooks(app, "WorktreeRemove", payload, Board::Quiet).await;
     // Off the runtime: this deletes the tree, which on a checkout carrying
     // `node_modules` is seconds of filesystem work, and it retries a stale lock.
-    {
+    let removed = {
         let (main, at) = (app.cfg.main_checkout.clone(), path.clone());
         crate::proc::run_blocking("removing the worktree", move || {
             git::worktree_remove(&main, &at)
         })
-        .await??;
+        .await
+        .and_then(|r| r)
+    };
+    if let Err(e) = removed {
+        /* **A recovery record says the tree is gone, so a tree still standing
+        takes its records back.** `archive` stamps them before the remove because
+        the preflight demands them, and a refused remove used to leave them stamped
+        on sessions whose tree was right there — and `to_carry` passes over any
+        record with a recovery, so a swap or a move out of main then left those
+        conversations behind their branch. Only when the directory is really still
+        there: a remove that failed after a hook took the tree has torn it down. */
+        if path.exists() {
+            let mut inner = app.inner.write().await;
+            for s in inner.sessions.values_mut() {
+                if s.workspace == workspace {
+                    s.recovery = None;
+                }
+            }
+        }
+        return Err(e);
     }
 
     {
@@ -1422,6 +1441,54 @@ mod tests {
         app.set_banked("banked", None).await;
         std::fs::write(wt.join("f"), "x").unwrap();
         assert_eq!(reap_old(&app).await, 1, "a settled tree is still reaped");
+        let _ = std::fs::remove_dir_all(main.parent().unwrap());
+    }
+
+    /// A teardown git refuses leaves the tree standing, so its conversations must
+    /// not go on saying it was torn down.
+    ///
+    /// `archive` stamps a recovery record on each before the remove, and `to_carry`
+    /// passes over every record that has one — so a refused remove left
+    /// conversations in a living tree that no swap or move would ever carry.
+    #[tokio::test]
+    async fn a_refused_teardown_takes_the_recovery_records_back() {
+        use crate::model::Session;
+
+        let (main, wt, _) = repo_with_a_worktree("refused");
+        let app = crate::testutil::app_at(
+            &main,
+            r#""worktree_retention_days":60,"upstream_ref":"develop","upstream_remote":"origin""#,
+        );
+        app.register_worktree("held", wt.clone(), Some("worktree-old".into()))
+            .await;
+        let id = uuid::Uuid::new_v4();
+        {
+            let mut inner = app.inner.write().await;
+            let mut s = Session::new(id, "held".to_string(), wt.clone(), None);
+            s.had_a_turn = true;
+            s.set_state(State::Exited);
+            inner.sessions.insert(id, s);
+        }
+        // A lock with no claude pid in it is one `worktree_remove` leaves to refuse.
+        crate::testutil::git(
+            &main,
+            &[
+                "worktree",
+                "lock",
+                "--reason",
+                "somebody's",
+                wt.to_str().unwrap(),
+            ],
+        );
+
+        teardown(&app, "held")
+            .await
+            .expect_err("git refuses a locked tree");
+        assert!(wt.exists(), "the premise: the tree is still there");
+        assert!(
+            app.inner.read().await.sessions[&id].recovery.is_none(),
+            "a conversation in a standing tree is recorded as torn down"
+        );
         let _ = std::fs::remove_dir_all(main.parent().unwrap());
     }
 
