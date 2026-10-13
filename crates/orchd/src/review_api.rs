@@ -254,16 +254,23 @@ pub async fn open_pr(
     }
     .ok_or_else(|| anyhow::anyhow!("PR #{number} is not in the current poll"))?;
 
+    /* Moves main's checkout, so under the swap's lock — see `move_out_of_main`.
+    **Held until the session has claimed main, not only across the switch.** It used
+    to drop at the end of the arm, which left main on the PR's branch with nobody
+    recorded in it while the spawn was still on its way: `park_main`, run by any
+    session's exit, reads exactly that as "the last session left" and puts main back
+    on base, and a swap or a move out reads it as free. The spawn below is the
+    claim, so the guard lives as long as this function. */
+    let mut _swap = None;
     let workspace = match body.place.as_str() {
         "worktree" => spawn::ensure_pr_worktree(&app, number, &pr.head_ref).await?,
         "main" => {
-            // Moves main's checkout, so under the swap's lock — see `move_out_of_main`.
-            let _swap = app.swapping.try_lock().map_err(|_| {
+            _swap = Some(app.swapping.try_lock().map_err(|_| {
                 ApiError(anyhow::anyhow!(
                     "a swap is already running; it moves main's checkout, so give it a \
                      moment and look at the rail before asking again"
                 ))
-            })?;
+            })?);
             spawn::switch_main_to_pr(&app, &pr.head_ref).await?
         }
         other => refuse!("unknown place {other}"),
