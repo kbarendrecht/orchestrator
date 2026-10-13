@@ -1044,7 +1044,14 @@ pub(crate) enum Want<'a> {
     /// parent's HEAD.
     New { branch: &'a str, base: &'a str },
     /// A branch that already exists somewhere, local or on origin. A PR's head ref.
-    Existing { branch: &'a str },
+    ///
+    /// `from` is the remote a missing branch has to come from — the PR's head
+    /// repository, when `git::HeadCheck` knows which remote that is — so a branch
+    /// of the same name on another remote is never the one checked out.
+    Existing {
+        branch: &'a str,
+        from: Option<&'a str>,
+    },
 }
 
 /// Create a worktree the repo's way if it has one, ours otherwise.
@@ -1099,18 +1106,23 @@ pub(crate) async fn create_worktree(
     // for as long as git waits.
     let main = app.cfg.main_checkout.clone();
     let branch = match &want {
-        Want::New { branch, .. } | Want::Existing { branch } => branch.to_string(),
+        Want::New { branch, .. } | Want::Existing { branch, .. } => branch.to_string(),
     };
     let base = match &want {
         Want::New { base, .. } => Some(base.to_string()),
         Want::Existing { .. } => None,
     };
+    let from = match &want {
+        Want::Existing { from, .. } => from.map(str::to_string),
+        Want::New { .. } => None,
+    };
 
     if let Some(made) = hook_cut_worktree(app, name, board).await {
         let (m, tree, b, ba) = (main.clone(), made.clone(), branch.clone(), base.clone());
+        let fr = from.clone();
         let applied = tokio::task::spawn_blocking(move || match ba {
             Some(base) => git::checkout_new_branch(&m, &tree, &b, &base),
-            None => git::checkout_existing_branch(&m, &tree, &b),
+            None => git::checkout_existing_branch(&m, &tree, &b, fr.as_deref()),
         })
         .await
         .context("putting the hook's worktree on its branch panicked")?;
@@ -1141,7 +1153,7 @@ pub(crate) async fn create_worktree(
     }
     let added = tokio::task::spawn_blocking(move || match base {
         Some(base) => git::worktree_add_new(&main, &p, &branch, &base),
-        None => git::worktree_add_existing(&main, &p, &branch),
+        None => git::worktree_add_existing(&main, &p, &branch, from.as_deref()),
     })
     .await;
     let added = match added {

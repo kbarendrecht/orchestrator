@@ -173,7 +173,7 @@ fn a_branch_checked_out_in_main_cannot_be_cut_into_a_worktree() {
     git(&main, &["checkout", "-q", "-b", "feature/x"]).unwrap();
 
     assert_eq!(current_branch(&main).unwrap(), "feature/x");
-    let err = worktree_add_existing(&main, &dir.join("pr-1"), "feature/x")
+    let err = worktree_add_existing(&main, &dir.join("pr-1"), "feature/x", None)
         .expect_err("git must refuse a second checkout of one branch");
     assert!(
         refused_as_already_checked_out(&format!("{err:#}")),
@@ -1106,7 +1106,7 @@ fn a_tree_a_hook_made_can_be_put_on_the_branch_the_daemon_needs() {
     assert_eq!(current_branch(&made).unwrap(), "worktree-hookname");
 
     // Want::Existing — the PR case.
-    checkout_existing_branch(&repo, &made, "feature/head").unwrap();
+    checkout_existing_branch(&repo, &made, "feature/head", None).unwrap();
     assert_eq!(current_branch(&made).unwrap(), "feature/head");
 
     // Want::New — the plain and fork cases. `-B`, so a retry over a name the
@@ -1119,7 +1119,7 @@ fn a_tree_a_hook_made_can_be_put_on_the_branch_the_daemon_needs() {
     // moving work it did not put there.
     std::fs::write(made.join("f"), "changed by the hook\n").unwrap();
     assert!(checkout_new_branch(&repo, &made, "worktree-other", "develop").is_err());
-    assert!(checkout_existing_branch(&repo, &made, "feature/head").is_err());
+    assert!(checkout_existing_branch(&repo, &made, "feature/head", None).is_err());
 
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -1907,7 +1907,7 @@ fn adds_a_worktree_on_an_existing_branch() {
 
     let wt = repo.join(".claude/worktrees/pr-1");
     std::fs::create_dir_all(wt.parent().unwrap()).unwrap();
-    worktree_add_existing(&repo, &wt, "feature/x").expect("worktree add");
+    worktree_add_existing(&repo, &wt, "feature/x", None).expect("worktree add");
 
     assert!(wt.join("f.txt").exists());
     assert_eq!(current_branch(&wt).unwrap(), "feature/x");
@@ -1919,7 +1919,7 @@ fn refuses_a_branch_that_exists_nowhere() {
     let repo = scratch_repo();
     let wt = repo.join(".claude/worktrees/pr-2");
     std::fs::create_dir_all(wt.parent().unwrap()).unwrap();
-    let err = worktree_add_existing(&repo, &wt, "feature/nope").unwrap_err();
+    let err = worktree_add_existing(&repo, &wt, "feature/nope", None).unwrap_err();
     assert!(
         format!("{err:#}").contains("neither locally nor on any remote"),
         "unexpected: {err:#}"
@@ -1971,10 +1971,129 @@ fn a_head_branch_on_a_non_origin_remote_still_resolves() {
 
     let wt = repo.join(".claude/worktrees/pr-1");
     std::fs::create_dir_all(wt.parent().unwrap()).unwrap();
-    worktree_add_existing(&repo, &wt, "feature/head").unwrap();
+    worktree_add_existing(&repo, &wt, "feature/head", None).unwrap();
     assert_eq!(current_branch(&wt).unwrap(), "feature/head");
 
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Told which remote a head lives on, the add takes that remote's branch and not
+/// the first one of the same name.
+///
+/// The search tries `origin` first, so with `origin` as your fork and the PR's
+/// head on `upstream`, a branch your fork also has by that name was the one
+/// checked out — the PR's review written against your code.
+#[test]
+fn a_named_remote_wins_over_a_same_named_branch_on_origin() {
+    let root = crate::testutil::scratch("named-remote");
+    let make = |name: &str, content: &str| {
+        let at = root.join(name);
+        std::fs::create_dir_all(&at).unwrap();
+        crate::testutil::git(&at, &["init", "-q", "-b", "develop"]);
+        crate::testutil::git(&at, &["config", "user.email", "t@t"]);
+        crate::testutil::git(&at, &["config", "user.name", "t"]);
+        std::fs::write(at.join("f"), content).unwrap();
+        crate::testutil::git(&at, &["add", "-A"]);
+        crate::testutil::git(&at, &["commit", "-qm", content]);
+        crate::testutil::git(&at, &["branch", "fix-x"]);
+        at
+    };
+    let fork = make("fork", "the fork's fix-x");
+    let base = make("base", "the PR's fix-x");
+    let repo = make("repo", "base");
+    crate::testutil::git(&repo, &["branch", "-D", "fix-x"]);
+    crate::testutil::git(&repo, &["remote", "add", "origin", &fork.to_string_lossy()]);
+    crate::testutil::git(
+        &repo,
+        &["remote", "add", "upstream", &base.to_string_lossy()],
+    );
+
+    let wt = repo.join(".claude/worktrees/pr-1");
+    std::fs::create_dir_all(wt.parent().unwrap()).unwrap();
+    worktree_add_existing(&repo, &wt, "fix-x", Some("upstream")).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(wt.join("f")).unwrap(),
+        "the PR's fix-x",
+        "the fork's branch of the same name was checked out"
+    );
+    // And a miss on the named remote is a miss, not a fall back to origin's.
+    let wt2 = repo.join(".claude/worktrees/pr-2");
+    let err = worktree_add_existing(&repo, &wt2, "only-on-fork", Some("upstream"));
+    assert!(err.is_err());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// The URL forms a remote is written in, and the one that names no repository.
+#[test]
+fn a_remote_url_names_its_repository() {
+    for (url, want) in [
+        ("git@github.com:Acme/Repo.git", Some("acme/repo")),
+        ("ssh://git@github.com/acme/repo", Some("acme/repo")),
+        ("https://github.com/acme/repo.git", Some("acme/repo")),
+        ("https://github.com/acme/repo/", Some("acme/repo")),
+        // A path names a directory, and a guess there could refuse a good PR.
+        ("/srv/git/acme/repo.git", None),
+        ("../repo", None),
+        ("file:///srv/git/acme/repo.git", None),
+        ("C:\\git\\repo", None),
+    ] {
+        assert_eq!(repo_of_url(url).as_deref(), want, "{url}");
+    }
+}
+
+/// A PR maps onto the local branch of its name only when the head repository and
+/// the branch's own remote agree, and degrades to the old match when the
+/// checkout cannot say.
+#[test]
+fn a_head_is_the_local_branch_only_when_its_repository_agrees() {
+    let repo = crate::testutil::scratch_repo("headcheck");
+    let g = |args: &[&str]| crate::testutil::git(&repo, args);
+    // Nothing hosted: no opinion at all, whatever the PR says.
+    let blind = HeadCheck::read(&repo);
+    assert_eq!(blind.refusal("fix-x", Some("someone/else")), None);
+
+    g(&["remote", "add", "origin", "git@github.com:me/repo.git"]);
+    g(&[
+        "remote",
+        "add",
+        "upstream",
+        "https://github.com/acme/repo.git",
+    ]);
+    g(&["branch", "fix-x"]);
+    g(&["config", "branch.fix-x.remote", "origin"]);
+    g(&["branch", "untracked"]);
+    let check = HeadCheck::read(&repo);
+
+    // Unknown head repository: the name is all there is.
+    assert_eq!(check.refusal("fix-x", None), None);
+    // Your fork's PR, on your fork's branch.
+    assert_eq!(check.refusal("fix-x", Some("me/repo")), None);
+    assert_eq!(
+        check.refusal("fix-x", Some("ME/Repo")),
+        None,
+        "case is not identity"
+    );
+    // The base repo's PR named like your fork's branch: not yours.
+    let other = check.refusal("fix-x", Some("acme/repo")).expect("refused");
+    assert!(other.contains("tracks origin"), "{other}");
+    // A branch tracking nothing is what one pushed without `-u` looks like.
+    assert_eq!(check.refusal("untracked", Some("acme/repo")), None);
+    // A repository none of the remotes is.
+    let foreign = check
+        .refusal("fix-x", Some("someone/else"))
+        .expect("refused");
+    assert!(
+        foreign.contains("none of this checkout's remotes"),
+        "{foreign}"
+    );
+
+    assert_eq!(
+        check.fetch_from(Some("acme/repo")).as_deref(),
+        Some("upstream")
+    );
+    assert_eq!(check.fetch_from(Some("me/repo")).as_deref(), Some("origin"));
+    assert_eq!(check.fetch_from(None), None);
+    let _ = std::fs::remove_dir_all(&repo);
 }
 
 #[test]

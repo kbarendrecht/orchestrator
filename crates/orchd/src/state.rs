@@ -38,6 +38,15 @@ pub struct Repos {
     pub fork: Option<String>,
 }
 
+/// What [`AppState::pr_head`] found about a PR's head.
+#[derive(Debug, Default, Clone)]
+pub struct PrHead {
+    /// Why the local branch named like the head is not this PR's, if it is not.
+    pub refusal: Option<String>,
+    /// The remote the head repository is, to fetch a missing branch from.
+    pub from: Option<String>,
+}
+
 /// A run's session has ended.
 ///
 /// Published by [`crate::spawn::watch_session_exit`], which owns the only
@@ -296,6 +305,14 @@ pub struct Inner {
     /// and come back. Its absence after a run exits is how a failed run is
     /// detected: the agent reports by POSTing, not by its exit code.
     pub proposals: HashMap<u64, crate::proposal::ProposalSet>,
+    /// PRs whose head is **not** the local branch of the same name, with why —
+    /// `git::HeadCheck::refusal` as the last PR poll found it, and kept in step by
+    /// every fresh read ([`AppState::pr_head`]).
+    ///
+    /// A cache for the snapshot only, which cannot run git: it maps each PR row to
+    /// a tree and a session by head ref, and a same-named branch of somebody
+    /// else's is neither. Every flow that acts on a PR asks fresh instead.
+    pub foreign_heads: HashMap<u64, String>,
     /// The credential each posting run may post its proposals with, by session,
     /// with the PR it is good for.
     ///
@@ -900,6 +917,7 @@ impl AppState {
                 pending_outcome: Vec::new(),
                 proposals: HashMap::new(),
                 proposal_tokens: HashMap::new(),
+                foreign_heads: HashMap::new(),
                 stories: Default::default(),
                 spare: Default::default(),
                 viewer: None,
@@ -1120,6 +1138,42 @@ impl AppState {
     /// rule. Apart, a reader met either one without the other.
     pub async fn worktree_holding(&self, head_ref: &str) -> Option<String> {
         self.holding(head_ref, |w| !w.is_main()).await
+    }
+
+    /// Whether PR `pr`'s head may be taken for the local branch of its name, read
+    /// fresh, and the remote to fetch it from when it is not local.
+    ///
+    /// **Every PR flow asks this before it maps the PR onto a tree**, because the
+    /// three lookups that do the mapping — [`Self::worktree_holding`],
+    /// [`Inner::workspace_on`], `git::locate_branch` — know a branch only by name,
+    /// and a PR's head is a repository *and* a name. `git::HeadCheck` has the rule.
+    /// A PR not in the poll answers "nothing known", which is the old behaviour.
+    pub async fn pr_head(&self, pr: u64) -> PrHead {
+        let head = {
+            let inner = self.inner.read().await;
+            inner
+                .pr(pr)
+                .map(|p| (p.head_ref.clone(), p.head_repo.clone()))
+        };
+        let Some((head_ref, head_repo)) = head else {
+            return PrHead::default();
+        };
+        let main = self.cfg.main_checkout.clone();
+        let check = crate::proc::run_blocking("reading whose branch a PR's head is", move || {
+            crate::git::HeadCheck::read(&main)
+        })
+        .await
+        .unwrap_or_default();
+        let head = PrHead {
+            refusal: check.refusal(&head_ref, head_repo.as_deref()),
+            from: check.fetch_from(head_repo.as_deref()),
+        };
+        let mut inner = self.inner.write().await;
+        match &head.refusal {
+            Some(why) => inner.foreign_heads.insert(pr, why.clone()),
+            None => inner.foreign_heads.remove(&pr),
+        };
+        head
     }
 
     /// The one traversal both questions above are: [`Inner::workspace_on`].
@@ -1443,6 +1497,16 @@ impl AppState {
             .prs
             .iter()
             .map(|p| {
+                // A head that is some other repository's branch of the same name
+                // belongs to no tree and no conversation here.
+                if inner.foreign_heads.contains_key(&p.number) {
+                    return PrView {
+                        pr: p.clone(),
+                        rank: p.rank(),
+                        workspace: None,
+                        session: None,
+                    };
+                }
                 let session = inner.session_on(&p.head_ref);
                 let workspace = inner.workspace_on(&p.head_ref, |_| true).or_else(|| {
                     session

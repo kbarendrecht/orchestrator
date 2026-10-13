@@ -271,7 +271,7 @@ pub async fn open_pr(
                      moment and look at the rail before asking again"
                 ))
             })?);
-            spawn::switch_main_to_pr(&app, &pr.head_ref).await?
+            spawn::switch_main_to_pr(&app, number, &pr.head_ref).await?
         }
         other => refuse!("unknown place {other}"),
     };

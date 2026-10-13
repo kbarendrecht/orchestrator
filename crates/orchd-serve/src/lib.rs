@@ -1291,7 +1291,19 @@ fn start_pr_poller(app: Arc<AppState>) {
                     // Cloned for the outcome lookups below: the poll moves its own
                     // copy into the blocking task.
                     let asker = forge.clone();
-                    let result = tokio::task::spawn_blocking(move || forge.poll_prs()).await;
+                    /* The checkout's remotes and tracking config ride the same hop:
+                    two config reads, and the snapshot's PR rows need them to tell a
+                    PR's head from a same-named branch of another repository
+                    (`git::HeadCheck`), which the snapshot cannot ask git about. */
+                    let main = app.cfg.main_checkout.clone();
+                    let polled = tokio::task::spawn_blocking(move || {
+                        (forge.poll_prs(), orchd::git::HeadCheck::read(&main))
+                    })
+                    .await;
+                    let (result, whose) = match polled {
+                        Ok((r, h)) => (Ok(r), h),
+                        Err(e) => (Err(e), orchd::git::HeadCheck::default()),
+                    };
                     let mut inner = app.inner.write().await;
                     inner.token_source = Some(source);
                     match result {
@@ -1337,6 +1349,14 @@ fn start_pr_poller(app: Arc<AppState>) {
                             a network call and this lock is held across the whole
                             snapshot. */
                             let ask = inner.outcomes_to_ask(&prs);
+                            inner.foreign_heads = prs
+                                .iter()
+                                .filter_map(|p| {
+                                    whose
+                                        .refusal(&p.head_ref, p.head_repo.as_deref())
+                                        .map(|why| (p.number, why))
+                                })
+                                .collect();
                             inner.prs = prs;
                             inner.pr_error = None;
                             inner.pr_fetched = Some(std::time::SystemTime::now());

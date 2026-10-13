@@ -142,3 +142,141 @@ pub(super) fn fsmonitor_plan(current: Option<&str>, boolean_git: bool) -> Fsmoni
         (false, false) => Fsmonitor::Leave,
     }
 }
+
+// ---------------------------------------------------------------------------
+// Whose branch is it
+// ---------------------------------------------------------------------------
+
+/// What this checkout knows about where its branches come from: each remote's
+/// repository, and which remote each local branch tracks.
+///
+/// **A branch name is not an identity.** A PR names its head as `owner/repo` plus
+/// a ref, and the checkout names its branches by ref alone — so with `origin` as
+/// your fork and `upstream` as the base repo, a PR from upstream headed `fix-x`
+/// and your fork's own `fix-x` are two branches with one name, and matching on
+/// the name alone attached the PR to whichever the checkout happened to have.
+/// This is the other half of the identity, read from the config git already keeps:
+/// `remote.<r>.url` and `branch.<b>.remote`.
+#[derive(Debug, Default, Clone)]
+pub struct HeadCheck {
+    /// `(remote, owner/name)`, lowercased, for each remote whose URL names a
+    /// hosted repository. A local path names none and is left out.
+    remotes: Vec<(String, String)>,
+    /// Local branch → the remote it tracks.
+    tracking: std::collections::HashMap<String, String>,
+}
+
+impl HeadCheck {
+    /// Two config reads for the whole checkout, whatever the number of PRs asked.
+    pub fn read(main: &Path) -> HeadCheck {
+        let pairs = |pattern: &str| -> Vec<(String, String)> {
+            // Exit 1 is "no such key", which is an empty answer and not a failure.
+            git(main, &["config", "--get-regexp", pattern])
+                .map(|out| {
+                    out.lines()
+                        .filter_map(|l| l.trim().split_once(' '))
+                        .map(|(k, v)| (k.to_string(), v.trim().to_string()))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let remotes = pairs(r"^remote\..*\.url$")
+            .into_iter()
+            .filter_map(|(key, url)| {
+                let name = key.strip_prefix("remote.")?.strip_suffix(".url")?;
+                Some((name.to_string(), repo_of_url(&url)?))
+            })
+            .collect();
+        let tracking = pairs(r"^branch\..*\.remote$")
+            .into_iter()
+            .filter_map(|(key, remote)| {
+                let branch = key.strip_prefix("branch.")?.strip_suffix(".remote")?;
+                Some((branch.to_string(), remote))
+            })
+            .collect();
+        HeadCheck { remotes, tracking }
+    }
+
+    /// The remotes that carry `head_repo`, `origin` first when it is one of them.
+    fn carrying(&self, head_repo: &str) -> Vec<&str> {
+        let want = head_repo.to_ascii_lowercase();
+        let mut found: Vec<&str> = self
+            .remotes
+            .iter()
+            .filter(|(_, repo)| *repo == want)
+            .map(|(name, _)| name.as_str())
+            .collect();
+        found.sort_by_key(|r| *r != "origin");
+        found
+    }
+
+    /// Why the local branch `head_ref` is **not** this PR's head, or `None` when it
+    /// may stand for it.
+    ///
+    /// It degrades rather than insists, because a wrong refusal blocks a PR flow
+    /// that worked: an unknown head repo, or a checkout none of whose remotes names
+    /// a hosted repository (a local-path remote, a host this cannot parse), answers
+    /// `None` and the name is matched as it always was. Only two things refuse — a
+    /// head repo that none of the remotes carries, and a local branch that tracks
+    /// a *different* remote from the ones that do. A local branch tracking nothing
+    /// is taken as the PR's: it is what a branch you made and pushed without `-u`
+    /// looks like, and that is the common way to have opened the PR.
+    pub fn refusal(&self, head_ref: &str, head_repo: Option<&str>) -> Option<String> {
+        let head_repo = head_repo?;
+        if self.remotes.is_empty() {
+            return None;
+        }
+        let carrying = self.carrying(head_repo);
+        if carrying.is_empty() {
+            return Some(format!(
+                "its head is {head_repo}:{head_ref}, and {head_repo} is none of this \
+                 checkout's remotes — the local {head_ref}, if there is one, is a \
+                 different branch with the same name. Add {head_repo} as a remote to \
+                 work on it here."
+            ));
+        }
+        match self.tracking.get(head_ref) {
+            Some(tracks) if !carrying.contains(&tracks.as_str()) => Some(format!(
+                "its head is {head_repo}:{head_ref}, and the local {head_ref} tracks \
+                 {tracks}, which is a different repository — a branch with the same \
+                 name, not this PR's"
+            )),
+            _ => None,
+        }
+    }
+
+    /// The remote to fetch `head_repo`'s branch from when the checkout has no local
+    /// copy, or `None` to search as before (unknown head, or no hosted remotes).
+    pub fn fetch_from(&self, head_repo: Option<&str>) -> Option<String> {
+        self.carrying(head_repo?).first().map(|r| r.to_string())
+    }
+}
+
+/// `owner/name`, lowercased, from a remote URL: `git@host:o/n.git`,
+/// `ssh://git@host/o/n`, `https://host/o/n.git`. `None` for a local path, which
+/// names a directory and not a hosted repository — and a guess there is the
+/// one way this rule could refuse a PR it should not.
+pub fn repo_of_url(url: &str) -> Option<String> {
+    let url = url.trim();
+    let path = if let Some((_, rest)) = url.split_once("://") {
+        if url.starts_with("file://") {
+            return None;
+        }
+        rest.split_once('/')?.1
+    } else if let Some((host, rest)) = url.split_once(':') {
+        // scp-like `[user@]host:path`. A Windows drive (`C:\…`) or a path that
+        // merely contains a colon after a slash is not one.
+        if host.is_empty() || host.contains('/') || host.len() == 1 {
+            return None;
+        }
+        rest
+    } else {
+        return None;
+    };
+    let path = path.trim_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    let mut parts = path.rsplit('/');
+    let name = parts.next().filter(|s| !s.is_empty())?;
+    let owner = parts.next().filter(|s| !s.is_empty())?;
+    Some(format!("{owner}/{name}").to_ascii_lowercase())
+}

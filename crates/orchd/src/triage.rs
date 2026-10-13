@@ -197,6 +197,12 @@ pub(crate) async fn hand_to_live_session(
     head_ref: &str,
     command: &str,
 ) -> Result<Option<SessionId>> {
+    // The session on a same-named branch of another repository is not working on
+    // this PR, and typing a review of it at that agent would be worse than no
+    // answer. "Nobody is there" sends the caller to the cut, which says why.
+    if app.pr_head(pr).await.refusal.is_some() {
+        return Ok(None);
+    }
     let Some(ws) = app.worktree_holding(head_ref).await else {
         return Ok(None);
     };
@@ -275,8 +281,13 @@ pub async fn spawn_command_session(
     command: &str,
 ) -> Result<SessionId> {
     // If the branch already has a worktree with a live session, take you there
-    // rather than spawning a second one (§8).
-    if let Some(ws) = app.worktree_holding(head_ref).await {
+    // rather than spawning a second one (§8). Only when the branch by that name is
+    // this PR's: otherwise `ensure_pr_worktree` below refuses and says why.
+    let holding = match app.pr_head(pr).await.refusal {
+        None => app.worktree_holding(head_ref).await,
+        Some(_) => None,
+    };
+    if let Some(ws) = holding {
         if let Some(id) = hand_to_live_session(app, pr, head_ref, command).await? {
             return Ok(id);
         }

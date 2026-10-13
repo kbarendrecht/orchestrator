@@ -196,6 +196,27 @@ pub(super) fn freshen_base(main: &Path, base: &str) -> Result<()> {
 /// resolves rather than failing with "exists neither locally nor on origin". The
 /// fallback's `fetch --all` runs only on that miss, never on the common path.
 pub(super) fn remote_branch(main: &Path, branch: &str) -> Option<String> {
+    remote_branch_from(main, branch, None)
+}
+
+/// [`remote_branch`], told which remote the branch lives on.
+///
+/// **A named remote is the only one asked.** The search above takes the first
+/// remote with a branch of that name, which is the right guess when nothing is
+/// known and the wrong answer when something is: a PR headed from `upstream`
+/// whose name your fork on `origin` also has would be checked out from the fork.
+/// `HeadCheck::fetch_from` names the remote the PR's head repository is, and a
+/// miss there is a miss — never a fall back to a same-named branch elsewhere.
+pub(super) fn remote_branch_from(main: &Path, branch: &str, from: Option<&str>) -> Option<String> {
+    if let Some(remote) = from {
+        let _ = git_net_ok(
+            main,
+            &["fetch", remote, branch, "--no-tags"],
+            "a branch fetch",
+        );
+        let at = format!("{remote}/{branch}");
+        return git_ok(main, &["rev-parse", "--verify", "--quiet", &at]).then_some(at);
+    }
     let _ = git_net_ok(
         main,
         &["fetch", "origin", branch, "--no-tags"],
@@ -227,13 +248,27 @@ pub(super) fn remote_branch(main: &Path, branch: &str) -> Option<String> {
 /// One function because the rule is one rule (§6): PRs are opened from the fork, so
 /// a head ref this checkout has never seen is the ordinary case rather than a
 /// failure. Both the worktree-add and the checkout path ask it.
-pub(super) fn locate_branch(main: &Path, branch: &str) -> Result<Option<String>> {
+///
+/// `from` names the remote the branch must come from when it is not local — see
+/// [`remote_branch_from`] — and the refusal then names that remote.
+pub(super) fn locate_branch(
+    main: &Path,
+    branch: &str,
+    from: Option<&str>,
+) -> Result<Option<String>> {
     if branch_exists(main, branch) {
         return Ok(None);
     }
-    match remote_branch(main, branch) {
-        Some(remote) => Ok(Some(remote)),
-        None => bail!("branch {branch} exists neither locally nor on any remote"),
+    fetch_missing(main, branch, from).map(Some)
+}
+
+/// The remote-tracking ref for a branch that is not local, or the refusal naming
+/// where it was looked for.
+fn fetch_missing(main: &Path, branch: &str, from: Option<&str>) -> Result<String> {
+    match (remote_branch_from(main, branch, from), from) {
+        (Some(remote), _) => Ok(remote),
+        (None, Some(from)) => bail!("branch {branch} is neither local nor on {from}"),
+        (None, None) => bail!("branch {branch} exists neither locally nor on any remote"),
     }
 }
 
@@ -284,9 +319,14 @@ pub fn checkout_new_branch(main: &Path, tree: &Path, branch: &str, base: &str) -
 ///
 /// The PR half of the pair. If another worktree already holds the branch git
 /// refuses, and the caller falls back on that error rather than a check here.
-pub fn checkout_existing_branch(main: &Path, tree: &Path, branch: &str) -> Result<()> {
+pub fn checkout_existing_branch(
+    main: &Path,
+    tree: &Path,
+    branch: &str,
+    from: Option<&str>,
+) -> Result<()> {
     refuse_if_dirty(tree, branch)?;
-    match locate_branch(main, branch)? {
+    match locate_branch(main, branch, from)? {
         None => git(tree, &["checkout", "-q", branch])?,
         Some(remote) => git(tree, &["checkout", "-q", "-B", branch, &remote])?,
     };
@@ -301,9 +341,14 @@ pub fn checkout_existing_branch(main: &Path, tree: &Path, branch: &str) -> Resul
 /// not involved here, but `worktree-link` still runs at `SessionStart` and does
 /// the symlinks, which is the same path §2 describes for rebuilding a worktree
 /// on resume.
-pub fn worktree_add_existing(main: &Path, path: &Path, branch: &str) -> Result<()> {
+pub fn worktree_add_existing(
+    main: &Path,
+    path: &Path,
+    branch: &str,
+    from: Option<&str>,
+) -> Result<()> {
     let path_str = path.to_string_lossy().into_owned();
-    match locate_branch(main, branch)? {
+    match locate_branch(main, branch, from)? {
         None => git(main, &["worktree", "add", &path_str, branch])?,
         Some(remote) => git(main, &["worktree", "add", &path_str, "-b", branch, &remote])?,
     };
@@ -361,15 +406,19 @@ pub fn worktree_rebuild(
 /// refusal is the right answer: two trees on one branch is how you get a rebase
 /// in one of them rewriting the other's HEAD underneath it.
 pub fn switch_branch(cwd: &Path, branch: &str) -> Result<()> {
+    switch_branch_from(cwd, branch, None)
+}
+
+/// [`switch_branch`], fetching a missing branch from `from` only — a PR's head
+/// repository, when it is known. See [`remote_branch_from`].
+pub fn switch_branch_from(cwd: &Path, branch: &str, from: Option<&str>) -> Result<()> {
     if branch_exists(cwd, branch) {
         git(cwd, &["switch", branch])?;
         return Ok(());
     }
     // The head ref lives on the fork; `remote_branch` tries origin first and then
     // any remote, so a fork not named origin still resolves (§6).
-    let remote = remote_branch(cwd, branch).ok_or_else(|| {
-        anyhow::anyhow!("branch {branch} exists neither locally nor on any remote")
-    })?;
+    let remote = fetch_missing(cwd, branch, from)?;
     git(cwd, &["switch", "-c", branch, "--track", &remote])?;
     Ok(())
 }
@@ -969,7 +1018,7 @@ pub fn move_branch_out(main: &Path, dest: &Path, base: &str, new_branch: &str) -
         return Err(e);
     }
 
-    if let Err(e) = worktree_add_existing(main, dest, &branch) {
+    if let Err(e) = worktree_add_existing(main, dest, &branch, None) {
         return Err(undo(
             e.context(format!("no worktree could be cut for {branch}")),
         ));

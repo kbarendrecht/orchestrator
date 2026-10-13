@@ -199,7 +199,9 @@ pub async fn start(
     // `ensure_pr_worktree` itself, so creating one here only meant a refused run
     // left a worktree behind — and it is what split the two rules apart, since the
     // guard then asked about the empty tree it had just made.
-    let branch_busy = crate::spawn::branch_busy(app, &pr.head_ref).await.is_some();
+    let branch_busy = crate::spawn::branch_busy(app, number, &pr.head_ref)
+        .await
+        .is_some();
 
     let verdict = {
         let inner = app.inner.read().await;

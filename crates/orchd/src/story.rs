@@ -260,6 +260,10 @@ async fn run_filer(
             .map(|p| p.head_ref.clone())
             .with_context(|| format!("PR #{pr} is not in the current poll"))?
     };
+    // By name, so only once the name is this PR's — see `AppState::pr_head`.
+    if let Some(why) = app.pr_head(pr).await.refusal {
+        anyhow::bail!("#{pr} has no worktree in this checkout: {why}");
+    }
     let workspace = app
         .workspace_for(&head_ref)
         .await

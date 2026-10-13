@@ -1392,7 +1392,7 @@ pub async fn spawn_fix_pr_session(
     // it running someone else's instructions, and retargeting it mid-flight is
     // not the daemon's call. Finish the review and press fix again, or tell that
     // session to fix the build yourself.
-    if let Some(ws) = branch_busy(app, head_ref).await {
+    if let Some(ws) = branch_busy(app, pr, head_ref).await {
         bail!("{ws} already has a live session for #{pr}; finish or close it first");
     }
 
@@ -1519,7 +1519,14 @@ async fn recorded_worktree_for(
 /// refusal says "live session" and was then refused at the spawn — after the run
 /// had been announced. `is_live` is the operative rule: fix-pr rebases, and a
 /// session sitting at its prompt is one you are still working in.
-pub async fn branch_busy(app: &Arc<AppState>, head_ref: &str) -> Option<String> {
+///
+/// A tree on a *different* branch of the same name is nobody working on this PR,
+/// so a PR whose head is not the local namesake ([`AppState::pr_head`]) answers
+/// `None` here and is refused by name where its tree would be cut.
+pub async fn branch_busy(app: &Arc<AppState>, pr: u64, head_ref: &str) -> Option<String> {
+    if app.pr_head(pr).await.refusal.is_some() {
+        return None;
+    }
     let ws = app.worktree_holding(head_ref).await?;
     (!app.live_sessions_in(&ws).await.is_empty()).then_some(ws)
 }
@@ -1781,6 +1788,16 @@ async fn park_main(app: &Arc<AppState>) {
 
 /// The worktree for a PR's head branch, created if absent.
 pub async fn ensure_pr_worktree(app: &Arc<AppState>, pr: u64, head_ref: &str) -> Result<String> {
+    /* **The name is not enough to find the PR's branch here.** Every lookup below —
+    the tree holding the branch, main being on it, the local branch to check out —
+    asks by name, and a PR from a repository that is not one of this checkout's
+    remotes, or one whose local namesake tracks another remote, would be attached
+    to that other branch: its review written against your code, its fix pushed
+    from your work. Refused by name before any of them runs. */
+    let head = app.pr_head(pr).await;
+    if let Some(why) = head.refusal {
+        bail!("#{pr} cannot be opened in this checkout: {why}");
+    }
     let recorded = recorded_worktree_for(app, head_ref).await;
     if let Some((ws, path)) = &recorded {
         if path.is_dir() {
@@ -1862,7 +1879,10 @@ pub async fn ensure_pr_worktree(app: &Arc<AppState>, pr: u64, head_ref: &str) ->
                 app,
                 &name,
                 &path,
-                crate::worktree::Want::Existing { branch: head_ref },
+                crate::worktree::Want::Existing {
+                    branch: head_ref,
+                    from: head.from.as_deref(),
+                },
                 Board::Loud,
             )
             .await?;
@@ -1892,7 +1912,13 @@ async fn main_is_on(app: &Arc<AppState>, head_ref: &str) -> Result<bool> {
 /// in the handler while the other was a call. Refuses rather than half-doing it
 /// — main is exclusive, and switching the one tree every worktree is cut from
 /// under uncommitted work is not recoverable by pressing back.
-pub async fn switch_main_to_pr(app: &Arc<AppState>, head_ref: &str) -> Result<String> {
+pub async fn switch_main_to_pr(app: &Arc<AppState>, pr: u64, head_ref: &str) -> Result<String> {
+    // The same identity check `ensure_pr_worktree` makes, for the same reason: a
+    // switch by name would put main on somebody else's branch of that name.
+    let head = app.pr_head(pr).await;
+    if let Some(why) = head.refusal {
+        bail!("#{pr} cannot be opened in this checkout: {why}");
+    }
     // The canonical live-filtered read, not the bare `occupant`: a stale occupant
     // (session gone, `release_main` not yet run) must not block moving the checkout
     // when `claim_main` would already let a new session in.
@@ -1952,8 +1978,9 @@ pub async fn switch_main_to_pr(app: &Arc<AppState>, head_ref: &str) -> Result<St
         }
     }
 
+    let from = head.from;
     tokio::task::spawn_blocking(move || -> Result<()> {
-        crate::git::switch_branch(&path, &branch)
+        crate::git::switch_branch_from(&path, &branch, from.as_deref())
     })
     .await
     .map_err(|e| anyhow::anyhow!("switch task failed: {e}"))??;
@@ -2516,6 +2543,74 @@ mod tests {
             app.worktree_holding("feature/theirs").await.as_deref(),
             Some("pr-4242")
         );
+    }
+
+    /// A PR whose head is another repository's branch of the same name is not
+    /// attached to yours.
+    ///
+    /// With `origin` as your fork, a PR headed from the base repo as `fix-x` and
+    /// your own `fix-x` shared a name and nothing else — and every PR lookup is by
+    /// name, so the PR row showed your tree, `branch_busy` reported your session,
+    /// and the flows opened the PR on your branch. Driven through the gate every
+    /// one of them now asks first, and the snapshot that cannot ask.
+    #[tokio::test]
+    async fn a_pr_from_another_repository_is_not_your_same_named_branch() {
+        let dir = crate::testutil::scratch("prhead");
+        let main = dir.join("repo");
+        let run = crate::testutil::git;
+        run(&dir, &["init", "-q", "-b", "develop", "repo"]);
+        run(&main, &["config", "user.email", "t@t"]);
+        run(&main, &["config", "user.name", "t"]);
+        run(&main, &["commit", "-q", "--allow-empty", "-m", "base"]);
+        run(
+            &main,
+            &["remote", "add", "origin", "git@github.com:me/repo.git"],
+        );
+        run(
+            &main,
+            &["remote", "add", "upstream", "git@github.com:acme/repo.git"],
+        );
+        run(&main, &["branch", "fix-x"]);
+        run(&main, &["config", "branch.fix-x.remote", "origin"]);
+        let tree = main.join(".claude/worktrees/mine");
+        run(
+            &main,
+            &["worktree", "add", "-q", tree.to_str().unwrap(), "fix-x"],
+        );
+
+        let app = crate::testutil::app_at(&main, r#""upstream_ref":"origin/develop""#);
+        app.register_worktree("mine", tree.clone(), Some("fix-x".into()))
+            .await;
+        let _ = app.reconcile("mine").await;
+        let theirs = crate::forge::Pr {
+            head_ref: "fix-x".into(),
+            head_repo: Some("acme/repo".into()),
+            ..crate::testutil::pr(7)
+        };
+        let yours = crate::forge::Pr {
+            head_ref: "fix-x".into(),
+            head_repo: Some("me/repo".into()),
+            ..crate::testutil::pr(8)
+        };
+        app.inner.write().await.prs = vec![theirs, yours];
+
+        let err = ensure_pr_worktree(&app, 7, "fix-x")
+            .await
+            .expect_err("their PR was attached to your branch");
+        assert!(format!("{err:#}").contains("tracks origin"), "{err:#}");
+        assert!(
+            !app.cfg.worktree_path("pr-7").exists(),
+            "and nothing was cut for it"
+        );
+        // Your own PR on the same branch still finds your tree.
+        assert_eq!(ensure_pr_worktree(&app, 8, "fix-x").await.unwrap(), "mine");
+
+        // The snapshot reads the cache the gate keeps.
+        let snap = app.snapshot().await;
+        let row = |n: u64| snap.prs.iter().find(|p| p.pr.number == n).unwrap();
+        assert_eq!(row(7).workspace, None, "their PR's row shows your tree");
+        assert_eq!(row(8).workspace.as_deref(), Some("mine"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The race a relocation would otherwise lose.
@@ -3435,7 +3530,10 @@ mod tests {
             s.pid = Some(std::process::id());
             inner.sessions.insert(id, s);
         }
-        assert_eq!(branch_busy(&app, "feature").await.as_deref(), Some("pr-4"));
+        assert_eq!(
+            branch_busy(&app, 4, "feature").await.as_deref(),
+            Some("pr-4")
+        );
 
         // Archived is the other side of the same rule: nothing is running there.
         {
@@ -3446,9 +3544,9 @@ mod tests {
                 .unwrap()
                 .set_state(State::Archived { resumable: true });
         }
-        assert_eq!(branch_busy(&app, "feature").await, None);
+        assert_eq!(branch_busy(&app, 4, "feature").await, None);
         // A branch no worktree holds is never busy.
-        assert_eq!(branch_busy(&app, "other").await, None);
+        assert_eq!(branch_busy(&app, 4, "other").await, None);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
