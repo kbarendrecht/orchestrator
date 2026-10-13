@@ -149,6 +149,11 @@ pub struct Config {
     /// not a thing to flick mid-session.
     #[serde(default)]
     pub allow_several_in_main: bool,
+    /// What a plain `+` starts when more than one agent is installed. Unset is
+    /// the one you picked last. An agent that is not on PATH falls back to that
+    /// too, so a fixed choice cannot leave the button starting nothing.
+    #[serde(default)]
+    pub default_agent: Option<crate::agent::Agent>,
     /// Shadows the repo's `worktree-create` hook: **make the tree usable.**
     ///
     /// First of the two, run with cwd set to the new worktree, before
@@ -468,6 +473,7 @@ pub struct Settings {
     pub workspace_notes: WorkspaceNotes,
     pub worktree_retention_days: u32,
     pub allow_several_in_main: bool,
+    pub default_agent: Option<crate::agent::Agent>,
 }
 
 impl Settings {
@@ -485,6 +491,7 @@ impl Settings {
             workspace_notes: cfg.workspace_notes.clone(),
             worktree_retention_days: cfg.worktree_retention_days,
             allow_several_in_main: cfg.allow_several_in_main,
+            default_agent: cfg.default_agent,
         }
     }
 
@@ -1734,6 +1741,7 @@ mod tests {
             },
             worktree_retention_days: 60,
             allow_several_in_main: false,
+            default_agent: None,
         };
         let out = s
             .merge_into(r#"{"main_checkout":"/tmp/x","port":8080}"#)
@@ -1813,6 +1821,7 @@ mod tests {
             workspace_notes: WorkspaceNotes::default(),
             worktree_retention_days: 60,
             allow_several_in_main: false,
+            default_agent: None,
         };
         assert!(
             !base.queue_differs(&base),

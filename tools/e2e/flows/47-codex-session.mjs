@@ -26,7 +26,7 @@ export async function run(t) {
     return s.agents.length === 2 ? s : null
   })
   assert.deepEqual(s0.agents, ['claude', 'codex'])
-  assert.equal(s0.last_agent, 'claude', 'nothing picked yet means Claude Code')
+  assert.equal(s0.default_agent, 'claude', 'nothing picked yet means Claude Code')
 
   // Picked, so remembered.
   const { session: cx } = await t.api('POST', '/api/worktree', { name: 'cx', agent: 'codex' })
@@ -34,7 +34,7 @@ export async function run(t) {
   await t.transcribed(cx)
   const s = await t.session(cx)
   assert.equal(s.agent, 'codex')
-  assert.equal((await t.state()).last_agent, 'codex', 'a pick is what a plain press starts next')
+  assert.equal((await t.state()).default_agent, 'codex', 'a pick is what a plain press starts next')
   const first = argvOf(t, cx)
   assert.equal(first.verb, null, 'a new conversation has no verb')
   // The name Codex keeps in its own index, read back as the row's title.
@@ -46,6 +46,17 @@ export async function run(t) {
   await t.settled(plain)
   assert.equal((await t.session(plain)).agent, 'codex')
   await t.api('POST', `/api/session/${plain}/kill`)
+
+  // Unless the settings name one, which beats the last pick until unset.
+  const settings = await t.api('GET', '/api/config')
+  await t.api('POST', '/api/config', { ...settings, default_agent: 'claude' })
+  assert.equal((await t.state()).default_agent, 'claude', 'the setting, not the last pick')
+  const { session: fixed } = await t.api('POST', '/api/session', { workspace: 'main' })
+  await t.settled(fixed)
+  assert.equal((await t.session(fixed)).agent, 'claude')
+  await t.api('POST', `/api/session/${fixed}/kill`)
+  await t.api('POST', '/api/config', { ...settings, default_agent: null })
+  assert.equal((await t.state()).default_agent, 'codex', 'unset is the last pick again')
 
   // A fork continues Codex's own id, not the daemon's, and lands its own.
   const { session: fork } = await t.api('POST', `/api/session/${cx}/fork`)

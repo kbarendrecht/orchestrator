@@ -178,6 +178,7 @@ async function loadConfigInto(force = false) {
   // the setting being off said out loud, where '' would read as unset.
   ctl('setretain').value = String(cfg.worktree_retention_days ?? 0);
   ctl('setseveral').checked = !!cfg.allow_several_in_main;
+  ctl('setagent').value = cfg.default_agent || '';
   dirty = false;
   showDirty();
   procDraft = (cfg.main_processes || []).map((/** @type {any} */ p) => ({
@@ -372,6 +373,7 @@ function draftBody() {
     // not a shorter retention.
     worktree_retention_days: Math.max(0, Math.trunc(Number(ctl('setretain').value) || 0)),
     allow_several_in_main: !!ctl('setseveral').checked,
+    default_agent: ctl('setagent').value || null,
     /* **A field nobody edited goes back as it was read**, the rule `argvOf` keeps
        for the other argv fields. Joining is lossy here too, since `sh -c "a && b"`
        splits into words and a pattern holding a comma splits in two, and it
@@ -549,7 +551,8 @@ const TABS = {
   git: 'This checkout\'s config. A draft until Save; the upstream ref and the remote also restart the daemon.',
   tracker: 'This checkout\'s config. A draft until Save.',
   reviews: 'This checkout\'s config. A draft until Save.',
-  other: 'Wheel speed applies at once and is kept in this browser. Sessions and processes are this checkout\'s config, a draft until Save; the processes also restart the daemon.',
+  agent: 'This checkout\'s config. A draft until Save.',
+  other: 'Wheel speed applies at once and is kept in this browser. Processes are this checkout\'s config, a draft until Save, and restart the daemon.',
 };
 const TAB_KEY = 'orch.settings.tab';
 

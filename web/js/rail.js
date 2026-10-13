@@ -1606,7 +1606,7 @@ function addRow(c, state) {
   if (agents.length > 1) {
     tree.title += ' · right-click to pick the agent';
     tree.oncontextmenu = (ev) => openMenu(ev, agents.map((a) => /** @type {import('./core.js').MenuItem} */ (
-      [agentItem(a, state.last_agent), null, cutting ? null : () => void newWorktree(false, liveTarget(c), a)])));
+      [agentItem(a, state.default_agent), null, cutting ? null : () => void newWorktree(false, liveTarget(c), a)])));
   }
   row.appendChild(tree);
 
@@ -1636,7 +1636,7 @@ function addRow(c, state) {
   if (agents.length > 1) {
     if (!inMain.disabled) inMain.title += ' · right-click to pick the agent';
     inMain.oncontextmenu = (ev) => openMenu(ev, agents.map((a) => /** @type {import('./core.js').MenuItem} */ (
-      [agentItem(a, state.last_agent), null, inMain.disabled || !main ? null : () => void newSession(main.id, liveTarget(c), a)])));
+      [agentItem(a, state.default_agent), null, inMain.disabled || !main ? null : () => void newSession(main.id, liveTarget(c), a)])));
   }
   row.appendChild(inMain);
 

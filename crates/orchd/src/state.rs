@@ -759,7 +759,7 @@ impl AppState {
     ) -> Result<crate::agent::Agent, crate::model::Refusal> {
         let mut inner = self.inner.write().await;
         let Some(agent) = asked else {
-            return Ok(inner.last_agent);
+            return Ok(self.default_agent(&inner));
         };
         if !inner.agents.contains(&agent) {
             return Err(crate::model::Refusal::Missing(format!(
@@ -775,6 +775,15 @@ impl AppState {
             });
         }
         Ok(agent)
+    }
+
+    /// What a session started without naming an agent runs: the configured
+    /// default when it is installed, else the one picked last.
+    fn default_agent(&self, inner: &Inner) -> crate::agent::Agent {
+        self.settings()
+            .default_agent
+            .filter(|a| inner.agents.contains(a))
+            .unwrap_or(inner.last_agent)
     }
 
     /// Change one thing on one session under the write lock; a session that is
@@ -1454,7 +1463,7 @@ impl AppState {
             pr_error: inner.pr_error.clone(),
             agent_error: inner.agent_error.clone(),
             agents: inner.agents.clone(),
-            last_agent: inner.last_agent,
+            default_agent: self.default_agent(&inner),
             machine: inner.machine.clone(),
             pr_age_ms: inner
                 .pr_fetched
@@ -2183,7 +2192,7 @@ pub struct Snapshot {
     /// when there is more than one.
     pub agents: Vec<crate::agent::Agent>,
     /// What a plain `+` starts.
-    pub last_agent: crate::agent::Agent,
+    pub default_agent: crate::agent::Agent,
     /// What the boot preflight found; see `Inner::machine`. The board shows it in
     /// a bar, because these are the causes behind panes that read `unavailable`
     /// and `off` and there is nowhere else in the window they appear.

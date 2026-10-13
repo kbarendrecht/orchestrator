@@ -473,7 +473,7 @@ agents: Array<Agent>,
 /**
  * What a plain `+` starts.
  */
-last_agent: Agent, 
+default_agent: Agent, 
 /**
  * What the boot preflight found; see `Inner::machine`. The board shows it in
  * a bar, because these are the causes behind panes that read `unavailable`

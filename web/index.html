@@ -430,6 +430,7 @@
     <button class="settings-tab" type="button" role="tab" data-tab="git">Git</button>
     <button class="settings-tab" type="button" role="tab" data-tab="tracker">Tracker</button>
     <button class="settings-tab" type="button" role="tab" data-tab="reviews">Reviews</button>
+    <button class="settings-tab" type="button" role="tab" data-tab="agent">Agent</button>
     <button class="settings-tab" type="button" role="tab" data-tab="other">Other</button>
   </div>
   <div class="settings-card">
@@ -910,8 +911,20 @@
          than to the pane: the appearance half above applies the moment you touch it
          and is this browser's, so a theme change marking the config unsaved would
          both cry wolf and stop the pane ever re-reading the config. -->
-    <section class="settings-sec" data-config data-tab="other">
-      <div class="settings-group">Sessions</div>
+    <section class="settings-sec" data-config data-tab="agent">
+      <div class="settings-group">Agent</div>
+
+      <label class="settings-field">
+        <span class="settings-k">Default agent</span>
+        <select class="settings-in" id="setagent">
+          <option value="">last used</option>
+          <option value="claude">Claude Code</option>
+          <option value="codex">Codex</option>
+        </select>
+      </label>
+      <p class="settings-help">What <b>+ worktree</b> and <b>+ main</b> start. Right-click
+        either for the other one. An agent that is not installed falls back to the
+        one you used last.</p>
 
       <label class="settings-field">
         <span class="settings-k">Several sessions in main</span>
