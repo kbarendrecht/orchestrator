@@ -557,7 +557,18 @@ upgrade_run: UpgradeRun | null,
  */
 version: string, };
 
-export type State = { "state": "starting" } | { "state": "working" } | { "state": "your_turn", since: { secs_since_epoch: number, nanos_since_epoch: number }, reason: TurnReason, } | { "state": "build_failing", summary: string, } | { "state": "error", message: string, } | { "state": "exited" } | { "state": "archived", resumable: boolean, };
+export type State = { "state": "starting" } | { "state": "working" } | { "state": "your_turn", since: { secs_since_epoch: number, nanos_since_epoch: number }, reason: TurnReason, } | { "state": "build_failing", summary: string, 
+/**
+ * The wait this red build is drawn over, which is still what the pane
+ * holds and what comes back when the build goes green.
+ *
+ * **Not only a finished turn.** A build goes red under whatever the
+ * session was waiting on, so a question or a permission prompt became
+ * `BuildFailing`, and green then turned it into "turn complete" — and
+ * `safe_to_restart` said yes to a session sitting on a permission prompt,
+ * which the restart throws away.
+ */
+covers: TurnReason, } | { "state": "error", message: string, } | { "state": "exited" } | { "state": "archived", resumable: boolean, };
 
 /**
  * A story that exists in the tracker.

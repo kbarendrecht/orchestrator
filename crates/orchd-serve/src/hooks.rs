@@ -577,7 +577,7 @@ pub async fn stop(
             // `at_rest` answers `BuildFailing` or `YourTurn`, and only the second is
             // a wait — `Session::wait_for` is the one place that decides not to
             // restart a clock that is already running.
-            match orchd::health::at_rest(build_failure.as_deref()) {
+            match orchd::health::at_rest(build_failure.as_deref(), TurnReason::TurnComplete) {
                 State::YourTurn { reason, .. } => s.wait_for(reason),
                 other => s.set_state(other),
             }

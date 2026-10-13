@@ -2717,7 +2717,10 @@ impl AppState {
                 crate::model::State::Starting => {
                     anyhow::bail!("{name} is still starting")
                 }
-                crate::model::State::YourTurn { reason, .. } => match reason {
+                // A red build is drawn over a wait, and a question under it is
+                // still a question.
+                crate::model::State::YourTurn { reason, .. }
+                | crate::model::State::BuildFailing { covers: reason, .. } => match reason {
                     // Both take a keystroke as an answer rather than as a prompt.
                     crate::model::TurnReason::NeedsPermission => {
                         anyhow::bail!("{name} is waiting on a permission prompt; answer that first")

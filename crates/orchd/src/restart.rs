@@ -238,8 +238,16 @@ mod tests {
             (
                 State::BuildFailing {
                     summary: String::new(),
+                    covers: TurnReason::TurnComplete,
                 },
                 true,
+            ),
+            (
+                State::BuildFailing {
+                    summary: String::new(),
+                    covers: TurnReason::NeedsPermission,
+                },
+                false,
             ),
             (
                 State::Error {

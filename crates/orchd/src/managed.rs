@@ -301,14 +301,8 @@ async fn scan(
                 // health that just changed rather than a workspace-wide scan —
                 // see `health::build_failure_in`, which is what `hooks.rs` asks
                 // when a turn ends.
-                match (&health, &s.state) {
-                    (Health::Failing { summary }, State::YourTurn { .. }) => {
-                        s.set_state(crate::health::at_rest(Some(summary)));
-                    }
-                    (Health::Ok, State::BuildFailing { .. }) => {
-                        s.set_state(crate::health::at_rest(None));
-                    }
-                    _ => {}
+                if let Some(next) = crate::health::turned(&health, &s.state) {
+                    s.set_state(next);
                 }
             }
         }

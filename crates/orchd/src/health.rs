@@ -113,17 +113,36 @@ fn strip_ansi(s: &str) -> String {
 /// it from a different direction — a turn ending, or a process changing health —
 /// and each keeps its own guard about *which* sessions to apply it to, because
 /// those genuinely differ. What must not differ is this mapping.
-pub fn at_rest(build_failure: Option<&str>) -> State {
+///
+/// `waiting` is what the session is waiting on underneath: a finished turn when a
+/// `Stop` asks, and whatever wait the build went red over when a process does.
+/// The red state keeps it, so green hands back the same wait.
+pub fn at_rest(build_failure: Option<&str>, waiting: TurnReason) -> State {
     match build_failure {
         Some(summary) => State::BuildFailing {
             summary: summary.to_string(),
+            covers: waiting,
         },
-        // The turn is still finished, so it goes back to being an idle agent
-        // rather than to nothing at all.
         None => State::YourTurn {
             since: SystemTime::now(),
-            reason: TurnReason::TurnComplete,
+            reason: waiting,
         },
+    }
+}
+
+/// What a session at rest becomes when its workspace's build turns `health`, or
+/// `None` for no change.
+///
+/// Red is drawn over the wait the session was in, and green hands back that same
+/// wait. Only sessions already at rest: a working agent is not waiting on
+/// anything, so a red build is not its news yet.
+pub fn turned(health: &Health, state: &State) -> Option<State> {
+    match (health, state) {
+        (Health::Failing { summary }, State::YourTurn { reason, .. }) => {
+            Some(at_rest(Some(summary), *reason))
+        }
+        (Health::Ok, State::BuildFailing { covers, .. }) => Some(at_rest(None, *covers)),
+        _ => None,
     }
 }
 
@@ -143,6 +162,35 @@ pub fn build_failure_in(inner: &crate::state::Inner, workspace: &str) -> Option<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A build going red over a permission prompt and green again leaves the
+    /// permission prompt, not a finished turn: the pane never stopped asking.
+    #[test]
+    fn green_hands_back_the_wait_red_was_drawn_over() {
+        let red = Health::Failing {
+            summary: "TS2304".into(),
+        };
+        for reason in [
+            TurnReason::TurnComplete,
+            TurnReason::AskedAQuestion,
+            TurnReason::NeedsPermission,
+            TurnReason::Interrupted,
+            TurnReason::Ready,
+        ] {
+            let waiting = State::YourTurn {
+                since: SystemTime::now(),
+                reason,
+            };
+            let failing = turned(&red, &waiting).expect("red promotes a wait");
+            assert!(matches!(failing, State::BuildFailing { covers, .. } if covers == reason));
+            let back = turned(&Health::Ok, &failing).expect("green demotes it");
+            assert!(
+                matches!(back, State::YourTurn { reason: r, .. } if r == reason),
+                "{reason:?} came back as {back:?}"
+            );
+        }
+        assert!(turned(&red, &State::Working).is_none(), "not its news yet");
+    }
 
     #[test]
     fn strips_colour_codes_before_matching() {

@@ -260,6 +260,17 @@ pub enum TurnReason {
     Interrupted,
 }
 
+impl TurnReason {
+    /// Whether the pane is waiting on an answer rather than on a prompt: a
+    /// keystroke there is consent or a choice, and a respawn loses the question.
+    pub fn awaits_an_answer(self) -> bool {
+        matches!(
+            self,
+            TurnReason::AskedAQuestion | TurnReason::NeedsPermission
+        )
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "state", rename_all = "snake_case")]
 #[cfg_attr(
@@ -282,6 +293,15 @@ pub enum State {
     /// not waiting on a prompt, it is broken. Red outranks ochre (§2).
     BuildFailing {
         summary: String,
+        /// The wait this red build is drawn over, which is still what the pane
+        /// holds and what comes back when the build goes green.
+        ///
+        /// **Not only a finished turn.** A build goes red under whatever the
+        /// session was waiting on, so a question or a permission prompt became
+        /// `BuildFailing`, and green then turned it into "turn complete" — and
+        /// `safe_to_restart` said yes to a session sitting on a permission prompt,
+        /// which the restart throws away.
+        covers: TurnReason,
     },
     Error {
         message: String,
@@ -335,11 +355,10 @@ impl State {
     /// short, a red build, an error.
     pub fn safe_to_restart(&self) -> bool {
         match self {
-            State::YourTurn { reason, .. } => !matches!(
-                reason,
-                TurnReason::AskedAQuestion | TurnReason::NeedsPermission
-            ),
-            State::BuildFailing { .. } | State::Error { .. } => true,
+            State::YourTurn { reason, .. } | State::BuildFailing { covers: reason, .. } => {
+                !reason.awaits_an_answer()
+            }
+            State::Error { .. } => true,
             State::Starting | State::Working | State::Exited | State::Archived { .. } => false,
         }
     }
@@ -1557,7 +1576,8 @@ mod tests {
         assert!(!your_turn(TurnReason::TurnComplete).is_busy());
         // Stopped on a red build is idle too: it reached Stop and wants you.
         assert!(!State::BuildFailing {
-            summary: "x".into()
+            summary: "x".into(),
+            covers: TurnReason::TurnComplete,
         }
         .is_busy());
         assert!(!State::Exited.is_busy());
@@ -1569,10 +1589,24 @@ mod tests {
         assert!(your_turn(TurnReason::TurnComplete).wants_attention());
         assert!(your_turn(TurnReason::AskedAQuestion).wants_attention());
         assert!(State::BuildFailing {
-            summary: "x".into()
+            summary: "x".into(),
+            covers: TurnReason::TurnComplete,
         }
         .wants_attention());
         assert!(!State::Working.wants_attention());
+    }
+
+    /// A red build is drawn over a wait, and the wait is still there underneath:
+    /// a restart under a question is not safe because the build is red.
+    #[test]
+    fn a_red_build_over_a_question_is_still_a_question() {
+        let red = |covers| State::BuildFailing {
+            summary: "x".into(),
+            covers,
+        };
+        assert!(red(TurnReason::TurnComplete).safe_to_restart());
+        assert!(!red(TurnReason::AskedAQuestion).safe_to_restart());
+        assert!(!red(TurnReason::NeedsPermission).safe_to_restart());
     }
 
     /// An interrupted turn is a turn still owed, so the flag the resume nudge reads
@@ -1641,7 +1675,8 @@ mod tests {
         assert!(your_turn(TurnReason::TurnComplete).rank() < your_turn(TurnReason::Ready).rank());
         assert!(
             State::BuildFailing {
-                summary: "x".into()
+                summary: "x".into(),
+                covers: TurnReason::TurnComplete,
             }
             .rank()
                 < your_turn(TurnReason::TurnComplete).rank()
