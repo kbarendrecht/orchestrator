@@ -1033,6 +1033,9 @@ fn push_guard_command(
 ///
 /// Five seconds where Claude Code's are one: these are a process and a `curl`
 /// each, and `orch hook` bounds the request itself.
+///
+/// Empty when there is no `orch`, and [`orchd::codex::flags`] refuses every Codex
+/// spawn on that: a Codex session the rail cannot follow is worse than none.
 fn codex_overrides(
     base_branch: Option<&str>,
     main: &std::path::Path,

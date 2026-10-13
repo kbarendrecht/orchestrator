@@ -137,7 +137,7 @@ pub fn session_flags(
             v.extend(crate::skills::flag());
             Ok(v)
         }
-        crate::agent::Agent::Codex => Ok(crate::codex::flags(cwd, env, unset)),
+        crate::agent::Agent::Codex => crate::codex::flags(cwd, env, unset),
     }
 }
 

@@ -816,7 +816,13 @@ impl AppState {
             // on that round trip as well.
             if found.contains(&crate::agent::Agent::Codex) {
                 let main = self.cfg.main_checkout.clone();
-                tokio::task::spawn_blocking(move || crate::codex::flags(&main, &env, &[]));
+                // A refusal here is the one every Codex spawn will give, so it is
+                // said once at boot too, where the reason is easiest to find.
+                tokio::task::spawn_blocking(move || {
+                    if let Err(e) = crate::codex::flags(&main, &env, &[]) {
+                        tracing::warn!("Codex sessions will be refused: {e:#}");
+                    }
+                });
             }
             (found, last)
         })

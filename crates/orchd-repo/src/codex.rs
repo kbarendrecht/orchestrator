@@ -154,21 +154,18 @@ pub fn hook_override(event: &str, groups: &[HookGroup<'_>]) -> String {
 /// answers for the hashes must be the one the pty will run. A checkout pins its
 /// own through mise, and it is a node script that needs that checkout's `node`.
 ///
-/// Never fails a spawn. A session whose hooks cannot be trusted still runs, with
-/// a rail that cannot follow it, and the log says so; a session that does not
-/// start is worse.
-pub fn flags(cwd: &Path, env: &[(String, String)], unset: &[&str]) -> Vec<String> {
-    let overrides: Vec<String> = match hooks_path().and_then(|p| {
-        let text =
-            std::fs::read_to_string(&p).with_context(|| format!("reading {}", p.display()))?;
-        Ok(serde_json::from_str(&text)?)
-    }) {
-        Ok(o) => o,
-        Err(e) => {
-            tracing::warn!("no Codex hooks, so the rail cannot follow this session: {e:#}");
-            Vec::new()
-        }
-    };
+/// **Fails the spawn when the hooks cannot run**, which it used not to. A Codex
+/// session without them is not a degraded session but a wrong one: no
+/// `SessionEnd` and no `Stop`, so the row reads `Ready` through every turn, and
+/// the exit watcher forgets a session it never saw take a turn — its row and its
+/// worktree with it. Two ways to get there, both refused with what to fix: no
+/// `orch` beside the daemon (the hooks are `orch hook <route>`, so none are
+/// written), and a Codex that would not say the hashes it trusts, without which
+/// it skips every hook in silence.
+pub fn flags(cwd: &Path, env: &[(String, String)], unset: &[&str]) -> Result<Vec<String>> {
+    let overrides = hook_overrides(hooks_path().and_then(|p| {
+        std::fs::read_to_string(&p).with_context(|| format!("reading {}", p.display()))
+    }))?;
     // **The directory, named, on every start.** A resume or a fork in a directory
     // other than the one the conversation last ran in stops at a picker ("use
     // session directory" or "use current directory") whose default is the *old*
@@ -178,25 +175,35 @@ pub fn flags(cwd: &Path, env: &[(String, String)], unset: &[&str]) -> Vec<String
     // worked in its parent's tree. `-C` answers the picker before it is asked.
     let mut v: Vec<String> = vec!["-C".to_string(), cwd.to_string_lossy().into_owned()];
     v.extend(overrides.iter().flat_map(|o| ["-c".to_string(), o.clone()]));
-    if !overrides.is_empty() {
-        // The hook overrides alone, past `-C`: `app-server` refuses `-C` and exits,
-        // and the hashes are of the hooks, so nothing else belongs in the question.
-        match trust(cwd, env, unset, &v[2..]) {
-            Ok(state) => {
-                v.push("-c".to_string());
-                v.push(format!("hooks.state={state}"));
-            }
-            Err(e) => tracing::warn!(
-                "could not ask Codex for its hook hashes, so it will not run the \
-                 daemon's hooks and the rail cannot follow this session: {e:#}"
-            ),
-        }
-    }
+    // The hook overrides alone, past `-C`: `app-server` refuses `-C` and exits, and
+    // the hashes are of the hooks, so nothing else belongs in the question.
+    let state = trust(cwd, env, unset, &v[2..]).context(
+        "Codex would not say which hooks it trusts, so it would skip the daemon's \
+         and the rail could not follow the session; not starting it",
+    )?;
+    v.push("-c".to_string());
+    v.push(format!("hooks.state={state}"));
     if let Some(text) = crate::skills::codex_instructions() {
         v.push("-c".to_string());
         v.push(format!("developer_instructions={}", toml_str(&text)));
     }
-    v
+    Ok(v)
+}
+
+/// The hook overrides out of the file the daemon wrote at start, or why there are
+/// none. An empty list is the daemon's own way of saying it found no `orch`.
+fn hook_overrides(written: Result<String>) -> Result<Vec<String>> {
+    let overrides: Vec<String> = serde_json::from_str(
+        &written.context("the daemon's Codex hooks were never written; not starting it")?,
+    )
+    .context("the daemon's Codex hooks are unreadable; not starting it")?;
+    if overrides.is_empty() {
+        bail!(
+            "Codex cannot be followed without its hooks, and they run `orch`, which is not \
+             beside this orchd; install or build `orch` next to it and restart"
+        );
+    }
+    Ok(overrides)
 }
 
 /// The `hooks.state` inline table that trusts exactly the daemon's hooks.
@@ -398,6 +405,20 @@ mod tests {
             Some("renamed")
         );
         assert_eq!(thread_names(index).get("c"), None);
+    }
+
+    /// No `orch` means the daemon wrote no hooks, and a Codex session with none
+    /// is refused rather than started blind.
+    #[test]
+    fn a_codex_session_without_hooks_is_refused() {
+        let said = |r: Result<Vec<String>>| format!("{:#}", r.unwrap_err());
+        assert!(said(hook_overrides(Ok("[]".into()))).contains("`orch`"));
+        assert!(said(hook_overrides(Err(anyhow::anyhow!("gone")))).contains("never written"));
+        assert!(said(hook_overrides(Ok("{".into()))).contains("unreadable"));
+        assert_eq!(
+            hook_overrides(Ok(r#"["hooks.Stop=[]"]"#.into())).unwrap(),
+            ["hooks.Stop=[]"]
+        );
     }
 
     #[test]
