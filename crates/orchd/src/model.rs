@@ -829,7 +829,12 @@ impl Session {
             // conversation still owes you the rest of one. Clearing it here would
             // take the resume nudge away from the sessions that most need it — the
             // ones you cut off yourself.
-            State::YourTurn { reason, .. }
+            //
+            // A red build is drawn over a wait and is judged by that wait. A `Stop`
+            // while the build is red is `BuildFailing` over a finished turn, and it
+            // left the flag set: the next restart then nudged a session whose turn
+            // had ended with "continue".
+            State::YourTurn { reason, .. } | State::BuildFailing { covers: reason, .. }
                 if !matches!(reason, TurnReason::Ready | TurnReason::Interrupted) =>
             {
                 self.interrupted = false;
@@ -1607,6 +1612,33 @@ mod tests {
         assert!(red(TurnReason::TurnComplete).safe_to_restart());
         assert!(!red(TurnReason::AskedAQuestion).safe_to_restart());
         assert!(!red(TurnReason::NeedsPermission).safe_to_restart());
+    }
+
+    /// A turn that ends while the build is red has still ended.
+    #[test]
+    fn a_stop_on_a_red_build_is_the_end_of_the_turn() {
+        let mut s = Session::new(
+            uuid::Uuid::new_v4(),
+            "main".into(),
+            std::path::PathBuf::from("/tmp"),
+            None,
+        );
+        s.set_state(State::Working);
+        assert!(s.interrupted);
+        s.set_state(crate::health::at_rest(
+            Some("red"),
+            TurnReason::TurnComplete,
+        ));
+        assert!(!s.interrupted, "the turn finished, red or not");
+
+        // Red over a turn you cut short is still a turn owed.
+        s.set_state(State::Working);
+        s.set_state(State::YourTurn {
+            since: SystemTime::now(),
+            reason: TurnReason::Interrupted,
+        });
+        s.set_state(crate::health::at_rest(Some("red"), TurnReason::Interrupted));
+        assert!(s.interrupted);
     }
 
     /// An interrupted turn is a turn still owed, so the flag the resume nudge reads
