@@ -19,7 +19,7 @@ use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::process::Output;
 
-use super::model::ThreadRoot;
+use super::model::{LastComment, ThreadRoot};
 
 /// Appended to every written reply the daemon posts, on its own line.
 ///
@@ -79,10 +79,15 @@ impl Target {
         )
     }
 
-    /// 👍 a comment. The plain-adoption case: applied as asked, nothing to add.
-    pub fn thumbs_up(&self, root: &ThreadRoot) -> Result<Value> {
+    /// 👍 a thread's last comment. The plain-adoption case: applied as asked,
+    /// nothing to add.
+    ///
+    /// The same endpoint takes a reply's id as well as an opening comment's: a
+    /// reply in a review thread is a pull request review comment like any other,
+    /// with a `databaseId` of its own, and reactions hang off every one of them.
+    pub fn thumbs_up(&self, last: &LastComment) -> Result<Value> {
         self.api(
-            &reaction_path(&self.owner, &self.name, root.comment_id()),
+            &reaction_path(&self.owner, &self.name, last.comment_id()),
             Some(&json!({ "content": "+1" })),
         )
     }
@@ -291,8 +296,9 @@ mod tests {
             "posted alongside the thread rather than in it: {posted}"
         );
 
-        let first = target.thumbs_up(&root).expect("the reaction");
-        let again = target.thumbs_up(&root).expect("the same reaction again");
+        let last = fetched.last_for(&thread.id).expect("its last comment");
+        let first = target.thumbs_up(&last).expect("the reaction");
+        let again = target.thumbs_up(&last).expect("the same reaction again");
         eprintln!("reaction once={first}\nreaction twice={again}");
         assert_eq!(
             first.get("id"),

@@ -42,7 +42,9 @@ pub use github::{
     warn_if_world_readable, GitHubForge, Token, TokenSource,
 };
 pub use github_write::{ready_to_rerequest, with_footer};
-pub use model::{Checks, Comment, EndedPr, Pr, PrOutcome, Thread, ThreadRoot, Threads};
+pub use model::{
+    Checks, Comment, EndedPr, LastComment, Pr, PrOutcome, Thread, ThreadRoot, Threads,
+};
 
 /// Read + write against one repo on one forge.
 ///
@@ -76,9 +78,9 @@ pub trait Forge: Send + Sync + Clone + 'static {
     /// Reply in an existing review thread.
     fn reply(&self, at: &Path, root: &ThreadRoot, body: &str) -> Result<()>;
 
-    /// 👍 a comment — the plain-adoption case, applied as asked with nothing to
-    /// add.
-    fn thumbs_up(&self, at: &Path, root: &ThreadRoot) -> Result<()>;
+    /// 👍 a thread's last comment — the plain-adoption case, applied as asked
+    /// with nothing to add.
+    fn thumbs_up(&self, at: &Path, last: &LastComment) -> Result<()>;
 
     /// Ask one reviewer to look again.
     fn rerequest(&self, at: &Path, pr: u64, login: &str) -> Result<()>;
@@ -148,9 +150,9 @@ impl Forge for ForgeImpl {
             ForgeImpl::GitHub(f) => f.reply(at, root, body),
         }
     }
-    fn thumbs_up(&self, at: &Path, root: &ThreadRoot) -> Result<()> {
+    fn thumbs_up(&self, at: &Path, last: &LastComment) -> Result<()> {
         match self {
-            ForgeImpl::GitHub(f) => f.thumbs_up(at, root),
+            ForgeImpl::GitHub(f) => f.thumbs_up(at, last),
         }
     }
     fn rerequest(&self, at: &Path, pr: u64, login: &str) -> Result<()> {

@@ -26,7 +26,8 @@ curl -sS "$ORCH_URL/api/pr/$PR/triage-context" -H "x-orch-token: $ORCH_POST_TOKE
 {
   "pr": 35264,
   "owner": "…", "repo": "…",   // the repo the PR is on
-  "login": "…",                // you: a thread whose last comment is yours is answered
+  "login": "…",                // you, on the forge
+  "answerable": ["PRRT_…"],    // the threads still waiting on you — the set you work
   "language": "…",             // what to write replies and stories in
   "tracker": true,             // false: never propose `story+reply`
   "tracker_host": "…",         // the host a story URL you report must be on
@@ -39,8 +40,8 @@ curl -sS "$ORCH_URL/api/pr/$PR/triage-context" -H "x-orch-token: $ORCH_POST_TOKE
 `$ORCH_ASK_TOKEN` are in your environment already. If they are not, you are not in a session the daemon started:
 say so and stop, because nothing here can be handed anywhere.
 
-Below, `$PR`, `$OWNER`, `$REPO`, `$LOGIN`, `$LANGUAGE`, `$TRACKER`, `$TRACKER_HOST`,
-`$UPSTREAM` and `$PROPOSALS_URL` are the fields of that answer.
+Below, `$PR`, `$OWNER`, `$REPO`, `$LOGIN`, `$ANSWERABLE`, `$LANGUAGE`, `$TRACKER`,
+`$TRACKER_HOST`, `$UPSTREAM` and `$PROPOSALS_URL` are the fields of that answer.
 
 Three phases, in order: **read** (write nothing), **change** (only what they picked),
 **post** (only on their go). Do not run ahead of the human between them.
@@ -74,10 +75,14 @@ query($owner:String!,$repo:String!,$num:Int!){
 Plus `gh pr view $PR --json reviews,comments` for review-level bodies. Those often
 carry a `path` and `line` too — keep them when they do.
 
-Skip `isResolved`. **Keep `isOutdated`**: the code moved, the point may still stand. A
-thread whose last comment is `$LOGIN`'s is already answered; leave it alone. A thread
-`$LOGIN` already replied to where the reviewer came back is `continued` — read it as a
-conversation, lead the `read` with the earlier commitment, and set `"continued": true`.
+**Work exactly the threads in `$ANSWERABLE`**, and leave every other one alone. Which
+threads are already answered is the daemon's call, not yours: answered means the last
+comment is yours, or you 👍'd the last comment, and the fetch above does not ask for
+reactions, so a rule you derived from it would offer back every thread settled with a
+👍. `$ANSWERABLE` keeps outdated threads (the code moved, the point may still stand)
+and drops resolved ones. A thread in it that `$LOGIN` already replied to, where the
+reviewer came back, is `continued` — read it as a conversation, lead the `read` with
+the earlier commitment, and set `"continued": true`.
 
 Record `headRefOid` before anything else — it goes back as `base_sha`, and is how the
 daemon notices a force-push that lands while the human is deciding.
@@ -148,7 +153,8 @@ curl -sS -X POST '$PROPOSALS_URL' \
   **never propose `story+reply`**: there is nowhere to file one and the daemon would refuse
   it, so a fair but out-of-scope point goes in a plain reply rather than a promised story.
 - A `story` is `title` and `body` only, in $LANGUAGE, no em dashes and no internal path
-  or label references. Every unresolved thread needs an entry.
+  or label references. Every thread in `$ANSWERABLE` needs an entry, and no other:
+  the daemon refuses a set with one missing or one extra.
 - Do not send `hunk` or the current code — the daemon reads `diffHunk` from GitHub.
 
 # Phase 2 — Change (only what they picked)
@@ -256,7 +262,8 @@ curl -sS -X POST -H "x-orch-ask: $ORCH_ASK_TOKEN" -H 'content-type: application/
 ```
 
 - **agree** — send `{}`, with no `reply` at all. The change it agreed to was made and
-  pushed in phase 2, so a 👍 is the whole of what is said.
+  pushed in phase 2, so a 👍 is the whole of what is said. The daemon puts it on the
+  thread's last comment, which is the one "answered" reads.
 - **reply** and **story** — send the reply from `$DECISIONS`, verbatim. A story reply
   already carries its link: you filed the story and substituted `{story}` in phase 2.
 

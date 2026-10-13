@@ -159,7 +159,7 @@ export async function run(t) {
 
   // --- the outward writes ---------------------------------------------------
   const reacted = await agent(`/api/session/${session}/thread/${OCTO_A.id}/reply`, {})
-  assert.deepEqual(await reacted.json(), { posted: false, reacted: true })
+  assert.deepEqual(await reacted.json(), { posted: false, reacted: true, already: false })
 
   const posted = await agent(
     `/api/session/${session}/thread/${OCTO_B.id}/reply`, { reply: REPLY })

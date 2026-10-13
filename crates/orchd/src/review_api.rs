@@ -49,10 +49,20 @@ pub async fn pr_triage_context(
     proposal_token_ok(&app, number, &headers).await?;
     let (owner, repo) =
         crate::resolve_repo(&app).context("no GitHub repo configured and none on the remote")?;
-    // The viewer, from the same fetch every other caller takes it from: the skill
-    // uses it to spot a thread it has already answered, and `gh api user` from the
-    // agent would be a second source for a fact the daemon just fetched.
-    let login = fetch_threads(&app, number).await.map(|f| f.viewer).ok();
+    // The viewer and the threads still awaiting an answer, from the same fetch
+    // every other caller takes them from. `answerable` is the skill's set: it used
+    // to re-derive "answered" from its own GraphQL read, which could not see a 👍
+    // and so offered back every thread the daemon had answered with one. One rule,
+    // `forge::model::answered`, and the skill reads its result.
+    let fetched = fetch_threads(&app, number).await.ok();
+    let login = fetched.as_ref().map(|f| f.viewer.clone());
+    let answerable: Option<Vec<String>> = fetched.as_ref().map(|f| {
+        f.items
+            .iter()
+            .filter(|t| t.answerable)
+            .map(|t| t.id.clone())
+            .collect()
+    });
     let base = format!("http://127.0.0.1:{}/api/pr/{number}", app.cfg.port);
     Ok(Json(json!({
         "pr": number,
@@ -62,6 +72,9 @@ pub async fn pr_triage_context(
         // answered. `None` when the poll has not seen this PR, and the skill then
         // asks GitHub itself rather than guessing.
         "login": login,
+        // The thread ids to read and propose for: every one still waiting on you,
+        // and no other. `None` when the fetch failed.
+        "answerable": answerable,
         "language": app.settings().default_language,
         // Whether `story+reply` may be offered at all: an option the daemon would
         // refuse should never reach a card.
@@ -464,9 +477,13 @@ pub async fn thread_reply(
         // A thread applied exactly as asked, with nothing to add. The reaction is
         // the whole of what is said, and it is still a write — so it goes through
         // the same seam rather than being left to the agent.
-        crate::post::react_one(&forge, &main, &thread_id, &fresh).await?;
+        let reacted = crate::post::react_one(&forge, &main, &thread_id, &fresh).await?;
         app.notify().await;
-        return Ok(Json(json!({ "posted": false, "reacted": true })));
+        // Already answered is a success, as for a reply: the thread's last word is
+        // yours or already carries your 👍, so there is nothing to add.
+        return Ok(Json(
+            json!({ "posted": false, "reacted": reacted, "already": !reacted }),
+        ));
     };
 
     let posted = crate::post::post_one(

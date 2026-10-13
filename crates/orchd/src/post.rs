@@ -19,8 +19,8 @@ use anyhow::{Context, Result};
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::forge::Threads;
 use crate::forge::{self, Forge, ForgeImpl};
-use crate::forge::{ThreadRoot, Threads};
 use crate::state::AppState;
 
 /// What became of one thread's outward words.
@@ -127,26 +127,48 @@ async fn send_reply_once(
     let root = fresh
         .root_for(thread_id)
         .with_context(|| format!("thread {thread_id} has no comment to answer"))?;
-    blocking(forge, at, &root, Send::Reply(text.to_string())).await?;
+    let (f, at, body) = (forge.clone(), at.to_path_buf(), text.to_string());
+    tokio::task::spawn_blocking(move || f.reply(&at, &root, &body))
+        .await
+        .context("the write panicked")??;
     Ok(Posted::Sent)
 }
 
-/// 👍 one thread, the plain-adoption case.
+/// 👍 one thread, the plain-adoption case. `false` when it was already answered.
 ///
 /// The reaction half of [`post_one`]'s job, split off because the two are chosen
 /// by stance and never both: `Agree` reacts and says nothing, `Reply`/`Story`
-/// write words. Shared for the same reason — so a run and a batch adopt a
-/// reviewer's point identically.
+/// write words.
+///
+/// **On the last comment**, because that is the one [`forge::model::answered`]
+/// reads: it went on the opening comment, so a 👍 for a reviewer's follow-up left
+/// the thread waiting. And not at all on a thread that is already answered — its
+/// last word is yours, or already carries your 👍 — because reacting to your own
+/// comment says nothing, and a retry is then a no-op rather than a second write.
+///
+/// [`forge::model::answered`]: crate::forge::model::answered
 pub(crate) async fn react_one(
     forge: &ForgeImpl,
     at: &Path,
     thread_id: &str,
     fresh: &Threads,
-) -> Result<()> {
-    let root = fresh
-        .root_for(thread_id)
+) -> Result<bool> {
+    let thread = fresh
+        .items
+        .iter()
+        .find(|t| t.id == thread_id)
+        .with_context(|| format!("thread {thread_id} is not on the PR"))?;
+    if !thread.answerable {
+        return Ok(false);
+    }
+    let last = fresh
+        .last_for(thread_id)
         .with_context(|| format!("thread {thread_id} has no comment to react to"))?;
-    blocking(forge, at, &root, Send::ThumbsUp).await
+    let (f, at) = (forge.clone(), at.to_path_buf());
+    tokio::task::spawn_blocking(move || f.thumbs_up(&at, &last))
+        .await
+        .context("the write panicked")??;
+    Ok(true)
 }
 
 fn already_replied(fresh: &Threads, thread_id: &str, body: &str) -> bool {
@@ -160,23 +182,6 @@ fn already_replied(fresh: &Threads, thread_id: &str, body: &str) -> bool {
                 .iter()
                 .any(|c| c.author == fresh.viewer && c.body.trim() == want.trim())
         })
-}
-
-enum Send {
-    Reply(String),
-    ThumbsUp,
-}
-
-/// `gh` is a subprocess, so every write goes through the blocking pool rather
-/// than stalling the runtime for the length of an HTTP round trip.
-async fn blocking(forge: &ForgeImpl, at: &Path, root: &ThreadRoot, send: Send) -> Result<()> {
-    let (f, at, root) = (forge.clone(), at.to_path_buf(), root.clone());
-    tokio::task::spawn_blocking(move || match send {
-        Send::Reply(body) => f.reply(&at, &root, &body),
-        Send::ThumbsUp => f.thumbs_up(&at, &root),
-    })
-    .await
-    .context("the write panicked")?
 }
 
 #[cfg(test)]
@@ -296,6 +301,21 @@ mod tests {
         .unwrap();
         // Matched the substituted body, so `{story}` never reached the write.
         assert_eq!(out, Posted::AlreadyThere);
+    }
+
+    /// A thread already answered gets no 👍: its last word is yours, so a reaction
+    /// would be on your own comment, and a retry has nothing left to do. Returns
+    /// before any write, which is what lets a forge with no repo stand in.
+    #[tokio::test]
+    async fn an_answered_thread_is_not_reacted_to_again() {
+        let mut t = thread("PRRT_1", Some("a.ts"), Some(1), "alice");
+        t.comments.push(comment(101, "viewer", "Done."));
+        t.answerable = false;
+        let fresh = fetched(vec![t]);
+        let reacted = react_one(&no_write_forge(), Path::new("/"), "PRRT_1", &fresh)
+            .await
+            .expect("an answered thread is not an error");
+        assert!(!reacted);
     }
 
     /// A thread the fetch no longer carries has no comment to answer, and that is

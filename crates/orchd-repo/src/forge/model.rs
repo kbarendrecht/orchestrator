@@ -168,8 +168,11 @@ impl Pr {
 ///
 /// The one definition, over the last comment's author and whether you reacted to
 /// it. Either you replied — nothing came after you — or the reviewer had the last
-/// word and you 👍'd it, which is the convention `commands/resolve.md` writes for
-/// "applied as asked, nothing to add".
+/// word and you 👍'd it, which is how both review skills say "applied as asked,
+/// nothing to add". **The last comment, never any comment**: a 👍 on the opening
+/// comment says nothing about the reviewer's follow-up under it, and a thread that
+/// came back to you must ask again. [`Threads::last_for`] is where the daemon's own
+/// 👍 goes for that reason.
 ///
 /// One function because two existed: the poll read the reaction and the resolve
 /// flow could not, so a thread the flow had answered with a 👍 stayed answerable
@@ -312,6 +315,27 @@ impl ThreadRoot {
     }
 }
 
+/// The comment a 👍 for a thread must land on: its **last** one.
+///
+/// A type of its own rather than a second [`ThreadRoot`], because the two writes
+/// want different comments and must not be able to swap them. A reply has to go
+/// to the opening comment — GitHub threads replies only under a top-level comment
+/// and refuses a reply to a reply — while the 👍 has to go to the last one, since
+/// [`answered`] reads the reaction off the last comment. When the root was the
+/// target of both, the daemon's 👍 on a thread with a follow-up landed on the
+/// opening comment, and the thread it had just answered still read as waiting.
+/// Same minting rule as the root: only a fetch can make one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LastComment {
+    comment_id: u64,
+}
+
+impl LastComment {
+    pub fn comment_id(&self) -> u64 {
+        self.comment_id
+    }
+}
+
 impl Threads {
     /// Resolve each thread's [`Thread::answerable`] against this fetch's viewer.
     /// `pub(crate)` so the GitHub fetch can call it once paging is done.
@@ -352,17 +376,28 @@ impl Threads {
         });
     }
 
-    /// The comment a reply or reaction for this thread must be aimed at.
+    /// The comment a reply for this thread must be aimed at.
     ///
     /// Always the **opening** comment: the replies sub-resource threads under it,
-    /// and it is the only comment in the conversation we ever legitimately post
-    /// to. `None` for an unknown thread id or an empty thread, so a bad id
-    /// becomes a refusal rather than a write somewhere unintended.
+    /// and GitHub refuses a reply to a reply. A 👍 is aimed elsewhere, at
+    /// [`Self::last_for`]. `None` for an unknown thread id or an empty thread, so
+    /// a bad id becomes a refusal rather than a write somewhere unintended.
     pub fn root_for(&self, thread_id: &str) -> Option<ThreadRoot> {
         let t = self.items.iter().find(|t| t.id == thread_id)?;
         Some(ThreadRoot {
             pr: self.pr,
             comment_id: t.comments.first()?.database_id,
+        })
+    }
+
+    /// The comment a 👍 for this thread must be aimed at: the last one.
+    ///
+    /// See [`LastComment`] for why it is not the root. `None` for an unknown
+    /// thread id or an empty thread, on the same rule as [`Self::root_for`].
+    pub fn last_for(&self, thread_id: &str) -> Option<LastComment> {
+        let t = self.items.iter().find(|t| t.id == thread_id)?;
+        Some(LastComment {
+            comment_id: t.comments.last()?.database_id,
         })
     }
 

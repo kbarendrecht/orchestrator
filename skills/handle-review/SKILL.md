@@ -51,12 +51,16 @@ spawner does not set takes the empty string for an answer and carries on.
 Skip `isResolved`. **Keep `isOutdated`**: the code moved, the point may still stand.
 
 **A thread is already answered when its last comment is yours *or* you have 👍'd
-any comment in it.** Both halves, because a reaction is how this pass answers
-"applied as asked, nothing to add" — the Apply step below posts one — so a rule
+its last comment.** Both halves, because a reaction is how this pass answers
+"applied as asked, nothing to add" — the Replies step below posts one — so a rule
 that reads only comments offers you back every thread you settled that way, and
-the ones you thumbed by hand on GitHub besides. That is `reactionGroups` in the
-query above, and it is the same rule the daemon keeps in `forge::model::answered`.
-Do not re-answer an answered thread; say it was already settled and move on.
+the ones you thumbed by hand on GitHub besides. **The last comment, not any**: a 👍
+on the opening comment says nothing about a reviewer's follow-up under it, and that
+thread is asking again. That is `reactionGroups` on the last node in the query
+above, and it is the same rule the daemon keeps in `forge::model::answered` — the
+rail's count and the review overlay read it, so a thread you settle any other way
+keeps showing as waiting there. Do not re-answer an answered thread; say it was
+already settled and move on.
 
 **A review body is feedback too, and it is sorted with the threads.** It is
 already answered when you have 👍'd it, or a PR comment of yours after its
@@ -117,6 +121,8 @@ applied it somewhere they did not name, or you are asking them something.
 gh api -X POST repos/<owner>/<repo>/pulls/comments/<id>/reactions -f content=+1
 ```
 
+- `<id>` is the `databaseId` of the thread's **last** comment, the one the rule above
+  reads — not the opening comment's, which is where a reply goes.
 - Reactions take no footer line, and wait for the same go as a reply.
 - List them separately from the written replies in the draft.
 

@@ -6,7 +6,9 @@ use std::path::Path;
 use std::process::Command;
 
 use super::github_write::Target;
-use super::model::{Checks, Comment, EndedPr, Pr, PrOutcome, Thread, ThreadRoot, Threads};
+use super::model::{
+    Checks, Comment, EndedPr, LastComment, Pr, PrOutcome, Thread, ThreadRoot, Threads,
+};
 use super::Forge;
 
 /// Where the daemon's GitHub token came from.
@@ -310,8 +312,8 @@ impl Forge for GitHubForge {
         self.target(at).reply(root, body).map(|_| ())
     }
 
-    fn thumbs_up(&self, at: &Path, root: &ThreadRoot) -> Result<()> {
-        self.target(at).thumbs_up(root).map(|_| ())
+    fn thumbs_up(&self, at: &Path, last: &LastComment) -> Result<()> {
+        self.target(at).thumbs_up(last).map(|_| ())
     }
 
     fn rerequest(&self, at: &Path, pr: u64, login: &str) -> Result<()> {
@@ -1734,6 +1736,24 @@ mod tests {
         // would still thread, but the root is the only id we ever legitimately
         // post to, so it is the only one this hands out.
         assert_eq!(root.comment_id(), 100);
+    }
+
+    /// The 👍 goes on the last comment, because that is the one `answered` reads.
+    /// Aimed at the root, a thread with a follow-up stayed waiting after the
+    /// daemon had answered it.
+    #[test]
+    fn a_thumbs_up_is_aimed_at_the_last_comment_and_a_reply_at_the_first() {
+        let v = thread_page(
+            "viewer",
+            &thread_node("PRRT_1", false, false, &["alice", "viewer", "alice"]),
+            None,
+        );
+        let (page, _) = parse_thread_page(v, 10001).unwrap();
+        let root = page.root_for("PRRT_1").expect("a root");
+        let last = page.last_for("PRRT_1").expect("a last comment");
+        assert_eq!(root.comment_id(), 100);
+        assert_eq!(last.comment_id(), 102);
+        assert!(page.last_for("PRRT_other").is_none());
     }
 
     #[test]
