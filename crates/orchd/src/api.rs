@@ -1822,9 +1822,7 @@ pub async fn resume_external(
         };
         // Listed from `~/.codex` whatever this checkout has installed, so the
         // refusal a new session gets from `agent_for` is needed here too.
-        if !inner.agents.contains(&found.agent) {
-            refuse!("{} is not on this checkout's PATH", found.agent);
-        }
+        inner.installed(found.agent)?;
         (
             found.workspace.clone(),
             found.last_used,
@@ -1906,6 +1904,8 @@ pub async fn fork_session(
             .sessions
             .get(&id)
             .ok_or_else(|| crate::state::no_such_session(id))?;
+        // Before the worktree is cut, which `spawn_session` asking would be after.
+        inner.installed(s.agent)?;
         (s.has_conversation(), s.agent)
     };
     // Refuse before a worktree is cut, not after the fork dies in it. A fork

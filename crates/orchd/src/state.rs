@@ -474,6 +474,24 @@ fn mixed_session_ids(inner: &Inner) -> u64 {
 }
 
 impl Inner {
+    /// Refuse an agent this checkout cannot run.
+    ///
+    /// **Every spawn asks, not only a new one.** A resume, a fork, a restart and
+    /// auto-resume continue a conversation in the agent that holds it, and only
+    /// the new-session path used to check: the rest opened a pane that died with
+    /// `command not found`, and a restart killed the session first. A turnless
+    /// pane that dies is forgotten with its worktree, so the one sentence about it
+    /// was in the log.
+    pub fn installed(&self, agent: crate::agent::Agent) -> Result<(), crate::model::Refusal> {
+        if self.agents.contains(&agent) {
+            Ok(())
+        } else {
+            Err(crate::model::Refusal::Missing(format!(
+                "{agent} is not on this checkout's PATH"
+            )))
+        }
+    }
+
     /// Record what became of a PR the poll has stopped reporting.
     ///
     /// **Replaces rather than appends on a repeat**, because a PR can end twice:
@@ -787,15 +805,21 @@ impl AppState {
                 .into_iter()
                 .filter(|a| crate::pty::which(a.program(), &main, &env, &[]).is_ok())
                 .collect::<Vec<_>>();
+            (found, crate::store::load_last_agent(), env)
+        })
+        .await
+        .map(|(found, last, env)| {
             // Asked now, while nothing waits on it: the hook trust is an
             // `app-server` round trip, cached after the first, and otherwise the
             // first Codex spawn of every start paid it before its pane opened.
+            // Detached, because auto-resume waits on this probe and must not wait
+            // on that round trip as well.
             if found.contains(&crate::agent::Agent::Codex) {
-                crate::codex::flags(&main, &env, &[]);
+                let main = self.cfg.main_checkout.clone();
+                tokio::task::spawn_blocking(move || crate::codex::flags(&main, &env, &[]));
             }
-            (found, crate::store::load_last_agent())
+            (found, last)
         })
-        .await
         .unwrap_or_default();
         tracing::info!(?found, "agents on this checkout's PATH");
         let mut inner = self.inner.write().await;
@@ -820,11 +844,7 @@ impl AppState {
         let Some(agent) = asked else {
             return Ok(self.default_agent(&inner));
         };
-        if !inner.agents.contains(&agent) {
-            return Err(crate::model::Refusal::Missing(format!(
-                "{agent} is not on this checkout's PATH"
-            )));
-        }
+        inner.installed(agent)?;
         if inner.last_agent != agent {
             inner.last_agent = agent;
             tokio::task::spawn_blocking(move || {

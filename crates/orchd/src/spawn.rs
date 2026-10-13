@@ -138,6 +138,11 @@ async fn relocate(
     // the kill below makes it `Exited` before `Carried::from` ever looks.
     let (src_cwd, src_workspace, handle, title, name, created_at, pass, recorded, agent) = {
         let mut inner = app.inner.write().await;
+        // Before the kill below: a restart or a swap of a session whose agent has
+        // gone from the PATH would otherwise close it and then fail to start it.
+        if let Some(s) = inner.sessions.get(&id) {
+            inner.installed(s.agent)?;
+        }
         let s = inner
             .sessions
             .get_mut(&id)
@@ -696,6 +701,10 @@ async fn spawn_session_with_id(
             .await
             .unwrap_or(false);
     }
+
+    // Whose conversation it is is settled now, adoption included, and nothing has
+    // been touched yet. See `Inner::installed` for why every spawn asks.
+    app.inner.read().await.installed(carried.agent)?;
 
     // A conversation the daemon has moved still believes it is isolated in the tree
     // it started in: Claude Code pins that in the transcript and re-appends it every
@@ -2518,6 +2527,52 @@ mod tests {
         assert!(err.contains("unknown workspace"), "{err}");
         assert!(app.inner.read().await.automation.get(7).is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A conversation is continued by the agent that holds it, so a resume and a
+    /// restart of one whose agent this checkout does not have are refused — the
+    /// restart before it kills anything, and neither leaves main claimed.
+    #[tokio::test]
+    async fn a_conversation_is_not_continued_by_an_agent_that_is_not_here() {
+        let (app, dir) = crate::testutil::app("not-here");
+        let id = Uuid::new_v4();
+        {
+            let mut inner = app.inner.write().await;
+            inner.agents = vec![crate::agent::Agent::Claude];
+            let mut s = Session::new(id, MAIN.to_string(), dir.clone(), None);
+            s.agent = crate::agent::Agent::Codex;
+            s.had_a_turn = true;
+            s.agent_session_id = Some("019a0000-0000-7000-8000-000000000000".into());
+            s.set_state(State::YourTurn {
+                since: std::time::SystemTime::now(),
+                reason: TurnReason::TurnComplete,
+            });
+            inner.sessions.insert(id, s);
+        }
+        let err = spawn_session(&app, MAIN, None, Source::Resume(id))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("Codex is not on this checkout's PATH"),
+            "{err}"
+        );
+        assert_eq!(
+            app.inner.read().await.workspaces[MAIN].occupant,
+            None,
+            "the claim went back"
+        );
+
+        let Err(err) = relocate_session(&app, id, MAIN, std::time::Duration::from_millis(10)).await
+        else {
+            panic!("a restart onto a missing agent was not refused");
+        };
+        let err = err.to_string();
+        assert!(err.contains("not on this checkout's PATH"), "{err}");
+        assert!(
+            app.inner.read().await.sessions[&id].state.is_live(),
+            "refused before anything was stopped"
+        );
     }
 
     /// A per-PR run rebases onto the PR's own base, not the daemon's global one.

@@ -1791,7 +1791,7 @@ function archivedRow(/** @type {import('../snapshot').SessionView} */ s, /** @ty
     ['rename', null, () => renameSession(s)],
     // Not gated on `resumable` the way opening it is: a fork cuts its own
     // worktree, so a conversation whose branch is gone can still be branched off.
-    ['fork', null, s.has_transcript ? () => forkSession(s) : null],
+    ['fork', null, s.has_transcript && agentHere(s) ? () => forkSession(s) : null],
     ['copy', null, [
       ['id', null, () => copyId(s)],
       ['branch', null, sessionBranch(s) ? () => copyBranch(s) : null],
@@ -1801,10 +1801,23 @@ function archivedRow(/** @type {import('../snapshot').SessionView} */ s, /** @ty
   return btn;
 }
 
+/** Whether this checkout can run the agent holding the conversation.
+ *
+ *  A resume, a fork and a restart all continue a conversation in its own agent,
+ *  so each is greyed or refused here on the list the daemon refuses on
+ *  (`Inner::installed`) — before a click that would open a pane and die. */
+function agentHere(/** @type {import('../snapshot').SessionView} */ s) {
+  return snapshotFor(s.id).agents.includes(s.agent);
+}
+
 /** Continue a past conversation, rebuilding its worktree first if it is gone. */
 async function openArchived(/** @type {import('../snapshot').SessionView} */ s) {
   if (!s.resumable) {
     toast('transcript only: the branch is gone and the commit is unreachable', true);
+    return;
+  }
+  if (!agentHere(s)) {
+    toast(`${AGENT_LABEL[s.agent]} is not on this checkout's PATH`, true);
     return;
   }
   try {
@@ -2068,7 +2081,7 @@ function sessionRow(/** @type {import('../snapshot').SessionView} */ s, /** @typ
   btn.oncontextmenu = (ev) => openMenu(ev, [
     ['rename', null, () => renameSession(s)],
     // Nothing to branch off until the conversation has had a turn.
-    ['fork', null, s.has_transcript ? () => forkSession(s) : null],
+    ['fork', null, s.has_transcript && agentHere(s) ? () => forkSession(s) : null],
     // Claude Code's own picker, reached rather than rebuilt. Greyed in the states
     // where the daemon refuses it — mid-turn an escape interrupts the turn, and at
     // a question or a permission prompt it answers instead of rewinding.
@@ -2078,7 +2091,7 @@ function sessionRow(/** @type {import('../snapshot').SessionView} */ s, /** @typ
        closed row, where the thing you want is a resume. */
     s.restart_queued
       ? ['cancel the restart', null, () => restartSession(s, true)]
-      : ['restart', null, s.alive ? () => restartSession(s, false) : null],
+      : ['restart', null, s.alive && agentHere(s) ? () => restartSession(s, false) : null],
     ['copy', null, [
       ['id', null, () => copyId(s)],
       ['branch', null, sessionBranch(s) ? () => copyBranch(s) : null],

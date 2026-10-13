@@ -388,10 +388,10 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
     app.set_machine_warnings(warnings).await;
     // Off the boot path: until it answers, the board offers Claude Code alone,
     // which is what it offered before there was a choice.
-    {
+    let probed = {
         let app = app.clone();
-        tokio::spawn(async move { app.probe_agents().await });
-    }
+        tokio::spawn(async move { app.probe_agents().await })
+    };
     // Before anything can spawn a session, `auto_resume` included: a run whose
     // exit nobody is listening for is a verdict that never lands.
     app.observe_runs(settle_run);
@@ -544,7 +544,7 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
     adopt_banked_work(&app).await;
     autostart_processes(&app).await;
     if app.cfg.auto_resume && !opts.no_resume {
-        auto_resume(app.clone(), records);
+        auto_resume(app.clone(), records, probed);
     }
     start_pr_poller(app.clone());
     start_review_poller(app.clone());
@@ -1458,7 +1458,15 @@ fn first_per_workspace(
 /// A crash or a reboot takes every Claude process with it, because the daemon
 /// owns the pty. Resuming costs the scrollback — ring buffers are in memory —
 /// but keeps the conversation, which is the part that took time to build.
-fn auto_resume(app: Arc<AppState>, records: Vec<store::SessionRecord>) {
+///
+/// `probed` is the agent probe: every resume asks whether its agent is installed
+/// (`Inner::installed`), and until the probe answers the list is Claude Code
+/// alone, so a Codex session resumed before it would be refused for good.
+fn auto_resume(
+    app: Arc<AppState>,
+    records: Vec<store::SessionRecord>,
+    probed: tokio::task::JoinHandle<()>,
+) {
     // Set before the task starts, so nothing that runs first sees main as free, and
     // cleared however the task ends, early return included.
     struct Done(Arc<AppState>);
@@ -1474,6 +1482,8 @@ fn auto_resume(app: Arc<AppState>, records: Vec<store::SessionRecord>) {
     let done = Done(app.clone());
     tokio::spawn(async move {
         let _done = done;
+        // A panicked probe leaves the list as it was, which is still an answer.
+        let _ = probed.await;
         // Any session that was live, whatever started it. A run started with a
         // skill used to be skipped here, and skipping it silently meant the pane
         // you were actually sitting in was the one that did not come back. `--resume`
