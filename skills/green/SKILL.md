@@ -17,9 +17,12 @@ repo's own `CLAUDE.md` before assuming any of them.
 
 ## Steps
 
-1. `gh pr view <n> --json headRefName,baseRefName,headRepositoryOwner,url,title,mergeable,statusCheckRollup`.
-   Head owner is not `gh api user --jq .login` → stop, it is someone else's branch
-   to force-push.
+1. `gh pr view <n> --json headRefName,baseRefName,headRepository,headRepositoryOwner,url,title,mergeable,statusCheckRollup`.
+   Then whether you may force-push it: `$ORCH_MAY_PUSH` when the daemon set it,
+   otherwise `gh api repos/<headRepositoryOwner>/<headRepository> --jq
+   .permissions.push`. Not `yes` / `true` → stop, it is a branch you cannot push to.
+   Push access, **not** whether the head repo's owner is you: an org's repo is owned
+   by the org and is still yours to push to. It is the question the daemon asks.
 2. On the branch already? Stay. Otherwise `git fetch origin <headRefName> && git
    switch <headRefName>`. Dirty tree → stop and show it.
 3. Take the PR's own base in: `git fetch <remote> <baseRefName>`, then rebase onto
@@ -55,7 +58,8 @@ Read its `CLAUDE.md` or `CONTRIBUTING` first; where neither says,
 `git log --merges <remote>/<baseRefName>..HEAD` answers it, because a branch that
 already carries merges from the base is a branch somebody merges.
 
-- **Rebase**, the default: the branch is yours and this pass force-pushes anyway.
+- **Rebase**, the default: you may push the branch (step 1) and this pass
+  force-pushes anyway.
 - **Merge**, where the PR branch may not be rewritten: a repo that asks for merge
   commits, a branch already carrying them, or a forge that refuses the force-push.
 

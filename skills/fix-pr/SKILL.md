@@ -13,7 +13,7 @@ branch is step 3, and on some repos that is a merge.
 
 ## What you are working on
 
-Four values, and the daemon puts them in your environment when it starts a fix
+Five values, and the daemon puts them in your environment when it starts a fix
 run. There is no context call and no token here on purpose: a fix run force-pushes
 unattended, so it is given the narrowest surface that does the job — it asks the
 daemon for nothing and can therefore reach nothing.
@@ -24,6 +24,7 @@ daemon for nothing and can therefore reach nothing.
 | `$ORCH_UPSTREAM` | the PR's base, as a ref (`upstream/develop`) | `gh pr view <pr> --json baseRefName`, then that branch on the remote below |
 | `$ORCH_UPSTREAM_REMOTE` | the remote to fetch (`upstream`) | `git remote` — one remote means it is that one; several means ask |
 | `$ORCH_LOGIN` | you, on the forge | `gh api user --jq .login` |
+| `$ORCH_MAY_PUSH` | `yes` or `no`: the daemon's answer to whether you may force-push this branch | `gh api repos/<headRepositoryOwner>/<headRepository> --jq .permissions.push`, `true` meaning yes |
 
 The fallbacks are what make this work when a person types it in a checkout the
 daemon never started. Use them; do not stop for a missing variable.
@@ -40,9 +41,11 @@ from step 1. A mismatch is a stop, not something to correct by switching.
 
 ## Steps
 
-1. `gh pr view $ORCH_PR --json headRefName,baseRefName,headRefOid,headRepositoryOwner,url,title,mergeable,statusCheckRollup`.
-   Head owner is not `$ORCH_LOGIN` → stop, it is someone else's branch to
-   force-push.
+1. `gh pr view $ORCH_PR --json headRefName,baseRefName,headRefOid,headRepository,headRepositoryOwner,url,title,mergeable,statusCheckRollup`.
+   `$ORCH_MAY_PUSH` is not `yes` → stop, you may not force-push this branch. The
+   question is push access to the head repo, **not** whether its owner is you: an
+   org's repo is owned by the org and is still yours to push to, and the daemon has
+   already asked GitHub. Unset means nobody asked, so ask with the fallback above.
 2. Dirty tree → stop and show it. You are already on the right branch (above).
 3. **Take the base in before you read a single log.** A check the base has already
    fixed is the commonest thing a run burns itself on, and its log looks exactly
@@ -91,8 +94,8 @@ than yours. Read its `CLAUDE.md` or `CONTRIBUTING` first; where neither says,
 `git log --merges $ORCH_UPSTREAM..HEAD` answers it, because a branch that already
 carries merges from the base is a branch somebody merges.
 
-- **Rebase**, the default: `git rebase $ORCH_UPSTREAM`. The branch is yours (step 1
-  proved it) and this run force-pushes anyway.
+- **Rebase**, the default: `git rebase $ORCH_UPSTREAM`. You may push the branch (step
+  1 established it) and this run force-pushes anyway.
 - **Merge**, where the PR branch may not be rewritten: a repo that asks for merge
   commits, a branch already carrying them, or a forge that refuses the force-push.
   `git merge $ORCH_UPSTREAM`, and keep that commit out of step 6.

@@ -134,6 +134,46 @@ pub struct Pr {
 }
 
 impl Pr {
+    /// Why you may not rewrite this PR's branch, or `None` when you may.
+    ///
+    /// **The one authorship rule**, asked by the daemon before every run that
+    /// rebases, amends or force-pushes — `fix-pr`, the overlay's review and the
+    /// `handle-review` pane — and handed to the skill as its answer, so no skill
+    /// works it out a second way. What matters is write access to the head repo,
+    /// never whose name is on it.
+    ///
+    /// It was "the head repo's owner is your login", which was wrong in both
+    /// directions. On an org PR the owner is the org, so it refused every PR and
+    /// `fix-pr` could not run outside a fork layout at all; and a same-repo PR
+    /// passed it only because you happened to own the repo, having established
+    /// nothing about a force-push. Scoping the guard to forks instead was the other
+    /// option and is worse: it would skip the check on exactly the PRs whose branch
+    /// lives in a shared repo. The four skills went on asking the owner question
+    /// after the daemon stopped, so a run the daemon had cleared stopped itself on
+    /// every org PR.
+    ///
+    /// Both unknowns fail closed: a run that force-pushes must never guess.
+    pub fn push_refusal(&self, viewer: &str) -> Option<String> {
+        if viewer.is_empty() {
+            return Some(format!(
+                "#{} cannot be worked on: your GitHub login is unknown",
+                self.number
+            ));
+        }
+        let where_ = self.head_repo.as_deref().unwrap_or("an unknown repo");
+        match self.head_pushable {
+            Some(true) => None,
+            Some(false) => Some(format!(
+                "#{} is headed from {where_}, which you cannot push to",
+                self.number
+            )),
+            None => Some(format!(
+                "#{} cannot be worked on: GitHub did not say whether you can push to {where_}",
+                self.number
+            )),
+        }
+    }
+
     /// Sort key for the rail PR group (§9):
     /// needs-resolving → failing → open and clean → draft.
     ///

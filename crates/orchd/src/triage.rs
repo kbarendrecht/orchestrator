@@ -116,11 +116,31 @@ pub async fn gate(app: &Arc<AppState>, pr: u64, workspace: &str) -> Result<Optio
 /// `RunKind` existed to tell the two apart; with one left, `asks` is always true
 /// and the command is always `REVIEW`.
 pub async fn spawn_review(app: &Arc<AppState>, pr: u64, head_ref: &str) -> Result<SessionId> {
+    may_push(app, pr).await?;
     let kind = RunKind {
         command: Pass::REVIEW,
         asks: true,
     };
     spawn_posting_run(app, pr, head_ref, kind).await
+}
+
+/// Refuse a PR whose branch you may not rewrite, before anything is spawned or cut.
+///
+/// Both review flows amend into the commits that own each change and push
+/// `--force-with-lease`, the same writes `fix-pr` makes, so they ask the same
+/// question it does — `Pr::push_refusal` — rather than leaving each skill to
+/// compare the head repo's owner with your login, which refused every org PR. The
+/// skill is then handed the answer (`ORCH_MAY_PUSH`, or `may_push` in
+/// `triage-context`) instead of working it out again.
+async fn may_push(app: &Arc<AppState>, pr: u64) -> Result<()> {
+    let inner = app.inner.read().await;
+    let Some(p) = inner.pr(pr) else {
+        bail!("PR #{pr} is not in the current poll");
+    };
+    match p.push_refusal(inner.viewer.as_deref().unwrap_or_default()) {
+        Some(why) => bail!("{why}"),
+        None => Ok(()),
+    }
 }
 
 /// What tells a triage run from a review session. Everything else about the two
@@ -280,6 +300,10 @@ pub async fn spawn_command_session(
     head_ref: &str,
     command: &str,
 ) -> Result<SessionId> {
+    // First, before a session is asked or a tree is cut: the pass amends and
+    // force-pushes, so a branch you may not push to is refused by name here rather
+    // than by the agent half-way through.
+    may_push(app, pr).await?;
     // If the branch already has a worktree with a live session, take you there
     // rather than spawning a second one (§8). Only when the branch by that name is
     // this PR's: otherwise `ensure_pr_worktree` below refuses and says why.
@@ -344,6 +368,9 @@ async fn start_with_prompt(
         asks: true,
         extra_env: vec![
             (crate::skills::VAR_PR.to_string(), pr.to_string()),
+            // Asked by `may_push` before anything was spawned, so it is the answer
+            // and not a guess.
+            (crate::skills::VAR_MAY_PUSH.to_string(), "yes".to_string()),
             // The language a reply is written in when the thread does not settle
             // it. Config, so the skill cannot carry it.
             (
@@ -447,6 +474,7 @@ mod tests {
         ))
         .expect("parse");
         let app = crate::state::AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+        pushable(&app, 4, true).await;
         {
             let mut inner = app.inner.write().await;
             let id = uuid::Uuid::new_v4();
@@ -471,6 +499,40 @@ mod tests {
             !err.contains("already used") && !err.contains("interleave"),
             "refused on the reused name again: {err}"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Put PR `n` on `feature/x` into the poll, and you on it, with push access or
+    /// without. Every review spawn asks `may_push` first.
+    async fn pushable(app: &Arc<crate::state::AppState>, n: u64, may: bool) {
+        let mut inner = app.inner.write().await;
+        inner.viewer = Some("me".into());
+        inner.prs = vec![crate::forge::Pr {
+            head_ref: "feature/x".into(),
+            head_repo: Some("acme/repo".into()),
+            head_pushable: Some(may),
+            ..crate::testutil::pr(n)
+        }];
+    }
+
+    /// A branch you may not push to is refused before any session is asked or any
+    /// tree is cut, by both review flows, and by name — the question `fix-pr`
+    /// asks, not the owner-is-you rule the skills each kept.
+    #[tokio::test]
+    async fn a_review_of_a_branch_you_cannot_push_to_is_refused_first() {
+        let (app, dir, _) = with_live_session("handle-nopush", None).await;
+        pushable(&app, 4, false).await;
+        for err in [
+            spawn_command_session(&app, 4, "feature/x", Pass::HANDLE_REVIEW)
+                .await
+                .expect_err("not yours to push to"),
+            spawn_review(&app, 4, "feature/x")
+                .await
+                .expect_err("not yours to push to"),
+        ] {
+            let err = format!("{err:#}");
+            assert!(err.contains("acme/repo, which you cannot push to"), "{err}");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -518,6 +580,7 @@ mod tests {
             s.pid = Some(std::process::id());
             inner.sessions.insert(id, s);
         }
+        pushable(&app, 4, true).await;
         (app, dir, id)
     }
 

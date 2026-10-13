@@ -24,7 +24,7 @@ worktree, so it infers the repo; `gh api user --jq .login` is you.
 gh api graphql -f query='
 query($owner:String!,$repo:String!,$num:Int!){
   repository(owner:$owner,name:$repo){ pullRequest(number:$num){
-    headRefName headRepositoryOwner{login}
+    headRefName headRepository{name} headRepositoryOwner{login}
     reviewThreads(first:100){ nodes{ isResolved isOutdated
       comments(first:20){ nodes{ databaseId author{login} body path line url
         reactionGroups{ content viewerHasReacted } } } } }
@@ -37,16 +37,18 @@ query($owner:String!,$repo:String!,$num:Int!){
 review-level bodies that are not anchored to a line; skip the empty ones. Plus
 `gh pr view $ORCH_PR --json comments` for the PR's own conversation.
 
-**`headRepositoryOwner.login` is not `gh api user --jq .login` → stop, it is
-someone else's branch to force-push.** Say whose it is. Reading the threads is
-welcome on anybody's PR; the Apply step below amends commits and pushes
-`--force-with-lease`, which is not, and there is no way to do half of this pass.
-`fix-pr`, `green` and `review` all stop on the same line — this is the one you are
-most likely to press by accident, because it is the button on the row.
+**`$ORCH_MAY_PUSH` is not `yes` → stop, it is a branch you may not force-push.**
+Say whose it is. Reading the threads is welcome on anybody's PR; the Apply step
+below amends commits and pushes `--force-with-lease`, which is not, and there is no
+way to do half of this pass. `fix-pr`, `green` and `review` all stop on the same
+answer.
 
-Asked of `gh` rather than read from the environment, like `green` does: this run is
-handed `$ORCH_PR` and the output language, and a skill that reads a variable its
-spawner does not set takes the empty string for an answer and carries on.
+It is the daemon's answer, and it asked about **push access** to the head repo —
+not whether the repo's owner is you, which refused every org PR, whose owner is the
+org. When the daemon started this pane it already refused a PR you cannot push to,
+so you will see `yes`. Unset means you were typed by hand: ask the same question,
+`gh api repos/<headRepositoryOwner>/<headRepository> --jq .permissions.push`, and
+stop unless it says `true`. Never treat an unset variable as a yes.
 
 Skip `isResolved`. **Keep `isOutdated`**: the code moved, the point may still stand.
 

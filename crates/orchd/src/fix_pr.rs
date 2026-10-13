@@ -54,38 +54,10 @@ pub fn evaluate(input: &GuardInput) -> Verdict {
 
     // Authorship: you must be able to push to the head repo (§8). A `fix-pr` run
     // rebases and force-pushes, so what matters is write access — never whose name
-    // is on the repo.
-    //
-    // This was "the head repo's owner is your login", which was wrong in both
-    // directions. On an org PR the owner is the org, so it refused every PR and
-    // `fix-pr` could not run outside a fork layout at all; and a same-repo PR
-    // passed it only because you happened to own the repo, having established
-    // nothing about a force-push. Scoping the guard to forks instead was the other
-    // option and is worse: it would skip the check on exactly the PRs whose branch
-    // lives in a shared repo.
-    //
-    // Both unknowns fail closed. A run that force-pushes must never guess.
-    if input.viewer.is_empty() {
-        return no(format!(
-            "#{} cannot be remediated: your GitHub login is unknown",
-            pr.number
-        ));
-    }
-    let where_ = pr.head_repo.as_deref().unwrap_or("an unknown repo");
-    match pr.head_pushable {
-        Some(true) => {}
-        Some(false) => {
-            return no(format!(
-                "#{} is headed from {where_}, which you cannot push to",
-                pr.number
-            ))
-        }
-        None => {
-            return no(format!(
-                "#{} cannot be remediated: GitHub did not say whether you can push to {where_}",
-                pr.number
-            ))
-        }
+    // is on the repo. `Pr::push_refusal` is the rule and says why it is this one;
+    // the review spawns ask it too, and the skills read its answer.
+    if let Some(why) = pr.push_refusal(input.viewer) {
+        return no(why);
     }
 
     // One live run per PR, keyed on the number.

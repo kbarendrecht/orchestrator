@@ -1410,11 +1410,15 @@ pub async fn spawn_fix_pr_session(
     Being a skill is also what makes it work when *you* type `/orchd:fix-pr 42`
     in a checkout the daemon never started: the file names a fallback for each
     variable, which a prompt file rendered per run could not have. */
-    let (login, base_ref) = {
+    let (login, base_ref, may_push) = {
         let inner = app.inner.read().await;
+        let viewer = inner.viewer.clone().unwrap_or_default();
         (
             inner.viewer.clone(),
             inner.pr(pr).map(|p| p.base_ref.clone()),
+            inner
+                .pr(pr)
+                .is_some_and(|p| p.push_refusal(&viewer).is_none()),
         )
     };
     let mut extra_env = vec![
@@ -1439,6 +1443,13 @@ pub async fn spawn_fix_pr_session(
         (
             crate::skills::VAR_UPSTREAM_REMOTE.to_string(),
             app.cfg.upstream_remote.clone(),
+        ),
+        // The guard table already asked this, so it is `yes` on every run that got
+        // here; set from the poll rather than assumed, so a second caller of this
+        // function cannot hand a run a `yes` nobody checked.
+        (
+            crate::skills::VAR_MAY_PUSH.to_string(),
+            if may_push { "yes" } else { "no" }.to_string(),
         ),
     ];
     /* Omitted rather than empty when the poller has not run yet, and that turns a

@@ -28,6 +28,7 @@ curl -sS "$ORCH_URL/api/pr/$PR/triage-context" -H "x-orch-token: $ORCH_POST_TOKE
   "owner": "…", "repo": "…",   // the repo the PR is on
   "login": "…",                // you, on the forge
   "answerable": ["PRRT_…"],    // the threads still waiting on you — the set you work
+  "may_push": true,            // may you amend and force-push this branch
   "language": "…",             // what to write replies and stories in
   "tracker": true,             // false: never propose `story+reply`
   "tracker_host": "…",         // the tracker's host: never link to it yourself
@@ -40,8 +41,9 @@ curl -sS "$ORCH_URL/api/pr/$PR/triage-context" -H "x-orch-token: $ORCH_POST_TOKE
 `$ORCH_ASK_TOKEN` are in your environment already. If they are not, you are not in a session the daemon started:
 say so and stop, because nothing here can be handed anywhere.
 
-Below, `$PR`, `$OWNER`, `$REPO`, `$LOGIN`, `$ANSWERABLE`, `$LANGUAGE`, `$TRACKER`,
-`$TRACKER_HOST`, `$UPSTREAM` and `$PROPOSALS_URL` are the fields of that answer.
+Below, `$PR`, `$OWNER`, `$REPO`, `$LOGIN`, `$ANSWERABLE`, `$MAY_PUSH`, `$LANGUAGE`,
+`$TRACKER`, `$TRACKER_HOST`, `$UPSTREAM` and `$PROPOSALS_URL` are the fields of that
+answer.
 
 Three phases, in order: **read** (write nothing), **change** (only what they picked),
 **post** (only on their go). Do not run ahead of the human between them.
@@ -51,8 +53,10 @@ Three phases, in order: **read** (write nothing), **change** (only what they pic
 The daemon created a worktree pinned to this PR's head branch and started you inside
 it. Do not switch branches and do not create one — the run stays on the PR's head ref.
 Confirm rather than assume: `git rev-parse --abbrev-ref HEAD` against `headRefName`
-from the fetch. A mismatch is a stop, not something to correct by switching. Head owner
-not `$LOGIN` → stop, it is someone else's branch to force-push.
+from the fetch. A mismatch is a stop, not something to correct by switching.
+`$MAY_PUSH` not `true` → stop, it is a branch you may not force-push. That is the
+daemon's answer about push access, and the only one to use: do not compare the head
+repo's owner with `$LOGIN`, which refuses every org PR, whose owner is the org.
 
 # Phase 1 — Read (write nothing)
 

@@ -110,6 +110,11 @@ pub const VAR_PR: &str = "ORCH_PR";
 pub const VAR_UPSTREAM: &str = "ORCH_UPSTREAM";
 pub const VAR_UPSTREAM_REMOTE: &str = "ORCH_UPSTREAM_REMOTE";
 pub const VAR_LOGIN: &str = "ORCH_LOGIN";
+/// The daemon's authorship answer, `yes` or `no`: may this session rewrite and
+/// force-push the PR's branch. `forge::Pr::push_refusal` decides it, and the
+/// skills read it rather than asking whose name is on the head repo — which is
+/// the question the daemon stopped asking because it was wrong both ways.
+pub const VAR_MAY_PUSH: &str = "ORCH_MAY_PUSH";
 /// The story pass: what to file, where to report, and the host a URL must be on.
 pub const VAR_STORIES: &str = "ORCH_STORIES";
 pub const VAR_DROP: &str = "ORCH_DROP";
@@ -292,17 +297,28 @@ mod tests {
             (
                 "fix-pr",
                 FIX_PR,
-                &[VAR_PR, VAR_UPSTREAM, VAR_UPSTREAM_REMOTE, VAR_LOGIN][..],
+                &[
+                    VAR_PR,
+                    VAR_UPSTREAM,
+                    VAR_UPSTREAM_REMOTE,
+                    VAR_LOGIN,
+                    VAR_MAY_PUSH,
+                ][..],
             ),
             (
                 "story",
                 STORY,
                 &[VAR_STORIES, VAR_DROP, VAR_TRACKER_HOST][..],
             ),
-            // The pane pass gets two and reads both. It deliberately does *not*
-            // read `VAR_LOGIN`, which its run does not set: its authorship stop
-            // asks `gh` instead, the way `green` does.
-            ("handle-review", HANDLE_REVIEW, &[VAR_PR, VAR_LANGUAGE][..]),
+            // The pane pass gets three and reads all of them. It deliberately does
+            // *not* read `VAR_LOGIN`, which its run does not set: its authorship
+            // stop reads the daemon's `VAR_MAY_PUSH`, and asks `gh` the same
+            // question when typed by hand.
+            (
+                "handle-review",
+                HANDLE_REVIEW,
+                &[VAR_PR, VAR_LANGUAGE, VAR_MAY_PUSH][..],
+            ),
         ] {
             for v in vars {
                 assert!(

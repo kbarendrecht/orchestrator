@@ -63,6 +63,11 @@ pub async fn pr_triage_context(
             .map(|t| t.id.clone())
             .collect()
     });
+    let may_push = {
+        let inner = app.inner.read().await;
+        let viewer = inner.viewer.clone().unwrap_or_default();
+        inner.pr(number).map(|p| p.push_refusal(&viewer).is_none())
+    };
     let base = format!("http://127.0.0.1:{}/api/pr/{number}", app.cfg.port);
     Ok(Json(json!({
         "pr": number,
@@ -75,6 +80,11 @@ pub async fn pr_triage_context(
         // The thread ids to read and propose for: every one still waiting on you,
         // and no other. `None` when the fetch failed.
         "answerable": answerable,
+        // The daemon's authorship answer, `Pr::push_refusal`: may this session
+        // amend and force-push the branch. The skill reads it instead of comparing
+        // the head repo's owner with `login`, which refused every org PR. `None`
+        // when the poll has not seen the PR.
+        "may_push": may_push,
         "language": app.settings().default_language,
         // Whether `story+reply` may be offered at all: an option the daemon would
         // refuse should never reach a card.
