@@ -442,6 +442,9 @@ impl Host {
                 );
                 // A restart resumes: the person asked for an empty start once, when
                 // they added the checkout, and a crash is not them asking again.
+                // What they declined stays declined because the daemon wrote that
+                // answer to its store before it reported ready — see `no_resume` in
+                // `crate::start`.
                 if let Err(e) = host.open_checkout_with(&exe_again, path, false) {
                     tracing::error!(checkout = %path.display(), "the restart failed: {e:#}");
                 }

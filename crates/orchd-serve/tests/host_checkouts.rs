@@ -325,9 +325,17 @@ async fn a_host_adds_closes_and_reopens_checkouts_and_refuses_the_three() {
     // its records, deliberately, so this is the guard that stops a path coming
     // back and resurrecting months-old conversations.
     let state = orchd_serve::host::checkout_dir(&second).unwrap();
+    // A record the daemon can read, not only the two fields the ask counts: 6b
+    // below is about what the daemon writes back, and a file it cannot parse is
+    // moved aside rather than rewritten.
     std::fs::write(
         state.join("sessions.json"),
-        r#"[{"id":"s1","was_live":true,"had_a_turn":true}]"#,
+        format!(
+            r#"[{{"id":"7e1f4b0c-0000-4000-8000-000000000001","workspace":"main","cwd":{:?},
+                "created_at":{{"secs_since_epoch":1,"nanos_since_epoch":0}},
+                "was_live":true,"had_a_turn":true}}]"#,
+            second.to_string_lossy()
+        ),
     )
     .unwrap();
     let (code, body) = post(
@@ -359,6 +367,22 @@ async fn a_host_adds_closes_and_reopens_checkouts_and_refuses_the_three() {
     );
     assert_eq!(code, 200, "the answered add was refused: {body}");
     assert_eq!(body["result"]["added"], "opened");
+
+    // 6b — and the answer is on disk by the time the daemon is up. The host's one
+    // automatic restart does not carry "start empty", so a daemon that died before
+    // its first persist would otherwise resume exactly what was just declined.
+    let records: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(state.join("sessions.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        records.len(),
+        1,
+        "the declined record was dropped: {records:?}"
+    );
+    assert_eq!(
+        records[0]["was_live"], false,
+        "a declined resume was not written down before the daemon said it was ready"
+    );
 
     // 7 — the host file remembers what is open, so the app opens it again.
     let remembered = orchd_serve::host::remembered_checkouts();

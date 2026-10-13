@@ -463,6 +463,24 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
     phases.mark("records");
     adopt_existing_worktrees(&app).await?;
     app.restore_sessions(records.clone()).await;
+    /* **"Start empty" is written down before `ready`, not left to the first
+    persist.** It is an answer for this one start, and the host's one automatic
+    restart passes no such flag — a restart is not the person asking again. So a
+    daemon that died before anything persisted left `was_live: true` on disk, and
+    the restart resumed exactly the sessions the re-add had just declined. Written
+    here, everything the host can restart is a daemon whose file already says so:
+    a death before this line is a launch that never reported ready, and that is a
+    failed add rather than a restart. */
+    if opts.no_resume {
+        let declined = app.session_records().await;
+        let written = orchd::proc::run_blocking("recording the declined resume", move || {
+            store::save(&declined)
+        })
+        .await;
+        if let Ok(Err(e)) | Err(e) = written {
+            tracing::warn!("could not record the declined resume: {e:#}");
+        }
+    }
     phases.mark("adopt");
     {
         let mut inner = app.inner.write().await;
