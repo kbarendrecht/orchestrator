@@ -529,6 +529,14 @@ pub async fn thread_reply(
 /// them back too, and a retry asks for nobody twice because GitHub treats a
 /// repeated request as the state it already is.
 ///
+/// **And only a reviewer this review answered.** Eligible is having at least one
+/// thread in the set the review started from — the proposals, which
+/// `ProposalSet::validate` holds to exactly the threads awaiting an answer when
+/// the session read them. It asked every author with nothing waiting, so a
+/// reviewer whose threads were all settled weeks ago was asked to look again by a
+/// review that never touched them, and the approval page — which lists only
+/// authors with a thread in the review — had promised otherwise.
+///
 /// One reviewer's refusal is not the call's. `github-actions[bot]` cannot be a
 /// requested reviewer at all, and a review whose threads a bot opened would
 /// otherwise end on an error for the one reviewer that was never going to work.
@@ -548,8 +556,21 @@ pub async fn session_rerequest(
         }
     };
 
+    // The review's starting set. Not persisted, like the proposals it comes from,
+    // so a restart between reading and posting forgets it — and then nobody is
+    // asked rather than everybody, which is the direction to be wrong in.
+    let started: Vec<String> = {
+        let inner = app.inner.read().await;
+        match inner.proposals.get(&number) {
+            Some(set) => set.proposals.iter().map(|p| p.thread_id.clone()).collect(),
+            None => refuse!(
+                "no record of which threads this review of #{number} started from, so \
+                 nobody is re-requested; ask on GitHub by hand"
+            ),
+        }
+    };
     let fresh = fetch_threads(&app, number).await?;
-    let reviewers = reviewers_of(&fresh);
+    let reviewers = reviewers_of(&fresh, &started);
 
     let forge = write_forge(&app)?;
     let main = app.cfg.main_checkout.clone();
@@ -584,32 +605,41 @@ pub async fn session_rerequest(
     ))
 }
 
-/// Each reviewer on the PR and how many of their threads still await an answer.
+/// Each reviewer this review answered, and how many of their threads still await
+/// an answer.
 ///
 /// The rule `session_rerequest` rests on, pulled out because it is the half worth
-/// testing: the write needs a forge and a PR, this needs neither.
+/// testing: the write needs a forge and a PR, this needs neither. `rvRerequestRows`
+/// in `web/js/review.js` draws the same rule on the approval page, and the two
+/// must agree: eligible is a thread in `started`, held is any thread of theirs
+/// still answerable, the review's or one opened since.
 ///
-/// Ordered by where each reviewer's first thread appears, not by a hash's order, so
-/// the answer reads in the same order the approval page listed them. Your own
-/// threads are skipped — a review of your own is not something to ask yourself for
-/// again.
-fn reviewers_of(fresh: &crate::forge::Threads) -> Vec<(String, usize)> {
+/// Ordered by where each reviewer's first thread appears in the fetch, which is
+/// the Files-changed order `sort_for_review` puts it in and the order the approval
+/// page lists them in. Your own threads are skipped — a review of your own is not
+/// something to ask yourself for again.
+fn reviewers_of(fresh: &crate::forge::Threads, started: &[String]) -> Vec<(String, usize)> {
+    let author = |t: &crate::forge::Thread| t.comments.first().map(|c| c.author.clone());
     let mut out: Vec<(String, usize)> = Vec::new();
     for thread in &fresh.items {
-        let Some(who) = thread.comments.first().map(|c| c.author.as_str()) else {
+        let Some(who) = author(thread) else {
             continue;
         };
-        if who == fresh.viewer {
+        if who == fresh.viewer || !started.contains(&thread.id) {
             continue;
         }
-        // No `expect` on the freshly-pushed slot: a panic here would take the
-        // daemon down for a bookkeeping detail, and `clippy.toml` refuses it.
-        if let Some(slot) = out.iter_mut().find(|(l, _)| l == who) {
-            if thread.answerable {
-                slot.1 += 1;
-            }
-        } else {
-            out.push((who.to_string(), usize::from(thread.answerable)));
+        if !out.iter().any(|(l, _)| *l == who) {
+            out.push((who, 0));
+        }
+    }
+    for thread in fresh.items.iter().filter(|t| t.answerable) {
+        let Some(who) = author(thread) else {
+            continue;
+        };
+        // No `expect` on the slot: a panic here would take the daemon down for a
+        // bookkeeping detail, and `clippy.toml` refuses it.
+        if let Some(slot) = out.iter_mut().find(|(l, _)| *l == who) {
+            slot.1 += 1;
         }
     }
     out
@@ -722,12 +752,19 @@ mod tests {
                 thread("PRRT_5", Some("c.rs"), Some(3), "me"),
                 // Opened while the session worked: nobody read it, so carol waits.
                 thread("PRRT_6", Some("d.rs"), Some(4), "carol"),
+                answered("PRRT_7", "carol"),
+                // Settled long before this review, and nothing of dave's was in it:
+                // a review that never touched dave does not ask dave again.
+                answered("PRRT_8", "dave"),
             ],
         };
+        let started: Vec<String> = ["PRRT_1", "PRRT_2", "PRRT_4", "PRRT_5", "PRRT_7"]
+            .map(String::from)
+            .to_vec();
 
-        // Ordered by first appearance, which is the order the approval page listed.
+        // Ordered by first appearance, which is the order the approval page lists.
         assert_eq!(
-            reviewers_of(&fresh),
+            reviewers_of(&fresh, &started),
             vec![
                 ("alice".to_string(), 0),
                 ("bob".to_string(), 1),
@@ -750,7 +787,7 @@ mod tests {
             head_sha: None,
             items: vec![empty],
         };
-        assert!(reviewers_of(&fresh).is_empty());
+        assert!(reviewers_of(&fresh, &["PRRT_1".to_string()]).is_empty());
     }
 
     /// The hand-off is the review's, and only about a PR that still has something

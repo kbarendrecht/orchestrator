@@ -192,6 +192,9 @@ Re-request each reviewer whose every thread is addressed, without asking:
 
 - Per reviewer, not per PR: one reviewer's five handled while another's two are open
   re-requests the first alone.
+- Only a reviewer with a thread in this pass. One whose threads were all settled
+  before you started is not asked again by a pass that never touched them — the
+  same rule the daemon's own re-request keeps.
 - Addressed means applied, or replied to with a *posted* reply. An unposted draft is
   not addressed.
 - Report who was skipped and which thread holds each one back.

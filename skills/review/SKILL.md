@@ -285,9 +285,10 @@ curl -sS -X POST -H "x-orch-ask: $ORCH_ASK_TOKEN" \
 ```
 
 Once, after the last reply. Which reviewers are asked is the daemon's: it refetches the
-threads and asks the ones with nothing of theirs still awaiting an answer. So a reply
-that did not go out holds its author back on its own, and a thread somebody opened while
-you were working holds them back too.
+threads and asks each reviewer who had a thread in this review and has nothing of theirs
+still awaiting an answer. So a reply that did not go out holds its author back on its
+own, a thread somebody opened while you were working holds them back too, and a reviewer
+this review never touched is not asked.
 
 The answer is three lists — `asked`, `held` (how many threads still hold each one back)
 and `failed` (one login's refusal, not the call's: a bot cannot be a requested reviewer

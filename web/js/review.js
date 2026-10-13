@@ -884,25 +884,36 @@ function rvCommitRow(/** @type {ReturnType<typeof outward>} */ out) {
  *
  *  Per reviewer, not per PR: one whose every thread is addressed is re-requested
  *  even while another's are still open. The daemon recomputes this from a fresh
- *  fetch at post time; this is the same rule, shown early. */
+ *  fetch at post time (`reviewers_of` in `review_api.rs`), and this is the same
+ *  rule shown early: **eligible is a thread in this review** — the queue, which is
+ *  the set the session started from — and held is any thread of theirs still
+ *  open, the review's or one opened since. Listed in thread order, as the daemon
+ *  answers; this sorted by login while the daemon's comment claimed the two
+ *  orders matched. */
 function rvRerequestRows(/** @type {QueueItem[]} */ q) {
   const viewer = reviewState.data?.viewer;
-  const mine = new Map();   // login -> { open: [labels] }
-  for (const t of reviewState.data?.threads || []) {
-    if (!t.answerable) continue;
+  const threads = reviewState.data?.threads || [];
+  const mine = new Map();   // login -> { open: [labels] }, in thread order
+  for (const t of threads) {
     const who = t.comments?.[0]?.author;
     if (!who || who === viewer) continue;
-    const entry = mine.get(who) || { open: [] };
+    if (q.some((/** @type {QueueItem} */ x) => x.t.id === t.id) && !mine.has(who)) {
+      mine.set(who, { open: [] });
+    }
+  }
+  for (const t of threads) {
+    if (!t.answerable) continue;
+    const entry = mine.get(t.comments?.[0]?.author);
+    if (!entry) continue;
     const item = q.find((/** @type {QueueItem} */ x) => x.t.id === t.id);
     if (!item || !isHandled(item)) {
       const line = t.line ?? t.original_line;
       entry.open.push(t.path ? (line ? `${t.path}:${line}` : t.path) : 'the review summary');
     }
-    mine.set(who, entry);
   }
 
   const rows = [];
-  for (const [who, { open }] of [...mine].sort()) {
+  for (const [who, { open }] of mine) {
     const row = el('div', 'stage-row' + (open.length ? ' off' : ''));
     const c = el('span', 'c');
     const head = el('div', 'threadhead');
