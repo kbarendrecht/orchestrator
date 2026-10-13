@@ -279,9 +279,10 @@ impl Host {
     /// Each row appears the moment its daemon answers, and a checkout still
     /// starting is simply not in the list yet.
     ///
-    /// A checkout that will not start is logged and skipped, never fatal: one bad
-    /// path must not cost the window. Returns when every attempt has finished, so
-    /// the caller can hand the window over knowing the list is settled.
+    /// A checkout that will not start is logged and kept as a down row, never
+    /// fatal: one bad path must not cost the window. Returns when every attempt has
+    /// finished, so the caller can hand the window over knowing the list is
+    /// settled.
     pub fn open_remembered(self: &Arc<Self>, checkouts: &[PathBuf]) {
         let mut opening = Vec::new();
         for checkout in checkouts {
@@ -290,6 +291,7 @@ impl Host {
             opening.push(std::thread::spawn(move || {
                 if let Err(e) = host.open_checkout(&checkout) {
                     tracing::error!(checkout = %checkout.display(), "could not open: {e:#}");
+                    host.record_down(&checkout);
                 }
             }));
         }
@@ -377,6 +379,29 @@ impl Host {
         }
         locked(&self.children).remove(checkout);
         self.announce();
+    }
+
+    /// Record a remembered checkout whose daemon would not start, as a down row.
+    ///
+    /// **The same shape a death at runtime leaves** ([`Self::mark_down`]), because
+    /// it is the same fact: a checkout you opened whose daemon is not running. It
+    /// used to leave no row at all, so there was nothing to `reopen` — and since
+    /// [`Self::remember`] writes the rows, the next add, close or reorder wrote
+    /// `host.json` without it and one bad boot forgot a checkout for good.
+    ///
+    /// Port 0 and no token: there is no daemon to reach, and the page dials a down
+    /// row the way it dials one whose daemon died, which is to fail and wait for
+    /// the list to change.
+    fn record_down(&self, checkout: &Path) {
+        self.record(Checkout {
+            path: checkout.to_string_lossy().into_owned(),
+            name: String::new(),
+            port: 0,
+            token: String::new(),
+            live: false,
+            repo: None,
+            clash: None,
+        });
     }
 
     /// Start a checkout's daemon and record it.
