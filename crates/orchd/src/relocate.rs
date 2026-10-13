@@ -426,9 +426,10 @@ const CARRY_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 /// exchange and this has none: you started something in main, it turned into real
 /// work, and now it wants a tree of its own so main is free again.
 ///
-/// One session, not the whole tree. The branch travels because the conversation is
-/// about it (`git::move_branch_out` carries the uncommitted work with it), and main
-/// is left on base rather than detached.
+/// Pressed from one session, and the branch travels because the conversation is
+/// about it (`git::move_branch_out` carries the uncommitted work with it); main is
+/// left on base rather than detached. Every other live session in main goes too,
+/// because main's one branch is the one leaving — the swap's rule, for its reason.
 ///
 /// The refusals are the swap's, for the same reasons: an agent mid-turn in main
 /// would have the tree replaced under it, and a stopped rebase cannot switch at
@@ -448,7 +449,7 @@ pub async fn move_out_of_main(
              and look at the rail before asking again"
         ))
     })?;
-    let (busy, live) = {
+    let live = {
         let inner = app.inner.read().await;
         let s = inner
             .sessions
@@ -460,17 +461,39 @@ pub async fn move_out_of_main(
                 crate::model::short_id(&id)
             );
         }
-        (s.state.is_busy(), s.state.is_live())
+        s.state.is_live()
     };
-    if busy {
+    /* **Any agent mid-turn in main refuses, not only the one pressed.** The move
+    switches main's checkout to base, and every session in main reads that tree, so
+    a second session working while you press move on an idle one would have its
+    files replaced under it. This used to check the pressed row alone, the one guard
+    here that disagreed with the swap's. */
+    if let Some(who) = app.busy_session_in(MAIN).await {
         refuse!(
-            "that agent is mid-turn; the move replaces every file under it, so let \
-             the turn finish first"
+            "main has an agent mid-turn ({who}); the move replaces every file under it, \
+             so let that turn finish first"
         );
     }
+    /* **Every live session in main goes with the branch, as in the swap.** Main has
+    one branch, so a live session there is about the branch that is leaving, and one
+    left behind sits on base with its work in another tree — the stranding
+    `check_moves_landed` exists to say out loud. Picked before git runs, like the
+    swap, so a reconcile in between cannot change the answer. The pressed session
+    goes first when it is live, because it is the one the response describes. */
+    let travelling: Vec<(SessionId, crate::model::State)> = {
+        let mut ids = live_in(&app, MAIN).await;
+        if live {
+            ids.retain(|s| *s != id);
+            ids.insert(0, id);
+        }
+        let mut with_state = Vec::with_capacity(ids.len());
+        for s in ids {
+            with_state.push((s, state_of(&app, s).await));
+        }
+        with_state
+    };
 
     let main = app.cfg.main_checkout.clone();
-    let was = state_of(&app, id).await;
     let out = crate::carry::move_out(&app, crate::model::Board::Loud, None).await?;
     let crate::carry::MovedOut {
         name,
@@ -480,69 +503,87 @@ pub async fn move_out_of_main(
         records,
     } = &out;
 
-    // The conversation follows its branch: live means a pty to move, and a record
+    // The conversations follow their branch: live means a pty to move, and a record
     // that is not running has nothing to respawn, so the record itself travels.
     //
     // All or nothing, like the swap: a session that will not start in the new tree
-    // takes the move back, and is resumed in main as it stood.
-    let carried = if live {
-        match spawn::relocate_session(&app, id, name, CARRY_GRACE).await {
-            Ok(moved) => Some(Ok(moved)),
-            Err(e) => {
-                let why = format!("{e:#}");
-                let back = crate::carry::move_back(&app, &out).await;
-                /* Home is wherever the branch is now: main when the move came back,
-                the new tree when it could not. And an empty session whose fresh
-                start failed has no record left — the exit watcher drops a session
-                that never had a turn — so there is nothing to bring home, which
-                is not a failure of the undo. The swap's undo makes the same check. */
-                let to = if back.is_ok() { MAIN } else { name.as_str() };
-                let exists = app.inner.read().await.sessions.contains_key(&id);
-                let home = if exists {
-                    spawn::relocate_back(&app, id, to, CARRY_GRACE, &was)
-                        .await
-                        .map(|_| ())
-                } else {
-                    Ok(())
-                };
-                match (back, home) {
-                    (Ok(()), Ok(_)) => {
-                        tracing::warn!(session = %id, %why, "move out of main undone");
-                        refuse_busy!("move failed, nothing moved: {why}");
-                    }
-                    (back, home) => {
-                        let left: Vec<String> = [
-                            back.err()
-                                .map(|e| format!("the branch stays in {name}: {e:#}")),
-                            home.err().map(|e| {
-                                format!("the session is stopped and resumable from the rail: {e:#}")
-                            }),
-                        ]
-                        .into_iter()
-                        .flatten()
-                        .collect();
-                        refuse!(
-                            "move failed and could not be fully undone: {why}. {}",
-                            left.join("; ")
-                        );
-                    }
+    // takes the move back, and every one that had already landed is resumed in main
+    // as it stood.
+    let mut landed: Vec<(SessionId, spawn::Relocated)> = Vec::new();
+    for (sid, was) in &travelling {
+        let e = match spawn::relocate_session(&app, *sid, name, CARRY_GRACE).await {
+            Ok(moved) => {
+                landed.push((*sid, moved));
+                continue;
+            }
+            Err(e) => e,
+        };
+        let why = format!("{e:#}");
+        let back = crate::carry::move_back(&app, &out).await;
+        /* Home is wherever the branch is now: main when the move came back, the new
+        tree when it could not. Newest arrival first and the failed one last, the
+        swap's order. An empty session whose fresh start failed has no record left —
+        the exit watcher drops a session that never had a turn — so there is nothing
+        to bring home, which is not a failure of the undo; the swap's undo makes the
+        same check. */
+        let to = if back.is_ok() { MAIN } else { name.as_str() };
+        let mut left: Vec<String> = back
+            .as_ref()
+            .err()
+            .map(|e| format!("the branch stays in {name}: {e:#}"))
+            .into_iter()
+            .collect();
+        let returning = landed
+            .iter()
+            .rev()
+            .map(|(original, moved)| (moved.id, *original))
+            .chain(std::iter::once((*sid, *sid)));
+        for (now, original) in returning {
+            let before = travelling
+                .iter()
+                .find(|(t, _)| *t == original)
+                .map_or_else(|| was.clone(), |(_, s)| s.clone());
+            if app.inner.read().await.sessions.contains_key(&now) {
+                if let Err(e) = spawn::relocate_back(&app, now, to, CARRY_GRACE, &before).await {
+                    left.push(format!(
+                        "{} is stopped and resumable from the rail: {e:#}",
+                        crate::model::short_id(&now)
+                    ));
                 }
             }
+            // A fork leaves the original behind in the new tree as a stopped record
+            // about the same branch, so it goes home too.
+            if now != original && to == MAIN {
+                carry_record(&app, original, MAIN, &main, &moved.branch).await;
+            }
         }
-    } else {
+        app.notify().await;
+        if left.is_empty() {
+            tracing::warn!(session = %sid, %why, "move out of main undone");
+            refuse_busy!("move failed, nothing moved: {why}");
+        }
+        refuse!(
+            "move failed and could not be fully undone: {why}. {}",
+            left.join("; ")
+        );
+    }
+    if !live {
         carry_record(&app, id, name, path, &moved.branch).await;
-        None
-    };
+    }
 
     // Told the same thing the swap tells a carried conversation: the cwd moved under
     // it, and a session Claude Code has isolated somewhere else has to re-anchor.
-    if let Some(Ok(landed)) = &carried {
+    for (_, now) in &landed {
         let notice = arrival_notice(&app, &moved.branch, &main, path, false);
         let mut inner = app.inner.write().await;
-        if let Some(s) = inner.sessions.get_mut(&landed.id) {
+        if let Some(s) = inner.sessions.get_mut(&now.id) {
             s.arrival_notice = Some(notice);
         }
     }
+    let carried = landed
+        .iter()
+        .find(|(original, _)| *original == id)
+        .map(|(_, now)| moved_json(now));
 
     // Its siblings — the past conversations in main about the branch that just
     // left. Leaving them behind points a later resume at main's directory while
@@ -559,28 +600,17 @@ pub async fn move_out_of_main(
         "branch": moved.branch,
         "created": moved.created,
         "main": moved.base,
-        "session": carried_json(&carried),
+        // `null` is its own answer and not an error: the pressed session was not
+        // running, so its record travelled and there was no pty to move.
+        "session": carried.unwrap_or(serde_json::Value::Null),
+        // Every live session that went, the pressed one included, so the page can
+        // close each dead terminal the way the swap's `moved_out` does.
+        "moved_out": landed.iter().map(|(_, now)| moved_json(now)).collect::<Vec<_>>(),
         "wip_error": moved.wip_error,
         // Named, not counted, for the reason the swap gives: which files stayed is
         // the difference between fetching them and wondering what you lost.
         "untracked_left": untracked,
     })))
-}
-
-/// One direction of the carry, as the SPA reads it.
-///
-/// `null` is its own answer and not an error: it means there was nothing in that
-/// tree to move, which is the ordinary case for a swap into an empty main.
-fn carried_json(r: &Option<anyhow::Result<spawn::Relocated>>) -> serde_json::Value {
-    match r {
-        None => serde_json::Value::Null,
-        Some(Ok(moved)) => moved_json(moved),
-        Some(Err(e)) => json!({
-            "session": serde_json::Value::Null,
-            "degraded": false,
-            "error": format!("{e:#}"),
-        }),
-    }
 }
 
 /// One move that landed, as the SPA reads it.
@@ -903,6 +933,39 @@ mod tests {
             !format!("{:#}", err.0).contains("nothing to swap"),
             "but not as a spare: {:#}",
             err.0
+        );
+    }
+
+    /// The move switches main's checkout, so an agent mid-turn *anywhere* in main
+    /// refuses it — not only the row it was pressed from. Checking the pressed row
+    /// alone let an idle session's move switch main to base under a working one.
+    #[tokio::test]
+    async fn a_move_out_refuses_while_any_session_in_main_is_mid_turn() {
+        use crate::model::{Session, State as S, TurnReason};
+
+        let (app, dir) = crate::testutil::app("move-out-busy");
+        let (idle, busy) = {
+            let mut inner = app.inner.write().await;
+            let mut idle = Session::new(Uuid::new_v4(), MAIN.into(), dir.clone(), None);
+            idle.set_state(S::YourTurn {
+                since: std::time::SystemTime::now(),
+                reason: TurnReason::Ready,
+            });
+            let mut busy = Session::new(Uuid::new_v4(), MAIN.into(), dir.clone(), None);
+            busy.set_state(S::Working);
+            let ids = (idle.id, busy.id);
+            inner.sessions.insert(idle.id, idle);
+            inner.sessions.insert(busy.id, busy);
+            ids
+        };
+        let err = move_out_of_main(State(app.clone()), Path(idle))
+            .await
+            .expect_err("another agent in main is working");
+        let msg = format!("{:#}", err.0);
+        assert!(msg.contains("mid-turn"), "says why: {msg}");
+        assert!(
+            msg.contains(&crate::model::short_id(&busy)),
+            "and names who: {msg}"
         );
     }
 

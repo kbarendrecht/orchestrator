@@ -2272,10 +2272,11 @@ async function moveOutOfMain(/** @type {import('../snapshot').SessionView} */ s)
     const r = await callFor(s.id, `/api/session/${s.id}/out-of-main`);
     // A relocated session keeps its id, so the dead terminal is still in `terms`
     // under the key the new pty wants — the same reason the swap and resume close it.
-    if (r.session && r.session.session) {
-      Term.close(checkoutOf(s.id) ?? activeCheckout(), `session:${r.session.session}`);
-      setPendingSelect(r.session.session);
+    // Every live session in main went, not only this one, and each left a dead one.
+    for (const moved of r.moved_out ?? []) {
+      if (moved.session) Term.close(checkoutOf(s.id) ?? activeCheckout(), `session:${moved.session}`);
     }
+    if (r.session && r.session.session) setPendingSelect(r.session.session);
     toast(r.created
       ? `cut ${r.branch} in ${r.workspace}; main is still on ${r.main}`
       : `${r.branch} is in ${r.workspace}; main is on ${r.main}`);
