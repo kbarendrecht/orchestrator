@@ -1600,11 +1600,12 @@ function renderBar() {
   host.hidden = false;
 }
 
-/** What Ctrl+Enter does: press the final screen's send button. Through the button
- *  rather than straight to `sendBatch`, or the shortcut sends a batch the button
- *  itself refuses — which it did until now. Off the final screen, nothing. */
+/** What Ctrl+Enter does: press the screen's warm button, which is accept on a
+ *  card and send on the final screen. On a card that is the one way to accept
+ *  from a reply box, where Enter is a newline. Through the button rather than
+ *  straight to `sendBatch`, or the shortcut sends a batch the button itself
+ *  refuses — which it did until now. */
 function sendFromKeyboard() {
-  if (reviewState.screen !== 'final') return;
   const send = /** @type {HTMLButtonElement|null} */ (
     $('rvoverlay').querySelector('.acts .act.warm'));
   if (send && !send.disabled) send.click();

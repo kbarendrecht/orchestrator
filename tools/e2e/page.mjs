@@ -331,6 +331,19 @@ try {
   check(await dirtyAfter('#setnotemain', `${was}x`) === true && await dirtyAfter('#setnotemain', was) === false,
     'typing a field back to what was read clears unsaved')
 
+  /* **MOD+Enter submits from a textarea** (#45), where Enter is a newline and the
+     button was a Tab or a mouse away. Saved means the unsaved flag clears with the
+     typing still in the box; then put back the same way. */
+  await dirtyAfter('#setnotemain', `${was}y`)
+  await page.press('#setnotemain', `${MOD_KEY}+Enter`)
+  await page.waitForTimeout(400)
+  check(await page.$eval('#setdiscard', (b) => b.hidden)
+    && await page.$eval('#setnotemain', (i) => i.value) === `${was}y`,
+    'MOD+Enter in a settings textarea saves')
+  await dirtyAfter('#setnotemain', was)
+  await page.press('#setnotemain', `${MOD_KEY}+Enter`)
+  await page.waitForTimeout(400)
+
   /* **The review queue's source shows the fields it uses and no others.** Three
      sources, two of which have fields, and the fields are *hidden* rather than
      removed so a draft survives a look at another source — which is also why this

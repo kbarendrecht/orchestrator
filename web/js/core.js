@@ -801,6 +801,7 @@ function dlgOpen(message, {
   const card = el('div', 'dlgcard');
   card.setAttribute('role', 'dialog');
   card.setAttribute('aria-modal', 'true');
+  card.dataset.form = '';
 
   // Newlines are how every one of these messages was written for `confirm`, and
   // they carry the detail under the question. `white-space: pre-wrap` in the
@@ -813,6 +814,7 @@ function dlgOpen(message, {
   no.onclick = () => dlgClose(cancelValue);
   const go = el('button', 'dlgbtn go' + (danger ? ' danger' : ''), ok || 'OK');
   go.onclick = () => dlgClose(answer());
+  go.dataset.submit = '';
   // Cancel first, so Tab reaches the safe one before the destructive one and the
   // row still reads left to right in the order everything else puts them.
   foot.appendChild(no);

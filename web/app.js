@@ -369,6 +369,7 @@ function openFreeAnswer(/** @type {HTMLElement} */ opts, /** @type {string} */ s
   if (opts.querySelector('.oqfree')) return;
   askFree = option.value;
   const wrap = el('div', 'oqfree');
+  wrap.dataset.form = '';
   const box = el('textarea', 'box');
   box.setAttribute('aria-label', option.label);
   box.placeholder = 'Say what you want instead. It reaches the agent as written.';
@@ -376,6 +377,7 @@ function openFreeAnswer(/** @type {HTMLElement} */ opts, /** @type {string} */ s
 
   const row = el('div', 'oqfoot');
   const send = el('button', 'oqsend', 'send');
+  send.dataset.submit = '';
   send.onclick = () => {
     if (!box.value.trim()) return toast('nothing written yet', true);
     // The box is built into `opts`' parent, so it is there.
@@ -1692,6 +1694,19 @@ function keymap(/** @type {KeyboardEvent} */ e) {
     e.preventDefault();
     void Editor.save();
     return;
+  }
+  /* MOD+Enter submits the form focus is in, the one way to from a textarea, where
+     Enter is a newline. A form opts in: `data-form` on its root, `data-submit` on
+     the button. Marked rather than found by walking up from the focus, because a
+     walk from a terminal reaches the ask box's send button and answers for you. */
+  if (e.key === 'Enter' && appMod(e) && !e.shiftKey) {
+    const form = /** @type {HTMLElement} */ (e.target).closest?.('[data-form]');
+    const go = /** @type {HTMLButtonElement | null | undefined} */ (form?.querySelector('[data-submit]'));
+    if (go) {
+      e.preventDefault();
+      if (!go.disabled) go.click();
+      return;
+    }
   }
   /* The overlay wants bare Enter, j/k and digits, and this handler is registered
      with capture:true — it runs before any element listener wherever focus is.
