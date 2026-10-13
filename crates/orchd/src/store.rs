@@ -612,7 +612,16 @@ pub fn has_conversation(id: uuid::Uuid, cwd: &Path, recorded: Option<&Path>) -> 
     let Some(path) = transcript_file(id, cwd, recorded) else {
         return false;
     };
-    let Ok(head) = read_head(&path, FIRST_TURN_BYTES) else {
+    // A Codex rollout opens with `session_meta`, which carries the base
+    // instructions and is ~19KB on its own, so the window starts after it. Read
+    // from the top, the first turn was past the window, and a restart started a
+    // fresh conversation in place of the one it was asked to resume.
+    let head = if crate::codex::rollout_id(&path).is_some() {
+        read_after_first_line(&path, FIRST_TURN_BYTES)
+    } else {
+        read_head(&path, FIRST_TURN_BYTES)
+    };
+    let Ok(head) = head else {
         return false;
     };
     // The pattern holds no newline, so searching the buffer whole is the same
@@ -1364,6 +1373,18 @@ fn read_head(path: &Path, n: u64) -> std::io::Result<Vec<u8>> {
     Ok(buf)
 }
 
+/// `n` bytes from the start of the second line. The first is skipped up to the
+/// same 1MB bound [`rollout_cwd`] reads it with.
+fn read_after_first_line(path: &Path, n: u64) -> std::io::Result<Vec<u8>> {
+    use std::io::{BufRead, Read};
+    let mut r = std::io::BufReader::new(std::fs::File::open(path)?);
+    let mut first = Vec::new();
+    (&mut r).take(1 << 20).read_until(b'\n', &mut first)?;
+    let mut buf = Vec::new();
+    r.take(n).read_to_end(&mut buf)?;
+    Ok(buf)
+}
+
 /// Whether the conversation ended its turn with background work still out: a
 /// shell started with `run_in_background`, or a background agent, that never
 /// reported back.
@@ -1814,6 +1835,38 @@ mod tests {
             .unwrap()
             .contains("Rebase onto develop"));
         assert!(super::has_conversation(id, &dir, Some(&rollout)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A real `session_meta` is longer than the window a first turn is looked
+    /// for in** — ~19KB of base instructions — so the turn has to be looked for
+    /// after it. Read from the top, every Codex conversation read as empty, and a
+    /// restart replaced it with a fresh one.
+    #[test]
+    fn a_codex_turn_behind_a_long_session_meta_is_a_conversation() {
+        let dir = std::env::temp_dir().join(format!("orchd-cxmeta-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let id = uuid::Uuid::new_v4();
+        let rollout = dir.join(format!("rollout-2026-10-13T10-10-02-{id}.jsonl"));
+        let meta = serde_json::json!({
+            "type": "session_meta",
+            "payload": { "cwd": "/repo", "base_instructions": "x".repeat(20 * 1024) },
+        });
+        std::fs::write(
+            &rollout,
+            format!(
+                "{meta}\n{}\n",
+                r#"{"type":"event_msg","payload":{"type":"task_started"}}"#
+            ),
+        )
+        .unwrap();
+        assert!(super::has_conversation(id, &dir, Some(&rollout)));
+
+        std::fs::write(&rollout, format!("{meta}\n")).unwrap();
+        assert!(
+            !super::has_conversation(id, &dir, Some(&rollout)),
+            "no turn yet is still no conversation"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

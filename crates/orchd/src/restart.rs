@@ -144,7 +144,7 @@ pub async fn run_due(app: &Arc<AppState>) {
         let Ok(_swap) = app.swapping.try_lock() else {
             return;
         };
-        tracing::info!(session = %id, "restarting on the installed claude");
+        tracing::info!(session = %id, "restarting on the installed agent");
         let outcome = crate::spawn::relocate_session(app, id, &workspace, GRACE).await;
         /* **Cleared whatever happened.** A respawn under the same id replaced the
         record already, so this finds `false` and changes nothing. A fork left the

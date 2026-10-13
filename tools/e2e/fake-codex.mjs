@@ -288,7 +288,10 @@ async function session() {
       fire('SessionStart', { source: verb === 'resume' ? 'resume' : 'startup' })
     }
     fire('UserPromptSubmit', { turn_id: turnId, prompt: text })
-    append({ type: 'session_meta', payload: { id, cwd: process.cwd() } })
+    // As long as a real one, whose base instructions alone are ~19KB: the
+    // daemon looked for the first turn in the first 8KB, found none behind it,
+    // and every restart started a new conversation.
+    append({ type: 'session_meta', payload: { id, cwd: process.cwd(), base_instructions: 'x'.repeat(19 * 1024) } })
     append({ type: 'event_msg', payload: { type: 'task_started', turn_id: turnId } })
     append({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text }] } })
     // A tool call, so the pre-edit route and the push guard are exercised through

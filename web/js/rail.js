@@ -2158,7 +2158,7 @@ const isRewindable = (/** @type {import('../snapshot').SessionView} */ s) =>
  *
  *  Selects first, because the picker draws in the pane and pressing this on a row
  *  you cannot see would put a modal somewhere out of sight. */
-/** Respawn a session on the `claude` installed now, or take that back.
+/** Respawn a session on the agent installed now, or take that back.
  *
  *  The daemon queues rather than restarts: a session mid-turn goes when its turn
  *  ends, so the toast says which of the two happened rather than "restarted". */
@@ -2169,7 +2169,7 @@ async function restartSession(/** @type {import('../snapshot').SessionView} */ s
   try {
     const r = await callFor(s.id, `/api/session/${s.id}/restart`, cancel ? { cancel: true } : {});
     if (cancel) toast('restart cancelled');
-    else toast(r.now ? 'restarting on the installed Claude Code' : 'restarts when this turn ends');
+    else toast(r.now ? `restarting on the installed ${AGENT_LABEL[s.agent]}` : 'restarts when this turn ends');
   } catch (e) {
     toast(reason(e), true);
   }

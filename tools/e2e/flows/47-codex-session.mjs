@@ -96,7 +96,9 @@ export async function run(t) {
   const day = path.join(t.home, '.codex/sessions/2026/10/11')
   fs.mkdirSync(day, { recursive: true })
   fs.writeFileSync(path.join(day, `rollout-2026-10-11T09-00-00-${outside}.jsonl`), [
-    { type: 'session_meta', payload: { id: outside, cwd: t.repo } },
+    // Real-size: a first turn past the first 8KB went unseen, so this was never
+    // listed and a move of it started a new conversation.
+    { type: 'session_meta', payload: { id: outside, cwd: t.repo, base_instructions: 'x'.repeat(19 * 1024) } },
     { type: 'event_msg', payload: { type: 'task_started' } },
     { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hi' }] } },
   ].map((r) => JSON.stringify(r)).join('\n') + '\n')
