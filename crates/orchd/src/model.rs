@@ -686,7 +686,7 @@ pub struct Session {
     ///
     /// Codex chooses its id and takes none, so it is read off the first hook that
     /// carries one and `codex resume` is given it. `None` for Claude Code, whose id
-    /// is the daemon's, and for a Codex session that never had a turn — which has
+    /// is the daemon's, and for a Codex session that never had a turn, which has
     /// no conversation to resume either.
     pub agent_session_id: Option<String>,
 }

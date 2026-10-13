@@ -1,6 +1,6 @@
 ---
 name: orch
-description: How to reach the orchestrator you are running inside — start or end another session, list the sessions and where they run, or start one of the workspace's declared processes. Use when you want a second session to work in parallel, or need to know what else is running before touching a branch or a worktree.
+description: How to reach the orchestrator you are running inside: start or end another session, list the sessions and where they run, or start one of the workspace's declared processes. Use when you want a second session to work in parallel, or need to know what else is running before touching a branch or a worktree.
 ---
 
 # You are running inside orchd

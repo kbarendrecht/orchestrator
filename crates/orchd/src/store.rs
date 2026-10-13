@@ -612,25 +612,35 @@ pub fn has_conversation(id: uuid::Uuid, cwd: &Path, recorded: Option<&Path>) -> 
     let Some(path) = transcript_file(id, cwd, recorded) else {
         return false;
     };
-    // A Codex rollout opens with `session_meta`, which carries the base
-    // instructions and is ~19KB on its own, so the window starts after it. Read
-    // from the top, the first turn was past the window, and a restart started a
-    // fresh conversation in place of the one it was asked to resume.
-    let head = if crate::codex::rollout_id(&path).is_some() {
-        read_after_first_line(&path, FIRST_TURN_BYTES)
-    } else {
-        read_head(&path, FIRST_TURN_BYTES)
-    };
-    let Ok(head) = head else {
+    if crate::codex::rollout_id(&path).is_some() {
+        return rollout_has_turn(&path);
+    }
+    let Ok(head) = read_head(&path, FIRST_TURN_BYTES) else {
         return false;
     };
     // The pattern holds no newline, so searching the buffer whole is the same
     // search as scanning it by line, without the split.
-    //
-    // A Codex rollout is written from the first turn on, and that turn opens with
-    // `task_started`; nothing in a Claude Code transcript is spelled that way.
-    let head = String::from_utf8_lossy(&head);
-    head.contains(r#""type":"user""#) || head.contains(r#""type":"task_started""#)
+    String::from_utf8_lossy(&head).contains(r#""type":"user""#)
+}
+
+/// Whether a Codex rollout holds a turn: a `task_started` line, which opens each.
+///
+/// **Not a window from the top, as a Claude Code transcript gets.** The rollout
+/// opens with `session_meta`, ~19KB of base instructions, and then one
+/// `thread_settings_applied` of ~2.2KB per settings change made before the first
+/// prompt. A window read from the top missed the turn behind them, and a restart
+/// then started a fresh conversation in place of the one it was asked to resume.
+/// So it reads line by line to the first turn, bounded at 1MB so a file that is
+/// something else is never read whole.
+fn rollout_has_turn(path: &Path) -> bool {
+    use std::io::{BufRead, Read};
+    let Ok(f) = std::fs::File::open(path) else {
+        return false;
+    };
+    std::io::BufReader::new(f.take(1 << 20))
+        .split(b'\n')
+        .map_while(Result::ok)
+        .any(|line| String::from_utf8_lossy(&line).contains(r#""type":"task_started""#))
 }
 
 /// Whether a conversation was ever written to disk.
@@ -881,8 +891,8 @@ fn external_in(
 ///
 /// **Codex files by date, not by directory**: `sessions/YYYY/MM/DD/rollout-…`, with
 /// the cwd on the first line. So the walk is every rollout, and what keeps it cheap
-/// is the same mtime cache [`external_in`] uses — an unchanged file is the previous
-/// answer, read for nothing — plus reading only the head of a new one. Capped per
+/// is the same mtime cache [`external_in`] uses for a listed conversation, and
+/// [`rollout_cwd_cached`] for the rest, so an unchanged file is not read again. Capped per
 /// workspace like the Claude Code list, newest first.
 fn external_codex(
     sessions: &Path,
@@ -924,7 +934,7 @@ fn external_codex(
             out.push(prev.clone());
             continue;
         }
-        let Some(cwd) = rollout_cwd(&path) else {
+        let Some(cwd) = rollout_cwd_cached(&path, last_used) else {
             continue;
         };
         let Some((workspace, at)) = workspaces.iter().find(|(_, p)| *p == cwd) else {
@@ -951,6 +961,31 @@ fn external_codex(
         *n <= EXTERNAL_MAX
     });
     out
+}
+
+/// [`rollout_cwd`], remembered per file and mtime.
+///
+/// `previous` only keeps the conversations that were *listed*, and most rollouts
+/// on a machine belong to other checkouts, so without this every scan re-read and
+/// re-parsed the ~19KB first line of each of them, every minute, per daemon.
+fn rollout_cwd_cached(path: &Path, at: SystemTime) -> Option<PathBuf> {
+    type Seen = std::collections::HashMap<PathBuf, (SystemTime, Option<PathBuf>)>;
+    static SEEN: std::sync::LazyLock<std::sync::Mutex<Seen>> =
+        std::sync::LazyLock::new(Default::default);
+    let hit = SEEN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(path)
+        .filter(|(when, _)| *when == at)
+        .map(|(_, cwd)| cwd.clone());
+    if let Some(cwd) = hit {
+        return cwd;
+    }
+    let cwd = rollout_cwd(path);
+    SEEN.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(path.to_path_buf(), (at, cwd.clone()));
+    cwd
 }
 
 /// The cwd a rollout's `session_meta` records, off its first line.
@@ -1370,18 +1405,6 @@ fn read_head(path: &Path, n: u64) -> std::io::Result<Vec<u8>> {
     use std::io::Read;
     let mut buf = Vec::new();
     std::fs::File::open(path)?.take(n).read_to_end(&mut buf)?;
-    Ok(buf)
-}
-
-/// `n` bytes from the start of the second line. The first is skipped up to the
-/// same 1MB bound [`rollout_cwd`] reads it with.
-fn read_after_first_line(path: &Path, n: u64) -> std::io::Result<Vec<u8>> {
-    use std::io::{BufRead, Read};
-    let mut r = std::io::BufReader::new(std::fs::File::open(path)?);
-    let mut first = Vec::new();
-    (&mut r).take(1 << 20).read_until(b'\n', &mut first)?;
-    let mut buf = Vec::new();
-    r.take(n).read_to_end(&mut buf)?;
     Ok(buf)
 }
 
@@ -1839,7 +1862,7 @@ mod tests {
     }
 
     /// **A real `session_meta` is longer than the window a first turn is looked
-    /// for in** — ~19KB of base instructions — so the turn has to be looked for
+    /// for in** (~19KB of base instructions), so the turn has to be looked for
     /// after it. Read from the top, every Codex conversation read as empty, and a
     /// restart replaced it with a fresh one.
     #[test]
@@ -1856,6 +1879,23 @@ mod tests {
             &rollout,
             format!(
                 "{meta}\n{}\n",
+                r#"{"type":"event_msg","payload":{"type":"task_started"}}"#
+            ),
+        )
+        .unwrap();
+        assert!(super::has_conversation(id, &dir, Some(&rollout)));
+
+        // And behind the ~2.2KB event each settings change writes before a turn,
+        // which pushed it out of any window counted from the top.
+        let setting = serde_json::json!({
+            "type": "event_msg",
+            "payload": { "type": "thread_settings_applied", "settings": "y".repeat(2200) },
+        });
+        std::fs::write(
+            &rollout,
+            format!(
+                "{meta}\n{}{}\n",
+                format!("{setting}\n").repeat(6),
                 r#"{"type":"event_msg","payload":{"type":"task_started"}}"#
             ),
         )

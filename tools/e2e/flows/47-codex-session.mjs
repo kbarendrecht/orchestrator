@@ -68,8 +68,8 @@ export async function run(t) {
   assert.equal(forked.verb, 'fork')
   assert.equal(forked.continues, first.id, 'codex fork is given the id Codex chose')
 
-  // A turnless pane leaves `starting` without a hook — Codex sends none before a
-  // prompt — and a line the daemon types for it lands once the pane is still.
+  // A turnless pane leaves `starting` without a hook (Codex sends none before a
+  // prompt), and a line the daemon types for it lands once the pane is still.
   t.setTurns(0)
   const child = await t.api('POST', `/api/session/${cx}/spawn`, {
     worktree: true,
@@ -90,8 +90,8 @@ export async function run(t) {
   t.setTurns(1)
 
   // A Codex conversation from a terminal in this checkout is listed beside the
-  // daemon's own and adopted on Codex, while the daemon's own Codex sessions —
-  // filed under the ids Codex chose — are not mistaken for outside ones.
+  // daemon's own and adopted on Codex, while the daemon's own Codex sessions,
+  // filed under the ids Codex chose, are not mistaken for outside ones.
   const outside = crypto.randomUUID()
   const day = path.join(t.home, '.codex/sessions/2026/10/11')
   fs.mkdirSync(day, { recursive: true })

@@ -434,11 +434,17 @@ struct Carried {
     /// discarded it a moment later. `None` for a fresh session, which really did
     /// start now.
     created_at: Option<std::time::SystemTime>,
-    /// Both: a fork is continued by the agent that holds the conversation. The
-    /// agent's own id is resume only, since a fork is a conversation the agent
-    /// names afresh.
+    /// Both: a fork is continued by the agent that holds the conversation.
     agent: crate::agent::Agent,
+    /// Both, and a fork is why. A Codex fork is `codex fork <their id>`, and the
+    /// id is the parent's, so it travels until [`agent_argv`] has read it and
+    /// cleared it: a fork's own id is the one Codex picks.
     agent_session_id: Option<String>,
+    /// A Codex rollout, on a resume. Codex sends no hook until the next prompt,
+    /// so until then nothing else can name the file, and a move in that window
+    /// read the conversation as empty and started a new one. A Claude Code
+    /// transcript is found from the id, so it needs no carry.
+    transcript: Option<PathBuf>,
 }
 
 impl Carried {
@@ -467,11 +473,10 @@ impl Carried {
             // forked, so the files you rewrote before it existed are news to it.
             created_at: (!fork).then_some(prev.created_at),
             agent: prev.agent,
-            agent_session_id: if fork {
-                None
-            } else {
-                prev.agent_session_id.clone()
-            },
+            agent_session_id: prev.agent_session_id.clone(),
+            transcript: (prev.agent == crate::agent::Agent::Codex && !fork)
+                .then(|| prev.transcript_path.clone())
+                .flatten(),
         }
     }
 
@@ -504,6 +509,9 @@ impl Carried {
         session.forked_from = self.forked_from;
         session.agent = self.agent;
         session.agent_session_id = self.agent_session_id;
+        if self.transcript.is_some() {
+            session.transcript_path = self.transcript;
+        }
         self.branch
     }
 }
@@ -609,6 +617,7 @@ async fn spawn_session_with_id(
         if rollout.is_some() {
             carried.agent = crate::agent::Agent::Codex;
             carried.agent_session_id = Some(id.to_string());
+            carried.transcript = rollout.clone();
         }
         let at = path.clone();
         carried.had_a_turn =
@@ -1253,7 +1262,7 @@ enum Begin {
 ///
 /// **After both on purpose.** Codex's flags are asked of the `codex` that this
 /// session's `PATH` finds, and its first prompt is its argv rather than typed, so
-/// a site that built its argv first — which every one did — would hand it the
+/// a site that built its argv first (every one did) would hand it the
 /// daemon's `PATH` and an empty first turn.
 ///
 /// The ids are translated here. Claude Code's are the daemon's. Codex's is the
@@ -2052,22 +2061,27 @@ const READY_AT_MOST: std::time::Duration = std::time::Duration::from_secs(10);
 /// A Codex session's `SessionStart`, which Codex does not send until a prompt is.
 ///
 /// Measured on 0.162.1: nothing fires while the TUI sits at an empty prompt, so a
-/// Codex session would read `starting` until you typed — and a line the daemon has
+/// Codex session would read `starting` until you typed, and a line the daemon has
 /// to type for it (`orch new --prompt`, a run handed to a live pane) had no moment
 /// to go in at. A prompt known at spawn goes in the argv instead
 /// ([`crate::agent::Agent::prompt_in_argv`]); this is for the rest.
 ///
 /// The signal is the pty: drawn, then still. **Typed too early, a line is lost**,
-/// which a probe that wrote after a fixed second showed — nothing fired at all. So
+/// which a probe that wrote after a fixed second showed: nothing fired at all. So
 /// it waits for the first output and then for [`READY_QUIET`] of none, bounded by
 /// [`READY_AT_MOST`] for a pane that keeps redrawing.
 fn watch_ready(app: Arc<AppState>, id: SessionId, handle: Arc<PtyHandle>) {
     tokio::spawn(async move {
         use tokio::sync::broadcast::error::RecvError;
         let mut out = handle.subscribe();
-        let drew = tokio::time::timeout(std::time::Duration::from_secs(30), out.recv()).await;
-        if matches!(drew, Ok(Err(RecvError::Closed))) {
-            return;
+        // Subscribed only once `started` runs, after the spawn, so a Codex that drew
+        // its prompt first has already said everything it will: that output is in
+        // the ring, and waiting for more read as `starting` for the whole 30s.
+        if handle.snapshot().is_empty() {
+            let drew = tokio::time::timeout(std::time::Duration::from_secs(30), out.recv()).await;
+            if matches!(drew, Ok(Err(RecvError::Closed))) {
+                return;
+            }
         }
         let began = std::time::Instant::now();
         loop {
@@ -2984,6 +2998,41 @@ mod tests {
         // And the one that does: a fork replays the parent's turns, so it opens on
         // a conversation rather than an empty pane.
         assert!(next.had_a_turn);
+    }
+
+    /// **A Codex conversation is found by what Codex named it**, so both of those
+    /// have to travel. A resume carries the rollout, which nothing else can name
+    /// until Codex sends a hook, and a move in that window read the conversation as
+    /// empty. A fork carries the parent's id into `agent_argv`, which reads it for
+    /// `codex fork` and then clears it; cleared here, the fork started blank.
+    #[test]
+    fn a_codex_conversation_travels_by_its_own_id_and_rollout() {
+        let rollout = PathBuf::from("/home/x/.codex/sessions/rollout-2026-10-13T10-10-02-a.jsonl");
+        let mut prev = Session::new(Uuid::new_v4(), "wt".into(), PathBuf::from("/tmp"), None);
+        prev.agent = crate::agent::Agent::Codex;
+        prev.agent_session_id = Some("theirs".into());
+        prev.transcript_path = Some(rollout.clone());
+
+        let mut resumed = Session::new(prev.id, "wt".into(), PathBuf::from("/tmp"), None);
+        Carried::from(Some(&prev), false).apply(&mut resumed);
+        assert_eq!(
+            resumed.transcript_path,
+            Some(rollout),
+            "the rollout, on a resume"
+        );
+        assert_eq!(resumed.agent_session_id.as_deref(), Some("theirs"));
+
+        let mut forked = Session::new(Uuid::new_v4(), "wt".into(), PathBuf::from("/tmp"), None);
+        Carried::from(Some(&prev), true).apply(&mut forked);
+        assert_eq!(
+            forked.agent_session_id.as_deref(),
+            Some("theirs"),
+            "the parent's id, for `codex fork` to be given"
+        );
+        assert_eq!(
+            forked.transcript_path, None,
+            "a fork writes a rollout of its own"
+        );
     }
 
     /// What the exit watcher published, for the test below.

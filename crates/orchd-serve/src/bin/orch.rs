@@ -52,7 +52,7 @@ orch — talk to the orchestrator you are running inside
       Not for you to call — the daemon registers this as a PreToolUse hook.
 
   orch hook <route>
-      Not for you to call — how a Codex session's hooks reach the daemon.
+      Not for you to call: how a Codex session's hooks reach the daemon.
 
 `orch <command> --help` for the flags each one takes.
 
@@ -679,7 +679,7 @@ fn main() -> ExitCode {
     }
 }
 
-/// `orch hook <route>` — one of a Codex session's hooks, handed to the daemon.
+/// `orch hook <route>`: one of a Codex session's hooks, handed to the daemon.
 ///
 /// **Codex runs only command hooks**, where Claude Code posts to the daemon over
 /// HTTP itself, so this is that HTTP hook as a process: the same route, the same

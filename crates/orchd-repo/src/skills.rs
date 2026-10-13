@@ -184,7 +184,7 @@ pub fn flag() -> Vec<String> {
 /// files in your checkout, and in `~/.agents/skills`, which would hand them to
 /// every Codex you run. Its plugins install into a cache that outlives the
 /// process. So the skills stay where [`write_plugin`] puts them for Claude Code,
-/// and these instructions name each one and its file — handed to the process as
+/// and these instructions name each one and its file, handed to the process as
 /// `developer_instructions`, the per-invocation layer Codex does have. Measured on
 /// 0.162.1: told the path that way, it reads the file and follows it.
 ///

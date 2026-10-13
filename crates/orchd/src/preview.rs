@@ -243,7 +243,7 @@ pub async fn scratchpad_image(
     if !kind.starts_with("image/") {
         return StatusCode::NOT_FOUND.into_response();
     }
-    let Some(bytes) = scratchpad_read(&app, q).await else {
+    let Some(bytes) = scratchpad_read(&app, q, true).await else {
         return StatusCode::NOT_FOUND.into_response();
     };
     let mut response = image_response(kind, bytes);
@@ -257,12 +257,22 @@ pub async fn scratchpad_image(
 /// Refused when it is not UTF-8, the way `/api/file` refuses a binary file.
 pub async fn scratchpad_file(
     State(app): State<Arc<AppState>>,
+    method: axum::http::Method,
     Query(q): Query<ScratchpadQuery>,
 ) -> Response {
     if content_type(&q.path).starts_with("image/") {
         return StatusCode::NOT_FOUND.into_response();
     }
-    let Some(content) = scratchpad_read(&app, q)
+    // The page's underline check is a HEAD, one per path an agent prints. axum
+    // answers HEAD through this handler, so without this each check read the
+    // whole file and encoded it to throw the body away.
+    if method == axum::http::Method::HEAD {
+        return match scratchpad_read(&app, q, false).await {
+            Some(_) => StatusCode::OK.into_response(),
+            None => StatusCode::NOT_FOUND.into_response(),
+        };
+    }
+    let Some(content) = scratchpad_read(&app, q, true)
         .await
         .and_then(|b| String::from_utf8(b).ok())
     else {
@@ -281,7 +291,9 @@ pub async fn scratchpad_file(
 /// [`in_scratchpad`]. **`scratchpad/<file>` is taken too**: an agent names its
 /// own scratchpad that way in prose, so it is resolved against this session's
 /// folder rather than the workspace, and then held to the same check.
-async fn scratchpad_read(app: &AppState, q: ScratchpadQuery) -> Option<Vec<u8>> {
+///
+/// `body: false` makes every check and reads nothing, for a HEAD.
+async fn scratchpad_read(app: &AppState, q: ScratchpadQuery, body: bool) -> Option<Vec<u8>> {
     let cwd = {
         let inner = app.inner.read().await;
         inner.sessions.get(&q.session).map(|s| s.cwd.clone())
@@ -312,6 +324,9 @@ async fn scratchpad_read(app: &AppState, q: ScratchpadQuery) -> Option<Vec<u8>> 
         let md = std::fs::metadata(&at).ok()?;
         if !md.is_file() || md.len() > MAX_BYTES {
             return None;
+        }
+        if !body {
+            return Some(Vec::new());
         }
         std::fs::read(&at).ok()
     })

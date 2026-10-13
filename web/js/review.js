@@ -1604,7 +1604,7 @@ function renderBar() {
  *  card and send on the final screen. On a card that is the one way to accept
  *  from a reply box, where Enter is a newline. Through the button rather than
  *  straight to `sendBatch`, or the shortcut sends a batch the button itself
- *  refuses — which it did until now. */
+ *  refuses, which it did until now. */
 function sendFromKeyboard() {
   const send = /** @type {HTMLButtonElement|null} */ (
     $('rvoverlay').querySelector('.acts .act.warm'));

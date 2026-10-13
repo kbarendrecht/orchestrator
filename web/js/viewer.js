@@ -143,6 +143,12 @@ export function create(on) {
   document.addEventListener('keydown', (ev) => {
     if (ev.key.toLowerCase() !== 'a' || !appMod(ev) || ev.shiftKey) return;
     if (!on.mount.offsetParent) return;
+    // Every viewer listens on the document, and two can be up at once: the file
+    // pane opened over the finder. Only the one actually on top may answer, or
+    // the later one selected its file under the one you were looking at.
+    const box = on.mount.getBoundingClientRect();
+    const top = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+    if (!top || !on.mount.contains(top)) return;
     const t = /** @type {HTMLElement} */ (ev.target);
     if (t.closest?.('input, textarea, [contenteditable]')) return;
     ev.preventDefault();

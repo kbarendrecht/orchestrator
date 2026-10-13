@@ -1346,7 +1346,10 @@ function fillSessions(/** @type {HTMLElement} */ group, /** @type {import('./cor
      while a snapshot landed did nothing at all. Built every time to read its
      HTML, which is cheap; inserted only when that HTML changed. */
   const add = addRow(c, state);
-  items.push({ key: 'add', sig: add.outerHTML, build: () => add });
+  // Plus what its menus close over and its HTML does not show: which agents
+  // the right-click offers and which of them it marks as the default.
+  const addSig = `${add.outerHTML}|${(state.agents || []).join()}|${state.default_agent}`;
+  items.push({ key: 'add', sig: addSig, build: () => add });
   /* **The rows, in the box `archivedToggle` opens from the add row above.** The box is
      bounded in CSS at about ten rows rather than truncated, and it is also what
      says "section" now that the control naming it rides the header —

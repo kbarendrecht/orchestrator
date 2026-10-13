@@ -1813,6 +1813,11 @@ pub async fn resume_external(
                 crate::model::short_id(&id)
             );
         };
+        // Listed from `~/.codex` whatever this checkout has installed, so the
+        // refusal a new session gets from `agent_for` is needed here too.
+        if !inner.agents.contains(&found.agent) {
+            refuse!("{} is not on this checkout's PATH", found.agent);
+        }
         (
             found.workspace.clone(),
             found.last_used,

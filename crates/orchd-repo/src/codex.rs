@@ -59,28 +59,46 @@ pub fn rollout_id(path: &Path) -> Option<String> {
 /// under.
 ///
 /// `session_index.jsonl` holds one line per naming, appended, so **the last line
-/// for an id wins** — the same rule as Claude Code's `ai-title`. Codex writes it
+/// for an id wins**, the same rule as Claude Code's `ai-title`. Codex writes it
 /// once the first turn is done, so `None` before then is ordinary.
 pub fn thread_name(id: &str) -> Option<String> {
-    let text = std::fs::read_to_string(home()?.join("session_index.jsonl")).ok()?;
-    thread_name_in(&text, id)
+    /* **Parsed once per version of the file, not once per call.** The index only
+    grows, and this is asked for every restored Codex record at boot and every
+    newly listed outside conversation. Keyed by mtime and length, since an append
+    can land inside one mtime tick. */
+    type Index = (
+        std::time::SystemTime,
+        u64,
+        std::collections::HashMap<String, String>,
+    );
+    static INDEX: std::sync::Mutex<Option<Index>> = std::sync::Mutex::new(None);
+    let path = home()?.join("session_index.jsonl");
+    let meta = std::fs::metadata(&path).ok()?;
+    let key = (meta.modified().ok()?, meta.len());
+    let mut cached = INDEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if cached
+        .as_ref()
+        .is_none_or(|(at, len, _)| (*at, *len) != key)
+    {
+        let text = std::fs::read_to_string(&path).ok()?;
+        *cached = Some((key.0, key.1, thread_names(&text)));
+    }
+    cached.as_ref()?.2.get(id).cloned()
 }
 
-fn thread_name_in(index: &str, id: &str) -> Option<String> {
+/// Every id's name, the last line for an id winning.
+fn thread_names(index: &str) -> std::collections::HashMap<String, String> {
     index
         .lines()
-        .rev()
-        .filter(|l| l.contains(id))
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
-        .filter(|v| v.get("id").and_then(|i| i.as_str()) == Some(id))
         .filter_map(|v| {
-            v.get("thread_name")
-                .and_then(|n| n.as_str())
-                .map(str::trim)
-                .filter(|n| !n.is_empty())
-                .map(str::to_string)
+            let id = v.get("id")?.as_str()?.to_string();
+            let name = v.get("thread_name")?.as_str()?.trim();
+            (!name.is_empty()).then(|| (id, name.to_string()))
         })
-        .next()
+        .collect()
 }
 
 /// The `-c` values for the daemon's hooks, written at every start beside
@@ -137,7 +155,7 @@ pub fn hook_override(event: &str, groups: &[HookGroup<'_>]) -> String {
 /// the skills.
 ///
 /// `cwd`, `env` and `unset` are the session's own, because the `codex` that
-/// answers for the hashes must be the one the pty will run — a checkout pins its
+/// answers for the hashes must be the one the pty will run. A checkout pins its
 /// own through mise, and it is a node script that needs that checkout's `node`.
 ///
 /// Never fails a spawn. A session whose hooks cannot be trusted still runs, with
@@ -156,8 +174,8 @@ pub fn flags(cwd: &Path, env: &[(String, String)], unset: &[&str]) -> Vec<String
         }
     };
     // **The directory, named, on every start.** A resume or a fork in a directory
-    // other than the one the conversation last ran in stops at a picker — "use
-    // session directory" or "use current directory" — whose default is the *old*
+    // other than the one the conversation last ran in stops at a picker ("use
+    // session directory" or "use current directory") whose default is the *old*
     // one, and the daemon starts conversations somewhere new all the time: a fork
     // cuts a worktree, a swap and a move resume elsewhere. Measured on 0.162.1, the
     // line the daemon typed next went into the picker, and the fork would have
@@ -383,8 +401,11 @@ mod tests {
             r#"{"id":"a","thread_name":"renamed","updated_at":"3"}"#,
             "\n",
         );
-        assert_eq!(thread_name_in(index, "a").as_deref(), Some("renamed"));
-        assert_eq!(thread_name_in(index, "c"), None);
+        assert_eq!(
+            thread_names(index).get("a").map(String::as_str),
+            Some("renamed")
+        );
+        assert_eq!(thread_names(index).get("c"), None);
     }
 
     #[test]

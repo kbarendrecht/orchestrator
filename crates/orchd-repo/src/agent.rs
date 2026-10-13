@@ -4,7 +4,7 @@
 //! is a fact about a program somebody else ships, and a `match` per fact keeps
 //! each one next to its twin, where a third agent would have to answer it too.
 //! What is the same for both stays where it was: the pty, the state machine, the
-//! hook routes. The hooks are the one place the two meet halfway — Codex adopted
+//! hook routes. The hooks are the one place the two meet halfway: Codex adopted
 //! Claude Code's payloads and its `PreToolUse` answer, so one set of handlers
 //! serves both and only the delivery differs.
 //!
@@ -56,7 +56,7 @@ impl Agent {
     /// Claude Code fires `SessionStart` once its prompt box is up, and the daemon
     /// types the line then: `initialUserMessage` is honoured only headless. Codex
     /// fires `SessionStart` inside the first turn instead, so there is no moment to
-    /// type at — measured on 0.162.1, nothing fired until a prompt was sent — and
+    /// type at (measured on 0.162.1, nothing fired until a prompt was sent), and
     /// both `codex [PROMPT]` and `codex resume <id> [PROMPT]` submit it on arrival.
     pub fn prompt_in_argv(self) -> bool {
         matches!(self, Agent::Codex)

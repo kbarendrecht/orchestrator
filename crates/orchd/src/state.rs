@@ -738,20 +738,26 @@ impl AppState {
     /// same reason as the preflight: an agent installed later is a restart away.
     pub async fn probe_agents(self: &Arc<Self>) {
         let (main, source) = (self.cfg.main_checkout.clone(), self.cfg.env_source);
-        let found = crate::proc::run_blocking("looking for the agents", move || {
+        // The last pick is read here too, off the runtime: `AppState::new` runs on
+        // a tokio worker, where a `std::fs` read is not allowed.
+        let (found, last) = crate::proc::run_blocking("looking for the agents", move || {
             let env = crate::env_source::read(source, &main);
-            crate::agent::Agent::ALL
+            let found = crate::agent::Agent::ALL
                 .into_iter()
                 .filter(|a| crate::pty::which(a.program(), &main, &env, &[]).is_ok())
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>();
+            (found, crate::store::load_last_agent())
         })
         .await
         .unwrap_or_default();
         tracing::info!(?found, "agents on this checkout's PATH");
+        let mut inner = self.inner.write().await;
+        inner.last_agent = last;
         if !found.is_empty() {
-            self.inner.write().await.agents = found;
-            self.notify().await;
+            inner.agents = found;
         }
+        drop(inner);
+        self.notify().await;
     }
 
     /// The agent a new session gets: the one asked for, which is then remembered,
@@ -786,9 +792,14 @@ impl AppState {
     /// What a session started without naming an agent runs: the configured
     /// default when it is installed, else the one picked last.
     fn default_agent(&self, inner: &Inner) -> crate::agent::Agent {
+        let installed = |a: &crate::agent::Agent| inner.agents.contains(a);
+        // The last pick is a fallback, not a promise: it defaults to Claude Code,
+        // and a checkout with only Codex on PATH would start `claude` and die.
         self.settings()
             .default_agent
-            .filter(|a| inner.agents.contains(a))
+            .filter(installed)
+            .or(Some(inner.last_agent).filter(installed))
+            .or(inner.agents.first().copied())
             .unwrap_or(inner.last_agent)
     }
 
@@ -878,7 +889,7 @@ impl AppState {
                 pr_error: None,
                 agent_error: None,
                 agents: vec![crate::agent::Agent::Claude],
-                last_agent: crate::store::load_last_agent(),
+                last_agent: crate::agent::Agent::default(),
                 machine: Vec::new(),
                 pr_fetched: None,
                 pr_poll: 0,
@@ -2646,6 +2657,22 @@ mod tests {
         s.set_state(State::Working);
         inner.sessions.insert(id, s);
         id
+    }
+
+    /// **The fallback is held to what is installed too.** The last pick defaults
+    /// to Claude Code, so a checkout with only Codex on PATH started `claude`.
+    #[tokio::test]
+    async fn a_plain_press_never_starts_an_agent_that_is_not_installed() {
+        let app = app().await;
+        {
+            let mut inner = app.inner.write().await;
+            inner.agents = vec![crate::agent::Agent::Codex];
+            inner.last_agent = crate::agent::Agent::Claude;
+        }
+        assert_eq!(
+            app.agent_for(None).await.ok(),
+            Some(crate::agent::Agent::Codex)
+        );
     }
 
     /// **Nothing is written over the store before boot has read it.** The agent

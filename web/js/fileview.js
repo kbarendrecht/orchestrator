@@ -164,7 +164,11 @@ export async function openScratch(ws, session, abs, at = activeCheckout()) {
   $('fvoverlay').classList.add('on');
   if (content == null) viewer().image(abs, scratchUrl(at.base, session, abs));
   else viewer().showText(abs, content);
+  // The same two steps `show` takes, or a handoff `.md` opened as source under a
+  // button that said it was rendered, and the first press seemed to do nothing.
+  if (content != null && viewer().renderable() && state.rendered) viewer().render();
   renderHead(true);
+  if (bar.on) runSeek(false);
 }
 
 /** Put the files under a folder an agent printed under the pointer, one menu level

@@ -4,7 +4,7 @@
 //
 // It honours what the daemon depends on from Codex, and no more:
 //
-//   1. The argv — `resume <id>` and `fork <id>` first, `-c key=value` overrides,
+//   1. The argv: `resume <id>` and `fork <id>` first, `-c key=value` overrides,
 //      and the positionals behind `--`, the last of which is the first prompt.
 //   2. **Trust.** Real Codex skips a hook it was not told to trust, silently, so a
 //      daemon that got the hashes wrong would pass every flow while the rail never
@@ -12,7 +12,7 @@
 //      its own: `app-server` answers `hooks/list` with them, the way Codex does, so
 //      the daemon has to ask rather than guess.
 //   3. The hooks, fired from the `-c` overrides rather than hardcoded, with
-//      Codex's own payload — its own session id, not the daemon's — and with
+//      Codex's own payload (its own session id, not the daemon's), and with
 //      `SessionStart` arriving inside the first turn, which is the Codex habit the
 //      daemon had to be built around.
 //   4. A rollout under `$CODEX_HOME/sessions`, written from the first turn, and a
@@ -190,7 +190,7 @@ async function session() {
   for (const d of hooks) {
     if (state[d.key]?.trusted_hash !== d.hash) {
       throw new Error(
-        `fake-codex: the ${d.event} hook is not trusted (key ${d.key}) — real Codex ` +
+        `fake-codex: the ${d.event} hook is not trusted (key ${d.key}); real Codex ` +
           'would skip it in silence; `codex::flags` must hand back the hashes `hooks/list` gave',
       )
     }

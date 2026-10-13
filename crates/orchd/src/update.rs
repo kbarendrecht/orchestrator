@@ -48,15 +48,25 @@ use orchd_base::install::Install;
 /// project, `claude` not installed by mise at all — because this drives a nudge.
 /// Something that cannot answer must be silent rather than shout.
 pub fn check(main: &Path) -> Option<AgentUpdate> {
-    // Each agent in turn, Claude Code first. The bar holds one update at a time,
-    // and the second is offered once the first is installed.
-    crate::agent::Agent::ALL
+    // One `mise ls` and one `outdated` for every agent, not one each: this runs on
+    // every spawn, and `outdated` is a network lookup. Asked lazily, so a machine
+    // with no agent under mise asks nothing.
+    let found: Vec<(crate::agent::Agent, String)> = crate::agent::Agent::ALL
         .into_iter()
-        .find_map(|agent| check_one(main, agent))
-}
-
-fn check_one(main: &Path, agent: crate::agent::Agent) -> Option<AgentUpdate> {
-    let tool = agent_providing_tool(main, agent)?;
+        .filter_map(|agent| Some((agent, agent_install_path(main, agent)?)))
+        .collect();
+    if found.is_empty() {
+        return None;
+    }
+    let listed = mise(
+        main,
+        &["ls", "--current", "--json"],
+        "naming the agent's mise tool",
+    );
+    let tools: Vec<(crate::agent::Agent, String)> = found
+        .into_iter()
+        .filter_map(|(agent, at)| Some((agent, tool_providing(&at, listed.as_ref())?)))
+        .collect();
     // `--json` rather than the table: the human output is columns of padded
     // text, and `{}` for "nothing outdated" is unambiguous where an empty table
     // is not.
@@ -64,16 +74,18 @@ fn check_one(main: &Path, agent: crate::agent::Agent) -> Option<AgentUpdate> {
     // Named, rather than asking about every tool the checkout pins. Bare
     // `outdated` reaches each tool's own backend — seven registries here, one of
     // them answering 404 and warning about it every time — and the answer is
-    // thrown away but for one line. Asked about the agent alone it is a single
-    // lookup off mise's cache, which is what makes polling this often affordable.
-    let out = mise(
-        main,
-        &["outdated", "--json", &tool],
-        "the agent version check",
-    )?;
-    let mut u = parse(&out.stdout, &tool)?;
-    u.agent = agent;
-    Some(u)
+    // thrown away but for one line. Asked about the agents alone it is a lookup
+    // off mise's cache, which is what makes polling this often affordable.
+    let mut args = vec!["outdated", "--json"];
+    args.extend(tools.iter().map(|(_, t)| t.as_str()));
+    let out = mise(main, &args, "the agent version check")?;
+    // Claude Code first, as `Agent::ALL` orders them. The bar holds one update at a
+    // time, and the second is offered once the first is installed.
+    tools.into_iter().find_map(|(agent, tool)| {
+        let mut u = parse(&out.stdout, &tool)?;
+        u.agent = agent;
+        Some(u)
+    })
 }
 
 /// How long a `mise` query may take before it is killed. These reach mise's
@@ -112,29 +124,29 @@ pub(crate) fn mise(main: &Path, args: &[&str], label: &str) -> Option<std::proce
 /// cannot offer to upgrade something it does not know how to.
 ///
 /// **The folder is not always the name.** mise files a backend's tool under its
-/// name with the punctuation folded — `npm:@openai/codex` lives in
-/// `installs/npm-openai-codex/` — and `outdated` answers `{}` for a name it does
+/// name with the punctuation folded (`npm:@openai/codex` lives in
+/// `installs/npm-openai-codex/`), and `outdated` answers `{}` for a name it does
 /// not know, exactly as it does for a tool that is current. Asked by its folder,
 /// Codex would never be nudged and nothing would say so. So the name is read back
 /// from `mise ls`, which lists each tool beside the folder it installed.
-fn agent_providing_tool(main: &Path, agent: crate::agent::Agent) -> Option<String> {
+fn tool_providing(at: &str, listed: Option<&std::process::Output>) -> Option<String> {
+    let folder = tool_of_install_path(at)?;
+    Some(
+        listed
+            .and_then(|l| tool_installed_at(&l.stdout, at))
+            .unwrap_or(folder),
+    )
+}
+
+/// Where `mise which` finds the agent's binary, the half of the question above
+/// that is asked once per agent.
+fn agent_install_path(main: &Path, agent: crate::agent::Agent) -> Option<String> {
     let out = mise(
         main,
         &["which", agent.program()],
         "resolving the agent's mise tool",
     )?;
-    let at = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    let folder = tool_of_install_path(&at)?;
-    let listed = mise(
-        main,
-        &["ls", "--current", "--json"],
-        "naming the agent's mise tool",
-    );
-    Some(
-        listed
-            .and_then(|l| tool_installed_at(&l.stdout, &at))
-            .unwrap_or(folder),
-    )
+    Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
 /// The tool whose install folder holds `path`, out of `mise ls --json`.
