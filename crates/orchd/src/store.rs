@@ -79,6 +79,12 @@ pub struct SessionRecord {
     pub created_at: SystemTime,
     /// Recorded next to the session so a crashed daemon's orphans can be found
     /// in the process table on the next start (§8b).
+    ///
+    /// **Only while the process is the session's.** The exit watcher clears it and
+    /// a restore never carries it back, because the next start *kills* what this
+    /// names: a number left on a record outlives its process, the kernel hands it
+    /// to something else, and that something — another checkout's agent, an
+    /// editor — took a `SIGTERM` from a daemon that had never heard of it.
     pub pid: Option<u32>,
     /// Whether this was live when the record was last written. The daemon owns
     /// the pty, so a crash kills the process — this is the only way to know
@@ -173,7 +179,10 @@ impl SessionRecord {
         s.transcript_archived = self.transcript_archived;
         s.recovery = self.recovery;
         s.created_at = self.created_at;
-        s.pid = self.pid;
+        // `pid` is deliberately not carried: whatever it named died with the daemon
+        // that spawned it, and `reap_orphans` has already acted on the record. A
+        // restored session that kept it would write it back on every persist until
+        // the number was reused — see `SessionRecord::pid`.
         s.forked_from = self.forked_from;
         s.interrupted = self.interrupted;
         s.had_a_turn = self.had_a_turn;
@@ -545,9 +554,13 @@ pub fn prune_ghosts(mut records: Vec<SessionRecord>) -> (Vec<SessionRecord>, usi
 ///
 /// Anything still alive from a previous run is an orphan: the daemon spawns
 /// every session and nothing else adopts them (§8b).
+///
+/// **Only a record that was live.** A session that had already exited when the
+/// record was written left nothing running, so its number is either nobody's or
+/// somebody else's — and `kill` cannot tell those apart.
 pub fn reap_orphans(records: &[SessionRecord]) -> usize {
     let mut killed = 0;
-    for r in records {
+    for r in records.iter().filter(|r| r.was_live) {
         let Some(pid) = r.pid else { continue };
         if !pid_alive(pid) {
             continue;
@@ -1505,6 +1518,43 @@ fn read_tail(path: &Path, n: u64) -> std::io::Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    /// The next start `SIGTERM`s what a record's pid names, so a pid may only
+    /// reach that start from a record that was live — and a restore must not carry
+    /// one forward, or every later persist writes it back until the number is
+    /// somebody else's. A live `sleep` stands in for the unrelated process that
+    /// inherited the number.
+    #[test]
+    fn only_a_live_record_s_pid_is_reaped_and_a_restore_drops_it() {
+        use super::*;
+        let mut bystander = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawning sleep");
+        let mut r = SessionRecord::of(&Session::new(
+            uuid::Uuid::new_v4(),
+            MAIN.to_string(),
+            PathBuf::from("/tmp"),
+            None,
+        ));
+        r.pid = Some(bystander.id());
+        r.was_live = false;
+
+        assert!(
+            r.clone().restore().pid.is_none(),
+            "a restored session must not keep a dead daemon's pid"
+        );
+        assert_eq!(reap_orphans(std::slice::from_ref(&r)), 0);
+        assert!(
+            bystander.try_wait().expect("polling sleep").is_none(),
+            "a record that was not live must not reach the process its pid now names"
+        );
+
+        r.was_live = true;
+        assert_eq!(reap_orphans(std::slice::from_ref(&r)), 1);
+        let _ = bystander.kill();
+        let _ = bystander.wait();
+    }
+
     /// A background shell that never reported back is work the restart stopped;
     /// one that did report is not, and a notification for a task started before
     /// the tail does no harm.

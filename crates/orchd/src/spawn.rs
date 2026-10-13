@@ -2146,6 +2146,10 @@ pub(crate) fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<
                     if s.state.is_live() {
                         s.set_state(State::Exited);
                     }
+                    // The process is reaped, so the number is free for the kernel
+                    // to hand out again — and the next start kills whatever a
+                    // record's pid names. See `store::SessionRecord::pid`.
+                    s.pid = None;
                     if let Some(pass) = &s.pass {
                         if Pass::posts_proposals(&pass.command) {
                             posting_for = Some(pass.pr);
@@ -2826,6 +2830,62 @@ mod tests {
             "a session you ended reads as a fault: {:?}",
             inner.agent_error
         );
+        drop(inner);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A reaped process's number is the kernel's to reuse, and the next start
+    /// `SIGTERM`s whatever a record's pid names — so the exit that frees the number
+    /// has to take it off the record.
+    #[tokio::test]
+    async fn an_exited_session_forgets_its_pid() {
+        use crate::pty::PtyHandle;
+
+        let (app, dir) = crate::testutil::app("exitpid");
+        let spawned = PtyHandle::spawn(
+            &["cat".to_string()],
+            std::path::Path::new("/tmp"),
+            &[],
+            &[],
+            (24, 80),
+        )
+        .unwrap();
+
+        let id = Uuid::new_v4();
+        {
+            let mut inner = app.inner.write().await;
+            let mut s = Session::new(id, MAIN.to_string(), dir.clone(), None);
+            s.pty = Some(spawned.handle.clone());
+            s.pid = spawned.pid;
+            // A turn, so the exit archives the row rather than forgetting it: the
+            // record has to survive for its pid to matter.
+            s.set_state(State::Working);
+            inner.sessions.insert(id, s);
+        }
+        assert!(spawned.pid.is_some(), "the spawn reports a pid");
+        watch_session_exit(app.clone(), id, spawned.handle.clone());
+        spawned.handle.kill_gracefully().await;
+        for _ in 0..200 {
+            if app
+                .inner
+                .read()
+                .await
+                .sessions
+                .get(&id)
+                .is_some_and(|s| !s.state.is_live())
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        let inner = app.inner.read().await;
+        let s = inner
+            .sessions
+            .get(&id)
+            .expect("a session with a turn is kept");
+        assert!(!s.state.is_live(), "the watcher settled the exit");
+        assert_eq!(s.pid, None, "an exited session must not keep its pid");
         drop(inner);
         let _ = std::fs::remove_dir_all(&dir);
     }

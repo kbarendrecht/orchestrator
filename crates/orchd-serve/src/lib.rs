@@ -166,7 +166,7 @@ impl Server {
         `AppState::persist` now refuses to write while `shutting_down` is set, so
         the last word on disk is this set rather than whichever watcher ran last
         — and the kills below can be waited on. */
-        let resume_set = self.app.session_records().await;
+        let mut resume_set = self.app.session_records().await;
 
         // And before the lock is taken, because each of these is a bounded child
         // process. A watcher running through `docker compose exec` outlives its
@@ -177,13 +177,19 @@ impl Server {
         // The handles, out from under the lock: the escalation below awaits, and
         // holding the write lock across it would park every hook and snapshot for
         // as long as the slowest child takes to go.
-        let handles: Vec<std::sync::Arc<orchd::pty::PtyHandle>> = {
+        // Each handle with the session it belongs to, if it belongs to one, so a
+        // session whose process is confirmed gone can lose its pid below.
+        type Owned = (
+            Option<orchd::model::SessionId>,
+            std::sync::Arc<orchd::pty::PtyHandle>,
+        );
+        let handles: Vec<Owned> = {
             let mut inner = self.app.inner.write().await;
-            let mut all: Vec<_> = inner
+            let mut all: Vec<Owned> = inner
                 .sessions
                 .values()
-                .filter_map(|s| s.pty.clone())
-                .filter(|h| h.is_alive())
+                .filter_map(|s| Some((Some(s.id), s.pty.clone()?)))
+                .filter(|(_, h)| h.is_alive())
                 .collect();
             for w in inner.workspaces.values_mut() {
                 // The pty only. A `stop_command` is a bounded child of its own and
@@ -193,7 +199,8 @@ impl Server {
                     w.processes
                         .iter()
                         .filter_map(|p| p.pty.clone())
-                        .filter(|h| h.is_alive()),
+                        .filter(|h| h.is_alive())
+                        .map(|h| (None, h)),
                 );
                 w.processes.clear();
             }
@@ -218,10 +225,23 @@ impl Server {
         `sleep` grandchild were gone. Before this it exited at once and left
         them. */
         let mut going = tokio::task::JoinSet::new();
-        for h in handles {
-            going.spawn(async move { h.kill_gracefully().await });
+        for (id, h) in handles {
+            going.spawn(async move { (id, h.kill_gracefully().await) });
         }
-        while going.join_next().await.is_some() {}
+        let mut gone = std::collections::HashSet::new();
+        while let Some(joined) = going.join_next().await {
+            // A reaped leader is a pid the kernel may hand out again, and the next
+            // start kills whatever a record's pid names — see
+            // `store::SessionRecord::pid`. Only a confirmed exit clears it: a child
+            // that outlived even the `SIGKILL` is exactly the orphan that reap is
+            // for.
+            if let Ok((Some(id), Some(_))) = joined {
+                gone.insert(id);
+            }
+        }
+        for r in resume_set.iter_mut().filter(|r| gone.contains(&r.id)) {
+            r.pid = None;
+        }
         tracing::info!("shutdown: killed {killed} child process(es)");
 
         /* And now the set captured before any of that, verbatim. Every watcher woken
