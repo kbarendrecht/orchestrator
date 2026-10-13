@@ -68,16 +68,17 @@ pub async fn preflight(app: &Arc<AppState>, workspace: &str) -> Result<Preflight
         },
     });
 
-    // Checks 2 and 3 are three git execs, and two of them walk the whole worktree —
+    // Checks 2, 2b and 3 are a handful of git execs, and two of them walk the whole worktree —
     // `configure_repo` sets fsmonitor on main only, so in a worktree that is a full
     // scan. Off the runtime, and batched into one hop rather than three, because
     // they are asked together and only differ in what they report.
-    let (clean, branch, unpushed) = {
+    let (clean, stopped, branch, unpushed) = {
         let at = path.clone();
         let fallback = branches.iter().next().cloned();
         let upstream = app.cfg.upstream_ref.clone();
         crate::proc::run_blocking("the teardown preflight's git checks", move || {
             let clean = git::is_clean(&at).unwrap_or(false);
+            let stopped = git::operation_in_progress(&at);
             let branch = git::current_branch(&at)
                 .ok()
                 .or(fallback)
@@ -91,7 +92,7 @@ pub async fn preflight(app: &Arc<AppState>, workspace: &str) -> Result<Preflight
                     commits: vec!["(could not check origin)".to_string()],
                 })
             };
-            (clean, branch, unpushed)
+            (clean, stopped, branch, unpushed)
         })
         .await?
     };
@@ -104,6 +105,20 @@ pub async fn preflight(app: &Arc<AppState>, workspace: &str) -> Result<Preflight
             "git status --porcelain is empty".into()
         } else {
             "uncommitted changes present".into()
+        },
+    });
+
+    /* 2b. Nothing stopped part-way. **A clean tree can be mid-rebase**: one stopped
+    at `edit` or `break` has nothing to commit, so check 2 passed it, and the
+    removal then threw away the rebase's own state — the todo list, the commits not
+    yet replayed, `ORIG_HEAD` to abort to. The swap already refuses a stopped rebase
+    for the same reason; a merge, a cherry-pick and a revert are the same shape. */
+    checks.push(Check {
+        name: "nothing in progress",
+        passed: stopped.is_none(),
+        detail: match stopped {
+            None => "no rebase, merge or cherry-pick stopped part-way".into(),
+            Some(what) => format!("{what} is stopped part-way; finish or abort it first"),
         },
     });
 
@@ -1441,6 +1456,48 @@ mod tests {
         app.set_banked("banked", None).await;
         std::fs::write(wt.join("f"), "x").unwrap();
         assert_eq!(reap_old(&app).await, 1, "a settled tree is still reaped");
+        let _ = std::fs::remove_dir_all(main.parent().unwrap());
+    }
+
+    /// A rebase stopped part-way leaves a clean tree, and the teardown must still
+    /// refuse it: removing the tree throws away the rebase's own state.
+    #[tokio::test]
+    async fn a_tree_with_a_stopped_rebase_is_not_torn_down() {
+        let (main, wt, _) = repo_with_a_worktree("stopped");
+        let app = crate::testutil::app_at(
+            &main,
+            r#""worktree_retention_days":60,"upstream_ref":"develop","upstream_remote":"origin""#,
+        );
+        app.register_worktree("stopped", wt.clone(), Some("worktree-old".into()))
+            .await;
+        std::fs::write(wt.join("g"), "y").unwrap();
+        crate::testutil::git(&wt, &["add", "-A"]);
+        crate::testutil::git(&wt, &["commit", "-qm", "mine"]);
+        // An `exec` that fails stops the rebase with nothing to commit — the clean
+        // tree `edit` and `break` leave behind, without an editor.
+        let _ = std::process::Command::new("git")
+            .args(["rebase", "--exec", "false", "HEAD~1"])
+            .current_dir(&wt)
+            .output();
+        assert!(
+            git::rebase_in_progress(&wt),
+            "the premise: stopped part-way"
+        );
+        assert!(git::is_clean(&wt).unwrap(), "and clean");
+
+        let pf = preflight(&app, "stopped").await.unwrap();
+        let refused = pf
+            .checks
+            .iter()
+            .find(|c| c.name == "nothing in progress")
+            .expect("the check exists");
+        assert!(
+            !refused.passed,
+            "a stopped rebase passed: {}",
+            refused.detail
+        );
+        assert!(refused.detail.contains("rebase"), "{}", refused.detail);
+        assert!(!pf.can_remove);
         let _ = std::fs::remove_dir_all(main.parent().unwrap());
     }
 

@@ -462,6 +462,30 @@ pub fn rebase_in_progress(cwd: &Path) -> bool {
     dir.join("rebase-merge").exists() || dir.join("rebase-apply").exists()
 }
 
+/// Which multi-step operation this tree is stopped in the middle of, if any.
+///
+/// The rebase is the swap's refusal; a merge, a cherry-pick and a revert are the
+/// same shape for anything that would end the tree. Each can stop with a clean
+/// `git status` — a rebase at `edit` or `break`, a cherry-pick whose conflict was
+/// resolved and staged-then-reset — so "clean" says nothing about whether somebody
+/// is half way through rewriting the branch, and removing the tree then takes the
+/// state that operation needs to finish or abort.
+pub fn operation_in_progress(cwd: &Path) -> Option<&'static str> {
+    if rebase_in_progress(cwd) {
+        return Some("a rebase");
+    }
+    let dir = git(cwd, &["rev-parse", "--absolute-git-dir"]).ok()?;
+    let dir = Path::new(dir.trim());
+    [
+        ("MERGE_HEAD", "a merge"),
+        ("CHERRY_PICK_HEAD", "a cherry-pick"),
+        ("REVERT_HEAD", "a revert"),
+    ]
+    .into_iter()
+    .find(|(file, _)| dir.join(file).exists())
+    .map(|(_, what)| what)
+}
+
 /// Rebase onto the upstream base.
 ///
 /// Never a merge: history stays linear, which is how this repo is worked (§5's

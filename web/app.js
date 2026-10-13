@@ -972,7 +972,7 @@ onSelection((id, auto) => {
 
 /** Teardown is offered, never automatic, and the preflight is what makes it safe.
  *
- *  **No confirm, and the preflight is why.** The seven checks refuse a tree that is
+ *  **No confirm, and the preflight is why.** The eight checks refuse a tree that is
  *  dirty, unpushed or has a session in it, and they write the recovery record
  *  `revive` rebuilds from — at the same absolute path. So a wrong press costs one
  *  rebuild, not any work, which is the line this UI draws: a box is for what

@@ -281,7 +281,7 @@ skills plugin copy, `hooks.json`, `window.json`. `transcripts/` is the only
 remaining copy of a conversation once a worktree is gone and a session record
 survives because that copy does, so taking the directory would undo what `close`
 does on purpose. Its safety cannot be borrowed from `worktree::reap_old`, which
-is safe because it routes through `teardown`'s seven checks; a directory of JSON
+is safe because it routes through `teardown`'s eight checks; a directory of JSON
 has no such gate.
 
 ## A resume rebuilds a session's environment, so anything the daemon put there has to be re-handed.
