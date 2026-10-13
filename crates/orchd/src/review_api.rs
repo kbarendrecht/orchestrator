@@ -30,15 +30,14 @@ use crate::model::*;
 use crate::spawn;
 use crate::state::AppState;
 
-/// What the vendored `triage` skill needs to know before it can read anything.
+/// What the vendored `review` skill needs to know before it can read anything.
 ///
-/// **A skill is static; the prompt it replaced was rendered per run.**
-/// `commands/triage.md` carried seven substitutions a renderer filled in, and a
-/// file handed to every session cannot have any of them. So the values come from
-/// here instead, which is also what makes the skill work when a person types
-/// `/orchd:triage` by hand rather than the daemon typing it. `review` reads the
-/// same answer; every other run takes its values out of the environment, and
-/// `commands/` and its renderer are gone.
+/// **A skill is static; the prompt it replaced was rendered per run.** The old
+/// `commands/` prompts carried substitutions a renderer filled in, and a file
+/// handed to every session cannot have any of them. So the values come from here
+/// instead. Every other run takes its values out of the environment, and
+/// `commands/` and its renderer are gone. The name is the deleted triage pass's;
+/// the route kept it because the skill curls it by that path.
 ///
 /// Carries the run credential like the proposals route, and answers the same way
 /// to the app token, so the SPA can look at it too.
@@ -73,7 +72,6 @@ pub async fn pr_triage_context(
         // config (`config::Tracker`).
         "tracker_host": app.cfg.tracker.as_ref().map(|t| t.host.clone()),
         "proposals_url": format!("{base}/proposals"),
-        "progress_url": format!("{base}/triage/progress"),
         // The ref the branch is measured against, for the review session's "CI red
         // or behind the base → stop, that is fix-pr's job". The PR's *own* base
         // where the poller knows it, which is what `rebase_target` decides, so the

@@ -1,9 +1,9 @@
-//! The triage run: read the threads, propose, exit.
+//! The review runs: the overlay's `review` session and the `handle-review` pane.
 //!
-//! One of the four runs [`crate::spawn::spawn_run`] starts, beside `fix-pr` and
-//! the resolve run, and shaped the same way — a `claude` session you can watch
-//! and take over, not a `-p` run that happens out of sight. Its first turn is the
-//! vendored skill, typed as `/orchd:triage <pr>`. A slash
+//! Started by [`crate::spawn::spawn_run`], beside `fix-pr`, and shaped the same
+//! way — a `claude` session you can watch and take over, not a `-p` run that
+//! happens out of sight. Its first turn is the vendored skill, typed as
+//! `/orchd:review <pr>` or `/orchd:handle-review <pr>`. A slash
 //! command used to be the wrong shape here because it resolved from the agent's own
 //! command path, which depends on a repo usually not installed — the daemon now
 //! ships the skill itself and pushes `--plugin-dir` on every spawn
@@ -352,7 +352,7 @@ async fn start_with_prompt(
             ),
         ],
     };
-    // Its own id: this is the `/resolve` pane, the one run with no record of the
+    // Its own id: this is the `handle-review` pane, the one run with no record of the
     // daemon's beside it, so there is nothing for a caller to write first.
     crate::spawn::spawn_run(app, workspace, pr, uuid::Uuid::new_v4(), spec).await
 }

@@ -821,7 +821,8 @@ fn daemon_router(app: Arc<AppState>) -> Router {
         )
         // The one route a subprocess calls. Hostile input; see `pr_proposals`.
         .route("/api/pr/:number/proposals", post(review_api::pr_proposals))
-        // The rail's default: spawn a session running `/resolve <pr>` in a pane.
+        // A plain session on the PR's branch, in a worktree or in main: no skill
+        // is typed, so it is the PR to work on rather than a pass over it.
         .route("/api/pr/:number/open", post(review_api::open_pr))
         .route("/api/pr/:number/fix-pr", post(api::fix_pr))
         .route("/api/preview", post(orchd::preview::open))
