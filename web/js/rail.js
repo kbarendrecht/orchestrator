@@ -1571,7 +1571,7 @@ function startingRow() {
  */
 function addRow(c, state) {
   const row = el('div', 'ws-add');
-  const { main, mainActive, archived, external } = checkoutFacts(c, state);
+  const { main, archived, external } = checkoutFacts(c, state);
 
   /* Dead while one is being cut, and it says which one in the tooltip. Two things
      make one press look like none: the POST is a worktree, the repo's hooks and a
@@ -1605,8 +1605,17 @@ function addRow(c, state) {
   /* Main is exclusive: one active session at a time, and no queue. While it is
      occupied the button is disabled and says who holds it — unless
      `allow_several_in_main` is set, which is a config-file decision the daemon
-     reports in the snapshot, and then a second one is a thing you do on purpose. */
-  const occupant = mainActive.find((/** @type {import('../snapshot').SessionView} */ s) => s.id === main?.occupant && s.alive);
+     reports in the snapshot, and then a second one is a thing you do on purpose.
+
+     **Who holds it is the daemon's answer, `held_by`, not the recorded claim.**
+     The claim can name a session that has gone and none of several live ones, so
+     reading it here enabled a button the daemon then refused. `held_by` can also
+     name a session auto-resume has not brought back yet, which is not alive, so
+     the row is looked up among every session rather than the live ones. */
+  const heldBy = main?.held_by ?? null;
+  const occupant = heldBy
+    ? state.sessions.find((/** @type {import('../snapshot').SessionView} */ s) => s.id === heldBy) ?? { title: null, id: heldBy }
+    : null;
   const several = !!state.several_in_main;
   const inMain = el('button', 'addbtn', '+ main');
   // Occupied, or already making something: the second reason is the one that used

@@ -244,7 +244,7 @@ function counting() {
  *  `measured` and `is_main`. Everything else on a `WorkspaceView` rides here for
  *  nothing, and `processes` rides here several times a second. */
 const NOT_SHOWN = [
-  'processes', 'stopped_processes', 'occupant', 'kind', 'branches', 'branch',
+  'processes', 'stopped_processes', 'occupant', 'held_by', 'kind', 'branches', 'branch',
   'dirty_count',
 ];
 

@@ -1466,6 +1466,11 @@ impl AppState {
                 kind: w.kind.clone(),
                 is_main: w.is_main(),
                 occupant: w.occupant,
+                held_by: if w.is_main() {
+                    self.main_holder(&inner)
+                } else {
+                    None
+                },
                 /* Sorted, because a `HashSet` hands them back in whatever order
                 the last rehash left — and the page compares snapshots by their
                 JSON text to decide whether to repaint. A reorder that says
@@ -1715,6 +1720,12 @@ impl AppState {
     /// `claim_main` for the same "is anyone in main" question.
     pub async fn main_occupant(&self) -> Option<SessionId> {
         let inner = self.inner.read().await;
+        self.main_holder(&inner)
+    }
+
+    /// [`AppState::main_occupant`], for a caller already holding the state — the
+    /// snapshot, which hands the page this answer rather than the bare claim.
+    pub fn main_holder(&self, inner: &Inner) -> Option<SessionId> {
         let recorded = inner
             .workspaces
             .get(MAIN)
@@ -1742,7 +1753,7 @@ impl AppState {
                 live.sort_by_key(|s| s.created_at);
                 live.first().map(|s| s.id)
             })
-            .or_else(|| self.waiting_in_main(&inner))
+            .or_else(|| self.waiting_in_main(inner))
     }
 
     /// Auto-resume's intent for this session is over: it has been spawned or has
@@ -2516,7 +2527,16 @@ pub struct WorkspaceView {
     pub path: String,
     pub kind: WorkspaceKind,
     pub is_main: bool,
+    /// The recorded claim, as `claim_main` last wrote it. **Not** whether main is
+    /// held: it can name a session that has died, and name none of several live
+    /// ones. Sent for the flows that watch the claim itself.
     pub occupant: Option<Uuid>,
+    /// Who holds main, by the rule the daemon refuses on ([`AppState::main_holder`]):
+    /// the live claimant, else the oldest live session in main, else one auto-resume
+    /// is about to bring back. `None` on every other workspace. The "+ main" button
+    /// reads this, because a page that decided from `occupant` offered a session
+    /// the daemon then refused.
+    pub held_by: Option<Uuid>,
     /// Every branch this workspace has ever held, never pruned (§2).
     ///
     /// Not "what is checked out" — see `branch` for that. The two were conflated
@@ -3223,6 +3243,48 @@ mod tests {
         );
         // And a claim succeeds, proving the two readers agree main is free.
         assert!(app.claim_main(Uuid::new_v4()).await.is_ok());
+    }
+
+    /// The page is handed the holder the daemon refuses on, not the bare claim: a
+    /// dead claimant holds nothing, and a live session the claim does not name
+    /// holds main all the same.
+    #[tokio::test]
+    async fn the_snapshot_says_who_holds_main_by_the_daemons_rule() {
+        let app = app().await;
+        let held = |snap: Snapshot| {
+            snap.workspaces
+                .into_iter()
+                .find(|w| w.is_main)
+                .and_then(|w| w.held_by)
+        };
+        let dead = Uuid::new_v4();
+        {
+            let mut inner = app.inner.write().await;
+            let mut s = Session::new(
+                dead,
+                MAIN.to_string(),
+                std::path::PathBuf::from("/tmp"),
+                None,
+            );
+            s.set_state(State::Exited);
+            inner.sessions.insert(dead, s);
+            if let Some(w) = inner.workspaces.get_mut(MAIN) {
+                w.occupant = Some(dead);
+            }
+        }
+        assert_eq!(
+            held(app.snapshot().await),
+            None,
+            "a dead claim holds nothing"
+        );
+
+        let live = live_in_main(&app).await;
+        assert_eq!(
+            held(app.snapshot().await),
+            Some(live),
+            "unclaimed, and live"
+        );
+        assert_eq!(held(app.snapshot().await), app.main_occupant().await);
     }
 
     #[tokio::test]

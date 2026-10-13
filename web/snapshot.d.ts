@@ -663,7 +663,21 @@ agent: Agent | null, };
 
 export type WorkspaceKind = { "kind": "main" } | { "kind": "worktree", name: string, };
 
-export type WorkspaceView = { id: string, path: string, kind: WorkspaceKind, is_main: boolean, occupant: string | null, 
+export type WorkspaceView = { id: string, path: string, kind: WorkspaceKind, is_main: boolean, 
+/**
+ * The recorded claim, as `claim_main` last wrote it. **Not** whether main is
+ * held: it can name a session that has died, and name none of several live
+ * ones. Sent for the flows that watch the claim itself.
+ */
+occupant: string | null, 
+/**
+ * Who holds main, by the rule the daemon refuses on ([`AppState::main_holder`]):
+ * the live claimant, else the oldest live session in main, else one auto-resume
+ * is about to bring back. `None` on every other workspace. The "+ main" button
+ * reads this, because a page that decided from `occupant` offered a session
+ * the daemon then refused.
+ */
+held_by: string | null, 
 /**
  * Every branch this workspace has ever held, never pruned (§2).
  *
