@@ -316,6 +316,18 @@ pub(crate) async fn insert_and_spawn(
         set `had_a_turn` — nine of which would have been the site somebody forgot.
         A press that fails again puts it straight back, ~50ms later. */
         inner.agent_error = None;
+        /* **A tree with a session in it is no longer a spare**, whoever put the
+        session there. `spare::claim` takes its pick out of the pool, but a named
+        create, `orch new` into a workspace, or a resume can each land in a pooled
+        tree without asking the pool — which then went on offering it to the next
+        unnamed create while an agent was working in it. Here, beside the insert,
+        because this is the one door every agent comes through. */
+        let ws = session.workspace.clone();
+        inner.with_spare("a session started in it", |s| {
+            let before = s.ids.len();
+            s.ids.retain(|x| *x != ws);
+            s.ids.len() != before
+        });
         inner.sessions.insert(id, session)
     };
     let spawned = match PtyHandle::spawn(cmd, cwd, env, unset, DEFAULT_SIZE) {

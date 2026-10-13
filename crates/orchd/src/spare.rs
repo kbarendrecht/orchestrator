@@ -382,6 +382,17 @@ async fn verdict(app: &Arc<AppState>, id: &str, path: &Path) -> Option<Stale> {
     if !path.exists() {
         return Some(Stale::Missing);
     }
+    /* Any record pointing at the tree, live or not, is somebody's: a session that
+    has not written a byte yet leaves the tree clean and at the base, which is every
+    git measure below saying "fresh". The record is the one signal that cannot be
+    missed, and it costs no child process. */
+    let occupied = {
+        let inner = app.inner.read().await;
+        inner.sessions.values().any(|s| s.workspace == id)
+    };
+    if occupied {
+        return Some(Stale::Touched);
+    }
     let at = path.to_path_buf();
     let upstream = app.cfg.upstream_ref.clone();
     let measured = crate::proc::run_blocking("measuring the spare", move || {
@@ -550,6 +561,43 @@ mod tests {
         assert!(
             app.inner.read().await.workspaces.contains_key(&id),
             "it stays an ordinary workspace"
+        );
+    }
+
+    /// A session in a spare makes it somebody's before it has written a byte.
+    ///
+    /// A named create or `orch new` can put an agent in a pooled tree without asking
+    /// the pool, and a session that has not written anything leaves the tree clean
+    /// and at the base — every git measure said "fresh", and the pool handed the
+    /// tree to the next unnamed create with an agent already in it. Both doors are
+    /// closed: the spawn takes the tree out of the pool, and the verdict reads the
+    /// records, which is the half this drives without a spawn.
+    #[tokio::test]
+    async fn a_spare_with_a_session_in_it_is_not_handed_out() {
+        use crate::model::Session;
+
+        let (_main, app) = repo("spare-occupied");
+        refill(&app).await;
+        let (id, path) = {
+            let inner = app.inner.read().await;
+            let id = inner.spare.ids[0].clone();
+            let path = inner.workspaces[&id].path.clone();
+            (id, path)
+        };
+        {
+            let mut inner = app.inner.write().await;
+            let s = Session::new(uuid::Uuid::new_v4(), id.clone(), path.clone(), None);
+            inner.sessions.insert(s.id, s);
+        }
+
+        assert!(
+            claim(&app).await.is_none(),
+            "a spare somebody is in was handed out"
+        );
+        assert!(path.exists(), "and it is never removed");
+        assert!(
+            !app.inner.read().await.spare.ids.contains(&id),
+            "it leaves the pool as an ordinary workspace"
         );
     }
 
