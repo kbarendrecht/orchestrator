@@ -13,8 +13,11 @@ Three paths are in your environment, and the run cannot work without them:
 
 | variable | what it is |
 | --- | --- |
-| `$ORCH_STORIES` | the entries to file, as JSON — read it first |
+| `$ORCH_STORIES` | the entries to file, as JSON — read it first, never write it |
 | `$ORCH_DROP` | the one file you write, and the only file you write |
+
+They are two different files. Do not write the report over `$ORCH_STORIES`: the
+daemon reads only `$ORCH_DROP`, and a report anywhere else reads as a run that died.
 | `$ORCH_TRACKER_HOST` | the host the daemon will accept a story URL on |
 
 ## The rules that matter most

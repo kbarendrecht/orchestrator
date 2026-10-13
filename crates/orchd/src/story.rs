@@ -280,7 +280,7 @@ async fn run_filer(
     // dirty, which is the gate `post::run` re-checks.
     let scratch = Config::config_dir()?.join(format!("story-{pr}"));
     std::fs::create_dir_all(&scratch)?;
-    let drop_file = scratch.join("stories.json");
+    let (drafts_file, drop_file) = run_files(&scratch);
     // Cleared per run, so a previous run's report can never be read as this one's.
     // Only the file: the directory may hold state that has to outlive a run.
     let _ = std::fs::remove_file(&drop_file);
@@ -308,9 +308,8 @@ async fn run_filer(
     Dropped with the substitution: the `git remote` call that resolved
     `owner/repo` for a sentence. It was the only thing that could fail this
     spawn for a reason unrelated to filing a story. */
-    let stories_file = scratch.join("stories.json");
-    std::fs::write(&stories_file, serde_json::to_string_pretty(&drafts)?)
-        .with_context(|| format!("writing {}", stories_file.display()))?;
+    std::fs::write(&drafts_file, serde_json::to_string_pretty(&drafts)?)
+        .with_context(|| format!("writing {}", drafts_file.display()))?;
 
     let id = uuid::Uuid::new_v4();
     let mut cmd = vec![
@@ -391,7 +390,7 @@ async fn run_filer(
     let extra = vec![
         (
             crate::skills::VAR_STORIES.to_string(),
-            stories_file.to_string_lossy().into_owned(),
+            drafts_file.to_string_lossy().into_owned(),
         ),
         (
             crate::skills::VAR_DROP.to_string(),
@@ -499,6 +498,18 @@ async fn run_filer(
     Ok(report.stories)
 }
 
+/// Where a filer run reads its entries and where it writes its report.
+///
+/// **Two files, and they used to be one.** Both were `stories.json`, so clearing
+/// the old report and then writing this run's input put a file back at the report's
+/// path before the agent had started. A filer that died without reporting then left
+/// its own input to be read as its report: an array where an object belongs, said
+/// as "wrote something unparseable" instead of "exited without writing its report",
+/// and the clearing that guards against a stale report guarded nothing.
+fn run_files(scratch: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
+    (scratch.join("drafts.json"), scratch.join("stories.json"))
+}
+
 /// Write the stub server's MCP config next to the drop file.
 ///
 /// A real stdio MCP server *named* `shortcut`, so the tool names the prompt and
@@ -535,6 +546,16 @@ fn stub_config(scratch: &Path) -> Result<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The input and the report must never share a path: writing the one would
+    /// stand in for the other, which is exactly what they did.
+    #[test]
+    fn the_filer_reads_from_one_file_and_reports_to_another() {
+        let (drafts, report) = run_files(Path::new("/scratch"));
+        assert_ne!(drafts, report);
+        assert_eq!(drafts.parent(), report.parent(), "both in the granted dir");
+    }
+
     /// Drive the real filer against the stub MCP server.
     ///
     /// Ignored by default: it spawns a `claude` process, which is slow and needs a
