@@ -1906,7 +1906,7 @@ pub async fn fork_session(
             .sessions
             .get(&id)
             .ok_or_else(|| crate::state::no_such_session(id))?;
-        (s.had_a_turn, s.agent)
+        (s.has_conversation(), s.agent)
     };
     // Refuse before a worktree is cut, not after the fork dies in it. A fork
     // replays the conversation with `--resume`, so a session that never had a turn

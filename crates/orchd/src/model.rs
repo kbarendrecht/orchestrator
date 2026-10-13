@@ -769,7 +769,20 @@ impl Session {
     /// The single reader of both fields, because three call sites computed it
     /// apart and only one of them would have been fixed.
     pub fn resumable(&self) -> bool {
-        self.had_a_turn && !matches!(self.recovery, Some(ArchiveState::TranscriptOnly))
+        self.has_conversation() && !matches!(self.recovery, Some(ArchiveState::TranscriptOnly))
+    }
+
+    /// Whether there is a conversation the agent can be pointed back at: a turn
+    /// happened, and the agent's own id for it is known.
+    ///
+    /// The second half is only ever in doubt for an agent that names its own
+    /// conversation. Codex says the id in its first hook, which comes with the
+    /// first prompt, and a session the daemon put `Working` itself before that
+    /// hook landed (a typed run, a nudge) has a turn and no id. `codex resume`
+    /// with no id is `codex`, so a resume or a fork of it opened a blank
+    /// conversation under the old row rather than failing.
+    pub fn has_conversation(&self) -> bool {
+        self.had_a_turn && (!self.agent.names_its_own_session() || self.agent_session_id.is_some())
     }
 
     pub fn set_state(&mut self, state: State) {

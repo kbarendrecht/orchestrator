@@ -485,6 +485,13 @@ pub fn prune_ghosts(mut records: Vec<SessionRecord>) -> (Vec<SessionRecord>, usi
         if !r.had_a_turn && has_conversation(r.id, &r.cwd, r.transcript_path.as_deref()) {
             r.had_a_turn = true;
         }
+        // And the other way, for an agent that names its own conversation: without
+        // that name there is nothing to resume, whatever the bit says. A Codex fork
+        // was written that way until the spawn stopped claiming a turn for it, and
+        // auto-resume then brought it back as a blank conversation under its row.
+        if r.agent.names_its_own_session() && r.agent_session_id.is_none() {
+            r.had_a_turn = false;
+        }
     }
     let kept: Vec<SessionRecord> = records
         .into_iter()
@@ -2408,6 +2415,33 @@ mod tests {
             restored.state,
             State::Archived { resumable: false }
         ));
+    }
+
+    /// A Codex conversation is resumed by the id Codex chose, so one whose id was
+    /// never learned has nothing to resume — a fork nobody typed into is the shape
+    /// that reached disk — and a restart must not start a blank one in its place.
+    #[test]
+    fn a_codex_session_without_its_own_id_is_not_a_conversation() {
+        let mut s = Session::new(
+            uuid::Uuid::new_v4(),
+            "wt".into(),
+            Path::new("/nowhere-for-this-test").to_path_buf(),
+            None,
+        );
+        s.agent = crate::agent::Agent::Codex;
+        s.had_a_turn = true;
+        assert!(!s.has_conversation() && !s.resumable());
+        assert!(matches!(
+            SessionRecord::of(&s).restore().state,
+            State::Archived { resumable: false }
+        ));
+        let (kept, dropped) = prune_ghosts(vec![SessionRecord::of(&s)]);
+        assert!(kept.is_empty() && dropped == 1, "nothing to come back to");
+
+        s.agent_session_id = Some("019a0000-0000-7000-8000-000000000000".into());
+        assert!(s.has_conversation() && s.resumable());
+        let (kept, _) = prune_ghosts(vec![SessionRecord::of(&s)]);
+        assert_eq!(kept.len(), 1, "an id it can resume by keeps it");
     }
 
     #[test]

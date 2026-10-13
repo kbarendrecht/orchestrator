@@ -1180,7 +1180,14 @@ pub async fn spawn_worktree_session(
     // birth — the same as the fork path in `spawn_session`. Without this its own row
     // would offer no Fork and no nudge until it was first typed into, the very
     // false negative `had_a_turn` exists to remove.
-    session.had_a_turn = fork.is_some();
+    //
+    // **Not for an agent that names its own conversation.** `codex fork` picks the
+    // fork's id itself and says it only in the first hook, which Codex sends with
+    // the first prompt. Until then there is nothing to hand `codex resume`, so a
+    // restart of a fork nobody typed into started a blank conversation in its
+    // place, under the fork's row. The first prompt latches the bit and teaches
+    // the id together, which is the moment this one has a conversation of its own.
+    session.had_a_turn = fork.is_some() && !agent.names_its_own_session();
     // And it is *told* where it woke up. The conversation it replays was written in
     // another checkout, so without this the fork reasons about the parent's tree
     // from memory and the first remembered path it uses is wrong — the same failure

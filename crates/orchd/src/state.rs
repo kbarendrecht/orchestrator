@@ -2674,7 +2674,7 @@ impl SessionView {
             // with "no conversation found". Read straight off the session rather
             // than stat'ing the transcript, so it costs nothing on a hot path that
             // runs for every session on every notify.
-            has_transcript: s.had_a_turn,
+            has_transcript: s.has_conversation(),
             resumable: s.resumable(),
             interaction: s.interaction.clone(),
             forked_from: s.forked_from,
