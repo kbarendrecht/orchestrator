@@ -51,14 +51,26 @@ impl Agent {
         }
     }
 
-    /// Whether a first prompt goes on the command line rather than being typed.
+    /// Whether the first hook waits for a prompt.
     ///
     /// Claude Code fires `SessionStart` once its prompt box is up, and the daemon
     /// types the line then: `initialUserMessage` is honoured only headless. Codex
-    /// fires `SessionStart` inside the first turn instead, so there is no moment to
-    /// type at (measured on 0.162.1, nothing fired until a prompt was sent), and
-    /// both `codex [PROMPT]` and `codex resume <id> [PROMPT]` submit it on arrival.
-    pub fn prompt_in_argv(self) -> bool {
+    /// fires `SessionStart` inside the first turn instead (measured on 0.162.1,
+    /// nothing fired until a prompt was sent), so two things follow: a first
+    /// prompt known at spawn goes on the command line, which both `codex [PROMPT]`
+    /// and `codex resume <id> [PROMPT]` submit on arrival, and readiness is read
+    /// off the pty rather than off a hook.
+    pub fn hooks_wait_for_a_prompt(self) -> bool {
+        matches!(self, Agent::Codex)
+    }
+
+    /// Whether the agent picks its conversation's id itself.
+    ///
+    /// Claude Code takes the daemon's (`--session-id`) and finds its transcript
+    /// from it. Codex picks its own and takes none, so the daemon learns the id and
+    /// the rollout from the first hook that carries them, and has to carry both
+    /// itself until then.
+    pub fn names_its_own_session(self) -> bool {
         matches!(self, Agent::Codex)
     }
 
@@ -81,7 +93,7 @@ impl Agent {
     }
 
     /// The interactive argv: the program, how it continues, the per-process
-    /// `flags`, and the first prompt when [`Self::prompt_in_argv`].
+    /// `flags`, and the first prompt when [`Self::hooks_wait_for_a_prompt`].
     ///
     /// `id` is the daemon's id, which Claude Code is told to use; Codex ignores it.
     pub fn argv(

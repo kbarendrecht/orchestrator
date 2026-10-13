@@ -625,13 +625,13 @@ pub fn has_conversation(id: uuid::Uuid, cwd: &Path, recorded: Option<&Path>) -> 
 
 /// Whether a Codex rollout holds a turn: a `task_started` line, which opens each.
 ///
-/// **Not a window from the top, as a Claude Code transcript gets.** The rollout
-/// opens with `session_meta`, ~19KB of base instructions, and then one
+/// **Not the fixed 8KB window a Claude Code transcript gets.** The rollout opens
+/// with `session_meta`, ~19KB of base instructions, and then one
 /// `thread_settings_applied` of ~2.2KB per settings change made before the first
-/// prompt. A window read from the top missed the turn behind them, and a restart
-/// then started a fresh conversation in place of the one it was asked to resume.
-/// So it reads line by line to the first turn, bounded at 1MB so a file that is
-/// something else is never read whole.
+/// prompt. The window missed the turn behind them, and a restart then started a
+/// fresh conversation in place of the one it was asked to resume. So it reads line
+/// by line and stops at the first turn, which [`read_head`] cannot, bounded at 1MB
+/// so a file that is something else is never read whole.
 fn rollout_has_turn(path: &Path) -> bool {
     use std::io::{BufRead, Read};
     let Ok(f) = std::fs::File::open(path) else {
@@ -892,7 +892,7 @@ fn external_in(
 /// **Codex files by date, not by directory**: `sessions/YYYY/MM/DD/rollout-…`, with
 /// the cwd on the first line. So the walk is every rollout, and what keeps it cheap
 /// is the same mtime cache [`external_in`] uses for a listed conversation, and
-/// [`rollout_cwd_cached`] for the rest, so an unchanged file is not read again. Capped per
+/// [`conversation_cwd`] for the rest, so an unchanged file is not read again. Capped per
 /// workspace like the Claude Code list, newest first.
 fn external_codex(
     sessions: &Path,
@@ -934,15 +934,12 @@ fn external_codex(
             out.push(prev.clone());
             continue;
         }
-        let Some(cwd) = rollout_cwd_cached(&path, last_used) else {
+        let Some(cwd) = conversation_cwd(&path, last_used) else {
             continue;
         };
         let Some((workspace, at)) = workspaces.iter().find(|(_, p)| *p == cwd) else {
             continue;
         };
-        if !has_conversation(id, at, Some(&path)) {
-            continue;
-        }
         out.push(ExternalConversation {
             id,
             workspace: workspace.clone(),
@@ -963,12 +960,14 @@ fn external_codex(
     out
 }
 
-/// [`rollout_cwd`], remembered per file and mtime.
+/// Where a rollout's conversation ran, or `None` for one with no turn yet;
+/// remembered per file and mtime.
 ///
 /// `previous` only keeps the conversations that were *listed*, and most rollouts
-/// on a machine belong to other checkouts, so without this every scan re-read and
-/// re-parsed the ~19KB first line of each of them, every minute, per daemon.
-fn rollout_cwd_cached(path: &Path, at: SystemTime) -> Option<PathBuf> {
+/// on a machine belong to other checkouts or have no turn, so without this every
+/// scan re-read each of them, ~19KB of first line and up to the first turn, every
+/// minute, per daemon.
+fn conversation_cwd(path: &Path, at: SystemTime) -> Option<PathBuf> {
     type Seen = std::collections::HashMap<PathBuf, (SystemTime, Option<PathBuf>)>;
     static SEEN: std::sync::LazyLock<std::sync::Mutex<Seen>> =
         std::sync::LazyLock::new(Default::default);
@@ -981,7 +980,7 @@ fn rollout_cwd_cached(path: &Path, at: SystemTime) -> Option<PathBuf> {
     if let Some(cwd) = hit {
         return cwd;
     }
-    let cwd = rollout_cwd(path);
+    let cwd = rollout_cwd(path).filter(|_| rollout_has_turn(path));
     SEEN.lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .insert(path.to_path_buf(), (at, cwd.clone()));

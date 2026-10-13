@@ -746,6 +746,12 @@ impl AppState {
                 .into_iter()
                 .filter(|a| crate::pty::which(a.program(), &main, &env, &[]).is_ok())
                 .collect::<Vec<_>>();
+            // Asked now, while nothing waits on it: the hook trust is an
+            // `app-server` round trip, cached after the first, and otherwise the
+            // first Codex spawn of every start paid it before its pane opened.
+            if found.contains(&crate::agent::Agent::Codex) {
+                crate::codex::flags(&main, &env, &[]);
+            }
             (found, crate::store::load_last_agent())
         })
         .await
@@ -795,8 +801,13 @@ impl AppState {
         let installed = |a: &crate::agent::Agent| inner.agents.contains(a);
         // The last pick is a fallback, not a promise: it defaults to Claude Code,
         // and a checkout with only Codex on PATH would start `claude` and die.
-        self.settings()
-            .default_agent
+        // The field alone: `settings()` clones all of them, and this runs per snapshot.
+        let configured = self
+            .settings
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .default_agent;
+        configured
             .filter(installed)
             .or(Some(inner.last_agent).filter(installed))
             .or(inner.agents.first().copied())

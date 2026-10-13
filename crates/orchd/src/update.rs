@@ -81,11 +81,9 @@ pub fn check(main: &Path) -> Option<AgentUpdate> {
     let out = mise(main, &args, "the agent version check")?;
     // Claude Code first, as `Agent::ALL` orders them. The bar holds one update at a
     // time, and the second is offered once the first is installed.
-    tools.into_iter().find_map(|(agent, tool)| {
-        let mut u = parse(&out.stdout, &tool)?;
-        u.agent = agent;
-        Some(u)
-    })
+    tools
+        .into_iter()
+        .find_map(|(agent, tool)| parse(&out.stdout, &tool, agent))
 }
 
 /// How long a `mise` query may take before it is killed. These reach mise's
@@ -183,7 +181,7 @@ fn tool_of_install_path(path: &str) -> Option<String> {
 }
 
 /// Split from [`check`] so the shapes mise emits can be tested without mise.
-fn parse(stdout: &[u8], tool: &str) -> Option<AgentUpdate> {
+fn parse(stdout: &[u8], tool: &str, agent: crate::agent::Agent) -> Option<AgentUpdate> {
     let v: serde_json::Value = serde_json::from_slice(stdout).ok()?;
     // Absent from `outdated` is the ordinary happy case: the tool is current.
     let entry = v.get(tool)?;
@@ -198,7 +196,7 @@ fn parse(stdout: &[u8], tool: &str) -> Option<AgentUpdate> {
         tool: tool.to_string(),
         current,
         latest,
-        agent: crate::agent::Agent::Claude,
+        agent,
     })
 }
 
@@ -834,6 +832,9 @@ pub async fn mark_stale(app: &Arc<AppState>, look: Look) {
             (std::path::PathBuf, crate::agent::Agent),
             Option<std::path::PathBuf>,
         > = std::collections::HashMap::new();
+        // The environment is the tree's, so one read serves both agents in it.
+        let mut envs: std::collections::HashMap<std::path::PathBuf, Vec<(String, String)>> =
+            std::collections::HashMap::new();
         live.into_iter()
             .filter(|(_, at, exe)| {
                 if !exe.exists() {
@@ -852,8 +853,10 @@ pub async fn mark_stale(app: &Arc<AppState>, look: Look) {
                     exports. The one other PATH change `session_env` makes is to put
                     the app's own directory first, which holds `orch` and never
                     `claude`, so the two cannot disagree about the agent. */
-                    let env = crate::env_source::read(cfg.env_source, cwd);
-                    orchd_base::pty::which(agent.program(), cwd, &env, &[]).ok()
+                    let env = envs
+                        .entry(cwd.clone())
+                        .or_insert_with(|| crate::env_source::read(cfg.env_source, cwd));
+                    orchd_base::pty::which(agent.program(), cwd, env, &[]).ok()
                 });
                 // A tree where `claude` cannot be found says nothing about this
                 // session, so it is not called stale on the strength of that.
@@ -1616,7 +1619,8 @@ mod tests {
 
     #[test]
     fn reads_the_shape_mise_actually_emits() {
-        let u = parse(BOTH_SPELLINGS, "claude-code").expect("an update");
+        let u =
+            parse(BOTH_SPELLINGS, "claude-code", crate::agent::Agent::Claude).expect("an update");
         assert_eq!(u.tool, "claude-code");
         assert_eq!(u.current, "2.1.232");
         assert_eq!(u.latest, "2.1.240");
@@ -1633,12 +1637,17 @@ mod tests {
         // answer is silence, because the binary a session runs is up to date.
         let upgraded = br#"{"claude":{"current":"2.1.232","latest":"2.1.240"}}"#;
         assert_eq!(
-            parse(upgraded, "claude-code"),
+            parse(upgraded, "claude-code", crate::agent::Agent::Claude),
             None,
             "a stale entry that PATH never reaches must not nag"
         );
         // And the other way round, when `claude` is the one in use.
-        assert_eq!(parse(upgraded, "claude").expect("an update").tool, "claude");
+        assert_eq!(
+            parse(upgraded, "claude", crate::agent::Agent::Claude)
+                .expect("an update")
+                .tool,
+            "claude"
+        );
     }
 
     #[test]
@@ -1685,12 +1694,16 @@ mod tests {
     fn nothing_outdated_is_silence() {
         // What mise prints when everything is current, and the case that must not
         // produce a nudge.
-        assert_eq!(parse(b"{}", "claude-code"), None);
+        assert_eq!(
+            parse(b"{}", "claude-code", crate::agent::Agent::Claude),
+            None
+        );
         // Other tools behind, the agent not mentioned: also nothing to say.
         assert_eq!(
             parse(
                 br#"{"bun":{"current":"1.0","latest":"1.1"}}"#,
-                "claude-code"
+                "claude-code",
+                crate::agent::Agent::Claude
             ),
             None
         );
@@ -1701,16 +1714,23 @@ mod tests {
         // Defensive: mise listing a tool whose versions match would otherwise
         // become "upgrade 2.1.240 to 2.1.240".
         let raw = br#"{"claude-code":{"current":"2.1.240","latest":"2.1.240"}}"#;
-        assert_eq!(parse(raw, "claude-code"), None);
+        assert_eq!(parse(raw, "claude-code", crate::agent::Agent::Claude), None);
     }
 
     #[test]
     fn unparseable_output_says_nothing_rather_than_failing() {
-        assert_eq!(parse(b"not json", "claude-code"), None);
-        assert_eq!(parse(b"", "claude-code"), None);
+        assert_eq!(
+            parse(b"not json", "claude-code", crate::agent::Agent::Claude),
+            None
+        );
+        assert_eq!(parse(b"", "claude-code", crate::agent::Agent::Claude), None);
         // Present but missing the fields the nudge needs.
         assert_eq!(
-            parse(br#"{"claude-code":{"requested":"latest"}}"#, "claude-code"),
+            parse(
+                br#"{"claude-code":{"requested":"latest"}}"#,
+                "claude-code",
+                crate::agent::Agent::Claude
+            ),
             None
         );
     }

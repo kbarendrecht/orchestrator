@@ -9,7 +9,7 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::json;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -160,19 +160,25 @@ async fn learn_agent_id(app: &Arc<AppState>, id: Uuid, payload: &HookPayload) {
     let Some(theirs) = payload.session_id.as_deref().filter(|t| !t.is_empty()) else {
         return;
     };
+    let tp = payload.transcript_path.as_deref().filter(|t| !t.is_empty());
+    // Asked under a read guard first: this runs on three hooks a turn for every
+    // session, and nearly always there is nothing to write.
+    let news = app.inner.read().await.sessions.get(&id).is_some_and(|s| {
+        s.agent.names_its_own_session()
+            && (s.agent_session_id.as_deref() != Some(theirs)
+                || tp.is_some_and(|t| s.transcript_path.as_deref() != Some(Path::new(t))))
+    });
+    if !news {
+        return;
+    }
     let mut inner = app.inner.write().await;
     let Some(s) = inner.sessions.get_mut(&id) else {
         return;
     };
-    if s.agent != orchd::agent::Agent::Codex {
-        return;
-    }
-    if s.agent_session_id.as_deref() != Some(theirs) {
-        s.agent_session_id = Some(theirs.to_string());
-    }
+    s.agent_session_id = Some(theirs.to_string());
     // As reported, unchecked: Codex names the rollout it is writing, where Claude
     // Code's `--worktree` reported a directory it never wrote to.
-    if let Some(tp) = payload.transcript_path.as_deref().filter(|t| !t.is_empty()) {
+    if let Some(tp) = tp {
         s.transcript_path = Some(PathBuf::from(tp));
     }
 }
@@ -1001,7 +1007,7 @@ fn push_guard_command(
 /// exist, which Claude Code never told the daemon about (`ws::note_interrupt`).
 /// And `SessionStart` arrives with the first prompt rather than before it, which
 /// is why a Codex session's first prompt is its argv
-/// ([`orchd::agent::Agent::prompt_in_argv`]).
+/// ([`orchd::agent::Agent::hooks_wait_for_a_prompt`]).
 ///
 /// Five seconds where Claude Code's are one: these are a process and a `curl`
 /// each, and `orch hook` bounds the request itself.

@@ -244,7 +244,7 @@ replaced for the daemon's sessions.
 **32. A mise tool's install folder is not always its name, and `outdated` will
 not say so.** `npm:@openai/codex` installs to `npm-openai-codex/`, and
 `mise outdated` answers `{}` for a name it does not know exactly as it does for a
-current tool. `update::agent_providing_tool` reads the name back from `mise ls`.
+current tool. `update::tool_installed_at` reads the name back from `mise ls`.
 *Kind:* mise's behaviour. *Breaks:* silently. The agent is never offered an
 upgrade.
 

@@ -66,12 +66,8 @@ pub fn thread_name(id: &str) -> Option<String> {
     grows, and this is asked for every restored Codex record at boot and every
     newly listed outside conversation. Keyed by mtime and length, since an append
     can land inside one mtime tick. */
-    type Index = (
-        std::time::SystemTime,
-        u64,
-        std::collections::HashMap<String, String>,
-    );
-    static INDEX: std::sync::Mutex<Option<Index>> = std::sync::Mutex::new(None);
+    type Index = (std::time::SystemTime, u64, HashMap<String, String>);
+    static INDEX: Mutex<Option<Index>> = Mutex::new(None);
     let path = home()?.join("session_index.jsonl");
     let meta = std::fs::metadata(&path).ok()?;
     let key = (meta.modified().ok()?, meta.len());
@@ -89,7 +85,7 @@ pub fn thread_name(id: &str) -> Option<String> {
 }
 
 /// Every id's name, the last line for an id winning.
-fn thread_names(index: &str) -> std::collections::HashMap<String, String> {
+fn thread_names(index: &str) -> HashMap<String, String> {
     index
         .lines()
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
@@ -181,15 +177,11 @@ pub fn flags(cwd: &Path, env: &[(String, String)], unset: &[&str]) -> Vec<String
     // line the daemon typed next went into the picker, and the fork would have
     // worked in its parent's tree. `-C` answers the picker before it is asked.
     let mut v: Vec<String> = vec!["-C".to_string(), cwd.to_string_lossy().into_owned()];
-    let hooks: Vec<String> = overrides
-        .iter()
-        .flat_map(|o| ["-c".to_string(), o.clone()])
-        .collect();
-    v.extend(hooks.iter().cloned());
+    v.extend(overrides.iter().flat_map(|o| ["-c".to_string(), o.clone()]));
     if !overrides.is_empty() {
-        // The hook overrides alone: `app-server` refuses `-C` and exits, and the
-        // hashes are of the hooks, so nothing else belongs in the question.
-        match trust(cwd, env, unset, &hooks) {
+        // The hook overrides alone, past `-C`: `app-server` refuses `-C` and exits,
+        // and the hashes are of the hooks, so nothing else belongs in the question.
+        match trust(cwd, env, unset, &v[2..]) {
             Ok(state) => {
                 v.push("-c".to_string());
                 v.push(format!("hooks.state={state}"));

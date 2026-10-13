@@ -175,6 +175,18 @@ export function create(on) {
     ev.clipboardData.setData('text/plain', view.file.lines.join('\n'));
   });
 
+  /** Make `content` the loaded file, and forget everything measured on the last
+   *  one. Both ways in go through here, so per-file state is reset in one place. */
+  function load(/** @type {string} */ path, /** @type {string} */ content) {
+    const plain = content.length > HUGE;
+    view.file = { path, lines: content.split('\n'), lang: plain ? null : langFor(path), plain };
+    view.rowH = 0;
+    blame = new Map();
+    blameAsked = new Set();
+    changed = [];
+    hits = [];
+  }
+
   /** Swap the ruler alone when its marks arrive. **Not the band**: a rebuilt
    *  band can move the pane's scroll, and a scroll closes an open menu, so the
    *  marks landing a moment after a right-click took the menu away with them. */
@@ -512,13 +524,7 @@ export function create(on) {
     showText(label, content) {
       ++view.seq;
       view.ws = null;
-      const plain = content.length > HUGE;
-      view.file = { path: label, lines: content.split('\n'), lang: plain ? null : langFor(label), plain };
-      view.rowH = 0;
-      blame = new Map();
-      blameAsked = new Set();
-      changed = [];
-      hits = [];
+      load(label, content);
       paint({ line: 1, last: 0, col: 0, len: 0 });
     },
 
@@ -611,18 +617,7 @@ export function create(on) {
         }
         // A newer `show` has been asked for while this one was in the air.
         if (mine !== view.seq) return false;
-        const plain = (answer.content?.length ?? 0) > HUGE;
-        view.file = {
-          path,
-          lines: String(answer.content ?? '').split('\n'),
-          lang: plain ? null : langFor(path),
-          plain,
-        };
-        view.rowH = 0;
-        blame = new Map();
-        blameAsked = new Set();
-        changed = [];
-        hits = [];
+        load(path, String(answer.content ?? ''));
         void askChanges();
       }
       paint(spot);

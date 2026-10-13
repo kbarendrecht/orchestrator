@@ -1600,17 +1600,12 @@ function addRow(c, state) {
      stays in this tooltip because that is the only place it is ever discovered. */
   tree.title = cutting || `New worktree session · ${MOD_LABEL} N (shift-click to name it)`;
   tree.onclick = (/** @type {MouseEvent} */ ev) => void newWorktree(ev.shiftKey, liveTarget(c));
-  /* **A plain press is the agent picked last, and the menu is where you pick.**
+  /* **A plain press is the default agent, and the menu is where you pick.**
      Only when this checkout has more than one: with one agent there is nothing to
      choose, and a menu holding one item is a click that asks a question with one
-     answer. The pick is remembered by the daemon, so the next plain press and the
-     keyboard chords follow it. */
-  const agents = state.agents ?? ['claude'];
-  if (agents.length > 1) {
-    tree.title += ' · right-click to pick the agent';
-    tree.oncontextmenu = (ev) => openMenu(ev, agents.map((a) => /** @type {import('./core.js').MenuItem} */ (
-      [agentItem(a, state.default_agent), null, cutting ? null : () => void newWorktree(false, liveTarget(c), a)])));
-  }
+     answer. Unless settings name a default, the pick is remembered by the daemon,
+     so the next plain press and the keyboard chords follow it. */
+  agentMenu(tree, state, cutting ? null : (a) => void newWorktree(false, liveTarget(c), a));
   row.appendChild(tree);
 
   row.appendChild(el('span', 'addsep', '\u00b7'));
@@ -1636,11 +1631,7 @@ function addRow(c, state) {
   // `void` is how this file says fire-and-forget out loud; the row lands on the
   // next snapshot either way.
   inMain.onclick = () => { if (main) void newSession(main.id, liveTarget(c)); };
-  if (agents.length > 1) {
-    if (!inMain.disabled) inMain.title += ' · right-click to pick the agent';
-    inMain.oncontextmenu = (ev) => openMenu(ev, agents.map((a) => /** @type {import('./core.js').MenuItem} */ (
-      [agentItem(a, state.default_agent), null, inMain.disabled || !main ? null : () => void newSession(main.id, liveTarget(c), a)])));
-  }
+  agentMenu(inMain, state, inMain.disabled || !main ? null : (a) => void newSession(main.id, liveTarget(c), a));
   row.appendChild(inMain);
 
   /* Hard right, so the row says one thing about the list above it rather than two:
@@ -1653,8 +1644,17 @@ function addRow(c, state) {
 }
 
 /** A menu row for starting on `a`, marking the one a plain press starts. */
-const agentItem = (/** @type {import('../repo').Agent} */ a, /** @type {import('../repo').Agent | undefined} */ last) =>
-  `new ${AGENT_LABEL[a]} session${a === (last ?? 'claude') ? ' · default' : ''}`;
+/** The right-click on an add button: one item per agent, the default marked,
+ *  each greyed when `start` is null. Only with more than one agent installed. */
+function agentMenu(/** @type {HTMLButtonElement} */ btn, /** @type {import('../snapshot').Snapshot} */ state, /** @type {((a: import('../repo').Agent) => void) | null} */ start) {
+  if (state.agents.length < 2) return;
+  if (!btn.disabled) btn.title += ' · right-click to pick the agent';
+  btn.oncontextmenu = (ev) => openMenu(ev, state.agents.map((a) => /** @type {import('./core.js').MenuItem} */ ([
+    `new ${AGENT_LABEL[a]} session${a === state.default_agent ? ' · default' : ''}`,
+    null,
+    start && (() => start(a)),
+  ])));
+}
 
 /** The checkout's target as it is now. `setCheckouts` replaces every target on
  *  each snapshot, and one captured by a node the rail kept holds a base and a

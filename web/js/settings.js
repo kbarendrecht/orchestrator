@@ -1,7 +1,7 @@
 // The settings panel. The zoom control it offers lives in core, because the
 // terminals read the scale too.
 
-import { ctl, $, WHEEL, ZOOM, borrowFocus, call, callHost, caret, setUiPx, uiPx, UI_PX_MAX, UI_PX_MIN, closeLegend, el, get, MOD_LABEL, onSelection, reason, returnFocus, loadWheel, saveWheel, saveZoom, setWheel, setZoom, snap, uiScale, wheelSpeed } from './core.js';
+import { AGENT_LABEL, ctl, $, WHEEL, ZOOM, borrowFocus, call, callHost, caret, setUiPx, uiPx, UI_PX_MAX, UI_PX_MIN, closeLegend, el, get, MOD_LABEL, onSelection, reason, returnFocus, loadWheel, saveWheel, saveZoom, setWheel, setZoom, snap, uiScale, wheelSpeed } from './core.js';
 import { currentPreset, detectedFonts, FONTS, fontStack, onThemeChange, PRESETS, resetTheme, SEE_THROUGH, setTheme, SIZE_MAX, SIZE_MIN, theme, validFontName } from './theme.js';
 /* The arithmetic, for reading a typed hex back. A leaf with no imports of its own,
    so the module graph stays the DAG `dependency-cruiser` insists on — and the same
@@ -945,6 +945,9 @@ function setupSettings() {
     markDirty();
     renderProcs();
   };
+  for (const [value, label] of Object.entries(AGENT_LABEL)) {
+    $('setagent').appendChild(Object.assign(el('option', '', label), { value }));
+  }
   $('setsave').onclick = saveSettings;
   $('setsave').title = 'Saves and applies. A change to the upstream ref, the remote or '
     + 'the main processes also restarts, because those are read at start; live sessions '

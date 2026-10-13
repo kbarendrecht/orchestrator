@@ -1041,6 +1041,11 @@ for (const [id, where] of [['diffbody', () => Diff.state.path], ['fnsrc', Find.s
   });
 }
 
+/** The checkout a terminal event names, or the active one when it names none
+ *  the page knows. */
+const checkoutAt = (/** @type {string} */ checkout) =>
+  CHECKOUTS.find((c) => c.path === checkout) ?? activeCheckout();
+
 /* **And a path the agent printed opens the same viewer.** `term.js` finds it in
    the buffer and knows nothing else; this half is the part that needs the
    snapshot, which is the same division the modifier-click above follows.
@@ -1055,12 +1060,11 @@ Term.onPathClick(({ checkout, target, path, line, last, ev }) => {
   const where = ptyRoot(state, target);
   if (!where) return;
   const at = locate(state, where, path);
+  const scratch = scratchpadOf(state, target, path);
+  const openScratch = () => scratch
+    && void FileView.openScratch(scratch.workspace, scratch.session, scratch.abs, checkoutAt(checkout));
   if (!at) {
-    const scratch = scratchpadOf(state, target, path);
-    if (scratch) {
-      const own = CHECKOUTS.find((c) => c.path === checkout) ?? activeCheckout();
-      return void FileView.openScratch(scratch.workspace, scratch.session, scratch.abs, own);
-    }
+    if (scratch) return openScratch();
     // Refused rather than opened and failed: `/etc/hosts` is a real file and not
     // this workspace's, and a viewer that answers "no such file" would be lying
     // about which of the two went wrong.
@@ -1075,10 +1079,8 @@ Term.onPathClick(({ checkout, target, path, line, last, ev }) => {
     const dirs = await FileView.foldersOf(at.workspace, at.rel);
     if (dirs.length) return FileView.openFolder(at.workspace, dirs, ev);
     // `scratchpad/<file>` is how an agent names its own scratchpad in prose.
-    const scratch = scratchpadOf(state, target, path);
     if (!scratch) return toast(`no ${at.rel} in this workspace`, true);
-    const own = CHECKOUTS.find((c) => c.path === checkout) ?? activeCheckout();
-    void FileView.openScratch(scratch.workspace, scratch.session, scratch.abs, own);
+    openScratch();
   });
 });
 
@@ -1090,7 +1092,7 @@ Term.onPathCheck(({ checkout, target, paths }) => {
   const state = snapshotOf(checkout) ?? snap;
   const where = ptyRoot(state, target);
   if (!where) return Promise.resolve(paths.map(() => false));
-  const at = CHECKOUTS.find((c) => c.path === checkout) ?? activeCheckout();
+  const at = checkoutAt(checkout);
   return Promise.all(paths.map((path) => {
     /* A scratchpad file is underlined only if it is there: a HEAD to the route
        that serves it, which reads no body and refuses anything outside the
@@ -1123,7 +1125,7 @@ Term.onPathMenu(({ checkout, target, path, line, last, ev }) => {
     // The scratchpad image the click opens has the same two items here.
     const scratch = scratchpadOf(state, target, path);
     if (!scratch) return toast(`${path} is outside this workspace`, true);
-    const own = CHECKOUTS.find((c) => c.path === checkout) ?? activeCheckout();
+    const own = checkoutAt(checkout);
     return openMenu(ev, [
       ['Open here', null, () => void FileView.openScratch(scratch.workspace, scratch.session, scratch.abs, own)],
       ['Copy path', null, () => void copyText(scratch.abs)],
@@ -1138,7 +1140,7 @@ Term.onPathMenu(({ checkout, target, path, line, last, ev }) => {
   const reveal = (/** @type {string[]} */ found, /** @type {boolean} */ folder) => {
     const [first] = found;
     if (!first) return toast(`no ${rel} in this workspace`, true);
-    const at = CHECKOUTS.find((c) => c.path === checkout) ?? activeCheckout();
+    const at = checkoutAt(checkout);
     void callOn(at, '/api/open/reveal', { workspace, path: first, folder })
       .catch((e) => toast(reason(e), true));
   };
@@ -1169,7 +1171,7 @@ Term.onPathMenu(({ checkout, target, path, line, last, ev }) => {
       const [first] = dirs;
       FileView.openFolder(workspace, dirs, ev, [
         ...(dirs.length > 1 || !first ? [] : /** @type {import('./js/core.js').MenuItem[]} */ ([
-          [manager, null, () => void callOn(CHECKOUTS.find((c) => c.path === checkout) ?? activeCheckout(),
+          [manager, null, () => void callOn(checkoutAt(checkout),
             '/api/open/reveal', { workspace, path: first.folder, folder: false })
             .catch((e) => toast(reason(e), true))],
         ])),

@@ -285,6 +285,14 @@ pub async fn scratchpad_file(
     response
 }
 
+/// The uid a scratchpad folder is named for. Claude Code names its folder for
+/// the user's uid, and `HOME` is the user's.
+fn scratchpad_uid() -> std::io::Result<u32> {
+    use std::os::unix::fs::MetadataExt;
+    let home = std::env::var_os("HOME").unwrap_or_else(|| "/".into());
+    Ok(std::fs::metadata(&home)?.uid())
+}
+
 /// The bytes of the scratchpad file `q` names, or `None` for anything else.
 ///
 /// The file is resolved first, links and all, and only then checked against
@@ -301,13 +309,16 @@ async fn scratchpad_read(app: &AppState, q: ScratchpadQuery, body: bool) -> Opti
     let session = q.session;
     crate::proc::run_blocking("reading a scratchpad file", move || {
         let named = match q.path.strip_prefix("scratchpad/") {
-            Some(rest) => {
-                use std::os::unix::fs::MetadataExt;
-                // The same folder `drop_file` writes to, named for the uid.
-                let home = std::env::var_os("HOME").unwrap_or_else(|| "/".into());
-                let uid = std::fs::metadata(&home).ok()?.uid();
-                drop_path(Path::new("/tmp"), uid, &cwd, session, "x", 0).with_file_name(rest)
-            }
+            // The same folder `drop_file` writes to.
+            Some(rest) => drop_path(
+                Path::new("/tmp"),
+                scratchpad_uid().ok()?,
+                &cwd,
+                session,
+                "x",
+                0,
+            )
+            .with_file_name(rest),
             None => q.path.into(),
         };
         let at = std::fs::canonicalize(&named).ok()?;
@@ -470,10 +481,7 @@ pub async fn drop_file(
     };
     let session = q.session;
     let path = crate::proc::run_blocking("saving a dropped file", move || {
-        use std::os::unix::fs::MetadataExt;
-        // Claude Code's own folder is named for the uid, and HOME is the user's.
-        let home = std::env::var_os("HOME").unwrap_or_else(|| "/".into());
-        let uid = std::fs::metadata(&home)?.uid();
+        let uid = scratchpad_uid()?;
         let mut at = drop_path(Path::new("/tmp"), uid, &cwd, session, &q.name, 0);
         std::fs::create_dir_all(at.parent().unwrap_or(Path::new("/tmp")))?;
         // A second drop of `screenshot.png` must not overwrite the first, which

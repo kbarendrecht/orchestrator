@@ -917,9 +917,9 @@
       <label class="settings-field">
         <span class="settings-k">Default agent</span>
         <select class="settings-in" id="setagent">
+          <!-- One per agent, from `AGENT_LABEL` in settings.js, so a new agent
+               cannot be missing here. -->
           <option value="">last used</option>
-          <option value="claude">Claude Code</option>
-          <option value="codex">Codex</option>
         </select>
       </label>
       <p class="settings-help">What <b>+ worktree</b> and <b>+ main</b> start. Right-click
