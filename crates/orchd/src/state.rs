@@ -178,6 +178,12 @@ pub struct AppState {
     /// session in main parks the checkout back on its base branch, while a restart
     /// must leave it exactly where auto-resume will expect to find it.
     pub shutting_down: std::sync::atomic::AtomicBool,
+    /// Set once [`Self::restore_sessions`] has the previous run's records in
+    /// memory. Until then the session map is empty because nothing was read yet,
+    /// not because there are no sessions, and a `persist` writes that `[]` over the
+    /// file boot is about to load. Any `notify` before the load does that, and the
+    /// agent probe did, on every start where it beat the upstream fetch.
+    pub restored: std::sync::atomic::AtomicBool,
     /// Sessions auto-resume is going to bring back and has not reached yet (#33).
     ///
     /// **A session waiting its turn is not live, and `was_live` is read off live
@@ -896,6 +902,7 @@ impl AppState {
             sweeping: tokio::sync::Mutex::new(()),
             cutting: tokio::sync::Mutex::new(()),
             shutting_down: std::sync::atomic::AtomicBool::new(false),
+            restored: std::sync::atomic::AtomicBool::new(false),
             pending_resume: std::sync::Mutex::new(std::collections::HashSet::new()),
             auto_resuming: std::sync::atomic::AtomicBool::new(false),
             previews: std::sync::Mutex::new(HashMap::new()),
@@ -1227,7 +1234,9 @@ impl AppState {
         This is what replaced "no await point after the kills". The rule cost
         shutdown its `SIGHUP` → `SIGKILL` escalation, since escalating means
         waiting. */
-        if self.shutting_down.load(std::sync::atomic::Ordering::SeqCst) {
+        if self.shutting_down.load(std::sync::atomic::Ordering::SeqCst)
+            || !self.restored.load(std::sync::atomic::Ordering::SeqCst)
+        {
             return;
         }
         // Serialised, so two overlapping flushes cannot write this file at once.
@@ -1297,6 +1306,8 @@ impl AppState {
             }
             inner.sessions.entry(s.id).or_insert(s);
         }
+        self.restored
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     pub async fn snapshot(&self) -> Snapshot {
@@ -2635,6 +2646,33 @@ mod tests {
         s.set_state(State::Working);
         inner.sessions.insert(id, s);
         id
+    }
+
+    /// **Nothing is written over the store before boot has read it.** The agent
+    /// probe notified ahead of the load, and every restart where it beat the
+    /// upstream fetch wrote `[]` over the records boot then read back as none.
+    #[tokio::test]
+    async fn a_notify_before_the_records_are_restored_writes_nothing() {
+        let app = AppState::new(
+            crate::testutil::test_config(),
+            "t".into(),
+            crate::window::Chrome::None,
+        );
+        let _ = live_in_main(&app).await;
+        // `persisted_ids` is what a write records, read rather than the file: the
+        // test binary shares one scratch store, and other tests write it too.
+        let written = || app.persisted_ids.load(std::sync::atomic::Ordering::SeqCst);
+
+        app.notify().await;
+        assert_eq!(
+            written(),
+            0,
+            "an empty board that has not loaded yet is not an empty board"
+        );
+
+        app.restore_sessions(Vec::new()).await;
+        app.notify().await;
+        assert_ne!(written(), 0, "and once loaded it writes");
     }
 
     /// **The record a shutdown writes has to carry auto-resume's intent** (#33).

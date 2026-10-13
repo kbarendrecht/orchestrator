@@ -62,5 +62,9 @@ pub fn app_at(main: &Path, extra: &str) -> Arc<AppState> {
         format!(r#"{{"main_checkout":{main:?},{extra}}}"#)
     };
     let cfg: Config = serde_json::from_str(&raw).expect("the fixture config parses");
-    AppState::new(cfg, "t".into(), crate::window::Chrome::None)
+    let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+    // A fixture has no previous run to load, so it may write from the start.
+    app.restored
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    app
 }
