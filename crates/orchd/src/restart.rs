@@ -56,7 +56,11 @@ pub enum Which {
     /// The ones an upgrade left behind — see `Session::agent_stale`. What the
     /// agent bar asks for: a session opened after the upgrade is on the new build
     /// already, and respawning it would cost its scrollback for nothing.
-    Stale,
+    ///
+    /// Of one agent when it names one. The bar is about one agent's upgrade, and
+    /// "Restart them" used to respawn every stale session of either — a Codex
+    /// session restarted by a button that named Claude Code.
+    Stale(Option<crate::agent::Agent>),
 }
 
 /// Flag sessions for a respawn, and wake the watcher.
@@ -71,7 +75,7 @@ pub enum Which {
 pub async fn queue(app: &Arc<AppState>, which: Which) -> Result<Queued> {
     let only = match which {
         Which::One(id) => Some(id),
-        Which::All | Which::Stale => None,
+        Which::All | Which::Stale(_) => None,
     };
     let out = {
         let mut inner = app.inner.write().await;
@@ -89,10 +93,11 @@ pub async fn queue(app: &Arc<AppState>, which: Which) -> Result<Queued> {
         }
         let mut out = Queued::default();
         for s in inner.sessions.values_mut() {
-            if only.is_some_and(|id| id != s.id)
-                || !running(s)
-                || (which == Which::Stale && !s.agent_stale)
-            {
+            let left_behind = match which {
+                Which::Stale(agent) => s.agent_stale && agent.is_none_or(|a| a == s.agent),
+                Which::One(_) | Which::All => true,
+            };
+            if only.is_some_and(|id| id != s.id) || !running(s) || !left_behind {
                 continue;
             }
             s.restart_queued = true;
@@ -303,7 +308,7 @@ mod tests {
         app.with_session(old, |s| s.agent_stale = true).await;
 
         assert_eq!(
-            queue(&app, Which::Stale).await.unwrap(),
+            queue(&app, Which::Stale(None)).await.unwrap(),
             Queued { queued: 1, now: 1 }
         );
         let inner = app.inner.read().await;
@@ -311,6 +316,35 @@ mod tests {
         assert!(
             !inner.sessions[&new].restart_queued,
             "a session already on the new build is left alone"
+        );
+    }
+
+    /// The bar names one agent, so it restarts that agent's stale sessions and
+    /// leaves the other's alone.
+    #[tokio::test]
+    async fn stale_of_one_agent_leaves_the_other_agents_alone() {
+        use crate::agent::Agent;
+        let (app, dir) = crate::testutil::app("restart-stale-agent");
+        let claude = live(&app, &dir, turn(TurnReason::TurnComplete)).await;
+        let codex = live(&app, &dir, turn(TurnReason::TurnComplete)).await;
+        app.with_session(claude, |s| s.agent_stale = true).await;
+        app.with_session(codex, |s| {
+            s.agent_stale = true;
+            s.agent = Agent::Codex;
+        })
+        .await;
+
+        assert_eq!(
+            queue(&app, Which::Stale(Some(Agent::Claude)))
+                .await
+                .unwrap(),
+            Queued { queued: 1, now: 1 }
+        );
+        let inner = app.inner.read().await;
+        assert!(inner.sessions[&claude].restart_queued);
+        assert!(
+            !inner.sessions[&codex].restart_queued,
+            "not the bar's agent"
         );
     }
 

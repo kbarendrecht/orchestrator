@@ -527,9 +527,9 @@ function renderAgentUpdate() {
      The daemon marks each (`update::mark_stale`); this counts the ones not already
      queued, because a queued one is on its way and saying it again reads as a
      button that did nothing. */
-  const stale = everySession()
+  const leftBehind = everySession()
     .filter(({ session: x }) => x.agent_stale && x.alive && !x.restart_queued);
-  if (!u && !run && !stale.length) { bar.hidden = true; return; }
+  if (!u && !run && !leftBehind.length) { bar.hidden = true; return; }
   // A finished run with nothing in its tail is the one that worked. Reported
   // rather than cleared, because the sessions you already have open go on printing
   // Claude Code's own upgrade notice — they really are still the old build — so a
@@ -546,7 +546,13 @@ function renderAgentUpdate() {
   // outlive the nudge that started it.
   // The agent the run or the offer is about. A session left behind is named by
   // its own, and is Claude Code's when nothing else says.
-  const who = AGENT_LABEL[/** @type {import('./repo').Agent} */ (run?.agent ?? u?.agent ?? stale[0]?.session.agent ?? 'claude')];
+  const agent = /** @type {import('./repo').Agent} */ (run?.agent ?? u?.agent ?? leftBehind[0]?.session.agent ?? 'claude');
+  const who = AGENT_LABEL[agent];
+  /* **Only that agent's.** The bar names one agent, and it used to count and
+     restart every stale session of either: "Claude Code was upgraded — 3
+     sessions" over two Codex ones, and a button that respawned them too. The
+     other agent's come up once this bar has said its piece. */
+  const stale = leftBehind.filter(({ session: x }) => x.agent === agent);
   const n = stale.length;
   const behind = `${n} session${n === 1 ? '' : 's'} still on the old one`;
   const msg = failed
@@ -596,7 +602,7 @@ function renderAgentUpdate() {
       let later = 0;
       for (const c of at) {
         try {
-          const r = await callOn(c, '/api/sessions/restart', { stale: true });
+          const r = await callOn(c, '/api/sessions/restart', { stale: true, agent });
           now += r.now;
           later += r.queued - r.now;
         } catch (e) {
@@ -606,7 +612,7 @@ function renderAgentUpdate() {
       if (now || later) {
         toast(later
           ? `restarting ${now}, and ${later} more when their turn ends`
-          : `restarting ${now} session${now === 1 ? '' : 's'} on the new Claude Code`);
+          : `restarting ${now} session${now === 1 ? '' : 's'} on the new ${who}`);
       }
       // The run's report has said what it had to once the sessions are on their way.
       if (done) call('/api/agent/upgrade/dismiss').catch((e) => toast(reason(e), true));
@@ -616,7 +622,7 @@ function renderAgentUpdate() {
       await call('/api/agent/upgrade');
       // Nothing to point at: the button disables itself on the next snapshot, the
       // one carrying the run, and this same bar reports how it ended.
-      toast(`upgrading Claude Code to ${run?.to ?? u?.latest}`);
+      toast(`upgrading ${who} to ${run?.to ?? u?.latest}`);
     } catch (e) {
       toast(reason(e), true);
     }

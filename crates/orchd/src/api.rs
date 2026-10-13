@@ -1733,6 +1733,9 @@ pub struct RestartAll {
     /// Only the sessions an upgrade left behind — the agent bar's button.
     #[serde(default)]
     pub stale: bool,
+    /// And of these, only this agent's: the one the bar names.
+    #[serde(default)]
+    pub agent: Option<crate::agent::Agent>,
 }
 
 /// The same for every live session in this checkout — what a `mise up` of Claude
@@ -1741,10 +1744,9 @@ pub async fn restart_sessions(
     State(app): State<Arc<AppState>>,
     body: Option<Json<RestartAll>>,
 ) -> ApiResult<serde_json::Value> {
-    let which = if body.is_some_and(|Json(b)| b.stale) {
-        crate::restart::Which::Stale
-    } else {
-        crate::restart::Which::All
+    let which = match body {
+        Some(Json(b)) if b.stale => crate::restart::Which::Stale(b.agent),
+        _ => crate::restart::Which::All,
     };
     Ok(Json(serde_json::to_value(
         crate::restart::queue(&app, which).await?,
