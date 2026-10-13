@@ -1685,6 +1685,22 @@ async fn park_main(app: &Arc<AppState>) {
                 `move_out_of_main` does the same for the same reason. */
                 if let Some(id) = &ws {
                     app.forget_branch(id, &base).await;
+                    /* And the conversations in that tree, for the same reason one
+                    level down: a stopped record there still says it is about the
+                    base, and `to_carry` selects on that field — so the next move of
+                    main would match it as the base's conversation and carry it
+                    into main, away from the tree its work is in. The tree's
+                    content did not move, only its branch's name, so the record
+                    takes the new name. Persisted by the notify. */
+                    {
+                        let mut inner = app.inner.write().await;
+                        for s in inner.sessions.values_mut() {
+                            if s.workspace == *id && s.branch.as_deref() == Some(base.as_str()) {
+                                s.branch = Some(fresh.clone());
+                            }
+                        }
+                    }
+                    app.notify().await;
                 }
                 tracing::info!(
                     "{} was on {base} and main needs it; it is on {fresh} now",
@@ -3326,8 +3342,27 @@ mod tests {
         );
         git(&["checkout", "-q", "--", "f.txt"], &repo);
 
+        // A stopped conversation in that tree, recorded on the base it holds.
+        let resting = Uuid::new_v4();
+        {
+            let mut inner = app.inner.write().await;
+            let mut s = Session::new(resting, "w".into(), tree.clone(), None);
+            s.branch = Some("main".into());
+            s.had_a_turn = true;
+            s.set_state(State::Exited);
+            inner.sessions.insert(resting, s);
+        }
+
         park_main(&app).await;
         assert_eq!(branch(), "main", "main took its base back");
+        /* The record names the branch its tree holds now. Left on the base, it read
+        as main's conversation to `to_carry`, and the next move of main would have
+        carried it away from the tree its work is in. */
+        assert_eq!(
+            app.inner.read().await.sessions[&resting].branch.as_deref(),
+            Some("worktree-w"),
+            "the conversation in the tree still names the base it gave up",
+        );
         assert_eq!(
             crate::git::current_branch(&tree).unwrap(),
             "worktree-w",
