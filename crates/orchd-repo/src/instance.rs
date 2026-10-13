@@ -24,7 +24,16 @@
 //! below drives `acquire_at` with a path it chose and so cannot see which path a
 //! daemon computes.
 //!
-//! What it still does not cover: two hosts with different `ORCHD_CONFIG_DIR` values
+//! **And a daemon started from a terminal takes the same file.** A solo
+//! `orchd --main X` has the root config dir, not a checkout's, so it used to lock
+//! `<root>/instance.pid` while the app's child for X locked
+//! `<root>/checkouts/X-<hash>/instance.pid` — two files, two daemons for one
+//! checkout, both writing its `sessions.json` and its hook settings. The lock is
+//! keyed on the checkout now ([`lock_path`]): whatever the config dir, the file is
+//! that checkout's directory under it, and a child's config dir already *is* that
+//! directory.
+//!
+//! What it still does not cover: two hosts with different `ORCHD_CONFIG_DIR` roots
 //! pointed at one checkout. `mise run fixture` and `mise run e2e` are that shape and
 //! are safe for another reason — each uses a throwaway clone, so the checkout
 //! differs anyway.
@@ -35,7 +44,7 @@
 use anyhow::{bail, Context, Result};
 use std::io::Write;
 use std::os::fd::AsRawFd;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::config::Config;
 
@@ -82,8 +91,88 @@ pub struct Lock {
 /// module exists to prevent. It also guessed from a command line, so a recycled
 /// pid belonging to `vim ~/orchestrator/x` read as a live holder and wedged the app
 /// out of starting.
-pub fn acquire() -> Result<Lock> {
-    acquire_at(Config::config_dir()?.join("instance.pid"))
+///
+/// `main` is the checkout this daemon was told to manage, if it was told; the one
+/// `config.json` names otherwise. **Read without writing anything**, because the
+/// lock comes before every write — `Config::load_or_init` records a new `--main`
+/// in the file, and a second daemon that did that before being refused would have
+/// moved the first one's config out from under it.
+pub fn acquire(main: Option<&Path>) -> Result<Lock> {
+    let dir = Config::config_dir()?;
+    let checkout = main
+        .map(Path::to_path_buf)
+        .or_else(|| named_in(&dir.join("config.json")))
+        // The same resolution `Config::parse` applies, or the two spellings of one
+        // checkout would hash to two keys.
+        .map(|p| std::fs::canonicalize(&p).unwrap_or(p));
+    acquire_at(lock_path(&dir, checkout.as_deref()))
+}
+
+/// The checkout a config file names, from the raw JSON: `Config::parse` would
+/// refuse a file a later migration fixes, and this only needs the one key.
+fn named_in(config: &Path) -> Option<PathBuf> {
+    let raw = std::fs::read_to_string(config).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    v.get("main_checkout")?.as_str().map(PathBuf::from)
+}
+
+/// Where a checkout's instance lock lives: in that checkout's own directory,
+/// `<config dir>/checkouts/<key>`, whichever process asks.
+///
+/// A hosted child's config dir already *is* that directory — the host hands it
+/// over as `ORCHD_CONFIG_DIR` — so the lock is directly inside it. A daemon with
+/// the root config dir, started from a terminal, reaches down to the same one.
+/// Both arrive at one file, which is the whole point.
+///
+/// With no checkout to key on there is nothing to guard yet: the start is about to
+/// fail asking for `--main`, and the root file is where it always was.
+pub fn lock_path(config_dir: &Path, checkout: Option<&Path>) -> PathBuf {
+    let Some(checkout) = checkout else {
+        return config_dir.join("instance.pid");
+    };
+    let own = Path::new("checkouts").join(checkout_key(checkout));
+    if config_dir.ends_with(&own) {
+        config_dir.join("instance.pid")
+    } else {
+        config_dir.join(own).join("instance.pid")
+    }
+}
+
+/// The name of a checkout's state directory: `<leaf>-<hash>`.
+///
+/// **The hash is over the checkout path alone**, so the directory is a function of
+/// the checkout and nothing else: two processes pointed at one checkout agree on
+/// where its `sessions.json` and its lock are. The leaf is there for the person
+/// reading a bug report by eye; it is not the key, because two checkouts can share
+/// a leaf (a fork beside its parent, `web/app` beside `mobile/app`).
+///
+/// Here rather than in the host, which builds the directory from it, because the
+/// lock needs it too and this crate cannot reach the host's.
+///
+/// FNV-1a rather than anything stronger: this is a filename, not a signature.
+pub fn checkout_key(checkout: &Path) -> String {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for b in checkout.to_string_lossy().as_bytes() {
+        hash ^= u64::from(*b);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    let leaf = checkout
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    // Anything not obviously safe in a path component becomes `-`: this ends up
+    // inside a shell-quoted hook command and inside a transcript slug.
+    let safe: String = leaf
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    format!("{safe}-{hash:x}")
 }
 
 /// How long a refusal waits before it believes itself.
@@ -198,6 +287,40 @@ mod tests {
 
     fn scratch(tag: &str) -> PathBuf {
         crate::testutil::scratch(&format!("lock-{tag}")).join("instance.pid")
+    }
+
+    /// A daemon on the root config dir and a hosted child for the same checkout
+    /// take **one** file — the solo one used to lock `<root>/instance.pid`, so
+    /// both ran. And two checkouts still take two.
+    #[test]
+    fn a_solo_daemon_and_a_hosted_child_lock_one_file_per_checkout() {
+        let root = Path::new("/cfg/orchd");
+        let checkout = Path::new("/work/app");
+        let child_dir = root.join("checkouts").join(checkout_key(checkout));
+
+        let solo = lock_path(root, Some(checkout));
+        let hosted = lock_path(&child_dir, Some(checkout));
+        assert_eq!(solo, hosted, "two daemons for one checkout take two locks");
+        assert_eq!(hosted, child_dir.join("instance.pid"));
+
+        let other = lock_path(root, Some(Path::new("/play/app")));
+        assert_ne!(solo, other, "two checkouts sharing a leaf share a lock");
+    }
+
+    /// And the files really do exclude each other once both sides compute them.
+    #[test]
+    fn the_solo_lock_refuses_while_the_child_holds_it() {
+        let root = crate::testutil::scratch("lock-keyed");
+        let checkout = Path::new("/work/app");
+        let child_dir = root.join("checkouts").join(checkout_key(checkout));
+        let held = acquire_within(
+            lock_path(&child_dir, Some(checkout)),
+            std::time::Duration::ZERO,
+        )
+        .expect("the child's lock");
+        acquire_within(lock_path(&root, Some(checkout)), std::time::Duration::ZERO)
+            .expect_err("a solo daemon for the same checkout must be refused");
+        drop(held);
     }
 
     /// The invariant the module exists for, and the one the pid-file version

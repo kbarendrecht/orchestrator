@@ -164,13 +164,15 @@ the workspace and nothing else now. Green tests, `check-web` and e2e are
 not enough on their own.
 
 **One daemon per checkout.** The lock is an `flock` on
-`<config dir>/instance.pid`, not the port, so a second instance refuses to
-start rather than fighting over `sessions.json` and the hook settings file. Close
-the running app before `cargo run`.
-**`<config dir>` is per checkout for a hosted child** — `checkouts/<leaf>-<hash>`,
-derived from the checkout — so the lock guards the noun it always claimed to. Two
-daemons for one checkout are refused; two for two checkouts never meet, which is
-what makes several checkouts possible. A refused start still rotates that
+`<config dir>/checkouts/<leaf>-<hash>/instance.pid`, not the port, so a second
+instance refuses to start rather than fighting over `sessions.json` and the hook
+settings file. Close the running app before `cargo run`.
+**The path is keyed on the checkout, whoever asks** (`instance::lock_path`). A
+hosted child's `<config dir>` already *is* `checkouts/<leaf>-<hash>`, so its lock is
+directly inside it; a terminal `orchd --main X` on the root config dir reaches down
+to the same file. It used to lock `<root>/instance.pid` and start happily beside the
+app's child for X. Two daemons for one checkout are refused; two for two checkouts
+never meet, which is what makes several checkouts possible. A refused start still rotates that
 checkout's `orchd.log` before it is refused, because logging is installed before the
 lock is taken: a failed launch costs you one log generation. The file is deliberately **left behind** — it
 is what the lock is taken *on*, and removing it would let a second daemon lock a

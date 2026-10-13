@@ -152,8 +152,8 @@ async fn a_host_serves_the_page_for_a_checkout_its_child_manages() {
     // 6 — one daemon per checkout, enforced.
     //
     // **This is the lock re-key, and it came for free with the state split.** The
-    // lock is `<config dir>/instance.pid`, and `<config dir>` for a child is now
-    // `checkouts/<leaf>-<hash>` — derived from the checkout — so two daemons for one
+    // lock is in `checkouts/<leaf>-<hash>`, which is a child's `<config dir>` —
+    // derived from the checkout — so two daemons for one
     // checkout meet on one file where before they only met if their *hosts* shared
     // a config dir. Asserted here rather than in `instance.rs`, because the unit
     // test there drives `acquire_at` with a path it chose; what needed proving is
@@ -193,6 +193,36 @@ async fn a_host_serves_the_page_for_a_checkout_its_child_manages() {
     assert!(
         refusal.contains("orchd.log"),
         "the refusal does not say where to read more: {refusal}"
+    );
+    /* 6b — **and a daemon started from a terminal meets the same lock.** A solo
+    `orchd --main <checkout>` has the root config dir, not the checkout's, and it
+    used to lock `<root>/instance.pid` — a different file, so it started beside the
+    app's child and both wrote one `sessions.json`. Asserted on its own words
+    rather than its exit, because a daemon the lock failed to stop could still fail
+    on a busy port and read as a pass. */
+    let mut solo = std::process::Command::new(exe)
+        .args(["--main", &repo.to_string_lossy()])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawning a solo orchd");
+    // A loop of its own rather than `until`, which panics on its deadline and
+    // would leave a daemon the lock did not stop running after the test.
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while solo.try_wait().ok().flatten().is_none() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    if solo.try_wait().ok().flatten().is_none() {
+        let _ = solo.kill();
+        let _ = solo.wait();
+        panic!("a solo orchd for a checkout the app's child holds kept running");
+    }
+    let mut said = String::new();
+    std::io::Read::read_to_string(&mut solo.stderr.take().unwrap(), &mut said).unwrap();
+    assert!(
+        said.contains("Orchestrator is already running"),
+        "the solo daemon stopped for some other reason: {said}"
     );
     // And the first one is untouched by the attempt.
     assert!(

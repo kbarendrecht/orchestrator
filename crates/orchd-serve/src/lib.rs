@@ -273,7 +273,7 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
 
     // First, and before anything is written: a second daemon would spawn into
     // the same worktrees and rewrite the hook settings with its own port.
-    let lock = instance::acquire()?;
+    let lock = instance::acquire(opts.main_checkout.as_deref())?;
 
     let mut cfg = Config::load_or_init(opts.main_checkout)?;
     // From the argv of whoever spawned us, never from the file this just read.

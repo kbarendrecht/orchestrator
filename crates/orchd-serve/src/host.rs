@@ -1170,40 +1170,13 @@ pub fn polled_repo(checkout: &Path) -> Option<String> {
 
 /// Where one checkout's durable state lives.
 ///
-/// `<config dir>/checkouts/<leaf>-<hash>`. **The hash is over the checkout path
-/// alone**, so the directory is a function of the checkout and nothing else: two
-/// hosts pointed at one checkout agree on where its `sessions.json` is, which is
-/// the property the instance lock will need when it is re-keyed. The leaf is there
-/// for the person reading a bug report by eye; it is not the key, because two
-/// checkouts can share a leaf (a fork beside its parent, `web/app` beside
-/// `mobile/app`).
-///
-/// FNV-1a rather than anything stronger: this is a filename, not a signature.
+/// `<config dir>/checkouts/<leaf>-<hash>` — see [`orchd::instance::checkout_key`]
+/// for why the hash is over the checkout path alone. The instance lock is taken
+/// in this same directory, by a hosted child and a terminal `orchd --main` alike.
 pub fn checkout_dir(checkout: &Path) -> anyhow::Result<PathBuf> {
-    let mut hash: u64 = 0xcbf29ce484222325;
-    for b in checkout.to_string_lossy().as_bytes() {
-        hash ^= u64::from(*b);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    let leaf = checkout
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    // Anything not obviously safe in a path component becomes `-`: this ends up
-    // inside a shell-quoted hook command and inside a transcript slug.
-    let safe: String = leaf
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect();
     Ok(orchd::config::Config::config_dir()?
         .join("checkouts")
-        .join(format!("{safe}-{hash:x}")))
+        .join(orchd::instance::checkout_key(checkout)))
 }
 
 /// Files in the config dir that a checkout must **not** inherit.
