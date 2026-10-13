@@ -358,6 +358,38 @@ this file, which churned it from every build; that feature is gone.
   is what says which question is a review decision and which is the session asking
   something of its own.
 
+- **Codex: two things are still unmeasured, and `/new` can eat what the daemon
+  types.** Measured on 0.162.1 with `codex` from mise, driven in a real pty with a
+  dummy API key and the daemon's hooks trusted the way `codex::flags` trusts them.
+  A dummy key is enough to measure a failing turn, but not a successful one, and
+  that leaves two gaps:
+
+  - **Whether a turn that completes fires `Stop`.** The rail's "your turn" for a
+    Codex session rests on it, and nothing has shown it yet. Measure it with a real
+    key before a Codex session's state is trusted the way a Claude one's is.
+  - **`hooks::watch_turn_end` has not met a live Codex through the daemon.** It
+    reads a failed turn off the rollout, because Codex fires no hook for one (a 401
+    after five reconnects sent nothing). Its test drives the handler against lines
+    shaped like 0.162.1's, so a rollout format change would pass the test and miss
+    in use.
+
+  **`/new` opens a picker before the new conversation exists** ("use current Git
+  worktree" or "create new Git worktree"). Whatever arrives in that window answers
+  the picker instead of reaching the prompt, and the daemon types into the pane on
+  its own: the resume nudge, a hand-off, a queued prompt. Nothing in a hook says
+  the picker is up. It does *not* free main: `/new` sends no `SessionEnd` while the
+  process lives, and one `SessionEnd` per conversation (reason `other`) arrives
+  only at `/quit`. So the cost is a lost line, not a lost claim. The fix may be the
+  same as `-C` was for the resume picker: an argument that answers it before it is
+  asked, if Codex has one.
+
+  Re-measure after a Codex upgrade before relying on any of this. The probe that
+  measured it is a `pty.fork` that has to answer Codex's terminal queries (cursor
+  position, OSC 10/11 colours, the kitty `?u` keyboard query and DA), and a fresh
+  `CODEX_HOME` needs `[projects."<path>"] trust_level = "trusted"` in its
+  `config.toml` or it stops on "Trust this folder?". That probe is the capture
+  harness the next entry describes, in its smallest form.
+
 - **Record real agent screens, before there is a second agent to record.** orchd
   parses agent pty bytes in three places already — `agent_complaint` reads the ring
   buffer to turn a fast non-zero exit into a sentence (`spawn.rs`), `is_interrupt`
