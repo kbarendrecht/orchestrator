@@ -77,7 +77,7 @@ fn a_missing_host_file_falls_back_to_the_configured_checkout() {
     starts from `read_host_file().unwrap_or_default()`, so a torn file read as
     "none" was overwritten by the next add or close — the list and every hand-set
     key gone, with the only copy replaced by defaults. */
-    std::fs::write(&file, r#"{"checkouts":["/a"],"see_thr"#).unwrap();
+    std::fs::write(&file, r#"{"checkouts":["/a"],"see_through"#).unwrap();
     assert_eq!(
         orchd_serve::host::remembered_checkouts(),
         vec![repo.clone()],
@@ -86,7 +86,7 @@ fn a_missing_host_file_falls_back_to_the_configured_checkout() {
     orchd_serve::host::remember_checkouts(std::slice::from_ref(&repo));
     assert_eq!(
         std::fs::read_to_string(cfg.join("host.json.corrupt")).unwrap(),
-        r#"{"checkouts":["/a"],"see_thr"#,
+        r#"{"checkouts":["/a"],"see_through"#,
         "the unreadable file was overwritten rather than kept"
     );
 
