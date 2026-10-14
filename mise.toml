@@ -7,7 +7,9 @@ claude-code = "latest"
 # Codex session does — which hooks it fires, with which `SessionEnd` reasons, what
 # an in-pane `/new` does to the process — is only measurable against the binary,
 # and a guess about it is exactly the rule the daemon then gets wrong quietly.
-codex = "latest"
+# npm, not the `codex` short name: that resolves to aqua, which ships only the
+# `codex` binary and leaves out `codex-code-mode-host`, so code mode fails closed.
+"npm:@openai/codex" = "latest"
 node = "latest"
 rust = "latest"
 # `gh` is a *task* dependency, not the daemon's: the review flow reaches GitHub
