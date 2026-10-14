@@ -1632,6 +1632,15 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 .ctxmenu-parent::after{content:'\203A';color:var(--faint-solid)}
 .ctxmenu-parent[aria-expanded="true"]{background:var(--bg)}
 
+/* The full path over a hovered path in a terminal. Never takes the pointer, so it
+   cannot steal the hover that keeps it open. */
+.pathtip{
+  position:fixed;z-index:101;max-width:min(640px,calc(100vw - 8px));padding:4px 8px;
+  background:var(--raised);border:1px solid var(--line);border-radius:2px;
+  box-shadow:0 6px 18px rgba(0,0,0,.45);pointer-events:none;white-space:pre-wrap;
+  overflow-wrap:anywhere;font-family:var(--mono);font-size:calc(11.5px * var(--fs));color:var(--text);
+}
+
 /* ---------- toast ---------- */
 /* A stack of toasts, newest at the bottom. The container ignores the pointer so
    it never swallows a click meant for the terminal under it; an error row turns

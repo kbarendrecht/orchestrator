@@ -1115,6 +1115,18 @@ Term.onPathCheck(({ checkout, target, paths }) => {
   }));
 });
 
+/* And what the click would open, said on hover: the path from the workspace root,
+   or how many there are to pick from. Read from the list the underline was drawn
+   from, so it never walks the tree. */
+Term.onPathHover(({ checkout, target, path }) => {
+  const state = snapshotOf(checkout) ?? snap;
+  const where = ptyRoot(state, target);
+  if (!where) return null;
+  const hit = locate(state, where, path);
+  return (hit && FileView.hoverFor(checkout, hit.workspace, hit.rel))
+    ?? scratchpadOf(state, target, path)?.abs ?? null;
+});
+
 /* **The same path, with the other two things you can do to it.** A click opens
    the file here; the menu is where "open the folder" and "hand it to the machine"
    live, because a click cannot offer three answers without guessing which one was

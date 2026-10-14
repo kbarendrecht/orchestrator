@@ -15,7 +15,7 @@ import {
   $, activeCheckout, activeWorkspaceId, borrowFocus, get, getOn, openMenu, reason, returnFocus, toast,
 } from './core.js';
 import * as Editor from './editor.js';
-import { folders, level, matching } from './pathlink.js';
+import { folders, hoverText, level, matching } from './pathlink.js';
 import { MAX, hitLines, matches, nextIndex, offsetOf, replaceAll, substitute } from './seek.js';
 import * as Viewer from './viewer.js';
 
@@ -412,10 +412,29 @@ export async function known(at, ws, path) {
  *  @param {string} ws
  *  @param {string} path workspace-relative */
 export function isFolder(checkout, ws, path) {
+  const got = hoveredList(checkout, ws, path);
+  return !!got && !matching(got, path).length && folders(got, path).length > 0;
+}
+
+/** What a click on `path` would find, as the tooltip over its underline says it,
+ *  from the list the hover already has. No walk, for the reason [`isFolder`] has
+ *  none; `null` when no list is in yet or it holds nothing by that name. So it
+ *  can be up to [`HOVER_TTL`] behind the click, which walks fresh: a second file
+ *  by one name written in that window hovers as the first one alone.
+ *
+ *  @param {string} checkout the terminal's own checkout, by path
+ *  @param {string} ws
+ *  @param {string} path workspace-relative */
+export function hoverFor(checkout, ws, path) {
+  const got = hoveredList(checkout, ws, path);
+  return got ? hoverText(matching(got, path), folders(got, path).map((f) => f.folder)) : null;
+}
+
+/** The hover's file list that would hold `path`, if one has landed. */
+function hoveredList(/** @type {string} */ checkout, /** @type {string} */ ws, /** @type {string} */ path) {
   const whole = hovered.get(`${checkout}\0${ws}\0`);
   const dir = whole ? leftOutOf(whole.leftOut ?? [], path) : null;
-  const got = dir ? hovered.get(`${checkout}\0${ws}\0${dir}`)?.got : whole?.got;
-  return !!got && !matching(got, path).length && folders(got, path).length > 0;
+  return dir ? hovered.get(`${checkout}\0${ws}\0${dir}`)?.got : whole?.got;
 }
 
 /** The workspace's file list, if one landed within `ttl`, or the walk already

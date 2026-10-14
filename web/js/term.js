@@ -87,6 +87,37 @@ export function onPathCheck(/** @type {NonNullable<typeof pathCheck>} */ fn) {
   pathCheck = fn;
 }
 
+/** Asked what a hovered path opens, for the tooltip over its underline. Set from
+ *  `app.js`, for the reason `onPathClick` is. `null` shows nothing.
+ *
+ *  @type {((hit: { checkout: string, target: string, path: string }) => string | null) | null} */
+let pathHover = null;
+export function onPathHover(/** @type {NonNullable<typeof pathHover>} */ fn) {
+  pathHover = fn;
+}
+
+/** The one tooltip over a hovered path, made on first use.
+ *
+ *  **Drawn, not a `title`.** A native tooltip wants the pointer resting on one
+ *  element for half a second, and the DOM renderer replaces the row under it on
+ *  every line an agent prints.
+ *
+ *  @type {HTMLElement | null} */
+let tip = null;
+function showTip(/** @type {string} */ text, /** @type {MouseEvent} */ ev) {
+  if (!tip) {
+    tip = el('div', 'pathtip');
+    document.body.append(tip);
+  }
+  tip.textContent = text;
+  tip.hidden = false;
+  // Below and right of the pointer, kept on screen at the right and bottom edges.
+  const box = tip.getBoundingClientRect();
+  tip.style.left = `${Math.max(4, Math.min(ev.clientX + 12, innerWidth - box.width - 4))}px`;
+  tip.style.top = `${ev.clientY + 18 + box.height > innerHeight ? ev.clientY - box.height - 8 : ev.clientY + 18}px`;
+}
+const hideTip = () => { if (tip) tip.hidden = true; };
+
 /** The path under a pointer, found by arithmetic rather than by the DOM.
  *
  *  **Cells, not text nodes.** The rows are text only under the DOM renderer; a
@@ -217,7 +248,13 @@ function linkPaths(term, checkout, target) {
           // `end` is the last cell rather than one past it, which is xterm's own
           // convention — read from the OSC-8 provider in the vendored build.
           range: { start: cell(h.start, map, from), end: cell(h.end - 1, map, from) },
+          hover: (/** @type {MouseEvent} */ ev) => {
+            const said = h.kind === 'path' && pathHover?.({ checkout: checkout.path, target, path: h.path });
+            if (said) showTip(said, ev);
+          },
+          leave: hideTip,
           activate: (/** @type {MouseEvent} */ ev) => {
+            hideTip();
             if (Math.hypot(ev.clientX - down.x, ev.clientY - down.y) > DRAG_PX) return;
             ev.preventDefault();
             if (h.kind === 'url') { openUrl(checkout, h.url); return; }

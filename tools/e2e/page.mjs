@@ -1111,11 +1111,17 @@ try {
   for (const key of ['Escape', 'Enter']) {
     await (await rowMenu('rename'))?.click()
     await page.waitForSelector('#rail .sess-rename', { timeout: 5000 })
+    // A drag across the name selects text in WebKit only when the row is not draggable.
+    if (key === 'Escape') {
+      check(await page.$eval('#rail .sess-rename', (i) => !i.closest('[draggable="true"]')),
+        'a row being renamed does not drag, so the name can be selected')
+    }
     await page.keyboard.press(key)
     const gone = await page.waitForFunction(() => !document.querySelector('#rail .sess-rename'),
       null, { timeout: 3000 }).then(() => true, () => false)
     check(gone, `${key} on an unchanged rename puts the row back`)
   }
+  check(await page.$eval('#rail .sess[data-id]', (r) => r.draggable), 'and the row drags again after')
 
   /* --- a press outside the menu puts it away (#39) ---------------------------- */
 
@@ -2330,6 +2336,11 @@ try {
   await page.keyboard.press('Enter')
   const lonely = await pointAt('see Lonely.txt:2-4 now', 4, 14)
   await hoverLink(lonely)
+  /** What the tooltip over a hovered path says, once it says `want`. */
+  const tipSays = (want) => page.waitForFunction(
+    (w) => { const t = document.querySelector('.pathtip:not([hidden])'); return t && t.textContent.includes(w) },
+    want, { timeout: 5000 }).then(() => true).catch(() => false)
+  check(await tipSays('far/down/below/Lonely.txt'), 'hovering a bare name shows its path from the root')
   await page.mouse.click(lonely.x, lonely.y)
   const foundDeep = await page.waitForFunction(
     () => document.getElementById('fvpath')?.textContent === 'far/down/below/Lonely.txt',
@@ -2349,7 +2360,10 @@ try {
   await page.keyboard.type("printf 'and Lonel%s.txt again\\n' y")
   await page.keyboard.press('Enter')
   const twice = await pointAt('and Lonely.txt again', 4, 14)
+  // Past the hover list's two seconds: the second file is younger than the list.
+  await page.waitForTimeout(2100)
   await hoverLink(twice)
+  check(await tipSays('2 matches'), 'and a name two files share says there is a pick')
   await page.mouse.click(twice.x, twice.y)
   const picked = await page.waitForFunction(
     () => [...document.querySelectorAll('#ctxmenu:not([hidden]) .ctxmenu-item')]

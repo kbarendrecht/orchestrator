@@ -277,6 +277,21 @@ export function folders(list, path) {
     .sort((a, b) => a.folder.length - b.folder.length || a.folder.localeCompare(b.folder));
 }
 
+/** What hovering a printed path says it opens: the path from the workspace root,
+ *  or how many there are to pick from. Files before folders, because that is the
+ *  order a click tries them in.
+ *
+ *  @param {string[]} files what [`matching`] found
+ *  @param {string[]} dirs the folders [`folders`] found
+ *  @returns {string | null} */
+export function hoverText(files, dirs) {
+  const all = files.length ? files : dirs.map((d) => `${d}/`);
+  if (all.length < 2) return all[0] ?? null;
+  const SHOWN = 8;
+  const more = all.length > SHOWN ? [`and ${all.length - SHOWN} more`] : [];
+  return [`${all.length} matches, a click lets you pick:`, ...all.slice(0, SHOWN), ...more].join('\n');
+}
+
 /** One level of a folder, as a menu draws it: the subfolders, each with the files
  *  under it relative to that subfolder, and then the files directly in it.
  *

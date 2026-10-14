@@ -12,7 +12,7 @@
 // half of every sentence Claude Code writes, and an affordance that is wrong four
 // times out of five is one people learn to ignore.
 
-import { continues, folders, level, linksIn, matching, pathsIn } from '../web/js/pathlink.js'
+import { continues, folders, hoverText, level, linksIn, matching, pathsIn } from '../web/js/pathlink.js'
 
 let failed = false
 const check = (ok, what) => {
@@ -96,6 +96,14 @@ check(matching(LIST, 'bin/orchd').join() === 'bin/orchd', 'a file with no extens
 check(matching(LIST, 'Makefile').join() === 'src/Makefile', 'a name matches on the tail')
 check(matching(LIST, 'find.js').join() === 'tools/find.js,web/js/find.js', 'two matches, shortest first')
 check(matching(LIST, 'd.js').length === 0, 'the tail is a whole segment, not a suffix')
+
+// The hover says what a click opens, from the root, or that there is a pick.
+check(hoverText(matching(LIST, 'Makefile'), []) === 'src/Makefile', 'one match hovers as its path from the root')
+check(hoverText(matching(LIST, 'find.js'), []).startsWith('2 matches'), 'two say there is a pick')
+check(hoverText(matching(LIST, 'find.js'), []).includes('\nweb/js/find.js'), 'and name both')
+check(hoverText([], ['web/js']) === 'web/js/', 'a folder hovers with its slash')
+check(hoverText(Array.from({ length: 12 }, (_, i) => `f${i}`), []).endsWith('and 4 more'), 'a long pick is cut short')
+check(hoverText([], []) === null, 'nothing found says nothing')
 
 // --- several in one line ----------------------------------------------------
 
