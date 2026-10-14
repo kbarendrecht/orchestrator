@@ -2430,8 +2430,11 @@ function renameSession(/** @type {import('../snapshot').SessionView} */ s) {
      Dragging across the word you are fixing starts the row drag instead of
      selecting: the input blurs, and blur commits — so a half-corrected name was
      saved and the rail reordered underneath it. `draggable=false` on the input
-     hands the gesture back to the text. */
+     is not enough in WebKit, which still drags the row, so the row stops being
+     draggable until the rename ends. */
   input.draggable = false;
+  const row = /** @type {HTMLElement | null} */ (span.closest('[draggable="true"]'));
+  if (row) row.draggable = false;
   input.value = s.name || '';
   input.placeholder = s.title || '';
   span.replaceWith(input);
@@ -2449,6 +2452,7 @@ function renameSession(/** @type {import('../snapshot').SessionView} */ s) {
        so neither the rail nor the row redrew, and the input stayed with `done`
        set: Enter and Escape did nothing from then on. */
     input.replaceWith(span);
+    if (row) row.draggable = true;
     if (commit && given !== (s.name || '')) {
       try {
         await callFor(s.id, `/api/session/${s.id}/rename`, { name: given });
