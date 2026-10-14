@@ -2389,6 +2389,16 @@ function setupChrome() {
       window.addEventListener('mouseup', stop);
       window.addEventListener('blur', stop);
     });
+    /* **A bar never starts a drag-and-drop, because on Wayland that kills the
+       app.** Pulling the top bar crashed it twice, with WebKit in
+       `gtk_drag_begin` beside the window move from the same press: GTK asserts
+       `GDK_IS_WAYLAND_WINDOW`, then `Error 22 (Invalid argument) dispatching to
+       Wayland display`, and exits with the daemon and every session in it. Not
+       reproduced on demand, so this refuses the drag at `dragstart`, which WebKit
+       asks before it calls into GTK, rather than fixing what GTK does with it. */
+    document.addEventListener('dragstart', (e) => {
+      if (/** @type {HTMLElement} */ (e.target).closest?.(TITLEBARS)) e.preventDefault();
+    });
     document.addEventListener('dblclick', (e) => {
       if (!/** @type {HTMLElement} */ (e.target).closest?.(TITLEBARS)) return;
       if (/** @type {HTMLElement} */ (e.target).closest('button, input, a, kbd, .ctx-btn, .ctx-copy')) return;

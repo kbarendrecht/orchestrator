@@ -502,6 +502,11 @@ try {
     last, { timeout: 5000 },
   ).then(() => true).catch(() => false)
   check(moved, 'a dragged session row lands where it was dropped')
+  // A drag-and-drop from a bar crashes the app on Wayland, so the page refuses it.
+  // Only a page with window chrome has bars to pull, which is the `--mac` run.
+  const noBarDrag = await page.$eval('.top-c', (bar) => document.body.dataset.chrome === 'none'
+    ? null : !bar.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true })))
+  if (noBarDrag !== null) check(noBarDrag, 'a drag-and-drop never starts from a titlebar')
   const after = await railNames()
   // Sorted joins settle both halves: unequal lengths cannot produce equal joins.
   check([...after].sort().join('|') === [...before].sort().join('|'),
