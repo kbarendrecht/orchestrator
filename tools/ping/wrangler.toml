@@ -8,6 +8,13 @@ compatibility_date = "2026-10-01"
 [observability]
 enabled = false
 
+# Ten pings a minute per address.
+# See the comment at the limiter call in worker.js.
+[[ratelimits]]
+name = "LIMITER"
+namespace_id = "1001"
+simple = { limit = 10, period = 60 }
+
 [[d1_databases]]
 binding = "DB"
 database_name = "orchd-pings"

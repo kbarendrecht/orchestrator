@@ -21,6 +21,18 @@ export default {
     if (req.method !== 'POST' || new URL(req.url).pathname !== '/ping') {
       return new Response(null, { status: 404 })
     }
+    /* **Per address, before anything touches the database.** Without it anyone
+       could post fresh ids to inflate the count or spend D1's daily write quota,
+       after which real pings fail. A real install sends one ping a day and retries
+       hourly, so ten a minute leaves room for a whole office behind one NAT. The
+       address is the limiter's key in memory and is still not stored.
+
+       **It is loose, by Cloudflare's design and measured so:** the counter lives on
+       each server and settles in the background. Eighty requests one after another
+       in a minute all passed; a parallel burst of 150 had 27 refused. So it stops a
+       flood, not a patient script — enough for a count nobody is paid on. */
+    const { success } = await env.LIMITER.limit({ key: req.headers.get('cf-connecting-ip') ?? '' })
+    if (!success) return new Response(null, { status: 429 })
     let body
     try {
       body = await req.json()
