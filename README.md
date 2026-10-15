@@ -1,8 +1,8 @@
 # orchestrator
 
-**Run every Claude Code session, for every project, from one window.** See which
-agents are working, which are waiting on you, and which PRs still owe someone an
-answer.
+**A pull request pane that acts on itself.** See which PRs still owe someone an
+answer, press `handle`, and an agent works the threads in a pane you can take
+over. It drafts every reply and posts none of them without your go.
 
 [![release](https://img.shields.io/github/v/release/kbarendrecht/orchestrator?label=release&color=blue)](https://github.com/kbarendrecht/orchestrator/releases/latest)
 [![check](https://img.shields.io/github/actions/workflow/status/kbarendrecht/orchestrator/check.yml?branch=main&label=check)](https://github.com/kbarendrecht/orchestrator/actions/workflows/check.yml)
@@ -13,51 +13,73 @@ answer.
 
 A Rust daemon and a small vanilla-JS web app, shipped as one desktop application
 and runnable headless in a browser tab. It hosts
-[Claude Code](https://www.anthropic.com/claude-code) sessions; it is not itself an
-agent. [`docs/architecture.md`](docs/architecture.md) is how the pieces fit.
+[Claude Code](https://www.anthropic.com/claude-code) and
+[Codex](https://developers.openai.com/codex/cli/) sessions — several checkouts in
+one window, each session in its own worktree. It is not itself an agent.
+
+[What it does](#what-it-does) · [The review loop](#the-review-loop) ·
+[Install](#install) · [The agents](#the-agents) · [What you need](#what-you-need) ·
+[Security](#security) · [Developing](#developing)
 
 ## What it does
 
-Each row is real: the agents are Claude Code, the diffs are what they wrote.
+Each row is real: the agents are the ones you run, the diffs are what they wrote.
 [`docs/demo.md`](docs/demo.md) says how the recordings are made.
 
 <table>
 <tr>
-<td><b>01 &middot; Sessions &mdash; several projects, several agents, and nothing dies with the window.</b> Open more than one checkout in the same window; the panes follow the row you click. Each session gets its own git worktree and its own terminal. The rail says which are working and which wait on you. The daemon owns every pty, so closing the window &mdash; or killing the daemon &mdash; loses nothing.</td>
-<td><img src="docs/demo-repos.gif" alt="two checkouts in one window"><img src="docs/demo-revive.gif" alt="sessions surviving a daemon restart"></td>
+<td><b>01 &middot; The PR pane and the review queue &mdash; see who is waiting on whom.</b> Your open PRs, each with the threads still owed a reply and the checks that are red. Below them, other people's PRs ranked by how long somebody has waited: a request to you by name is amber, a request to your team is grey, and draft, conflicting and failing rows sink below a fold. The queue rows are demo data &mdash; <a href="docs/demo.md">why</a>.</td>
+<td><img src="docs/demo-panes.gif" alt="the PR pane and the review queue"></td>
 </tr>
 <tr>
-<td><b>02 &middot; Git and forge aware &mdash; see what changed, and who is waiting on it.</b> Two panes watch the working tree: changed files with git's own verbs, and a word-level diff against the merge-base that you can edit in. Two more watch GitHub: your open PRs with the threads still owed a reply, and other people's PRs ranked by who is blocked. The queue rows are demo data &mdash; <a href="docs/demo.md">why</a>.</td>
-<td><img src="docs/demo-diff.gif" alt="the diff viewer"><img src="docs/demo-panes.gif" alt="the PR pane and the review queue"></td>
-</tr>
-<tr>
-<td><b>03 &middot; Skills &mdash; the agent already knows the job.</b> Six skills ship with the app and reach every session. <code>/orchd:fix-pr</code> takes a red PR green and never comments. <code>/orchd:handle-review</code> works the threads, and posts nothing without a separate go. Through <code>orch</code>, a session reaches the daemon itself: it asks you a blocking question, starts a second session, or checks what is running before it touches a branch.</td>
+<td><b>02 &middot; Skills &mdash; one press hands the PR to an agent.</b> The skills ship with the app and reach every session. <code>handle</code> on a PR row starts <code>handle-review</code>: one agent reads the threads, applies what is right, asks you about the rest, and drafts the replies. <code>fix</code> starts <code>fix-pr</code>, which takes a red PR green and never comments. <a href="#the-review-loop">What each one refuses</a> is the half worth reading.</td>
 <td><img src="docs/demo-skill.gif" alt="the skills a session is given"></td>
 </tr>
 <tr>
-<td><b>04 &middot; Read and edit &mdash; find it, open it, change it.</b> Search a workspace with ripgrep's engine. Open a hit in its own file pane. Modifier-click a path or a symbol to go there. The pane is editable, and the agent is told when you change a file under it.</td>
+<td><b>03 &middot; Git aware &mdash; see what changed before you answer for it.</b> Two panes watch the working tree: changed files with git's own verbs, and a word-level diff against the merge-base that you can edit in.</td>
+<td><img src="docs/demo-diff.gif" alt="the diff viewer"></td>
+</tr>
+<tr>
+<td><b>04 &middot; Sessions &mdash; several projects, several agents, and nothing dies with the window.</b> Open more than one checkout in the same window; the panes follow the row you click. Each session gets its own git worktree and its own terminal. The daemon owns every pty, so closing the window loses nothing.</td>
+<td><img src="docs/demo-repos.gif" alt="two checkouts in one window"><img src="docs/demo-revive.gif" alt="sessions surviving a daemon restart"></td>
+</tr>
+<tr>
+<td><b>05 &middot; Read and edit &mdash; find it, open it, change it.</b> Search a workspace with ripgrep's engine, and open a hit in its own file pane. Modifier-click a path or a symbol to go there. The pane is editable, and the agent is told when you change a file under it.</td>
 <td><img src="docs/demo-find.gif" alt="find in a workspace, and the file viewer"></td>
 </tr>
 <tr>
-<td><b>05 &middot; Processes &mdash; a terminal and a build watcher, beside the agents.</b> <code>+</code> in the drawer opens a shell in the workspace. Declared processes &mdash; a build watcher, a container stack &mdash; run beside it, and their health folds into the rail next to the session that broke it.</td>
+<td><b>06 &middot; Processes &mdash; a terminal and a build watcher, beside the agents.</b> <code>+</code> in the drawer opens a shell in the workspace. Declared processes &mdash; a build watcher, a container stack &mdash; run beside it, and their health folds into the rail next to the session that broke it.</td>
 <td><img src="docs/demo-procs.gif" alt="a managed process in the drawer"></td>
 </tr>
 </table>
 
-## What you need
+## The review loop
 
-| What | Why |
-| --- | --- |
-| **Claude Code** (`claude` on `PATH`, signed in) | The daemon spawns it for every session. Without it a session exits the instant it starts, so the daemon says so at boot rather than letting you find out that way. |
-| **git 2.23 or newer** | Worktrees, branch moves, diffs — all of it. 2.23 is `switch`/`restore`, the oldest thing the daemon spells. One repo setting needs more and is written only where it works: `core.fsmonitor` is a boolean from 2.37 and a *hook path* before it, so on an older git the daemon leaves it alone and clears one an older build wrote. |
-| **WebKitGTK 4.1** (Linux only) | The desktop window. Ubuntu 22.04 / Debian 12 or newer; 20.04 ships 4.0 and will not work. macOS uses the system WebView. |
-| **`gh`**, signed in | Reads go out with `curl`, and for those `github_token_file` replaces it. Every write (a thread reply, a 👍, a re-requested review) shells `gh` and uses its credential, so the resolve flow wants it. |
+This is what the app is for. A PR row carries the verb that its state calls for,
+and pressing it starts an agent in that PR's worktree:
 
-A fresh checkout also needs Claude Code's **workspace trust**, accepted once in
-its dialog. Until then sessions die on spawn.
+- **`handle`** — threads are waiting. `handle-review` runs in a pane you watch and
+  can take over: it judges each thread, applies what is right, asks you about the
+  rest with a blocking question, and drafts the replies.
+- **`fix`** — the checks are red. `fix-pr` takes the base branch in, fixes the red,
+  amends, pushes and watches CI until it settles.
+- **Where a session already holds the branch**, the press hands the job to that
+  session as a typed turn rather than starting a second one.
 
-Nothing here is checked at install time. The daemon checks at **boot**, names what
-is missing and what stops working, and starts anyway.
+While a run is live the row reads `handling` or `fixing`, and pressing that takes
+you to the session doing it.
+
+**Nothing goes out without a separate go.** That rule is in each skill rather than
+in a setting, so it holds whichever agent runs it:
+
+| Skill | What it does | What it will not do |
+| --- | --- | --- |
+| `handle-review` | works a PR's threads in a pane, drafts each reply, and files a story for a fair point that is out of scope | post anything without an explicit go; resolve a thread |
+| `fix-pr` | takes a red PR green: base in, fix, amend, push, watch CI | comment, re-request a review, open or merge a PR |
+| `orch` | reaches the daemon from inside a session: ask a blocking question, start a second session, list what is running before touching a branch | reach GitHub; the daemon's own guard decides the rest |
+
+**Marking a thread resolved stays your button, by design.** The agent answers; the
+reviewer decides the answer was enough.
 
 ## Install
 
@@ -77,278 +99,54 @@ sudo apt update && sudo apt install orchestrator
 ```
 
 Each of those installs the app, the `orchd` daemon it runs per checkout, and the
-`orch` CLI. **All three upgrade from inside the app**: when a release lands, the
-bar at the top carries an Upgrade button that runs your own channel's command —
-`mise upgrade`, `brew upgrade --cask`, or apt behind a password prompt — and then
-a Restart button, because the running process is the old build until it goes. A
-downloaded `.dmg` or tarball gets the release link instead, since there is no
-installer to ask. The
+`orch` CLI. The
 [release page](https://github.com/kbarendrecht/orchestrator/releases/latest) also
-attaches a `.dmg`, a `.deb` and a tarball for anyone who would rather download
-one. Apple Silicon and x86-64 Linux are built.
+attaches a `.dmg`, a `.deb` and a tarball. Apple Silicon and x86-64 Linux are
+built.
 
-Launch it and point it at a git checkout when it asks. That checkout is *main*;
-worktrees are cut inside it under `.claude/worktrees/`. State lives in
-`~/.config/orchd/` on Linux and `~/Library/Application Support/orchd/` on macOS —
-move it with `ORCHD_CONFIG_DIR`.
+**All three upgrade from inside the app.** When a release lands, the bar at the
+top carries an Upgrade button that runs your own channel's command — `mise
+upgrade`, `brew upgrade --cask`, or apt behind a password prompt — and then a
+Restart button, because the running process is the old build until it goes. A
+downloaded `.dmg` or tarball gets the release link instead.
 
-A mise or tarball install has no launcher entry until the app writes one, so
-**run `orchestrator-desktop` once from a terminal**: that first launch puts it in
-Finder, Spotlight or your application menu. `orchestrator-desktop
---install-desktop-entry` writes it again after a move.
+State lives in `~/.config/orchd/` on Linux and `~/Library/Application
+Support/orchd/` on macOS — move it with `ORCHD_CONFIG_DIR`. Every setting is in the
+settings panel, and [`docs/configuration.md`](docs/configuration.md) lists each one
+with its default.
 
-`orch` is optional and nothing requires it: `orch new` starts a session with a
-prompt, `orch ls` lists what is running, `orch run` starts a declared process.
-Every session is told it is there, so an agent reaches for it without being
-prompted.
+## The agents
 
-## Configuring it for your repo
+**Either agent is enough.** The board offers what it finds on `PATH`, and `+`
+starts the one `default_agent` names — or the one you picked last. The rail, the
+worktrees, the diff and PR panes, and the resume after a restart are the same for
+both. These five things are not:
 
-The defaults ask nothing of the repo you point at: no review-queue command, no
-managed processes, no tracker. You get the session board, PR pane, diff viewer and
-worktrees on a bare `{ "main_checkout": "…" }`, and you turn the rest on as your
-repo can support it. Everything here is editable in the settings panel and written
-back to `config.json`; changes take effect on restart.
-
-| Setting | Default | What it is |
+| | Claude Code | Codex |
 | --- | --- | --- |
-| `upstream_ref` / `upstream_remote` | `origin/HEAD`, `origin` | the base every diff and worktree is measured against. On a **fork workflow** — an `upstream` remote beside `origin` — a first run detects it and writes `upstream/<default branch>` instead, so there is nothing to set by hand. |
-| `reviews_source` | `default` | where the review pane's rows come from: `default`, `custom` or `command`. `default` is `custom` with no rules applied, so the panel shows the same fields for both and switches to `custom` when one is changed. Absent means what it used to: a command if `reviews_command` is set, the default queue otherwise. |
-| `reviews_rules` | *(empty)* | what `custom` lists and how it ranks. See below. |
-| `reviews_command` | *(empty — the built-in queue)* | argv printing the review queue as JSON. See below. Used when `reviews_source` is `command`. |
-| `main_processes` | *(empty)* | long-running processes shown in the drawer. See below. |
-| `tracker` | `none` | where an out-of-scope review point can be filed as a story. Three fields — `mcp_server`, `host` and an optional `token_env` — so pointing it at another tracker is a config edit rather than a release. Its token is **not** a config key — set `ORCHD_TRACKER_TOKEN` in the daemon's environment, or let `env_source` read the checkout's own. It also needs the repo to declare a matching **MCP server** — see below. |
-| `env_source` | `mise` | which tool is asked what a session's own directory exports — `mise`, `direnv`, or `none`. Config file only, not in the settings panel. See below. |
-| `default_language` | `English` | the language the agent *writes* replies and stories in. Prompts and code stay English regardless. |
-| `worktree_init` / `worktree_setup` | *(empty)* | two commands run in every worktree the daemon cuts itself. See below. |
-| `worktree_retention_days` | `60` | remove the worktree of a conversation not worked in for this many days, hourly, and one that no conversation points at at all. Age is the transcript's last write, not the session's start, so a conversation you kept open for weeks is not old the day after you stop; an orphaned tree is dated by its own directory. **The tree, never the row**: the session stays in the rail and a resume rebuilds the tree, so this reclaims disk rather than losing work, and it removes nothing the teardown preflight would refuse — a dirty tree, an unpushed commit, a live session or a running process all keep it. `0` turns it off. It exists because `claude --worktree` removes its own tree when its session ends and never gets to: the daemon owns the pty and kills it. |
+| The conversation's id | the daemon's, handed over with `--session-id` | Codex's own, learned from its first hook |
+| The skills | a plugin dir, called as `/orchd:fix-pr` | named in `developer_instructions`, called as `orchd:fix-pr` |
+| The hooks | a settings file that merges with your repo's | `-c` overrides per invocation, each trusted by hash |
+| Rewind | offered in the row's menu | not offered: two escapes mean whatever Codex makes of them |
+| Workspace trust | accepted once per checkout, or sessions die on spawn | nothing to accept |
 
-The table above is the set most repos touch. The rest are operational, and most
-repos leave them at the default:
+[`docs/assumptions.md`](docs/assumptions.md) has what each agent was measured
+doing, and what breaks when it stops.
 
-| Setting | Default | What it is |
-| --- | --- | --- |
-| `main_checkout` | *(required)* | the privileged checkout the daemon manages. The one key with no default; the folder picker writes it on first run. |
-| `worktrees_subdir` | `.claude/worktrees` | where worktrees live, relative to `main_checkout`. Point it at the same place a repo's own `WorktreeCreate` hook puts them, so the daemon recognises its own worktrees. Kept relative and inside main on purpose. |
-| `port` | `7777` | the loopback port the daemon serves the SPA and API on. Never bound to anything but `127.0.0.1`. |
-| `repo` | *(derived)* | `owner/name` override, when it cannot be read off the upstream remote. |
-| `github_token_file` | *(none)* | a `0600` file holding a read-only GitHub token, outside the repo. An alternative to `ORCHD_GITHUB_TOKEN` or `gh auth token`. Reads only: the writes go through `gh`. |
-| `worktree_processes` | *(empty)* | managed processes for worktree workspaces, the counterpart to `main_processes`. Empty means a shell is opened on demand instead. |
-| `poll_seconds` | `300` | how often the PR poll runs. One query per period, negligible against the API budget. |
-| `review_timeout_seconds` | `240` | ceiling for a configured `reviews_command` before the poller gives up on it. The built-in queue is one bounded `curl` and does not read it. |
-| `story_timeout_seconds` | `300` | ceiling for the borrowed story-filing agent — the one timeout in the daemon, because its caller is a blocking request rather than a rail entry someone is watching. |
-| `allow_several_in_main` | `false` | let main hold more than one live session. Off because one checkout is one working tree and one git index: two agents there share both, the changed-file pane merges their edits without saying who wrote what, and one agent's `git add` stages the other's work. Moving main's checkout still refuses while any session is live in it. Editable in the settings panel. |
-| `default_agent` | unset | what a plain `+` starts when Claude Code and Codex are both installed: `"claude"`, `"codex"`, or unset for the one picked last. One that is not on PATH falls back to the last pick. Editable in the settings panel. |
-| `auto_resume` | `true` | relaunch sessions that were live when the daemon last went down, with `--resume`, so a crash costs the scrollback rather than the conversation. |
-| `forge` | `github` | which forge the repo lives on. Only GitHub is implemented, and the key is the seam a second one would be added behind — not a config switch that would turn one on. `crates/orchd-repo/src/forge/mod.rs` lists the four things that sit outside the trait and would have to move first. |
-| `workspace_notes` | *(empty)* | what to tell an agent whose conversation was just moved into a workspace, keyed by the kind it landed in. The daemon states the factual half (which branch, which directory); this is the half only the repo knows. |
+## What you need
 
-An **unknown key is named and then ignored** — a misspelling does not error, it
-just leaves the default in force, and the daemon says which key it did not know
-on the `WARN` line at start-up. Ignoring it is deliberate: a config this build
-rejects costs you the daemon, and an old file with a stale key must still load.
-
-### The review queue
-
-The daemon builds one itself, so the pane works on a fresh install with nothing
-configured: it lists every open PR somebody else wrote, using the same token and
-the same `curl` the PR pane already uses. No script, no `node`, no `gh`.
-
-- **The `all` / `asked` word in its header narrows it** to the PRs GitHub has your
-  review requested on (`review-requested:@me`, a team you are in included).
-  Remembered per browser. `all` is every open PR somebody else wrote: you cannot
-  review your own, and the PR pane above holds those. The word is offered only
-  where it would narrow something, so a queue configured `requested_only` does not
-  show it.
-- **Requested first, then age**, oldest first within each. How long somebody has
-  waited is true whatever a team's labels mean.
-- **Amber means you were named.** A request to a team you belong to stays grey and
-  says `team`.
-- **Draft, conflicting and failing rows sink** below a "not reviewable" fold. They
-  are waiting on their author.
-
-**Narrow and rank it without leaving the daemon.** Set `reviews_source` to
-`custom` and `reviews_rules` says the rest, in Settings → Git or in `config.json`:
-
-```json
-"reviews_rules": {
-  "filter": {
-    "labels_any": ["needs-review"],
-    "hide_drafts": false,
-    "hide_blocked": false,
-    "requested_only": false
-  },
-  "high_labels": ["security"],
-  "low_labels": ["chore"],
-  "skip_labels": ["no-review"],
-  "asked_of_me": "above",
-  "asked_of_team": "above"
-}
-```
-
-- **The two asks are placed separately.** `asked_of_me` is somebody picking you by
-  name; `asked_of_team` is somebody picking a group you are in, which anybody in it
-  may take. Each is `top`, `above` or `normal`. Both default to `above`, which is
-  the one band they shared before this existed, so an unconfigured queue is
-  unchanged.
-- `high_labels` lifts a PR above the rest, over an ordinary request. `low_labels`
-  sinks it to the end, still shown. `skip_labels` drops it — **the only exclusion
-  list there is**, so there is never a question of which one the pane obeyed.
-- **A lift wins over a sink.** Top-placed ask, then `high_labels`, then an ask at
-  `above`, then everything else, then `low_labels`. So a chore label does not bury
-  a PR somebody asked you to look at; set that ask to `normal` if you want it to.
-- **Where two lists name one label**, `skip_labels` wins over both others and
-  `high_labels` wins over `low_labels`. A label in `labels_any` *and* `skip_labels`
-  is a queue that can hold nothing, and it holds nothing.
-- `hide_drafts` and `hide_blocked` do not overlap: a draft is one of the three
-  blockers, so `hide_blocked` would otherwise have hidden drafts and made the
-  other flag invisible.
-- Every field empty is the built-in queue exactly, so switching to `custom` and
-  saving nothing changes nothing.
-- **Toggles rather than a search string, because a search string is one forge's
-  grammar.** What a checkout configures is the question — who wrote it, what is it
-  labelled, is it ready — and each forge answers in its own words. `reviews.rs`
-  does the translating for GitHub, into the search where GitHub can express it and
-  over the rows it already parses where it cannot.
-
-**Your team's ranking wins if you have one.** Point `reviews_command` at anything
-that prints the JSON in [`docs/reviews-json.md`](docs/reviews-json.md) and the
-built-in never runs. A non-zero exit shows the pane as *degraded* with its own
-stderr, deliberately distinct from "no reviews": silently showing an empty queue
-when the source is broken is what would cost a colleague a day.
-
-### Filing stories in a tracker
-
-With `tracker` set, a review point that is fair but out of scope can be filed as a
-story and answered with its id. The tracker is reached over MCP, by an agent the
-daemon borrows, so three things have to line up:
-
-- **`tracker` is three fields**, one shape only: `{"mcp_server": "shortcut",
-  "host": "app.shortcut.com", "token_env": "SHORTCUT_API_TOKEN"}`. `token_env` is
-  optional — name it and the daemon pushes that variable into the agent's
-  environment instead of the server authenticating itself.
-- **`.mcp.json` declares a server named by `tracker.mcp_server`.** The daemon
-  approves that one server for the sessions it spawns, never all of them.
-- **A tracker skill** (`.claude/skills/*/SKILL.md`) holds the team id, the
-  workflow state and the story type. Those are yours, which is why they are not
-  settings.
-
-Get the server name wrong and Claude Code drops it **silently**: the tool is
-simply absent and the run burns its timeout mid-review. The daemon checks at boot
-and says so.
-
-### The environment a session gets
-
-A session gets the daemon's environment plus whatever `env_source` says the
-session's own directory exports — `mise env --json` or `direnv export json`, per
-spawn, in that directory.
-
-That second half is not optional in practice. The daemon's environment is
-whatever started it, and a desktop launcher's holds no checkout's variables at
-all — so an `.mcp.json` header or a tool a session shells gets the empty string
-and fails in its own words.
-
-Every failure is silent by design: no tool, no config, unreadable output, and the
-session starts with what it had. An **untrusted** `mise.toml` is the one case that
-logs a warning, because the variables exist and the session is not getting them —
-a fresh worktree is a new path, so `mise trust` belongs in `worktree_setup`. Set
-`env_source` to `none` if the daemon already has everything.
-
-### Worktree hooks
-
-The daemon cuts and removes worktrees itself for PR worktrees, resumes and
-relocated layouts. It runs your repo's own hooks around that.
-
-**Creating.** Your repo's `WorktreeCreate` hook is asked first and the daemon
-adopts the tree it printed, then puts that tree on the branch it needs; every way
-that can decline falls through to the daemon cutting its own. Then these two run,
-in order, with cwd set to the new worktree:
-
-| Setting | For |
+| What | Why |
 | --- | --- |
-| `worktree_init` | the tree *as a checkout*: basing it on a fresh upstream, triangular push |
-| `worktree_setup` | what it needs *beside* the code: symlinks back to main, generated config |
+| **Claude Code** or **Codex** (`claude` or `codex` on `PATH`, signed in) | The daemon spawns one for every session. With neither, a session exits the instant it starts, so the daemon says so at boot rather than letting you find out that way. |
+| **git 2.23 or newer** | Worktrees, branch moves, diffs — all of it. 2.23 is `switch`/`restore`, the oldest thing the daemon spells. One repo setting needs more: `core.fsmonitor` is a boolean from 2.37 and a *hook path* before it, so on an older git the daemon leaves it alone. |
+| **WebKitGTK 4.1** (Linux only) | The desktop window. Ubuntu 22.04 / Debian 12 or newer; 20.04 ships 4.0 and will not work. macOS uses the system WebView. |
+| **`gh`**, signed in | Reads go out with `curl`, and for those `github_token_file` replaces it. Every write (a thread reply, a 👍, a re-requested review) shells `gh` and uses its credential. |
 
-Both stand in for what your repo does at `WorktreeCreate`. Two rather than one so a
-repo that splits that work points each setting straight at the script it already
-has. Nothing here stands in for `SessionStart`, which fires for a daemon-cut tree by
-itself, so whatever your repo hangs off that event still runs.
+A fresh checkout also needs Claude Code's **workspace trust**, accepted once in
+its dialog. Until then its sessions die on spawn.
 
-Both are non-fatal and the second runs even if the first failed: a tree that is
-merely un-based is still worth linking. A relative script path resolves against the
-main checkout, not the worktree, since the worktree may not carry it yet.
-
-**Removing.** Teardown runs your repo's `WorktreeRemove` hooks, then `git worktree
-remove` and `git worktree prune`, which no-op when the hook already did the job. A
-refusal is reported as it stands: never `--force`, never a recursive delete, since
-a worktree can hold symlinks back into main and following them destroys the main
-checkout.
-
-### Declaring a managed process
-
-A managed process is a long-running command for the main checkout — a build
-watcher, a container stack — with the output patterns that decide whether the rail
-reads it as healthy or failing:
-
-```json
-"main_processes": [{
-  "name": "watch",
-  "command": ["npx", "ng", "build", "--watch"],
-  "failure_patterns": ["Error:", "ERROR in", "error TS"],
-  "ok_patterns": ["bundle generation complete"],
-  "autostart": false
-}]
-```
-
-`ok_patterns` is the part worth getting right: it is what *clears* a failure. A
-watcher whose success line is missing from the list leaves the rail stuck on
-`build failing` after you have already fixed the compile.
-
-**`stop_command`, when the command is a client rather than the process.** Empty
-for anything ordinary, where killing the pty kills the process. Set it where that
-is not true:
-
-```json
-"command": ["docker", "compose", "exec", "-T", "assets", "pnpm", "run", "build-watch"],
-"stop_command": ["docker", "compose", "exec", "-T", "assets", "pkill", "-f", "build-watch"]
-```
-
-`docker compose exec` runs the watcher **inside the container**, and docker does
-not signal it when the exec client goes away — so every start stacks another one
-up in there, with nothing reaping them. The stop command runs in the workspace's
-directory, bounded, immediately *before* the pty is killed, on every path that
-means stop: the drawer's close, a restart, and the daemon shutting down. A failure
-is logged and the pty is killed anyway.
-
-## Troubleshooting
-
-- **Every session dies the instant it starts.** Claude Code's workspace trust has
-  not been accepted for that checkout, so `claude` refuses. Accept it in the dialog
-  once, per checkout.
-- **It will not start: "Orchestrator is already running".** One instance at a time,
-  held by a pid file in the config dir, because a second one would spawn sessions
-  into the same worktrees and take over the hook settings. Close the running app.
-- **The review pane reads *degraded*.** A configured `reviews_command` exited non-zero and the
-  pane is showing its stderr. Deliberately distinct from an empty queue, which is
-  what "no reviews" looks like.
-- **A setting does nothing.** An unknown key is ignored. The daemon warns at
-  start-up with the key it did not know (`orchd.log`, or the terminal); check the
-  spelling against the tables above.
-- **It is not in Finder, Spotlight or your launcher.** A mise or tarball install
-  writes its entry on first launch, so start it once from a terminal. If it is
-  still missing, run `orchestrator-desktop --install-desktop-entry`, which says
-  where it wrote.
-- **Started from the launcher, it cannot find `gh` or `claude`.** The PR pane
-  reports no credential and a session dies on spawn. An app started by Finder or a
-  desktop entry does not inherit your
-  shell's `PATH`: macOS hands it `/usr/bin:/bin:/usr/sbin:/sbin`, which holds
-  neither Homebrew nor mise. The app asks your login shell for its `PATH` at
-  startup and adopts it, so this should heal itself. If it does not, your `PATH` is
-  probably set somewhere an interactive login shell does not read.
-- **A session cannot see a variable your shell has.** The daemon's environment is
-  not your shell's. `env_source` bridges that per spawn, and an untrusted
-  `mise.toml` is the one case that logs a warning instead of degrading quietly. See
-  [The environment a session gets](#the-environment-a-session-gets).
+Nothing here is checked at install time. The daemon checks at **boot**, names what
+is missing and what stops working, and starts anyway.
 
 ## Security
 
@@ -365,8 +163,8 @@ trust.
 Agents get narrower credentials than the page does, and a `PreToolUse` guard
 refuses three things on the agent's git: a lease-less force push, a push that
 writes the base branch or removes branches, and git that changes main or another
-worktree the app manages. Read it as a
-mistake-catcher, not a control — it sees `Bash` calls only.
+worktree the app manages. Read it as a mistake-catcher, not a control — it sees
+`Bash` calls only.
 
 [`docs/security.md`](docs/security.md) has the reasoning behind each of those, and
 what each one does not cover.
@@ -381,6 +179,18 @@ Worker ([`tools/ping/`](tools/ping/)) does not store your address.
 
 Turn it off in Settings → Other, which writes `"usage_ping": false` to `host.json`
 in the config dir. A debug build and anything with `CI` set never ping.
+
+## Troubleshooting
+
+[`docs/troubleshooting.md`](docs/troubleshooting.md) names each symptom and what
+it means. The three most common:
+
+- **Every Claude Code session dies the instant it starts.** Workspace trust has
+  not been accepted for that checkout. Accept it in the dialog once.
+- **A setting does nothing.** An unknown key is ignored, and the daemon names it
+  at start-up in `orchd.log`.
+- **Started from the launcher, it cannot find `gh`, `claude` or `codex`.** A
+  launcher does not hand the app your shell's `PATH`.
 
 ## Developing
 
@@ -399,108 +209,23 @@ mise run fixture                         # a throwaway PR to drive the review fl
 ```
 
 `cargo run -p orchd-serve --bin orchd -- --main /path/to/your/repo` runs one daemon
-headless and prints a tokened URL. The binaries live in `orchd-serve` since the
-split, so `--bin orchd` from the root no longer resolves. `mise run shot` drives Chrome while the
-app runs in **WebKitGTK**, so it is good for layout and not the last word.
+headless and prints a tokened URL. `mise run shot` drives Chrome while the app runs
+in **WebKitGTK**, so it is good for layout and not the last word.
 
-[`docs/architecture.md`](docs/architecture.md) is how the running system fits
-together, [`CLAUDE.md`](CLAUDE.md) has the traps as one line each and
-[`docs/traps/`](docs/traps/gates.md) what each one cost, [`TODO.md`](TODO.md) what is open,
-[`docs/assumptions.md`](docs/assumptions.md) what the daemon assumes and what breaks
-when each is false, and [`docs/spec.md`](docs/spec.md) the requirements the `(§N)`
-comments point at.
+| Where | What is in it |
+| --- | --- |
+| [`docs/architecture.md`](docs/architecture.md) | how the running system fits together, and the module map |
+| [`CLAUDE.md`](CLAUDE.md) | the traps, one line each |
+| [`docs/traps/`](docs/traps/gates.md) | what each trap cost |
+| [`docs/assumptions.md`](docs/assumptions.md) | what the daemon assumes, and what breaks when each is false |
+| [`docs/spec.md`](docs/spec.md) | the requirements the `(§N)` comments point at |
+| [`TODO.md`](TODO.md) | what is open |
 
 Releases are CalVer (`year.month.n`), and `mise run release` cuts one: it bumps
 the version, **waits for `check` to go green on the commit you are on**, then
 commits, tags and pushes. The waiting is the point — `check` is the only thing
 that runs the suite on macOS, and a tag pushed before it answers may publish
-nothing. The version lives in `[workspace.package]`, `desktop/tauri.conf.json` and
-`Cargo.lock`; the crate manifests say `version.workspace = true`, so cargo refuses
-a disagreement. The workflow refuses a tag that disagrees with the version.
-
-### Layout
-
-Four crates, split so `cargo` enforces the layering rather than a script counting
-it. Each depends only on the ones above it; `docs/crate-split.md` has why, what it
-cost, and why the runtime core is still one crate.
-
-```
-crates/orchd-base/    the primitives. Nothing here may import anything below.
-  git/            every git call, one file per seam: exec (the timed runner),
-                  status, refs, unpushed, worktree, bank, review
-  pty.rs          portable-pty host, and the scrollback ring every pty keeps
-  proc.rs         run a child with a deadline, portably (no coreutils `timeout`)
-  child.rs        the protocol for a checkout's daemon: launch, ready line, observer
-  atomic.rs       write-and-rename for every durable file, and setting aside one
-                  that will not parse
-  model.rs        the shared value types: ChangedFile, FileSet, DiffFile, Bank
-  proposal.rs     what a review session proposes: Stance × Mode, positions, stories
-  guard.rs        the git rules (push blast radius, reach), run by `orch guard push`
-  edit.rs         file read/write with containment and conflict detection
-  headroom.rs     the pre-spawn resource check every session goes through
-  install.rs      which packaging put this binary here: mise, brew, apt, a file
-  window.rs       Chrome, and the handle the desktop shell registers
-  timing.rs       per-start phase lines: exec counts, share of the time, slow git
-  secret.rs       one fresh token, and the leaf that broke a cycle to get here
-
-crates/orchd-repo/    one checkout, described. No session state lives here.
-  config.rs       config file, defaults, the tracker and its credential
-  launch.rs       the environment and argv a session's process is built with
-  agent.rs        which agent a session runs, Claude Code or Codex, and its argv
-  codex.rs        Codex's hooks as -c overrides, their trust, its rollouts
-  forge/          the Forge seam: trait + dispatch (mod.rs), agnostic model
-                  (model.rs), the GitHub impl (github.rs, github_write.rs)
-  diff.rs         numstat, hunk parsing, word-level LCS
-  patch.rs        what git says changed: the numstat parser and the dirty list
-  skills.rs       the vendored skills in skills/, written out as the plugin dir
-                  every spawn is handed with --plugin-dir
-  reviews.rs      review queue: the built-in GitHub search, or reviews_command
-  env_source.rs   where a session's own variables come from: mise or direnv, per spawn
-  migrate.rs      repairs a config this build could not otherwise read
-  instance.rs     the one-daemon-per-checkout flock
-  machine.rs      what the daemon needs from the machine, warned about at boot
-  logging.rs      the file log, since a launcher-started app has no stdout
-
-crates/orchd/         the runtime core: the `orchd` library, what the daemon knows.
-  api.rs          HTTP surface and the origin/token guards
-  model.rs        Workspace / Session / Process, State, ArchiveState
-  preview.rs      the file pane's html preview: a sandboxed frame's token and route
-  relocate.rs     the swap, the move out of main, and the conversation that travels
-  restart.rs      respawn sessions in place on the installed claude, each when idle
-  review_api.rs   the review overlay's routes: the threads, the proposals, one
-                  thread's reply, the hand-off
-  state.rs        the daemon's owned state, snapshots, reconcile, durable writes
-  store.rs        session record persistence, orphan reaping
-  spawn.rs        session / worktree / process spawning, and worktree_setup
-  worktree.rs     cutting a tree and the hooks that finish it; teardown preflight,
-                  archive, revive, removal
-  spare.rs        the pool of one: a worktree cut before anybody asks for one
-  triage.rs       the review session's spawn, and the gates a worktree must pass
-  post.rs         one thread's outward words: the story, the reply, the reaction
-  fix_pr.rs       automation state, the fix-pr guard table, a run's verdict
-  story.rs        filing a tracker story for a fair-but-out-of-scope point
-  update.rs       both upgrade bars: is Claude Code behind, and what this
-                  install's own upgrade command is, so the app can run it
-  health.rs       a managed process's output → health
-  names.rs        the worktree names the rail offers
-
-crates/orchd-serve/   the daemon: the server, and everything it starts.
-  lib.rs          start, the router, the pollers, startup recovery
-  host.rs         the page, the asset routes, the checkout list, the window commands
-  link.rs         orchestrator://open?file=… links, and a second launch handing one over
-  ping.rs         the daily usage ping: install id, version, platform
-  hooks.rs        hook receiver and the generated settings file
-  ws.rs           event stream + pty attach
-  firstrun.rs     judging a folder, reading a repo, writing its config, the recents
-  main.rs         the `orchd` binary; bin/orch.rs is the `orch` CLI a session gets
-
-web/            the SPA (vanilla, xterm.js vendored) — one module graph under js/,
-                booted by app.js; the *.d.ts files are generated from the Rust
-                structs, one per crate that exports any
-desktop/src/    the Tauri shell: main.rs (window, boot, splash), launcher.rs (the
-                .desktop entry and the macOS .app bundle), login_path.rs (the
-                login shell's PATH, adopted before the runtime exists)
-```
+nothing.
 
 ## Licence
 
@@ -508,13 +233,10 @@ Copyright © 2026 Kars Barendrecht.
 
 [AGPL-3.0-only](LICENSE). Use it, run it, change it. If you distribute it, or run
 a modified version as a network service, the source has to go with it under the
-same terms.
-
-The network clause is not decoration here. In the desktop app it does nothing —
-the daemon binds loopback and you are both the operator and the user, so the
-obligation is to yourself. It has teeth in the **headless** mode, which binds a
-port and prints a URL: point that at an interface your team can reach and it is a
-network service, and this licence is what keeps a hosted variant open.
+same terms. In the desktop app that network clause does nothing — the daemon binds
+loopback and you are both the operator and the user. It has teeth in the
+**headless** mode, which binds a port and prints a URL, and it is what keeps a
+hosted variant open.
 
 The vendored web assets are not ours: xterm.js, PrismJS and four font families,
 all MIT or OFL-1.1. [`THIRD-PARTY.md`](THIRD-PARTY.md) lists each one with its

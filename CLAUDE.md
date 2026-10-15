@@ -1,8 +1,9 @@
 # Working in this repo
 
-`orchd` is a Rust daemon plus a vanilla-JS SPA that hosts several Claude Code
-sessions over one monorepo. **README.md** has the architecture and the module
-map; **TODO.md** has what is open. Read it before proposing work: several obvious
+`orchd` is a Rust daemon plus a vanilla-JS SPA that hosts several Claude Code and
+Codex sessions over one monorepo. **README.md** is what it does;
+**docs/architecture.md** has the architecture and the module map; **TODO.md** has
+what is open. Read it before proposing work: several obvious
 ideas are already in there, with what has been tried and why the shape is what it
 is.
 
