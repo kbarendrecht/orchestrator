@@ -7,7 +7,7 @@ description: Get a pull request green. Take its base branch in, fix the red chec
 
 `/orchd:fix-pr <pr>`. Mechanical only. **Never** post a comment, re-request a
 review, open or merge a PR, or resolve a thread. Review threads are
-`/orchd:handle-review`'s and `/orchd:review`'s job, and a run that starts answering
+`/orchd:handle-review`'s job, and a run that starts answering
 people is doing something nobody asked for. Merging the PR is what you never do; taking its base *into* the
 branch is step 3, and on some repos that is a merge.
 

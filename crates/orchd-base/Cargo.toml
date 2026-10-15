@@ -34,7 +34,7 @@ tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
 tracing = { workspace = true }
 uuid = { version = "1", features = ["v4", "serde"] }
 
-# Generates `web/snapshot.d.ts` from the structs in `model.rs` and `proposal.rs`.
+# Generates `web/snapshot.d.ts` from the structs in `model.rs`.
 #
 # **Optional rather than a dev-dependency, which is the crate line showing.** As a
 # dev-dependency it exists only while *this* crate's own tests build — and

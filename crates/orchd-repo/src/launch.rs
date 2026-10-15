@@ -2,15 +2,15 @@
 //!
 //! **Its own module because both halves reach into features, and `config` must
 //! not.** These two lived in `config`, where `session_env` called
-//! [`crate::env_source`] and `story` and `session_flags` called
-//! [`crate::skills`] — so configuration imported the three features it configures
+//! [`crate::env_source`] and `session_flags` called [`crate::skills`] — and a
+//! story filer, since removed, did too — so configuration imported the features it configures
 //! and each imported `config` back. Four of the seventeen mutual pairs
 //! `mise run check-modules` counts were these.
 //!
 //! The layer this makes explicit: `config` is what the file says, the feature
 //! modules are what each one does, and **this** is the one place that knows how to
-//! turn the first into a process. Nothing in `config`, `env_source`, `story` or
-//! `skills` may import this module; the spawners are its only callers.
+//! turn the first into a process. Nothing in `config`, `env_source` or `skills`
+//! may import this module; the spawners are its only callers.
 
 use crate::config::Config;
 use anyhow::Result;

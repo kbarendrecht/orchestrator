@@ -60,7 +60,7 @@ impl Gate {
 /// Whether the PR's tree is ready to be written into.
 ///
 /// Checked once, where the run is spawned, and **before anything changes the
-/// tree** — on every path that writes into it: both review flows here and
+/// tree** — on every path that writes into it: the review pass here and
 /// `fix_pr::start`. It used to run after `ensure_pr_worktree`, and that call is not
 /// read-only: when main holds the PR's branch it moves the branch *and main's
 /// uncommitted work* into a new worktree, so the gate then inspected a tree the
@@ -68,10 +68,9 @@ impl Gate {
 /// under a run that amends and force-pushes. `fix_pr::start` never gated at all,
 /// and the pane flow skipped it whenever the tree had to be cut.
 ///
-/// **It used to be checked twice and shown as a screen**: the overlay fetched it
-/// with `/review` and drew a gate with `commit…` and `stash` buttons in front of
-/// the intake. That went with the batch's screens; the spawn refuses with
-/// [`Gate::say`] in the toast.
+/// **It used to be checked twice and shown as a screen**, with `commit…` and
+/// `stash` buttons in front of a review. That went with the overlay; the spawn
+/// refuses with [`Gate::say`] in the toast.
 pub async fn gate(app: &Arc<AppState>, pr: u64, head_ref: &str) -> Result<Option<Gate>> {
     // Only a *running* fix-pr holds the tree. A finished one has let go, so it
     // must not gate.
@@ -255,8 +254,8 @@ pub async fn spawn_command_session(
     // never written. It refused whenever an archived session's recovery record
     // named `pr-<n>` — which teardown writes — so reviewing a PR whose worktree you
     // had torn down was refused for good, with advice ("rename") that cannot be
-    // followed for a name the daemon derives from the PR number. `fix-pr` and
-    // `triage` never had the check and were unaffected, so one PR answered two ways.
+    // followed for a name the daemon derives from the PR number. `fix-pr` never had
+    // the check and was unaffected, so one PR answered two ways.
     //
     // What it claimed to prevent does not happen (transcripts are keyed by session
     // uuid; `spawn_worktree_session` has the whole account), and the real hazard,

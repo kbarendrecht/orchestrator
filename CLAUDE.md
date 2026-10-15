@@ -390,6 +390,7 @@ together: same entries, same order, same groups.
 
 - The keyboard map has a contract, and it is the reason the next binding is obvious.
 - `page-check --mac` ran the Linux branch for its whole life, because of one letter.
+- The ask box folds, and never dismisses, because the agent is still blocked.
 - Shift-Shift is the one gesture that costs no chord, and the guard is the whole of it.
 - The find viewer draws a band of the file, and the spacers are what make it scroll.
 - The mouse's back button undoes a jump, and no gate here can prove the webview delivers it.

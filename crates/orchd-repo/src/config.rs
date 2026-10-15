@@ -69,7 +69,7 @@ pub struct Config {
     /// it there.
     #[serde(default)]
     pub env_source: EnvSourceKind,
-    /// The language the agent *writes* in — reviewer replies and story text.
+    /// The language the agent *writes* in — reviewer replies, and a story it files.
     ///
     /// A **fallback**, which is what the name says: the agent matches a thread's
     /// own language first and only reaches for this when that is unclear. Prompts
@@ -602,16 +602,18 @@ fn default_review_timeout() -> u64 {
     240
 }
 
-/// What a tracker is to the daemon: an MCP server's name, the host its URLs live
-/// on, and optionally the variable holding its token.
+/// What a tracker is to the daemon: an MCP server's name, and optionally the
+/// variable holding its token.
 ///
 /// ```jsonc
 /// "tracker": {
 ///   "mcp_server": "shortcut",          // the name in the repo's own .mcp.json
-///   "host": "app.shortcut.com",        // the host a story URL must be on
 ///   "token_env": "SHORTCUT_API_TOKEN"  // optional; see below
 /// }
 /// ```
+///
+/// `host` and `stub` are still read, so a file that has them parses, and neither
+/// is required or used: both were the overlay review's story filer's.
 ///
 /// **One shape to write, and two names still readable.** This was an enum arm per
 /// tracker holding those as compile-time constants, so adding Jira or Linear meant
@@ -628,10 +630,9 @@ fn default_review_timeout() -> u64 {
 /// **Explicit, never detected.** The daemon could read the repo's `.mcp.json` and
 /// guess, and deliberately does not: `machine::check` *verifies* that the server
 /// named here is declared there, and warns when it is not. Guessing would supply
-/// only the server name — not the host, which is per-site for Jira, and not
-/// whether you want stories offered at all — and an expired token would silently
-/// remove an option from every review card, leaving "triage did not propose a
-/// story" indistinguishable from "the daemon hid it".
+/// only the server name, and not whether you want the agent to reach a tracker at
+/// all — and a server that vanished from `.mcp.json` would then silently take the
+/// tool away mid-review, with nothing to say whether you or the daemon did it.
 ///
 /// **`token_env` is optional, which is the fact the research turned up.** The
 /// official Linear (`https://mcp.linear.app/mcp`) and Atlassian
@@ -654,13 +655,11 @@ pub struct Tracker {
     /// stays *pending* and is dropped silently otherwise. Transport-independent: a
     /// remote server is a name in that file like any other.
     pub mcp_server: String,
-    /// The host its story URLs live on: `app.shortcut.com`, `linear.app`, or your
-    /// own `<site>.atlassian.net`.
-    ///
-    /// **Read by nothing now.** It checked that a story URL the daemon's own
-    /// filer reported was this tracker's, and that filer went with the overlay
-    /// review. Kept so the documented shape still parses; dropping it is a change
-    /// to the config format, and a separate one.
+    /// **Read by nothing now, and not required.** It checked that a story URL the
+    /// daemon's own filer reported was this tracker's, and that filer went with
+    /// the overlay review. Still accepted so a file that has it parses; empty when
+    /// it is absent, and then not written back.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub host: String,
     /// The variable the MCP entry expands for its credential, e.g. a
     /// `Bearer ${SHORTCUT_API_TOKEN}` header. The daemon resolves the value itself
@@ -681,7 +680,7 @@ pub struct Tracker {
 /// A tracker this build cannot read costs you the tracker, not the config.
 ///
 /// **The asymmetry is the whole argument.** A tracker is one optional flow: with
-/// it, an out-of-scope review point can be filed as a story. Refusing the *file*
+/// it, a review agent can file an out-of-scope point as a story. Refusing the *file*
 /// over it costs the checkout, the port, the managed processes and every hand-tuned
 /// key — and `Config::existing` then reads that as first run, so the app offers a
 /// folder picker for a project configured months ago. Measured: a daemon started
@@ -708,7 +707,7 @@ fn tracker_or_warn<'de, D: serde::Deserializer<'de>>(
         Ok(t) => Ok(Some(t)),
         Err(e) => {
             // Loudly, and with the same sentence the refusal would have carried:
-            // the setting is gone until it is fixed, and `story+reply` says so too.
+            // the setting is gone until it is fixed.
             tracing::warn!("ignoring `tracker`: {e}");
             Ok(None)
         }
@@ -756,6 +755,7 @@ impl<'de> Deserialize<'de> for Tracker {
         #[derive(Deserialize)]
         struct Spelled {
             mcp_server: String,
+            #[serde(default)]
             host: String,
             #[serde(default)]
             token_env: Option<String>,
@@ -764,7 +764,7 @@ impl<'de> Deserialize<'de> for Tracker {
         }
         /* **Dispatched on the value, not with `untagged`.** That attribute reports
         `data did not match any variant` and throws the *field* error away, so an
-        object missing `host` — or with a typo'd key — got a message worse than
+        object missing `mcp_server` — or with a typo'd key — got a message worse than
         serde's own, on a config whose whole file is then dropped
         (`Config::existing`). The shape is known from one look: a string is a
         name, anything else is the object and gets to fail on its own terms. */
@@ -795,10 +795,9 @@ impl<'de> Deserialize<'de> for Tracker {
                     "`tracker` is not a name: drop the key entirely for no tracker".to_string()
                 }
                 _ => format!(
-                    "`tracker: \"{name}\"` is not a name — it takes `mcp_server`, `host` \
+                    "`tracker: \"{name}\"` is not a name — it takes `mcp_server` \
                      and an optional `token_env`. For Shortcut that is: \
-                     {{\"mcp_server\": \"shortcut\", \"host\": \"app.shortcut.com\", \
-                     \"token_env\": \"SHORTCUT_API_TOKEN\"}}"
+                     {{\"mcp_server\": \"shortcut\", \"token_env\": \"SHORTCUT_API_TOKEN\"}}"
                 ),
             })),
         }
@@ -1012,7 +1011,7 @@ fn default_config_dir(home: &Path) -> PathBuf {
 
 impl Config {
     /// Everything durable hangs off here: the config, the session store, the
-    /// automation and story records, the hook settings, the instance lock.
+    /// automation records, the hook settings, the instance lock.
     ///
     /// `ORCHD_CONFIG_DIR` moves the lot, which is what makes the review fixture
     /// (`tools/fixture-pr.mjs`) safe to point a daemon at. Without it a fixture
@@ -1345,20 +1344,15 @@ impl Config {
 // The tracker's credential
 // ---------------------------------------------------------------------------
 //
-// Here rather than in `story`, which is the one pass that files into a tracker:
-// `Tracker` and its `token_env` are fields of this file, and the pair below is
-// read by `launch::session_env` for *every* session. With it in `story`, the
-// module that builds a session's environment had to import the story pass while
-// the story pass imported this file back.
+// Here because `Tracker` and its `token_env` are fields of this file, and the pair
+// below is read by `launch::session_env` for *every* session. It once lived in the
+// daemon's story filer, which made that module and this one import each other.
 
 /// The tracker's variable and its value, for a session that may or may not need one.
 ///
 /// `None` means "nothing to hand over" — no tracker configured, or no token in the
 /// daemon's environment — and says so in silence, because boot already logs the
 /// missing token once (`lib.rs`) and a warning per spawn would only bury it.
-///
-/// The story pass keeps the hard [`resolve_token`] instead: a run that files into a
-/// tracker with no credential can only fail mid-flight, so it is refused up front.
 ///
 /// `checkout` is the environment built so far, which is where the token comes from
 /// when the daemon's own has none.
@@ -1558,23 +1552,29 @@ mod tests {
             guessed.contains("mcp_server"),
             "the refusal must name the fix: {guessed}"
         );
-        assert!(guessed.contains("app.shortcut.com"), "{guessed}");
+        assert!(guessed.contains("SHORTCUT_API_TOKEN"), "{guessed}");
 
         /* And an *object* fails on its own terms, which `#[serde(untagged)]` cost:
         it answered `data did not match any variant` for a missing field. The key
         that is wrong is the only useful thing to say. */
-        let missing = refused(r#"{"mcp_server":"linear"}"#);
+        let missing = refused(r#"{"host":"linear.app"}"#);
         assert!(
-            missing.contains("host"),
+            missing.contains("mcp_server"),
             "the field is what to name: {missing}"
         );
         assert!(!missing.contains("did not match any variant"), "{missing}");
+
+        // `host` is not required: nothing reads it, and demanding it dropped the
+        // whole tracker, and with it the MCP server's approval.
+        let bare = Config::parse(r#"{"main_checkout":"/tmp/x","tracker":{"mcp_server":"linear"}}"#)
+            .expect("parses");
+        assert_eq!(bare.tracker.expect("kept").mcp_server, "linear");
 
         // Both of those, in a config: the tracker is dropped and everything else
         // survives, which is the difference between a lost feature and a lost app.
         for bad in [
             r#"{"main_checkout":"/tmp/x","port":9001,"tracker":"jira"}"#,
-            r#"{"main_checkout":"/tmp/x","port":9001,"tracker":{"mcp_server":"linear"}}"#,
+            r#"{"main_checkout":"/tmp/x","port":9001,"tracker":{"host":"linear.app"}}"#,
             r#"{"main_checkout":"/tmp/x","port":9001,"tracker":42}"#,
         ] {
             let cfg = Config::parse(bad).expect("a bad tracker must not cost the file");

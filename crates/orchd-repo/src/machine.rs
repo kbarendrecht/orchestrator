@@ -10,7 +10,7 @@
 //!   trap that `proc::run_bounded` exists to avoid.
 //! - A tracker configured but not declared in the repo's `.mcp.json`: Claude Code
 //!   drops a pending MCP server **silently**, so the tool is simply not there and
-//!   the story pass burns its whole timeout in the middle of a review.
+//!   a review agent finds it missing only when it goes to file a story.
 //!
 //! **Warnings, never refusals.** A daemon that will not start because `gh` is
 //! missing is worse than one whose PR pane is empty, and the person running it may
@@ -408,11 +408,11 @@ pub fn check(cfg: &Config, tracker_server: Option<&str>) -> Vec<Warning> {
             Some(true) => {}
             Some(false) => out.push(Warning {
                 what: format!("the repo's `.mcp.json` declares no `{server}` server"),
-                cost: "filing a story will hang until it times out".into(),
+                cost: "a review session has no tracker tool, so it cannot file a story".into(),
             }),
             None => out.push(Warning {
                 what: format!("no readable `.mcp.json` in the repo, so `{server}` is not there"),
-                cost: "filing a story will hang until it times out".into(),
+                cost: "a review session has no tracker tool, so it cannot file a story".into(),
             }),
         }
     }

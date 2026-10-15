@@ -1353,13 +1353,12 @@ async fn agent_argv(
 ///
 /// **`id` is the caller's to mint, and that is the whole reason it is a parameter
 /// rather than a `Uuid::new_v4()` here.** Every run has a record of the daemon's
-/// own beside the session — `automation.by_pr`, a posting run's proposals — and
-/// each caller used to write it *after* this returned. A `claude` that dies at
+/// own beside the session — `automation.by_pr` — and each caller used to write
+/// it *after* this returned. A `claude` that dies at
 /// once, on a bad `--settings` or the version gate, is reaped before that write
 /// lands, and [`watch_session_exit`] then goes looking for a run to settle and
-/// finds nothing: a posting run's "exited without posting" warning read the
-/// *previous* run's proposals and stayed silent, and `fix_pr::start` carried a
-/// compensating re-check for exactly this. So the caller mints the id, writes its record under
+/// finds nothing, and `fix_pr::start` carried a compensating re-check for exactly
+/// this. So the caller mints the id, writes its record under
 /// it, and takes the record back out if this returns `Err` — the same ordering
 /// [`insert_and_spawn`] documents for the session record itself.
 pub(crate) async fn spawn_run(
@@ -2369,10 +2368,12 @@ pub(crate) fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<
             }
         }
         app.release_main(id).await;
-        /* And the news, after the claim is given back rather than before it.
-        The hand-off is the reason: `fix_pr::start` refuses while a live session
-        holds the branch, and that is only true once the record says `Exited` and
-        main has let go. The verdict half does not care either way. */
+        /* And the news, after the claim is given back rather than before it, so
+        whatever a subscriber starts finds the record `Exited` and main let go.
+        That was load-bearing for the review's hand-off to `fix-pr`, which went
+        with the overlay; `fix_pr::settle`, the one subscriber left, does not care
+        either way. Kept, because the order costs nothing and the other one is a
+        trap for the next subscriber. */
         if let Some(exit) = ended {
             app.run_ended(exit).await;
         }

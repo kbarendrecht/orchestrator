@@ -121,11 +121,10 @@ With `tracker` set, `handle-review` can file a review point that is fair but out
 scope as a story, and answer the thread with its id. The agent reaches the tracker
 over MCP, so three things have to line up:
 
-- **`tracker` is one shape:** `{"mcp_server": "shortcut", "host":
-  "app.shortcut.com", "token_env": "SHORTCUT_API_TOKEN"}`. `token_env` is optional
-  — name it and the daemon pushes that variable into the session's environment
-  instead of the server authenticating itself. `host` is no longer read; it stays
-  in the shape so an existing file still parses.
+- **`tracker` is one shape:** `{"mcp_server": "shortcut", "token_env":
+  "SHORTCUT_API_TOKEN"}`. `token_env` is optional — name it and the daemon pushes
+  that variable into the session's environment instead of the server
+  authenticating itself. An older file's `host` is still accepted and ignored.
 - **`.mcp.json` declares a server named by `tracker.mcp_server`.** The daemon
   approves that one server for the sessions it spawns, never all of them.
 - **A tracker skill** (`.claude/skills/*/SKILL.md`) holds the team id, the

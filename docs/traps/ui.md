@@ -55,6 +55,16 @@ WKWebView, and that `Ctrl`-click there is a right-click rather than a modifier
 click. That would need `page.mjs` on `macos-14` with a browser, which the job does
 not set up today.
 
+## The ask box folds, and never dismisses, because the agent is still blocked.
+The way out of a question over the terminal is a **fold**: the header stays as a
+one-line strip (`.oq.min`, the `×`, or `Esc`). Hiding it outright would be this
+box disagreeing with the rail and the waitbar, which read `wants_attention` off
+the daemon and are right — the agent really is still stopped until somebody
+answers. Folded per ask rather than with one flag (`askFolded`), so the next
+question opens by itself.
+This was recorded inside the overlay review's entry about the same box, and went
+with it; the behaviour did not.
+
 ## Shift-Shift is the one gesture that costs no chord, and the guard is the whole of it.
 A double tap of Shift opens the file search (`web/app.js`, below the keymap).
 It fits the map without bending a rule, which is why it was taken: `Shift` alone

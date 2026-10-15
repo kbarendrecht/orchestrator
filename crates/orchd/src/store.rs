@@ -43,10 +43,32 @@ impl OnDiskKind {
         }
     }
 
+    /// The pass, or `None` for a command this build no longer runs.
+    ///
+    /// **A retired pass loads as an ordinary conversation.** The overlay's
+    /// `review` and `story`, and the older `triage`, `resolve-run` and `green`,
+    /// left a record behind on any install that had one when it upgraded. Kept
+    /// as a pass, such a row is one nothing settles, and it blocks `handle` and
+    /// `fix` on its PR as "a review run is working". The conversation itself is
+    /// still worth keeping, so the row stays and only the pass goes.
     pub fn pass(self) -> Option<Pass> {
         match self {
             OnDiskKind::Interactive => None,
+            OnDiskKind::Automation { .. } if self.is_retired() => None,
             OnDiskKind::Automation { pr, command } => Some(Pass { pr, command }),
+        }
+    }
+
+    /// Whether this record's pass is one this build no longer runs. Asked by
+    /// auto-resume, which must not bring one back: its skill is gone from the
+    /// plugin dir and every route it called is gone from the daemon, so a resumed
+    /// conversation would carry on calling them and be refused each time.
+    pub fn is_retired(&self) -> bool {
+        match self {
+            OnDiskKind::Interactive => false,
+            OnDiskKind::Automation { command, .. } => {
+                command != Pass::FIX_PR && command != Pass::HANDLE_REVIEW
+            }
         }
     }
 }
@@ -2519,15 +2541,40 @@ mod tests {
         // `Automation.skill` became `command` when the prompts were vendored
         // into `commands/`. Sessions already on disk say `skill`, and a daemon
         // that cannot read its own state file loses every archived session.
-        let old = r#"{"kind":"automation","pr":4812,"skill":"green"}"#;
+        let old = r#"{"kind":"automation","pr":4812,"skill":"fix-pr"}"#;
         let k: OnDiskKind = serde_json::from_str(old).unwrap();
         assert_eq!(
             k.pass(),
             Some(crate::model::Pass {
                 pr: 4812,
-                command: "green".into()
+                command: "fix-pr".into()
             })
         );
+    }
+
+    /// A pass this build no longer runs loads as a plain conversation, and says
+    /// it is retired so auto-resume leaves it alone. The two live ones do not.
+    #[test]
+    fn a_retired_pass_loads_as_a_conversation() {
+        for command in ["review", "story", "triage", "resolve-run", "green"] {
+            let k = OnDiskKind::Automation {
+                pr: 7,
+                command: command.into(),
+            };
+            assert!(k.is_retired(), "{command}");
+            assert_eq!(k.pass(), None, "{command} must not come back as a pass");
+        }
+        for command in [
+            crate::model::Pass::FIX_PR,
+            crate::model::Pass::HANDLE_REVIEW,
+        ] {
+            let k = OnDiskKind::Automation {
+                pr: 7,
+                command: command.into(),
+            };
+            assert!(!k.is_retired(), "{command}");
+            assert_eq!(k.pass().map(|p| p.command).as_deref(), Some(command));
+        }
     }
 
     /// What the archive may list from a directory the daemon does not own.

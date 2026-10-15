@@ -149,8 +149,8 @@ export type Health = { "health": "starting" } | { "health": "ok" } | { "health":
  *
  * Hooks are one-way and the only daemon-to-agent path is a pty write, so this
  * is the first thing that travels *back*: the agent posts a question, blocks on
- * a long poll, and the answer you give in the overlay is what its tool call
- * returns. Deliberately structured rather than free text, so the overlay renders
+ * a long poll, and the answer you give in the ask box is what its tool call
+ * returns. Deliberately structured rather than free text, so the ask box renders
  * buttons instead of asking you to type into a terminal you cannot see.
  */
 export type Interaction = { id: string, 
@@ -211,9 +211,10 @@ export type Offer = { "kind": "button", command: string, } | { "kind": "advice",
  * live in `skills/` now, so this is no longer "which prompt did the daemon type".
  * It is the things the daemon has to know *around* the agent rather than
  * inside it: which settle path an exit dispatches to (`spawn::watch_session_exit`),
- * that a resolve run may not ask questions (`api::ask`), and that one pass per PR
- * is enough.
- * Every one of those happens before the first turn or after the last.
+ * which chip a PR row shows while the run is live (`fixing`, `handling`), and
+ * whether a stored record is a pass this build still runs
+ * (`store::OnDiskKind::is_retired`). Every one of those happens before the first
+ * turn or after the last.
  *
  * It carries **no opinion about attention.** `Kind::Automation` used to, and the
  * rail demoted a running pass and painted it teal on the strength of it — which
@@ -370,8 +371,8 @@ waiting_ms: number, created_ms: number, alive: boolean, dirty_count: number, bou
  */
 has_transcript: boolean, 
 /**
- * What this session is blocked on, waiting for you. The overlay renders it;
- * everything else ignores it.
+ * What this session is blocked on, waiting for you. The ask box over the
+ * terminal renders it; everything else ignores it.
  */
 interaction: Interaction | null, 
 /**

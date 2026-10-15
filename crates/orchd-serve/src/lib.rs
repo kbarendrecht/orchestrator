@@ -668,8 +668,9 @@ async fn bind(port: u16, fallback: bool) -> Result<(tokio::net::TcpListener, u16
 ///   `/api/session/`. A new route ending in one of those is silently
 ///   agent-reachable.
 /// - `SPENDS_GITHUB_TOKEN` lists the GETs that spend the GitHub credential
-///   outbound and therefore need the daemon token despite being GETs. Its own
-///   comment records `/review` having been added without it once.
+///   outbound and therefore need the daemon token despite being GETs. It is
+///   empty today; its own comment records `/review` having been added without
+///   it once.
 ///
 /// Adding a route is otherwise a one-liner; adding one that touches either of
 /// those two properties is not.
@@ -1446,6 +1447,13 @@ fn auto_resume(
                 tracing::warn!(session = %r.id, "not resumed: {} is gone", r.cwd.display());
             } else if !r.had_a_turn {
                 tracing::warn!(session = %r.id, "not resumed: no conversation to resume from.");
+            } else if r.kind.is_retired() {
+                // Its row stays, as a conversation you can resume by hand; it is
+                // only not brought back on its own into routes that are gone.
+                tracing::warn!(
+                    session = %r.id,
+                    "not resumed: it was a pass this build no longer runs"
+                );
             } else {
                 resumable.push(r);
             }

@@ -1231,7 +1231,7 @@ pub fn write_settings(
         //
         // Named rather than `enableAllProjectMcpServers`: a repo may declare a
         // dozen servers — browser automation, dashboards, whatever — and a
-        // story-filing agent has no business with any of them. The name comes
+        // review agent filing a story has no business with any of them. The name comes
         // from the configured tracker, and with none configured the list is
         // empty rather than approving something nothing will use.
         "enabledMcpjsonServers": tracker.map(|t| vec![t]).unwrap_or_default(),

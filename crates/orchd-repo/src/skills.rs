@@ -48,11 +48,8 @@ pub const FIX_PR: &str = include_str!("../../../skills/fix-pr/SKILL.md");
 
 /// Working a PR's review threads in a pane, with a person watching.
 ///
-/// **The default answer to the rail's review button**, and the reason is the
-/// overlay rather than this file: the cards are not good enough to be the only way
-/// through a review yet, so the flow that puts one agent and one terminal in front
-/// of you is the one the button starts. The `review` session stays a menu item
-/// away.
+/// **The answer to the rail's review button**: one agent and one terminal in front
+/// of you. There was a second review verb, an overlay of cards; it was removed.
 ///
 /// Vendored from the monorepo's own `/resolve`, which is where it was proven —
 /// and generalised on the way, per this repo's own rule about one repo not being
@@ -124,7 +121,7 @@ pub fn plugin_dir() -> Result<PathBuf> {
 ///
 /// It used to say the story run's `--allowedTools` would not let it invoke a skill
 /// anyway. That was never measured and is false — the module doc above has the
-/// measurement — and the story run's instructions are a skill now.
+/// measurement.
 pub fn flag() -> Vec<String> {
     match plugin_dir() {
         Ok(dir) => vec![
@@ -204,24 +201,23 @@ fn write_plugin_at(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The skills an earlier build shipped and this one does not.
+///
+/// **Named, not inferred from [`VENDORED`].** A folder in the plugin dir that is
+/// not vendored may be one this daemon wrote, or one somebody put there by hand,
+/// and only the first is the writer's to remove.
+const RETIRED: &[&str] = &["green", "review", "story"];
+
 /// Remove a skill an earlier build wrote and this one no longer ships.
 ///
 /// The directory outlives the build that wrote it, and Claude Code loads every
 /// skill it finds there, so a skill dropped from [`VENDORED`] would otherwise stay
-/// callable in every session forever. `green` was the first. Only the file this
-/// writer puts there is removed, and the directory only once it is empty, so
-/// anything else somebody left in it survives. Best effort: a leftover is a stale
-/// skill, not a broken start.
+/// callable in every session forever. Only [`RETIRED`] names are touched, only the
+/// `SKILL.md` this writer put there is removed, and the directory only once it is
+/// empty. Best effort: a leftover is a stale skill, not a broken start.
 fn prune(skills: &Path) {
-    let Ok(entries) = std::fs::read_dir(skills) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        if VENDORED.iter().any(|(n, _)| name == *n) {
-            continue;
-        }
-        let at = entry.path();
+    for name in RETIRED {
+        let at = skills.join(name);
         let _ = std::fs::remove_file(at.join("SKILL.md"));
         let _ = std::fs::remove_dir(&at);
     }
@@ -246,8 +242,8 @@ mod tests {
         }
     }
 
-    /// A skill an earlier build shipped is gone after the next write, and a file
-    /// the writer did not put there is not its to remove.
+    /// A skill an earlier build shipped is gone after the next write, and a skill
+    /// the writer never shipped is not its to remove — not even its `SKILL.md`.
     #[test]
     fn a_skill_no_longer_shipped_is_removed() {
         let dir = std::env::temp_dir().join(format!("orchd-prune-{}", std::process::id()));
@@ -256,14 +252,24 @@ mod tests {
         std::fs::write(old.join("SKILL.md"), "---\nname: green\n---\n").unwrap();
         let kept = dir.join("skills").join("mine");
         std::fs::create_dir_all(&kept).unwrap();
-        std::fs::write(kept.join("notes.txt"), "not the daemon's").unwrap();
+        std::fs::write(kept.join("SKILL.md"), "---\nname: mine\n---\n").unwrap();
+        // Beside a retired skill, a file that is not the writer's.
+        let leftover = dir.join("skills").join("review");
+        std::fs::create_dir_all(&leftover).unwrap();
+        std::fs::write(leftover.join("SKILL.md"), "---\nname: review\n---\n").unwrap();
+        std::fs::write(leftover.join("notes.txt"), "not the daemon's").unwrap();
 
         write_plugin_at(&dir).unwrap();
 
         assert!(!old.exists(), "a dropped skill must not stay callable");
         assert!(
-            kept.join("notes.txt").exists(),
-            "only SKILL.md is the writer's"
+            kept.join("SKILL.md").exists(),
+            "a skill somebody else put there is not the writer's"
+        );
+        assert!(!leftover.join("SKILL.md").exists(), "a retired skill goes");
+        assert!(
+            leftover.join("notes.txt").exists(),
+            "and only its SKILL.md is the writer's"
         );
         for (name, _) in VENDORED {
             assert!(dir.join("skills").join(name).join("SKILL.md").exists());

@@ -518,8 +518,8 @@ const SLIM_THREAD_NODES: &str = "nodes { isResolved isOutdated \
 /// the **nearest nullable ancestor** of a failure, and for a timeout inside a
 /// large `reviewThreads` that ancestor is the connection, not the `pullRequest`
 /// above it. Pointer-walking a null then yields no nodes *and* no cursor, which
-/// the paging loop reads as "that was the last page" — so the overlay opens on a
-/// PR that has threads, shows nothing to answer, and says nothing about why.
+/// the paging loop reads as "that was the last page" — so the poll under-counts
+/// what is waiting on you on that PR, and says nothing about why.
 ///
 /// A refusal is the honest answer: the caller retries on the next poll or the
 /// next open, and a floor it knows about beats a zero it does not.
@@ -596,10 +596,9 @@ fn all_summary_threads(
 /// more to fetch, and [`MAX_THREAD_PAGES`] counts pages *after* the first.
 ///
 /// Each fetched page goes to `on_page`, and the return says whether the guard
-/// fired, in which case what was gathered is a floor rather than the whole. One
-/// loop for the poll's slim pages and the overlay's full ones: the two used to be
-/// written out twice with the same guard and the same warning, and they had to be
-/// kept in step by hand.
+/// fired, in which case what was gathered is a floor rather than the whole. Generic
+/// over the page because it once served two fetches; the poll's slim pages are the
+/// one left.
 fn page_threads<T>(
     token: &str,
     pr: u64,
@@ -1253,6 +1252,27 @@ mod tests {
         assert_eq!(count_open(&threads, "me"), (2, 1));
     }
 
+    /// A summary page whose thread connection came back null is an error, not the
+    /// last page.
+    ///
+    /// GraphQL nulls the nearest nullable ancestor of a failure, so a timeout
+    /// inside a large `reviewThreads` nulls the connection while leaving the
+    /// `pullRequest` above it an object. Walked with pointers that yields no nodes
+    /// and no cursor, and the paging loop would read that as the last page: a PR
+    /// with more than a page of threads under-counts what is waiting on you,
+    /// silently.
+    #[test]
+    fn a_nulled_thread_connection_is_an_error_not_an_empty_page() {
+        let summary = node(
+            r#"{"data":{"repository":{"pullRequest":{"reviewThreads":null}}},
+                "errors":[{"message":"timeout"}]}"#,
+        );
+        assert!(parse_summary_thread_page(summary, 10001).is_err());
+    }
+
+    /// The other half: the poll's *list* keeps the tolerance, because there the
+    /// "one unreadable node must not hide the rest" argument holds — each PR
+    /// degrades on its own, and the next poll fixes it.
     #[test]
     fn a_partial_search_page_still_yields_the_prs_it_could_read() {
         let partial = serde_json::json!({
@@ -1264,6 +1284,13 @@ mod tests {
         let v = accept(partial).expect("errors beside data are usable");
         let nodes = v.pointer("/data/search/nodes").unwrap().as_array().unwrap();
         assert_eq!(parse_pr(&nodes[0], "me").unwrap().number, 7);
+    }
+
+    /// GitHub's cursor is opaque, so a quote in it must not break the document.
+    #[test]
+    fn the_cursor_is_json_encoded_into_the_query() {
+        let q = summary_threads_query("o", "n", 7, r#"cur"sor"#);
+        assert!(q.contains(r#"after: "cur\"sor""#), "{q}");
     }
 
     #[test]

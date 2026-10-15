@@ -21,9 +21,9 @@ interface Window {
     chrome: string;
     seeThrough?: boolean;
     platform: string;
-    /** Every open checkout, substituted by the host. Optional because the
-     *  review-preview page is served with one entry and older hosts substituted
-     *  none — `core.LOCAL` falls back to `token` when it is absent. */
+    /** Every open checkout, substituted by the host. Optional because older
+     *  hosts substituted none — `core.LOCAL` falls back to `token` when it is
+     *  absent. */
     checkouts?: import('./serve').Checkout[];
   };
   /** Prism is driven manually; this switches its auto-highlight off. */

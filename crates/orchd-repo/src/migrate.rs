@@ -39,10 +39,16 @@ struct Migration {
 }
 
 /// Every rule, oldest first. Order matters only when two touch the same key.
-const MIGRATIONS: &[Migration] = &[Migration {
-    name: "tracker name to object",
-    apply: tracker_name_to_object,
-}];
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        name: "tracker name to object",
+        apply: tracker_name_to_object,
+    },
+    Migration {
+        name: "drop keys this build retired",
+        apply: drop_retired_keys,
+    },
+];
 
 /// The backup, written each time something is actually migrated: it is the file as
 /// it stood immediately before this change, which is the copy worth having.
@@ -134,6 +140,25 @@ fn tracker_name_to_object(obj: &mut Map<String, Value>) -> bool {
     }
 }
 
+/// The keys a build once wrote and this one has no field for.
+///
+/// **Written by the daemon itself, which is why a warning is the wrong answer.**
+/// The first-run write serialises the whole `Config`, so a field that existed then
+/// is in the file on every machine that ran it. Removed from the struct, it would
+/// draw `unknown_keys`' warning on every start, for ever — a false alarm that
+/// teaches people to skip the one line meant to catch a typo.
+///
+/// `story_timeout_seconds` was the overlay review's story filer's ceiling.
+const RETIRED_KEYS: &[&str] = &["story_timeout_seconds"];
+
+fn drop_retired_keys(obj: &mut Map<String, Value>) -> bool {
+    let mut changed = false;
+    for key in RETIRED_KEYS {
+        changed |= obj.remove(*key).is_some();
+    }
+    changed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,6 +232,24 @@ mod tests {
         config_file(&path);
         assert_eq!(read(), before);
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A key the daemon wrote itself and no longer reads is dropped, so it never
+    /// draws the unknown-key warning, and the rest of the file is kept.
+    #[test]
+    fn a_retired_key_is_dropped_and_nothing_else_is() {
+        let dir = crate::testutil::scratch("migrate-retired");
+        let path = dir.join("config.json");
+        std::fs::write(
+            &path,
+            r#"{"main_checkout":"/repo","port":9001,"story_timeout_seconds":300}"#,
+        )
+        .unwrap();
+        config_file(&path);
+        let obj: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(obj.get("story_timeout_seconds").is_none());
+        assert_eq!(obj["port"], 9001);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

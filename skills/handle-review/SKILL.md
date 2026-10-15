@@ -40,8 +40,7 @@ review-level bodies that are not anchored to a line; skip the empty ones. Plus
 **`$ORCH_MAY_PUSH` is not `yes` → stop, it is a branch you may not force-push.**
 Say whose it is. Reading the threads is welcome on anybody's PR; the Apply step
 below amends commits and pushes `--force-with-lease`, which is not, and there is no
-way to do half of this pass. `fix-pr` and `review` both stop on the same
-answer.
+way to do half of this pass. `fix-pr` stops on the same answer.
 
 It is the daemon's answer, and it asked about **push access** to the head repo —
 not whether the repo's owner is you, which refused every org PR, whose owner is the
@@ -60,8 +59,8 @@ the ones you thumbed by hand on GitHub besides. **The last comment, not any**: a
 on the opening comment says nothing about a reviewer's follow-up under it, and that
 thread is asking again. That is `reactionGroups` on the last node in the query
 above, and it is the same rule the daemon keeps in `forge::model::answered` — the
-rail's count and the review overlay read it, so a thread you settle any other way
-keeps showing as waiting there. Do not re-answer an answered thread; say it was
+rail's count reads it, so a thread you settle any other way keeps showing as
+waiting there. Do not re-answer an answered thread; say it was
 already settled and move on.
 
 **A review body is feedback too, and it is sorted with the threads.** It is
@@ -176,8 +175,8 @@ so plainly in a reply rather than promising a story.
 
 - The description ends with the dedup key, exactly: `Source: review of #$ORCH_PR —
   <thread url>`, where the thread URL is the `url` of its **first** comment. That is
-  the line the daemon writes when it files a story for the overlay, so a later search
-  from either flow finds what the other filed instead of filing a second.
+  the line the search above finds, so a retry finds what an earlier pass filed
+  instead of filing a second.
 - Title and body in the thread's language, and about the work itself: nobody outside
   this session knows which thread this was.
 - One story per thread. A refused create is retried as the *same* create once what
@@ -189,9 +188,8 @@ id and the URL come from the create response, never assembled by hand, and the U
 on the tracker's own host. If the create fails twice, say so on the thread and leave it
 open: an unfiled story with a reply promising one is the state this exists to prevent.
 
-This pane files its own stories because it posts its own replies, with `gh`, and nobody
-reads a card here. The overlay's `review` session does neither: the daemon files and
-posts for it.
+This pane files its own stories because it posts its own replies, with `gh`: the
+daemon writes nothing to GitHub or to a tracker.
 
 ## After posting
 

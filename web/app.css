@@ -1741,9 +1741,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 .tok-inserted{color:#5fa97c}
 .tok-deleted{color:#c9615a}
 .tok-coord{color:#6ba6b8}
-/* `.hit` is the file viewer's search hit: the same mark on a different line.
-   Same rule, deliberately shared rather than copied. */
-.ln.cur s,.ln.hit s{box-shadow:inset 2px 0 0 var(--attn)}
+.ln.cur s{box-shadow:inset 2px 0 0 var(--attn)}
 :root{
   --add:rgba(95,169,124,.13);
   --add-hi:rgba(95,169,124,.32);

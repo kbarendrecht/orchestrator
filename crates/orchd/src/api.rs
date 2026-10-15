@@ -165,15 +165,6 @@ fn is_ask_route(path: &str) -> bool {
     path.starts_with("/api/session/") && ASK_ROUTES.iter().any(|s| path.ends_with(s))
 }
 
-/// Every route an *agent* calls, on a credential that is not the app token.
-///
-/// One predicate because the guard has to make the same two allowances for all of
-/// them — skip `needs_token`, and accept a missing `Origin` — and splitting that
-/// is how `…/committed` once shipped reachable by neither. See [`guard`].
-fn is_agent_route(path: &str) -> bool {
-    is_ask_route(path)
-}
-
 /// Reject anything that is not the SPA's own origin.
 ///
 /// Binding to 127.0.0.1 is necessary but not sufficient: any web page you visit
@@ -273,7 +264,7 @@ pub async fn guard(
     its only caller — twice over, since a curl that added an Origin would then
     have failed `needs_token` for want of an app token it is deliberately not
     given. Found by driving a real run, invisible to every unit test. */
-    let is_ask = is_agent_route(&path);
+    let is_ask = is_ask_route(&path);
 
     // HEAD is a read too: the scratchpad underline asks with one.
     let is_get = matches!(
@@ -314,9 +305,11 @@ pub async fn guard(
     `get()` already sends it on every request.
 
     A named list rather than a suffix match: this started as `/threads` alone
-    and `/review` was added later without it. `/threads` itself is gone now
-    (nothing called it); a dead entry here would read as a route that exists. */
-    const SPENDS_GITHUB_TOKEN: [&str; 1] = ["/review"];
+    and `/review` was added later without it. **Empty now**, and kept so the
+    next such GET has somewhere to go: `/threads` had no caller, and `/review`
+    went with the overlay review. A dead entry here would read as a route that
+    exists. */
+    const SPENDS_GITHUB_TOKEN: [&str; 0] = [];
     let spends_github_token =
         path.starts_with("/api/pr/") && SPENDS_GITHUB_TOKEN.iter().any(|s| path.ends_with(s));
     let needs_token = !is_hook && !is_ask && (!is_get || spends_github_token);
@@ -808,7 +801,7 @@ pub async fn ask(
         refuse!("a question with no words");
     }
     if body.options.is_empty() {
-        refuse!("a question with no options: the overlay renders buttons, not a prompt");
+        refuse!("a question with no options: the ask box renders buttons, not a prompt");
     }
     let interaction = crate::model::Interaction {
         id: Uuid::new_v4(),
@@ -1912,8 +1905,8 @@ async fn revive(app: &Arc<AppState>, id: Uuid) -> ApiResult<serde_json::Value> {
             .with_context(|| format!("session {id}"))?
     };
 
-    // Its recorded pass, not `None`: the run's PR and command are what the bar
-    // reads to say which PR this session is a pass over.
+    // Its recorded pass, not `None`: the run's PR and command are what settles it
+    // and what the PR row's `fixing` or `handling` chip reads.
     let pass = {
         let inner = app.inner.read().await;
         inner.sessions.get(&id).and_then(|s| s.pass.clone())
@@ -2794,7 +2787,7 @@ pub async fn open_file(
             &r#ref[..r#ref.len().min(8)]
         );
     }
-    let forge = write_forge(&app)?;
+    let forge = url_forge(&app)?;
     let url = forge.blob_url(&r#ref, path);
     open_detached(&url).await?;
     Ok(Json(json!({ "opened": url })))
@@ -2897,9 +2890,9 @@ fn open_external(url: &str, settle: Option<std::time::Duration>) -> anyhow::Resu
 // What the routes that reach the forge share.
 // ---------------------------------------------------------------------------
 
-/// The same, for writes. Writes shell their own tool, so no read token is
-/// needed — the forge carries only the repo it writes to.
-pub(crate) fn write_forge(app: &Arc<AppState>) -> Result<crate::forge::ForgeImpl, ApiError> {
+/// The forge for minting a browser URL, which needs the repo and no token: the
+/// daemon writes nothing to GitHub, and a URL is not a request.
+pub(crate) fn url_forge(app: &Arc<AppState>) -> Result<crate::forge::ForgeImpl, ApiError> {
     let (owner, name) = repo_of(app).context("no GitHub repo configured and none on the remote")?;
     Ok(crate::forge::ForgeImpl::for_kind(
         app.cfg.forge,

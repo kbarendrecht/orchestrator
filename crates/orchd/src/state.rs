@@ -609,10 +609,10 @@ impl Inner {
         self.prs.iter().find(|p| p.number == number)
     }
 
-    /// Mutating the three stores that outlive the daemon.
+    /// Mutating the stores that outlive the daemon.
     ///
     /// `sessions.json` is written by every `notify()`, so a session record cannot be
-    /// changed without being persisted. `automation` and `stories` had no
+    /// changed without being persisted. `automation` and `spare` had no
     /// such guarantee: each was durable only because every mutation site remembered
     /// to call the matching `store::save_*` afterwards. That held, but it made
     /// durability a property of the caller's memory — and a lost automation write in
@@ -1119,10 +1119,9 @@ impl AppState {
     /// Read-only: unlike `crate::worktree::ensure_pr_worktree` this never creates
     /// one, so a gate can be reported without a side effect.
     ///
-    /// **Here rather than in `api`, because `post` and `story` both ask it.** A
-    /// question about the workspace map is not an HTTP question, and reaching up
-    /// into the handler module for it is what made `api` and `post` import each
-    /// other.
+    /// **Here rather than in `api`**: a question about the workspace map is not an
+    /// HTTP question, and reaching up into the handler module for it once made two
+    /// modules import each other.
     pub async fn workspace_for(&self, head_ref: &str) -> Option<String> {
         self.holding(head_ref, |_| true).await
     }
@@ -2583,8 +2582,8 @@ pub struct SessionView {
     /// stat; it is now the `had_a_turn` bit, which answers the same question the
     /// callers actually meant without a per-snapshot read.
     pub has_transcript: bool,
-    /// What this session is blocked on, waiting for you. The overlay renders it;
-    /// everything else ignores it.
+    /// What this session is blocked on, waiting for you. The ask box over the
+    /// terminal renders it; everything else ignores it.
     pub interaction: Option<Interaction>,
     /// The conversation this one was cut from. A fork inherits its parent's
     /// title, so without this two rows read the same and neither says why.
