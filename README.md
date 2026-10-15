@@ -1,8 +1,11 @@
 # orchestrator
 
-**A pull request pane that acts on itself.** See which PRs still owe someone an
-answer, press `handle`, and an agent works the threads in a pane you can take
-over. It drafts every reply and posts none of them without your go.
+**An agentic development environment (ADE), from prompt to commit to PR to review.**
+Every session gets its own worktree and terminal, and keeps running when you close
+the app. When checks fail, one press has an agent fix them, push, and watch CI
+until the PR is green. When review comments arrive, another press hands them to an
+agent. It fixes what is clear, asks you where a decision is needed, and drafts
+every reply for your go.
 
 [![release](https://img.shields.io/github/v/release/kbarendrecht/orchestrator?label=release&color=blue)](https://github.com/kbarendrecht/orchestrator/releases/latest)
 [![check](https://img.shields.io/github/actions/workflow/status/kbarendrecht/orchestrator/check.yml?branch=main&label=check)](https://github.com/kbarendrecht/orchestrator/actions/workflows/check.yml)
@@ -14,8 +17,8 @@ over. It drafts every reply and posts none of them without your go.
 A Rust daemon and a small vanilla-JS web app, shipped as one desktop application
 and runnable headless in a browser tab. It hosts
 [Claude Code](https://www.anthropic.com/claude-code) and
-[Codex](https://developers.openai.com/codex/cli/) sessions — several checkouts in
-one window, each session in its own worktree. It is not itself an agent.
+[Codex](https://developers.openai.com/codex/cli/) sessions, several checkouts in
+one window. It is not itself an agent.
 
 [What it does](#what-it-does) · [The review loop](#the-review-loop) ·
 [Install](#install) · [The agents](#the-agents) · [What you need](#what-you-need) ·
