@@ -172,18 +172,6 @@ worktree the app manages. Read it as a mistake-catcher, not a control — it see
 [`docs/security.md`](docs/security.md) has the reasoning behind each of those, and
 what each one does not cover.
 
-### The usage ping
-
-Once a day a release build sends one ping, so the number of people running the
-app is a count rather than a guess. It carries four fields: a random install id
-(kept in `ping.json` in the config dir), the version, the OS and the CPU
-architecture. Nothing about your repos, sessions or code, and the receiving
-Worker ([`tools/ping/`](tools/ping/)) does not store your address.
-
-Turn it off in Settings → Other, which writes `"usage_ping": false` to `host.json`
-in the config dir. A debug build never pings, and nor does anything with `CI`
-set to a true value (`CI=false` or `CI=0` still pings).
-
 ## Troubleshooting
 
 [`docs/troubleshooting.md`](docs/troubleshooting.md) names each symptom and what
