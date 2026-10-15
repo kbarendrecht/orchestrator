@@ -481,6 +481,29 @@ impl Inner {
         self.prs_ended.truncate(ENDED_MAX);
     }
 
+    /// Write each session's open PR onto it, matched by branch.
+    ///
+    /// By the session's own branch rather than its workspace, because the
+    /// workspace is what a swap or a reap changes and the branch is what the
+    /// conversation was about. A head the checkout cannot vouch for
+    /// (`foreign_heads`) is skipped: a fork's PR on a same-named branch is not
+    /// this session's. Called after every successful poll; the notify that
+    /// follows the poll writes the records.
+    pub fn note_session_prs(&mut self) {
+        for s in self.sessions.values_mut() {
+            let Some(branch) = s.branch.as_deref() else {
+                continue;
+            };
+            let found = self
+                .prs
+                .iter()
+                .find(|p| p.head_ref == branch && !self.foreign_heads.contains_key(&p.number));
+            if let Some(p) = found {
+                s.pr = Some(p.number);
+            }
+        }
+    }
+
     /// Forget an ended PR, for the one case that un-ends: a reopened number
     /// coming back in the poll. Without this the row would keep saying `closed`
     /// about a PR that is open again, and the open list and the ended list would
@@ -2588,6 +2611,10 @@ pub struct SessionView {
     /// The conversation this one was cut from. A fork inherits its parent's
     /// title, so without this two rows read the same and neither says why.
     pub forked_from: Option<crate::model::SessionId>,
+    /// The PR this conversation was about, open or long since merged. The
+    /// archive row shows it, because the forge no longer remembers it.
+    #[cfg_attr(any(test, feature = "test-util"), ts(type = "number | null"))]
+    pub pr: Option<u64>,
     /// Whether this session still owes you the rest of a turn. The nudge is only
     /// true of these; every other resumed session is sitting at its prompt done.
     pub interrupted: bool,
@@ -2645,6 +2672,7 @@ impl SessionView {
             resumable: s.resumable(),
             interaction: s.interaction.clone(),
             forked_from: s.forked_from,
+            pr: s.pr,
             interrupted: s.interrupted,
             restart_queued: s.restart_queued,
             agent_stale: s.agent_stale,
@@ -3654,5 +3682,47 @@ mod tests {
         let row = snap.prs.iter().find(|p| p.pr.number == 2).expect("the PR");
         assert_eq!(row.workspace.as_deref(), Some(MAIN));
         assert_eq!(row.session, Some(newcomer));
+    }
+
+    /// A session keeps the PR its branch had, after the PR leaves the open list.
+    ///
+    /// The archive row reads it weeks later, when the forge answers for open PRs
+    /// only and the daemon's ended list holds ten. A head another repository owns
+    /// on a same-named branch is not this session's PR.
+    #[tokio::test]
+    async fn a_session_keeps_the_pr_of_its_branch_after_the_pr_is_gone() {
+        let app = app().await;
+        let id = live_in_main(&app).await;
+        let mut inner = app.inner.write().await;
+        inner.sessions.get_mut(&id).expect("the session").branch = Some("story-7".into());
+
+        // Someone else's fork, on a branch of the same name: not ours.
+        inner.prs = vec![crate::forge::Pr {
+            head_ref: "story-7".into(),
+            ..crate::testutil::pr(70)
+        }];
+        inner.foreign_heads.insert(70, "another repository".into());
+        inner.note_session_prs();
+        assert_eq!(
+            inner.sessions[&id].pr, None,
+            "a foreign head is not this session's PR"
+        );
+
+        inner.foreign_heads.clear();
+        inner.prs = vec![crate::forge::Pr {
+            head_ref: "story-7".into(),
+            ..crate::testutil::pr(7)
+        }];
+        inner.note_session_prs();
+        assert_eq!(inner.sessions[&id].pr, Some(7));
+
+        // Merged: the poll no longer lists it, and the session still says #7.
+        inner.prs.clear();
+        inner.note_session_prs();
+        assert_eq!(
+            inner.sessions[&id].pr,
+            Some(7),
+            "the PR outlives the open list"
+        );
     }
 }

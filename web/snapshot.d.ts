@@ -381,6 +381,11 @@ interaction: Interaction | null,
  */
 forked_from: string | null, 
 /**
+ * The PR this conversation was about, open or long since merged. The
+ * archive row shows it, because the forge no longer remembers it.
+ */
+pr: number | null, 
+/**
  * Whether this session still owes you the rest of a turn. The nudge is only
  * true of these; every other resumed session is sitting at its prompt done.
  */

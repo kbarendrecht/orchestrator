@@ -1277,6 +1277,7 @@ fn start_pr_poller(app: Arc<AppState>) {
                                 })
                                 .collect();
                             inner.prs = prs;
+                            inner.note_session_prs();
                             inner.pr_error = None;
                             inner.pr_fetched = Some(std::time::SystemTime::now());
                             drop(inner);

@@ -115,6 +115,9 @@ pub struct SessionRecord {
     /// explains why two rows share a title.
     #[serde(default)]
     pub forked_from: Option<SessionId>,
+    /// The PR this conversation was about. See `Session::pr`.
+    #[serde(default)]
+    pub pr: Option<u64>,
     /// Whether the last turn was cut off rather than finished.
     ///
     /// The one thing a resumed session cannot work out for itself: it comes back
@@ -177,6 +180,7 @@ impl SessionRecord {
             pid: s.pid,
             was_live: s.state.is_live(),
             forked_from: s.forked_from,
+            pr: s.pr,
             interrupted: s.interrupted,
             had_a_turn: s.had_a_turn,
             branch: s.branch.clone(),
@@ -204,6 +208,7 @@ impl SessionRecord {
         // restored session that kept it would write it back on every persist until
         // the number was reused — see `SessionRecord::pid`.
         s.forked_from = self.forked_from;
+        s.pr = self.pr;
         s.interrupted = self.interrupted;
         s.had_a_turn = self.had_a_turn;
         s.branch = self.branch;
@@ -1724,6 +1729,7 @@ mod tests {
                 pid: None,
                 was_live: false,
                 forked_from: None,
+                pr: None,
                 interrupted: false,
                 had_a_turn: false,
                 branch: None,
@@ -2294,6 +2300,36 @@ mod tests {
         let back = old.restore();
         assert_eq!(back.name, None);
         assert_eq!(back.label(), Some("Generated conversation name"));
+    }
+
+    /// The PR survives the record, or the archive loses it at the next launch:
+    /// the poll only answers for open PRs, so nothing would write it back.
+    #[test]
+    fn the_pr_a_conversation_was_about_survives_the_record() {
+        let mut s = crate::model::Session::new(
+            uuid::Uuid::new_v4(),
+            "wt".into(),
+            std::path::Path::new("/tmp").to_path_buf(),
+            None,
+        );
+        s.pr = Some(41);
+        assert_eq!(SessionRecord::of(&s).restore().pr, Some(41));
+
+        // A record written before the field existed loads with no PR.
+        let old: SessionRecord = serde_json::from_value(serde_json::json!({
+            "id": uuid::Uuid::new_v4(),
+            "workspace": "wt",
+            "cwd": "/tmp",
+            "kind": { "kind": "interactive" },
+            "title": null,
+            "transcript_path": null,
+            "archived_transcript": null,
+            "recovery": null,
+            "created_at": { "secs_since_epoch": 0, "nanos_since_epoch": 0 },
+            "pid": null,
+        }))
+        .expect("a record from before the field still loads");
+        assert_eq!(old.restore().pr, None);
     }
 
     /// A restart brings a session back in its recorded *directory*, so the branch

@@ -444,6 +444,10 @@ struct Carried {
     /// reading as forked. Set directly for a *new* fork; carried here for a resume
     /// of one that already was.
     forked_from: Option<SessionId>,
+    /// The PR this conversation was about, so a resume does not drop it before the
+    /// next poll writes it back — and an archived one is never polled again.
+    /// Not carried on a fork: a fork cuts its own branch, so its PR is its own.
+    pr: Option<u64>,
     /// When this conversation actually began, which a resume otherwise loses.
     ///
     /// `Session::new` stamps it with *now*, and a resume rebuilds the record under
@@ -493,6 +497,7 @@ impl Carried {
             // `spawn_session` sets that from the `Source`. This carries the fact
             // for a resume of a session that was already a fork.
             forked_from: if fork { None } else { prev.forked_from },
+            pr: if fork { None } else { prev.pr },
             // Resume only. A fork is a new conversation and started when it was
             // forked, so the files you rewrote before it existed are news to it.
             created_at: (!fork).then_some(prev.created_at),
@@ -531,6 +536,7 @@ impl Carried {
         session.spawned_by = self.spawned_by;
         session.spawn_cut_worktree = self.spawn_cut_worktree;
         session.forked_from = self.forked_from;
+        session.pr = self.pr;
         session.agent = self.agent;
         session.agent_session_id = self.agent_session_id;
         if self.transcript.is_some() {
@@ -3307,6 +3313,7 @@ mod tests {
         prev.spawned_by = Some(parent);
         prev.spawn_cut_worktree = true;
         prev.forked_from = Some(parent);
+        prev.pr = Some(41);
         prev.created_at = began;
 
         let mut next = Session::new(Uuid::new_v4(), "wt".into(), PathBuf::from("/tmp"), None);
@@ -3324,6 +3331,7 @@ mod tests {
         assert_eq!(next.spawned_by, Some(parent), "who spawned it");
         assert!(next.spawn_cut_worktree, "whether that spawn cut the tree");
         assert_eq!(next.forked_from, Some(parent), "that it was forked");
+        assert_eq!(next.pr, Some(41), "the PR it was about");
         assert_eq!(next.created_at, began, "when the conversation began");
     }
 
@@ -3349,6 +3357,7 @@ mod tests {
         prev.interrupted = true;
         prev.name = Some("the one you named".into());
         prev.forked_from = Some(parent);
+        prev.pr = Some(41);
         prev.created_at = began;
         prev.had_a_turn = true;
         prev.comes_back_as = at_rest(&State::YourTurn {
@@ -3368,6 +3377,10 @@ mod tests {
         assert!(
             next.forked_from.is_none(),
             "spawn_session sets this from the Source"
+        );
+        assert!(
+            next.pr.is_none(),
+            "a fork cuts its own branch, so its PR is its own"
         );
         assert_ne!(next.created_at, began, "a fork started when it was forked");
         // And the one that does: a fork replays the parent's turns, so it opens on

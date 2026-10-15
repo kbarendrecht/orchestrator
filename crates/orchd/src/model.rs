@@ -614,6 +614,14 @@ pub struct Session {
     /// it, so knowing *which* one is the difference between two rows that read
     /// identically and two you can tell apart.
     pub forked_from: Option<SessionId>,
+    /// The last open PR seen on this session's branch.
+    ///
+    /// **Kept on the session, because the forge forgets it.** The poller only
+    /// answers for open PRs, and the daemon remembers ten ended ones in memory —
+    /// so an archive row weeks old had no way to say which PR it was. Written by
+    /// [`crate::state::Inner::note_session_prs`] and never cleared: a PR that
+    /// merged is still the PR this conversation was about.
+    pub pr: Option<u64>,
     /// The session whose `orch new` created this one.
     ///
     /// What makes `orch kill` an undo rather than a remote control: the ask token
@@ -716,6 +724,7 @@ impl Session {
             comes_back_as: None,
             had_a_turn: false,
             forked_from: None,
+            pr: None,
             spawned_by: None,
             spawn_cut_worktree: false,
             outside_grants: Vec::new(),

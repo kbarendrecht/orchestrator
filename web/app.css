@@ -732,6 +732,14 @@ button.ctx-btn:hover{color:var(--text)}
 /* A past conversation. Quieter than a live row, and one line rather than two, so
    twenty of them still read as a list. */
 .sess.arc{padding:6px 15px 7px}
+/* A week heading in the archive: the faint label voice the add row uses, so it
+   reads as a divider between rows rather than as a row. */
+.arcweek{
+  padding:9px 15px 3px;font-family:var(--mono);font-size:calc(9px * var(--fs));
+  letter-spacing:.06em;text-transform:uppercase;color:var(--ghost);
+}
+/* The PR number on an archived row, in the clock's voice beside it. */
+.sess-pr{font-family:var(--mono);font-size:calc(9px * var(--fs));color:var(--faint-solid);flex:0 0 auto}
 .sess.arc .sess-name{color:var(--dim)}
 .sess.arc .sess-sub{color:var(--faint-solid);margin-top:0}
 .sess-warn{

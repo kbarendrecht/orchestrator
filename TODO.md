@@ -144,13 +144,6 @@ this file, which churned it from every build; that feature is gone.
   Until this is built the token file stays: it is the one way a launcher-started
   app without `gh` gets a token.
 
-- **The archive is a list you cannot find anything in.** 91 rows behind one caret,
-  each carrying a name and an age, with no grouping by date and no PR number.
-  Search already finds a session by what was said in it (`store::first_spoken_match`),
-  but `archivedRow` says out loud that this is the list you scan weeks later, and
-  scanning is the one thing it does not support. Group by week, and put the PR
-  number on the row where there is one.
-
 - **The diff and the thread's comments, drawn on a review question.** The overlay
   review — `handle review in UI`, its cards, its state machine, the daemon-side
   posting and the story filer — is deleted. `handle review` in a pane is the one

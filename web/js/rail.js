@@ -1387,6 +1387,26 @@ function fillArchive(box, c, archived, external) {
     ...external.filter((/** @type {import('../snapshot').ExternalView} */ x) => !shownIds.has(x.id) && hits[x.id]),
   ];
 
+  /* **Grouped by week while nothing is typed**, because this is the list you scan
+     weeks later and a run of rows that all say "12d" is not something you can
+     scan. Not while filtering: a query answers which rows, and the answer is
+     short enough to read whole. The outside conversations follow under their own
+     heading, since the two lists are kept apart on purpose (above). */
+  const grouped = !q;
+  /** @type {any[]} */
+  const listed = [];
+  let week = '';
+  for (const r of byName) {
+    if (grouped) {
+      const label = 'last_used_ms' in r ? 'outside orchd' : weekLabel(weekOf(r.created_ms));
+      if (label !== week) {
+        week = label;
+        listed.push({ key: `wk:${label}`, sig: `wk:${label}`, build: () => el('div', 'arcweek', label) });
+      }
+    }
+    listed.push(r);
+  }
+
   const row = (/** @type {any} */ r, /** @type {string | undefined} */ said) => ('last_used_ms' in r
     ? { key: `ext:${r.id}`, sig: paintSig([r, c.path, said ?? ''], NOT_DRAWN), build: () => externalRow(c, r, said) }
     : { key: `arc:${r.id}`, sig: paintSig([r, r.id === selected, said ?? ''], NOT_DRAWN), build: () => archivedRow(r, said) });
@@ -1404,12 +1424,36 @@ function fillArchive(box, c, archived, external) {
         if (n) n.textContent = q ? `${byName.length + byText.length} of ${archived.length + external.length}` : '';
       },
     },
-    ...byName.map((r) => row(r, undefined)),
+    ...listed.map((r) => ('build' in r ? r : row(r, undefined))),
     ...byText.map((r) => row(r, hits[r.id])),
     // Last, always: hits land above it as they arrive, so nothing already drawn
     // moves when the slow half of the search finishes.
     ...(busy ? [{ key: 'arcbusy', sig: 'arcbusy', build: () => searchingRow() }] : []),
   ]);
+}
+
+/** The Monday, at midnight, that starts the week a session began in.
+ *
+ *  `agoMs` is an age, which is what the snapshot carries; a snapshot a few
+ *  seconds old cannot move a session across a week. */
+function weekOf(/** @type {number} */ agoMs) {
+  const d = new Date(Date.now() - agoMs);
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+  return d;
+}
+
+/** What an archive week heading says: near weeks by name, older ones by date. */
+function weekLabel(/** @type {Date} */ monday) {
+  const now = weekOf(0);
+  // Rounded, because a week with a clock change in it is not 7 × 24 hours.
+  const weeks = Math.round((now.getTime() - monday.getTime()) / (7 * 864e5));
+  if (weeks === 0) return 'this week';
+  if (weeks === 1) return 'last week';
+  const date = monday.getFullYear() === now.getFullYear()
+    ? monday.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
+    : monday.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+  return `week of ${date}`;
 }
 
 /** The checkout whose archive was just opened from the rail, so its filter is
@@ -1753,6 +1797,9 @@ function archivedRow(/** @type {import('../snapshot').SessionView} */ s, /** @ty
   row.appendChild(el('span', 'sess-name', arcName, arcName));
   const forked = forkBadge(s);
   if (forked) row.appendChild(forked);
+  /* The PR this conversation was about, kept by the daemon after the PR merged —
+     the number is how you find "the session that did #41" weeks later. */
+  if (s.pr != null) row.appendChild(el('span', 'sess-pr', `#${s.pr}`, `PR #${s.pr}`));
   row.appendChild(clock('sess-id', s.created_ms, ' ago', '', s));
   btn.appendChild(row);
 
