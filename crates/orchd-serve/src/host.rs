@@ -895,6 +895,15 @@ pub struct HostFile {
     /// decides whether anything is there to see.
     #[serde(default)]
     pub see_through_window: bool,
+    /// Whether the app sends its daily usage ping. See [`crate::ping`] for what it
+    /// sends and why.
+    ///
+    /// **On by default, and here so it can be turned off.** Here rather than in
+    /// `config.json` for the same reason as `see_through_window`: it is one answer
+    /// for the install, not one per checkout. Read before every ping, so turning
+    /// it off takes effect without a restart.
+    #[serde(default = "default_usage_ping")]
+    pub usage_ping: bool,
 }
 
 /// **Hand-written, because `derive(Default)` disagreed with serde and won.**
@@ -913,12 +922,17 @@ impl Default for HostFile {
             checkouts: Vec::new(),
             checkout_retention_days: default_checkout_retention_days(),
             see_through_window: false,
+            usage_ping: default_usage_ping(),
         }
     }
 }
 
 fn default_checkout_retention_days() -> u32 {
     60
+}
+
+fn default_usage_ping() -> bool {
+    true
 }
 
 /// What a checkout's state directory holds that the daemon can rebuild.
@@ -1044,6 +1058,14 @@ pub fn remember_checkouts(checkouts: &[PathBuf]) {
 /// Whether the window should be built see-through. See [`HostFile::see_through_window`].
 pub fn see_through_window() -> bool {
     read_host_file().is_some_and(|f| f.see_through_window)
+}
+
+/// Whether the daily usage ping may be sent. See [`HostFile::usage_ping`].
+///
+/// No file is the default, which is on: a machine that has not written `host.json`
+/// yet has not turned anything off.
+pub fn usage_ping() -> bool {
+    read_host_file().map_or_else(default_usage_ping, |f| f.usage_ping)
 }
 
 fn checkout_retention_days() -> u32 {
@@ -1202,6 +1224,8 @@ pub fn checkout_dir(checkout: &Path) -> anyhow::Result<PathBuf> {
 ///   checkout's daemon.
 /// - `instance.pid` is the file the single-instance `flock` is taken on. A copy of
 ///   it is a second file to lock, which is the one thing the lock exists to refuse.
+/// - `ping.json` is the install's id for the usage ping. A copy would be harmless
+///   today, since only the host pings, but it is the host's and nothing else's.
 /// - `orchd.log*` is this process's own log, rotated per start.
 ///
 /// Everything in [`DERIVED`] is denied too, and by reference rather than by being
@@ -1209,7 +1233,7 @@ pub fn checkout_dir(checkout: &Path) -> anyhow::Result<PathBuf> {
 /// rebuilds it, which is the same reason not to carry it — and two hand-kept copies
 /// of one list is the shape this whole entry is about. `plugin` and `hooks.json`
 /// come from there.
-const NOT_INHERITED: [&str; 3] = ["checkouts", "host.json", "instance.pid"];
+const NOT_INHERITED: [&str; 4] = ["checkouts", "host.json", "instance.pid", "ping.json"];
 
 /// Whether one entry of the old config dir belongs to the checkout being seeded.
 fn inherited(name: &str) -> bool {
@@ -1435,6 +1459,10 @@ pub async fn serve(
         .with_context(|| format!("serving the page on 127.0.0.1:{port}"))?;
     let bound = listener.local_addr()?.port();
     let host = Host::new(token, bound, chrome);
+    // Here because this is the one start both the app and `orchd --host` share,
+    // and a child daemon never comes through it: one ping per install, not one
+    // per checkout.
+    crate::ping::start(usage_ping);
     let router = router(host.clone());
     // The host serves no pty, but it serves the page that opens them.
     let task = crate::serving::spawn("the host", listener, router);

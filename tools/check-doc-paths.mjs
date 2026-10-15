@@ -39,6 +39,7 @@ const ABSENT = new Map([
   ['recent.json', 'a daemon writes it'],
   ['host.json', 'a daemon writes it'],
   ['window.json', 'a daemon writes it'],
+  ['ping.json', 'the host writes it'],
   ['resolve-runs.json', 'gone with the batch flow; named in a trap that measured it'],
   ['stories.json', 'a daemon writes it'],
   ['manual.json', 'gone with the batch flow; named in a trap that measured it'],

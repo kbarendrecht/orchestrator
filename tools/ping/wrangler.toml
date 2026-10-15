@@ -1,0 +1,8 @@
+name = "orchd-ping"
+main = "worker.js"
+compatibility_date = "2026-10-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "orchd-pings"
+database_id = "3d16bb45-e822-4e98-bfcc-d08bbe703d12"

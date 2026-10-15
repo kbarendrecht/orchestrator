@@ -371,6 +371,17 @@ mistake-catcher, not a control — it sees `Bash` calls only.
 [`docs/security.md`](docs/security.md) has the reasoning behind each of those, and
 what each one does not cover.
 
+### The usage ping
+
+Once a day a release build sends one ping, so the number of people running the
+app is a count rather than a guess. It carries four fields: a random install id
+(kept in `ping.json` in the config dir), the version, the OS and the CPU
+architecture. Nothing about your repos, sessions or code, and the receiving
+Worker ([`tools/ping/`](tools/ping/)) does not store your address.
+
+Turn it off with `"usage_ping": false` in `host.json` in the config dir. A debug
+build and anything with `CI` set never ping.
+
 ## Developing
 
 ```
@@ -477,6 +488,7 @@ crates/orchd-serve/   the daemon: the server, and everything it starts.
   lib.rs          start, the router, the pollers, startup recovery
   host.rs         the page, the asset routes, the checkout list, the window commands
   link.rs         orchestrator://open?file=… links, and a second launch handing one over
+  ping.rs         the daily usage ping: install id, version, platform
   hooks.rs        hook receiver and the generated settings file
   ws.rs           event stream + pty attach
   firstrun.rs     judging a folder, reading a repo, writing its config, the recents

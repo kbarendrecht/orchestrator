@@ -1,0 +1,8 @@
+CREATE TABLE IF NOT EXISTS pings (
+  id TEXT NOT NULL,
+  day TEXT NOT NULL,
+  version TEXT NOT NULL,
+  os TEXT NOT NULL,
+  arch TEXT NOT NULL,
+  PRIMARY KEY (id, day)
+);
