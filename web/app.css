@@ -678,12 +678,17 @@ button.ctx-btn:hover{color:var(--text)}
 }
 /* A field, not a row of text: it is the one thing in this rail you type into, so
    it gets the height a text input needs rather than the height of the rows around
-   it. `line-height` rather than more padding, so the focus border the app draws on
-   every text input sits around the field instead of hugging the letters. */
+   it. */
 .arcq{
   flex:1 1 auto;min-width:0;background:none;border:0;padding:0;color:var(--text);
   font-family:var(--mono);font-size:calc(10.5px * var(--fs));line-height:1.8;
 }
+/* **No focus ring, because the field is focused for you.** Opening the archive
+   puts the caret here, so the app's 2px ring drew a bright box every time the box
+   opened, on a field you had not reached for. The rule under the filter line
+   brightens instead, the way `.opfield` says it has focus; the caret does the rest. */
+.arcq:focus,.arcq:focus-visible{outline:none}
+.arcfilter:focus-within{border-bottom-color:var(--faint-solid)}
 .arcq::placeholder{color:var(--ghost)}
 /* The webkit search decorations are a magnifier and a cancel button in Chrome's
    own metrics; the rail draws neither, and the app's engine is WebKitGTK. */
