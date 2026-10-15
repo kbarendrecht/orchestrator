@@ -155,9 +155,8 @@ this file, which churned it from every build; that feature is gone.
   ask, and that box can already carry a diff (`detail`). The pure diff rendering
   the cards used, `review-diff.js`, is in git history from before the removal.
 
-- **Codex: two things are still unmeasured, and `/new` can eat what the daemon
-  types.** Measured on 0.162.1 with `codex` from mise, driven in a real pty with a
-  dummy API key and the daemon's hooks trusted the way `codex::flags` trusts them.
+- **Codex: two things are still unmeasured.** Measured on 0.162.1 with `codex`
+  from mise, driven in a real pty with a dummy API key and the daemon's hooks trusted the way `codex::flags` trusts them.
   A dummy key is enough to measure a failing turn, but not a successful one, and
   that leaves two gaps:
 
@@ -170,22 +169,23 @@ this file, which churned it from every build; that feature is gone.
     shaped like 0.162.1's, so a rollout format change would pass the test and miss
     in use.
 
-  **`/new` opens a picker before the new conversation exists** ("use current Git
-  worktree" or "create new Git worktree"). Whatever arrives in that window answers
-  the picker instead of reaching the prompt, and the daemon types into the pane on
-  its own: the resume nudge, a hand-off, a queued prompt. Nothing in a hook says
-  the picker is up. It does *not* free main: `/new` sends no `SessionEnd` while the
-  process lives, and one `SessionEnd` per conversation (reason `other`) arrives
-  only at `/quit`. So the cost is a lost line, not a lost claim. The fix may be the
-  same as `-C` was for the resume picker: an argument that answers it before it is
-  asked, if Codex has one.
+  **They need a Codex login, and this machine has none** — no `auth.json` in
+  `~/.codex` and no `OPENAI_API_KEY` — so they wait for one. The probe below runs
+  with a real key in the same shape: put it in a scratch `CODEX_HOME` with
+  `codex login --with-api-key`, never in the user's own.
+
+  The `/new` picker that used to be the third gap is closed: `codex::flags` turns
+  Codex's own worktrees off, which removes the picker, and `fake-codex.mjs` refuses
+  a start without that, so the e2e flow fails if it is dropped.
 
   Re-measure after a Codex upgrade before relying on any of this. The probe that
   measured it is a `pty.fork` that has to answer Codex's terminal queries (cursor
   position, OSC 10/11 colours, the kitty `?u` keyboard query and DA), and a fresh
   `CODEX_HOME` needs `[projects."<path>"] trust_level = "trusted"` in its
   `config.toml` or it stops on "Trust this folder?". That probe is the capture
-  harness the next entry describes, in its smallest form.
+  harness the next entry describes, in its smallest form. **It also has to set
+  the pty's size** (`TIOCSWINSZ`, 40×140 is enough): at the default 0×0 Codex
+  draws nothing past its first keyboard query, and a probe reads that as a hang.
 
 - **Record real agent screens, before there is a second agent to record.** orchd
   parses agent pty bytes in three places already — `agent_complaint` reads the ring

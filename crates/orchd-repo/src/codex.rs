@@ -183,6 +183,15 @@ pub fn flags(cwd: &Path, env: &[(String, String)], unset: &[&str]) -> Result<Vec
     )?;
     v.push("-c".to_string());
     v.push(format!("hooks.state={state}"));
+    /* **No `/new` picker.** With Codex's own worktrees on, `/new` stops at "Where
+    should the new conversation run?" before the conversation exists, and a line
+    the daemon typed then — the resume nudge, a hand-off, a queued prompt — was
+    taken as the picker's answer and lost. Measured on 0.162.1 in a real pty: with
+    this off, `/new` opens the conversation at once and the typed line reaches the
+    prompt. The daemon cuts every worktree itself, so Codex's are never wanted.
+    Past the trust question, because the hashes are of the hooks alone. */
+    v.push("-c".to_string());
+    v.push("features.worktrees=false".to_string());
     if let Some(text) = crate::skills::codex_instructions() {
         v.push("-c".to_string());
         v.push(format!("developer_instructions={}", toml_str(&text)));

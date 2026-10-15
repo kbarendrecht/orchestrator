@@ -58,6 +58,14 @@ for (let i = 0; i < raw.length; i++) {
   }
 }
 
+/* Real Codex's `/new` stops at a worktree picker while its own worktrees are on,
+   and a line the daemon types then is taken as the picker's answer. The daemon
+   turns them off on every session it starts (`codex::flags`); `app-server` is the
+   trust question and carries the hooks alone. */
+if (verb !== 'app-server' && config.features?.worktrees !== false) {
+  throw new Error('fake-codex: started without features.worktrees=false; real Codex would eat a typed line at the /new picker')
+}
+
 function setPath(obj, keys, v) {
   let o = obj
   for (const k of keys.slice(0, -1)) o = o[k] ??= {}
