@@ -40,7 +40,7 @@ review-level bodies that are not anchored to a line; skip the empty ones. Plus
 **`$ORCH_MAY_PUSH` is not `yes` → stop, it is a branch you may not force-push.**
 Say whose it is. Reading the threads is welcome on anybody's PR; the Apply step
 below amends commits and pushes `--force-with-lease`, which is not, and there is no
-way to do half of this pass. `fix-pr`, `green` and `review` all stop on the same
+way to do half of this pass. `fix-pr` and `review` both stop on the same
 answer.
 
 It is the daemon's answer, and it asked about **push access** to the head repo —
@@ -209,5 +209,5 @@ Re-request each reviewer whose every thread is addressed, without asking:
 
 Resolving the threads stays an offer; it is the reviewer's button.
 
-CI still red, or the branch behind its base → that is `/orchd:green` in this pane,
-or `/orchd:fix-pr` as a run the daemon drives. Not this pass.
+CI still red, or the branch behind its base → that is `/orchd:fix-pr`, a run the
+daemon drives. Not this pass.

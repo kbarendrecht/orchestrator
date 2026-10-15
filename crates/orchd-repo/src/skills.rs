@@ -35,17 +35,6 @@ use crate::config::Config;
 /// every session's `PATH` already.
 pub const ORCH: &str = include_str!("../../../skills/orch/SKILL.md");
 
-/// Getting a PR green: rebase, fix the easy red, ask about the rest, amend, push,
-/// watch.
-///
-/// Bundled from the monorepo's own `/green` command, which is where it was proven,
-/// and it is the reason `fix-pr` does not need to grow an ask channel: this is the
-/// same job written for a person to invoke and for an agent to be handed. The two
-/// lines that are that repo's convention rather than a rule (its task runner, its
-/// `upstream` remote) are marked as such in the file, per the repo's own portability
-/// rule.
-pub const GREEN: &str = include_str!("../../../skills/green/SKILL.md");
-
 /// Getting a PR green, mechanically: take the base in, fix the red, amend, push,
 /// watch.
 ///
@@ -130,7 +119,6 @@ pub const VAR_LANGUAGE: &str = "ORCH_LANGUAGE";
 /// written out without also being checked.
 pub const VENDORED: &[(&str, &str)] = &[
     ("orch", ORCH),
-    ("green", GREEN),
     ("fix-pr", FIX_PR),
     ("review", REVIEW),
     ("story", STORY),
@@ -244,7 +232,31 @@ fn write_plugin_at(dir: &Path) -> Result<()> {
         std::fs::write(at.join("SKILL.md"), body)
             .with_context(|| format!("writing {}", at.join("SKILL.md").display()))?;
     }
+    prune(&dir.join("skills"));
     Ok(())
+}
+
+/// Remove a skill an earlier build wrote and this one no longer ships.
+///
+/// The directory outlives the build that wrote it, and Claude Code loads every
+/// skill it finds there, so a skill dropped from [`VENDORED`] would otherwise stay
+/// callable in every session forever. `green` was the first. Only the file this
+/// writer puts there is removed, and the directory only once it is empty, so
+/// anything else somebody left in it survives. Best effort: a leftover is a stale
+/// skill, not a broken start.
+fn prune(skills: &Path) {
+    let Ok(entries) = std::fs::read_dir(skills) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if VENDORED.iter().any(|(n, _)| name == *n) {
+            continue;
+        }
+        let at = entry.path();
+        let _ = std::fs::remove_file(at.join("SKILL.md"));
+        let _ = std::fs::remove_dir(&at);
+    }
 }
 
 #[cfg(test)]
@@ -264,6 +276,31 @@ mod tests {
             );
             assert!(head.contains("description:"), "{name} needs a description");
         }
+    }
+
+    /// A skill an earlier build shipped is gone after the next write, and a file
+    /// the writer did not put there is not its to remove.
+    #[test]
+    fn a_skill_no_longer_shipped_is_removed() {
+        let dir = std::env::temp_dir().join(format!("orchd-prune-{}", std::process::id()));
+        let old = dir.join("skills").join("green");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("SKILL.md"), "---\nname: green\n---\n").unwrap();
+        let kept = dir.join("skills").join("mine");
+        std::fs::create_dir_all(&kept).unwrap();
+        std::fs::write(kept.join("notes.txt"), "not the daemon's").unwrap();
+
+        write_plugin_at(&dir).unwrap();
+
+        assert!(!old.exists(), "a dropped skill must not stay callable");
+        assert!(
+            kept.join("notes.txt").exists(),
+            "only SKILL.md is the writer's"
+        );
+        for (name, _) in VENDORED {
+            assert!(dir.join("skills").join(name).join("SKILL.md").exists());
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Codex is told each skill by name, file and description, and a skill

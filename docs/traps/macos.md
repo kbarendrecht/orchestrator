@@ -56,7 +56,7 @@ Three rules: no lease-less force push, no push that writes the base branch (from
 `upstream_ref`, never a list of likely names) or removes branches, and no git that
 changes main or another managed worktree. **Rebase, never `git merge`, is *this*
 repo's convention** for its own branches,
-not a rule the guard or the skills impose: `fix-pr` and `green` read each repo's
+not a rule the guard or the skills impose: `fix-pr` reads each repo's
 own convention and merge the base in where that repo does.
 **The two halves.** `orch guard push` runs them as a `PreToolUse` hook on the
 agent's Bash, and `git::push_with_lease` re-states the base-branch rule because
