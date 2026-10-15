@@ -681,6 +681,22 @@
       </div>
     </section>
 
+    <!-- Its own section, because a heading is sticky inside its section and spaced
+         as the start of one. Not `data-config`: it is the install's, kept in
+         host.json, and it applies the moment it is ticked rather than waiting for
+         Save. -->
+    <section class="settings-sec" data-tab="other">
+      <div class="settings-group">Privacy</div>
+      <label class="settings-field">
+        <span class="settings-k">Send a daily usage ping</span>
+        <input class="settings-check" id="setping" type="checkbox">
+      </label>
+      <p class="settings-help">Once a day, a release build sends a random install id,
+        the version, the OS and the CPU architecture, so the number of people using the
+        app is a count rather than a guess. Nothing about your repos, sessions or code,
+        and your address is not stored.</p>
+    </section>
+
     <!-- `data-config` marks the half that is a *draft* until Save, which is what
          the help above promises. `markDirty` is delegated to these sections rather
          than to the pane: the appearance half above applies the moment you touch it

@@ -9,9 +9,9 @@
 //!
 //! The id is minted here, kept in `ping.json` in the config dir, and means nothing
 //! outside it: it ties one day's ping to the next and to no person. Turning the
-//! ping off is `"usage_ping": false` in `host.json`, which the host hands in as
-//! `allowed` — passed rather than read here, because the host is what calls this
-//! and the module graph is a DAG.
+//! ping off is the checkbox in Settings → Other, which writes `"usage_ping": false`
+//! to `host.json`. The host hands that in as `allowed` — passed rather than read
+//! here, because the host is what calls this and the module graph is a DAG.
 //!
 //! **Three things never ping**, because each would count something other than a
 //! person: a debug build (`cargo run` from a checkout), a test binary, and anything

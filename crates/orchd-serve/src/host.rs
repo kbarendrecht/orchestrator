@@ -898,10 +898,10 @@ pub struct HostFile {
     /// Whether the app sends its daily usage ping. See [`crate::ping`] for what it
     /// sends and why.
     ///
-    /// **On by default, and here so it can be turned off.** Here rather than in
-    /// `config.json` for the same reason as `see_through_window`: it is one answer
-    /// for the install, not one per checkout. Read before every ping, so turning
-    /// it off takes effect without a restart.
+    /// **On by default, and turned off from Settings → Other** (`/api/host/usage-ping`).
+    /// Here rather than in `config.json` for the same reason as `see_through_window`:
+    /// it is one answer for the install, not one per checkout. Read before every
+    /// ping, so turning it off takes effect without a restart.
     #[serde(default = "default_usage_ping")]
     pub usage_ping: bool,
 }
@@ -1066,6 +1066,22 @@ pub fn see_through_window() -> bool {
 /// yet has not turned anything off.
 pub fn usage_ping() -> bool {
     read_host_file().map_or_else(default_usage_ping, |f| f.usage_ping)
+}
+
+/// Turn the daily usage ping on or off.
+///
+/// Read, change one field, write — the shape [`remember_checkouts`] uses, and for
+/// its reason: rebuilding the file from defaults would reset every key the person
+/// set by hand. Blocking file IO.
+///
+/// **An error, not a logged shrug**, unlike `remember_checkouts`: this answers a
+/// checkbox, and a checkbox that stays ticked over a write that failed says the
+/// opposite of what the file holds.
+pub fn set_usage_ping(on: bool) -> anyhow::Result<()> {
+    let mut file = read_host_file().unwrap_or_default();
+    file.usage_ping = on;
+    let text = serde_json::to_string_pretty(&file)? + "\n";
+    orchd::atomic::write(&host_file()?, text.as_bytes())
 }
 
 fn checkout_retention_days() -> u32 {
@@ -1487,6 +1503,10 @@ pub fn router(host: Arc<Host>) -> Router {
         .route("/ws/host", get(host_socket))
         .route("/api/host/open", post(open_link))
         .route("/api/host/recent", get(recent))
+        .route(
+            "/api/host/usage-ping",
+            get(get_usage_ping).post(post_usage_ping),
+        )
         .route("/api/host/pick", post(pick))
         .route("/api/host/validate", post(validate))
         .route("/api/host/detect", post(detect))
@@ -1814,6 +1834,29 @@ async fn recent(State(host): State<Arc<Host>>) -> Json<serde_json::Value> {
         .filter(|r| !open.contains(&r.path))
         .collect();
     Json(json!({ "recent": recent }))
+}
+
+/// Whether the daily usage ping is on, for the checkbox in Settings.
+async fn get_usage_ping() -> Response {
+    match orchd::proc::run_blocking("reading the host file", usage_ping).await {
+        Ok(on) => Json(json!({ "on": on })).into_response(),
+        Err(e) => refusal(&format!("{e:#}")),
+    }
+}
+
+/// The checkbox's answer.
+#[derive(serde::Deserialize)]
+struct UsagePing {
+    on: bool,
+}
+
+/// Turn the daily usage ping on or off, from the checkbox in Settings.
+async fn post_usage_ping(Json(body): Json<UsagePing>) -> Response {
+    match orchd::proc::run_blocking("writing the host file", move || set_usage_ping(body.on)).await
+    {
+        Ok(Ok(())) => Json(json!({ "ok": true, "on": body.on })).into_response(),
+        Ok(Err(e)) | Err(e) => refusal(&format!("{e:#}")),
+    }
 }
 
 /// Raise the native folder dialog, for the checkout the recents do not list.

@@ -379,8 +379,8 @@ app is a count rather than a guess. It carries four fields: a random install id
 architecture. Nothing about your repos, sessions or code, and the receiving
 Worker ([`tools/ping/`](tools/ping/)) does not store your address.
 
-Turn it off with `"usage_ping": false` in `host.json` in the config dir. A debug
-build and anything with `CI` set never ping.
+Turn it off in Settings → Other, which writes `"usage_ping": false` to `host.json`
+in the config dir. A debug build and anything with `CI` set never ping.
 
 ## Developing
 

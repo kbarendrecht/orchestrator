@@ -73,6 +73,30 @@ fn a_missing_host_file_falls_back_to_the_configured_checkout() {
     std::fs::write(&file, r#"{"checkouts":[]}"#).unwrap();
     assert!(!orchd_serve::host::see_through_window());
 
+    /* **The usage ping is the opposite: absent is on**, and turning it off from
+    Settings must stick through the writes that follow. Those writes rebuild the
+    file, so a dropped key would turn the ping back on behind the person who
+    turned it off. */
+    assert!(orchd_serve::host::usage_ping(), "absent must be on");
+    orchd_serve::host::remember_checkouts(std::slice::from_ref(&repo));
+    orchd_serve::host::set_usage_ping(false).unwrap();
+    assert!(
+        !orchd_serve::host::usage_ping(),
+        "the checkbox did not write"
+    );
+    assert_eq!(
+        orchd_serve::host::remembered_checkouts(),
+        vec![repo.clone()],
+        "turning the ping off dropped the checkouts"
+    );
+    orchd_serve::host::remember_checkouts(&[]);
+    assert!(
+        !orchd_serve::host::usage_ping(),
+        "recording the checkouts turned the ping back on"
+    );
+    orchd_serve::host::set_usage_ping(true).unwrap();
+    assert!(orchd_serve::host::usage_ping());
+
     /* **A file that will not parse is moved aside, not read past.** The writer
     starts from `read_host_file().unwrap_or_default()`, so a torn file read as
     "none" was overwritten by the next add or close — the list and every hand-set

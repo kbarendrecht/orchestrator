@@ -1,7 +1,7 @@
 // The settings panel. The zoom control it offers lives in core, because the
 // terminals read the scale too.
 
-import { AGENT_LABEL, ctl, $, WHEEL, ZOOM, borrowFocus, call, callHost, caret, setUiPx, uiPx, UI_PX_MAX, UI_PX_MIN, closeLegend, el, get, MOD_LABEL, onSelection, reason, returnFocus, loadWheel, saveWheel, saveZoom, setWheel, setZoom, snap, uiScale, wheelSpeed } from './core.js';
+import { AGENT_LABEL, ctl, $, WHEEL, ZOOM, borrowFocus, call, callHost, getHost, caret, setUiPx, uiPx, UI_PX_MAX, UI_PX_MIN, closeLegend, el, get, MOD_LABEL, onSelection, reason, returnFocus, loadWheel, saveWheel, saveZoom, setWheel, setZoom, snap, uiScale, wheelSpeed } from './core.js';
 import { currentPreset, detectedFonts, FONTS, fontStack, onThemeChange, PRESETS, resetTheme, SEE_THROUGH, setTheme, SIZE_MAX, SIZE_MIN, theme, validFontName } from './theme.js';
 /* The arithmetic, for reading a typed hex back. A leaf with no imports of its own,
    so the module graph stays the DAG `dependency-cruiser` insists on — and the same
@@ -107,6 +107,39 @@ function openSettings() {
   showDirty();
   // The panel edits the daemon's config, not the snapshot, so read it fresh.
   void loadConfigInto();
+  void loadUsagePing();
+}
+
+/** Read the usage ping's setting into its checkbox.
+ *
+ *  Disabled until the host answers, so a click cannot land on a box showing a
+ *  guess. One that never answers stays disabled, which is the honest state. */
+async function loadUsagePing() {
+  const box = ctl('setping');
+  box.disabled = true;
+  try {
+    box.checked = !!(await getHost('/api/host/usage-ping')).on;
+    box.disabled = false;
+  } catch (e) {
+    $('setnote').textContent = `could not read the usage ping setting: ${reason(e)}`;
+  }
+}
+
+/** Write the checkbox to `host.json`, at once: it is the install's, not part of
+ *  the checkout's draft that Save sends. A write that fails puts the box back, so
+ *  it never shows the opposite of what the file holds. */
+async function saveUsagePing() {
+  const box = ctl('setping');
+  const on = !!box.checked;
+  box.disabled = true;
+  try {
+    await callHost('/api/host/usage-ping', { on });
+  } catch (e) {
+    box.checked = !on;
+    $('setnote').textContent = `could not save the usage ping setting: ${reason(e)}`;
+  } finally {
+    box.disabled = false;
+  }
 }
 
 async function loadConfigInto(force = false) {
@@ -552,7 +585,7 @@ const TABS = {
   tracker: 'This checkout\'s config. A draft until Save.',
   reviews: 'This checkout\'s config. A draft until Save.',
   agent: 'This checkout\'s config. A draft until Save.',
-  other: 'Wheel speed applies at once and is kept in this browser. Processes are this checkout\'s config, a draft until Save, and restart the daemon.',
+  other: 'Wheel speed applies at once and is kept in this browser. The usage ping applies at once, for every checkout. Processes are this checkout\'s config, a draft until Save, and restart the daemon.',
 };
 const TAB_KEY = 'orch.settings.tab';
 
@@ -751,6 +784,7 @@ function setupSettings() {
   $('wsdown').onclick = () => saveWheel(setWheel(stepped(wheelSpeed - WHEEL.step)));
   $('wsup').onclick = () => saveWheel(setWheel(stepped(wheelSpeed + WHEEL.step)));
   $('wsreset').onclick = () => saveWheel(setWheel(WHEEL.def));
+  ctl('setping').onchange = () => void saveUsagePing();
   /* A picked preset lands whole — the three colours and the opacity — because that
      is what a theme is now: a board at 72% is not Paper, so picking Paper has to
      put the slider back or the dropdown would be naming something the window is
