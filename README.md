@@ -178,7 +178,8 @@ architecture. Nothing about your repos, sessions or code, and the receiving
 Worker ([`tools/ping/`](tools/ping/)) does not store your address.
 
 Turn it off in Settings → Other, which writes `"usage_ping": false` to `host.json`
-in the config dir. A debug build and anything with `CI` set never ping.
+in the config dir. A debug build never pings, and nor does anything with `CI`
+set to a true value (`CI=false` or `CI=0` still pings).
 
 ## Troubleshooting
 
