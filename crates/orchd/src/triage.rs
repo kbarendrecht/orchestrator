@@ -1,23 +1,17 @@
-//! The review runs: the overlay's `review` session and the `handle-review` pane.
+//! The review run: `handle-review` in a pane, and the gates a PR's worktree must
+//! pass before anything writes into it.
 //!
 //! Started by [`crate::spawn::spawn_run`], beside `fix-pr`, and shaped the same
-//! way — a `claude` session you can watch and take over, not a `-p` run that
-//! happens out of sight. Its first turn is the vendored skill, typed as
-//! `/orchd:review <pr>` or `/orchd:handle-review <pr>`. A slash
-//! command used to be the wrong shape here because it resolved from the agent's own
-//! command path, which depends on a repo usually not installed — the daemon now
-//! ships the skill itself and pushes `--plugin-dir` on every spawn
-//! ([`crate::launch::session_flags`]), so the path is one it owns. The runs that
-//! still have a multi-line prompt carry it another way: every vendored prompt is
-//! a skill now, and what a template used to interpolate arrives by route or by
-//! environment ([`crate::skills`]).
+//! way — a session you can watch and take over, not a `-p` run that happens out of
+//! sight. Its first turn is the vendored skill, typed as
+//! `/orchd:handle-review <pr>`. The daemon ships the skill itself and pushes
+//! `--plugin-dir` on every spawn ([`crate::launch::session_flags`]), so the path
+//! is one it owns; what a template used to interpolate arrives by environment
+//! ([`crate::skills`]).
 //!
-//! Following `fix-pr`'s lesson ([`crate::fix_pr::settle`]): **the agent's stdout
-//! is not parsed.** The pty stream stays raw for xterm.js, and the run reports by
-//! POSTing a [`crate::proposal::ProposalSet`] to the daemon. So "did it work" is
-//! answered by looking for proposals, not by reading an exit code — an agent can
-//! exit 0 having said nothing useful, and parsing its output would be a second,
-//! worse source of truth.
+//! **There used to be a second review run here**, the overlay's `review` session,
+//! which posted proposals onto cards and carried out what you picked. It is gone:
+//! one review verb, in a terminal, is what the product is.
 
 use anyhow::{bail, Result};
 use std::sync::Arc;
@@ -26,7 +20,7 @@ use crate::model::*;
 use crate::spawn::ensure_pr_worktree;
 use crate::state::AppState;
 
-/// Why a triage run cannot start.
+/// Why a review run cannot start.
 ///
 /// These are the worktree-readiness gates: the review flow writes into this
 /// worktree, and every guarantee downstream — the check ladder, the complete file
@@ -120,35 +114,14 @@ pub async fn tree_gate(app: &Arc<AppState>, head_ref: &str) -> Result<Option<Gat
     gate
 }
 
-/// Start the overlay review session pinned to the PR's head branch.
-///
-/// One session answers the whole PR: it posts proposals into the overlay's cards,
-/// then stays alive, takes the human's decisions over the ask channel and carries
-/// out the change and the post itself. So it needs `ORCH_ASK_TOKEN` in its
-/// environment, the key the `/ask` and `/wait` routes check, and it is marked
-/// [`Pass::REVIEW`] so the rail colours, the guards and the handoff know it.
-///
-/// **It used to have a sibling.** A headless `triage` pass posted the same
-/// proposals and ended there, and a second run carried out what the cards decided.
-/// `RunKind` existed to tell the two apart; with one left, `asks` is always true
-/// and the command is always `REVIEW`.
-pub async fn spawn_review(app: &Arc<AppState>, pr: u64, head_ref: &str) -> Result<SessionId> {
-    may_push(app, pr).await?;
-    let kind = RunKind {
-        command: Pass::REVIEW,
-        asks: true,
-    };
-    spawn_posting_run(app, pr, head_ref, kind).await
-}
-
 /// Refuse a PR whose branch you may not rewrite, before anything is spawned or cut.
 ///
-/// Both review flows amend into the commits that own each change and push
-/// `--force-with-lease`, the same writes `fix-pr` makes, so they ask the same
+/// The review pass amends into the commits that own each change and pushes
+/// `--force-with-lease`, the same writes `fix-pr` makes, so it asks the same
 /// question it does — `Pr::push_refusal` — rather than leaving each skill to
 /// compare the head repo's owner with your login, which refused every org PR. The
-/// skill is then handed the answer (`ORCH_MAY_PUSH`, or `may_push` in
-/// `triage-context`) instead of working it out again.
+/// skill is then handed the answer (`ORCH_MAY_PUSH`) instead of working it out
+/// again.
 async fn may_push(app: &Arc<AppState>, pr: u64) -> Result<()> {
     let inner = app.inner.read().await;
     let Some(p) = inner.pr(pr) else {
@@ -158,68 +131,6 @@ async fn may_push(app: &Arc<AppState>, pr: u64) -> Result<()> {
         Some(why) => bail!("{why}"),
         None => Ok(()),
     }
-}
-
-/// What tells a triage run from a review session. Everything else about the two
-/// spawns is the same, and was written twice until the copies drifted.
-struct RunKind {
-    /// The `Pass` command the session carries, and the prefix of its
-    /// scratch dir under the config dir (`<command>-<pr>`). One field, because it
-    /// was two that were always the same string, in the struct whose whole purpose
-    /// is to stop two copies drifting.
-    command: &'static str,
-    /// Whether the run takes decisions over the ask channel, and so needs
-    /// `ORCH_ASK_TOKEN` in its environment.
-    asks: bool,
-}
-
-async fn spawn_posting_run(
-    app: &Arc<AppState>,
-    pr: u64,
-    head_ref: &str,
-    kind: RunKind,
-) -> Result<SessionId> {
-    // Before `ensure_pr_worktree`, which may move main's branch and its work.
-    if let Some(g) = gate(app, pr, head_ref).await? {
-        anyhow::bail!("{}", g.say());
-    }
-    let workspace = ensure_pr_worktree(app, pr, head_ref).await?;
-
-    /* Both posting runs are skills now, so the first turn is one typed line and
-    `FirstTurn` went with the last rendered prompt: what a template substituted,
-    `/api/pr/:n/triage-context` answers. The command string is the skill's
-    directory name — `skills::a_skill_is_named_after_the_command_that_types_it`
-    is what keeps those two spellings together. */
-    // The post token is minted by `spawn_run`, because both posting runs spawn
-    // there and `posts_proposals` names them; the ask token only when the run has
-    // somebody to ask.
-    let spec = crate::spawn::RunSpec {
-        command: kind.command.to_string(),
-        skill: kind.command.to_string(),
-        args: pr.to_string(),
-        agent: app.agent_for(None).await?,
-        asks: kind.asks,
-        extra_env: Vec::new(),
-    };
-
-    // Cleared *before* the spawn, not after. This is the run's own bookkeeping in
-    // the sense `spawn::spawn_run` describes: a `claude` that dies at once is
-    // reaped first, and the exit watcher's "exited without posting proposals"
-    // warning then reads the *previous* run's proposals, finds them, and stays
-    // silent about exactly the failure it was written for.
-    //
-    // Nothing to undo if the spawn fails. A fresh run supersedes whatever the last
-    // one proposed, and a run that could not start has superseded it just as much:
-    // keeping stale proposals on screen because the new run failed would be the
-    // worse of the two gaps.
-    {
-        let mut inner = app.inner.write().await;
-        inner.proposals.remove(&pr);
-    }
-
-    let id = crate::spawn::spawn_run(app, &workspace, pr, uuid::Uuid::new_v4(), spec).await?;
-    app.notify().await;
-    Ok(id)
 }
 
 /// Hand `/orchd:<command> <pr>` to the live session on `head_ref`'s worktree, if
@@ -298,19 +209,10 @@ pub(crate) async fn hand_to_live_session(
 /// Spawn an interactive session pinned to a PR's head branch, and type a slash
 /// command into it once it is ready.
 ///
-/// The default answer to the rail's review button, again: a `claude` session in the
-/// PR worktree running `/orchd:handle-review <pr>` in the pane, the agent doing the
-/// reading, fixing, pushing and posting itself while you supervise. The daemon does
-/// no irreversible writes here — the agent does, in a shell you can take over.
-///
-/// **"Again" because this had no caller for a while.** The button went to the
-/// triage-into-cards flow, and the docblock went on claiming the pane was the
-/// default while the only path in was a test — with a prompt lookup that could not
-/// have answered anyway. The overlay is the opt-in alternative once more, for the
-/// reason it was written down as the robust path in the first place: the cards are
-/// not good enough to be the only way through a review yet, and a review you can
-/// only finish by learning a new screen is a worse default than one that hands you
-/// a terminal.
+/// The answer to the rail's review button: a session in the PR worktree running
+/// `/orchd:handle-review <pr>` in the pane, the agent doing the reading, fixing,
+/// pushing and posting itself while you supervise. The daemon does no
+/// irreversible writes here — the agent does, in a shell you can take over.
 pub async fn spawn_command_session(
     app: &Arc<AppState>,
     pr: u64,
@@ -331,8 +233,7 @@ pub async fn spawn_command_session(
             return Ok(id);
         }
     }
-    /* **The same gates as the other review verb**, because the pass writes into
-    that tree: a rebase stopped part-way cannot take a commit, a running `fix-pr`
+    /* **The same gates as `fix-pr`**, because the pass writes into that tree: a rebase stopped part-way cannot take a commit, a running `fix-pr`
     is rewriting the same history, and a dirty tree means the first thing this
     agent amends is work somebody else left there.
 
@@ -418,13 +319,9 @@ mod tests {
             ..crate::testutil::test_config()
         };
         let dir = std::env::temp_dir();
-        let run_env = |post: Option<&str>, ask: Option<&str>| {
-            crate::spawn::run_env(&cfg, &dir, id, ask, post, &[])
-        };
-        let (env, _) = run_env(Some("post-tok"), Some("ask-tok"));
+        let (env, _) = crate::spawn::run_env(&cfg, &dir, id, Some("ask-tok"), &[]);
         let get = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
 
-        assert_eq!(get("ORCH_POST_TOKEN").as_deref(), Some("post-tok"));
         assert_eq!(get("ORCH_ASK_TOKEN").as_deref(), Some("ask-tok"));
         assert_eq!(
             get("ORCH_SESSION_ID").as_deref(),
@@ -432,19 +329,12 @@ mod tests {
         );
 
         // The regression this exists for. `ORCHD_TOKEN` here means the run holds
-        // the whole API again — teardown, spawn, file writes — to do a job that is
-        // one POST, while reading text a stranger wrote on a pull request.
+        // the whole API again — teardown, spawn, file writes — while reading text a
+        // stranger wrote on a pull request.
         assert!(
             get("ORCHD_TOKEN").is_none(),
             "the app token must never reach a run that reads third-party comments"
         );
-        // And the name the run actually curls with; a rename here would fail only
-        // at the POST, in a run that had already done its work.
-        assert!(crate::skills::REVIEW.contains("$ORCH_POST_TOKEN"));
-
-        // And a run that posts nothing is handed no post token at all.
-        let (fix, _) = run_env(None, None);
-        assert!(!fix.iter().any(|(n, _)| n == "ORCH_POST_TOKEN"));
     }
 
     #[test]
@@ -475,7 +365,7 @@ mod tests {
     /// Teardown writes a recovery record naming `pr-<n>`, and the old check refused
     /// on exactly that — for good, since "rename" is impossible for a name derived
     /// from the PR number, leaving deleting the conversation as the only way out.
-    /// `fix-pr` and `triage` never had the check, so one PR answered two ways.
+    /// `fix-pr` never had the check, so one PR answered two ways.
     ///
     /// Asserted as "not *this* refusal" rather than success: reaching a real spawn
     /// would need a repo, a branch and `claude`. The failure here is the missing
@@ -531,23 +421,17 @@ mod tests {
     }
 
     /// A branch you may not push to is refused before any session is asked or any
-    /// tree is cut, by both review flows, and by name — the question `fix-pr`
-    /// asks, not the owner-is-you rule the skills each kept.
+    /// tree is cut, and by name — the question `fix-pr` asks, not the owner-is-you
+    /// rule the skills each kept.
     #[tokio::test]
     async fn a_review_of_a_branch_you_cannot_push_to_is_refused_first() {
         let (app, dir, _) = with_live_session("handle-nopush", None).await;
         pushable(&app, 4, false).await;
-        for err in [
-            spawn_command_session(&app, 4, "feature/x", Pass::HANDLE_REVIEW)
-                .await
-                .expect_err("not yours to push to"),
-            spawn_review(&app, 4, "feature/x")
-                .await
-                .expect_err("not yours to push to"),
-        ] {
-            let err = format!("{err:#}");
-            assert!(err.contains("acme/repo, which you cannot push to"), "{err}");
-        }
+        let err = spawn_command_session(&app, 4, "feature/x", Pass::HANDLE_REVIEW)
+            .await
+            .expect_err("not yours to push to");
+        let err = format!("{err:#}");
+        assert!(err.contains("acme/repo, which you cannot push to"), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -580,10 +464,9 @@ mod tests {
             .await;
         pushable(&app, 4, true).await;
 
-        let review = spawn_review(&app, 4, "feature/x").await;
         let pane = spawn_command_session(&app, 4, "feature/x", Pass::HANDLE_REVIEW).await;
-        let fix = crate::fix_pr::start(&app, 4, crate::fix_pr::Asked::ByPress).await;
-        for (what, out) in [("review", review), ("pane", pane), ("fix-pr", fix)] {
+        let fix = crate::fix_pr::start(&app, 4).await;
+        for (what, out) in [("pane", pane), ("fix-pr", fix)] {
             let err = format!("{:#}", out.expect_err(what));
             assert!(err.contains("uncommitted"), "{what}: {err}");
         }

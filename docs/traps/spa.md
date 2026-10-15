@@ -116,9 +116,9 @@ Two details that are load-bearing. It is a plain `fn` returning a boxed future
 rather than a channel, so the call keeps its place in the exit sequence; and it
 is called **after** `release_main`, because `fix_pr::start` refuses while a live
 session holds the branch. An unobserved `AppState` — every unit test — drops the
-news, which is why the pair of tests is split: `spawn` asserts the exit is
-published with the right pass and flag, and `orchd-serve` asserts a refused
-hand-off takes `fix_pr_on_exit` back.
+news, which is why `spawn` asserts only that the exit is published with the
+right pass (`a_runs_exit_is_published`). The review's hand-off to `fix-pr`, the
+other half this used to test, went with the overlay review.
 The vocabulary moved with it: the six `Pass` commands are associated constants
 on `model::Pass` (`FIX_PR`, `REVIEW`, `TRIAGE`, `RESOLVE_RUN`, `HANDLE_REVIEW`,
 `STORY`) with `posts_proposals` and `is_triage_of` beside them, because "which

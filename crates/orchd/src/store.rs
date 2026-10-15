@@ -369,10 +369,6 @@ fn automation_from(raw: RawAutomation) -> crate::model::AutomationStore {
     store
 }
 
-fn stories_path() -> Result<PathBuf> {
-    Ok(Config::config_dir()?.join("stories.json"))
-}
-
 fn last_agent_path() -> Result<PathBuf> {
     Ok(Config::config_dir()?.join("agent.json"))
 }
@@ -419,21 +415,6 @@ pub fn save_spare(store: &SpareStore) -> Result<()> {
 /// left standing as an ordinary workspace.
 pub fn load_spare() -> SpareStore {
     load_json(spare_path())
-}
-
-/// Stories filed for review threads, so a retry does not file a second one.
-///
-/// A **cache**, not a ledger — see [`crate::story`]. The filer searches the
-/// tracker for the thread's permalink before creating anything, so this only
-/// saves an agent run. Which is why, unlike the two stores above, nothing here
-/// tries to repair or reconcile it on load: the worst an empty file costs is one
-/// redundant search.
-pub fn save_stories(cache: &crate::model::Cache) -> Result<()> {
-    save_json(&stories_path()?, cache)
-}
-
-pub fn load_stories() -> crate::model::Cache {
-    load_json(stories_path())
 }
 
 pub fn save(records: &[SessionRecord]) -> Result<()> {

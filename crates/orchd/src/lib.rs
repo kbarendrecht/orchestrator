@@ -13,7 +13,7 @@
 // a rename — and `cargo` now refuses an import from `orchd-base` back up here,
 // which is the whole point of the move.
 pub use orchd_base::{
-    atomic, child, edit, git, guard, headroom, install, proc, proposal, pty, secret, timing, window,
+    atomic, child, edit, git, guard, headroom, install, proc, pty, secret, timing, window,
 };
 
 // The checkout layer, at the paths it always had, for the same reason: moving it
@@ -32,7 +32,6 @@ pub mod health;
 pub mod managed;
 pub mod model;
 pub mod names;
-pub mod post;
 pub mod preview;
 pub mod relocate;
 pub mod restart;
@@ -41,7 +40,6 @@ pub mod spare;
 pub mod spawn;
 pub mod state;
 pub mod store;
-pub mod story;
 // Behind a feature, not `#[cfg(test)]`: `orchd-serve`'s tests build this crate as
 // an ordinary dependency and cannot see a `cfg(test)` module.
 #[cfg(any(test, feature = "test-util"))]

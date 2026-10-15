@@ -262,7 +262,7 @@ try {
       cased: safeHref('JavaScript:alert(1)'),
       data: safeHref('data:text/html,<script>1</script>'),
       empty: safeHref(''),
-      relative: safeHref('/review-preview'),
+      relative: safeHref('/app.css'),
     }
   })
   check(hrefs.https.startsWith('https://github.com/'), 'an https URL is left alone')
@@ -885,48 +885,6 @@ try {
      xterm focuses rather than on a stand-in. */
   check(await swallows('#setlang') === false, 'Backspace still reaches a text field')
   check(await swallows('.xterm-helper-textarea') === false, 'Backspace still reaches the pty')
-
-  /* --- the two bottom-docked panels do not sit on each other ------------------ */
-
-  /* **#21 was a screenshot of the review bar drawn across the question's answer
-     field.** Both dock at `bottom: var(--oq-clear)` — on purpose, so each clears
-     the agent's input line — and the question grows upward from that edge, so
-     whenever both are up the bar landed on it. `--oq-h` is the question's measured
-     height now, written by a `ResizeObserver`, and the bar rises by it.
-
-     Driven by unhiding the two elements rather than by getting a real session to
-     ask something mid-review: the rule under test is layout, and a geometry
-     assertion does not care which state machine produced the two boxes. What it
-     does care about is that the observer really fires, which a hand-set variable
-     would have faked.
-
-     Asked as "the rectangles do not intersect", not "the bar is below": the bar
-     rises *above* the question, because the two have different containing blocks
-     and the offset carries it clear. Which side it ends up on is layout's business;
-     not covering the answer field is the contract. Touching is allowed — demanding
-     a gap would be a second, invented rule. */
-  const overlap = await page.evaluate(async () => {
-    const oq = document.getElementById('oq')
-    const bar = document.getElementById('rvbar')
-    if (!oq || !bar) return null
-    oq.innerHTML = '<div class="oqh">needs your call</div><div class="oqq">'
-      + 'a question long enough to be more than one line, so the bar has something to clear'
-      + '</div>'
-    oq.hidden = false
-    bar.textContent = 'review · applying'
-    bar.hidden = false
-    // Two frames: one for the boxes to lay out, one for the observer's write to
-    // land and the bar to be positioned from it.
-    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))
-    const a = oq.getBoundingClientRect()
-    const b = bar.getBoundingClientRect()
-    const clear = b.bottom <= a.top || b.top >= a.bottom
-
-    oq.hidden = true; oq.replaceChildren(); bar.hidden = true; bar.textContent = ''
-    return { clear, oq: `${Math.round(a.top)}-${Math.round(a.bottom)}`, bar: `${Math.round(b.top)}-${Math.round(b.bottom)}` }
-  })
-  check(overlap?.clear === true,
-    `the review bar clears the open question (question ${overlap?.oq}, bar ${overlap?.bar})`)
 
   /* --- a binding is its exact modifiers ---------------------------------------- */
 

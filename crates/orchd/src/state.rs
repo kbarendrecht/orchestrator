@@ -56,10 +56,6 @@ pub struct RunExit {
     pub session: SessionId,
     /// What the session was. The command decides who is owed the news.
     pub pass: Pass,
-    /// The review asked, on its way out, for the CI it may not touch to be picked
-    /// up by a fix run. Only a review that said so: every other way one ends leaves
-    /// this false.
-    pub hand_off: bool,
 }
 
 /* **Who settles a finished run, told rather than known.**
@@ -300,11 +296,6 @@ pub struct Inner {
     /// that lags by one tick, or any poll between the disappearance and the merge,
     /// spends the only attempt.
     pub pending_outcome: Vec<(u64, String)>,
-    /// What the last triage run proposed, per PR. A run costs a full agent pass,
-    /// so this outlives the session that produced it — you can close the overlay
-    /// and come back. Its absence after a run exits is how a failed run is
-    /// detected: the agent reports by POSTing, not by its exit code.
-    pub proposals: HashMap<u64, crate::proposal::ProposalSet>,
     /// PRs whose head is **not** the local branch of the same name, with why —
     /// `git::HeadCheck::refusal` as the last PR poll found it, and kept in step by
     /// every fresh read ([`AppState::pr_head`]).
@@ -313,23 +304,6 @@ pub struct Inner {
     /// a tree and a session by head ref, and a same-named branch of somebody
     /// else's is neither. Every flow that acts on a PR asks fresh instead.
     pub foreign_heads: HashMap<u64, String>,
-    /// The credential each posting run may post its proposals with, by session,
-    /// with the PR it is good for.
-    ///
-    /// Minted per run and good for **one route on one PR**. It replaced handing
-    /// those runs `app.token`, which was the whole API — and they are the runs
-    /// whose input is third-party review comments, so a prompt-injected one held
-    /// the credential for `teardown`, `session` and `file` to do a job that needs
-    /// a single POST. `model::Session::ask_token` states that rule; this is the
-    /// same rule for the one route that is not per-session.
-    ///
-    /// Deliberately **not** persisted: a run does not survive a restart, so a
-    /// token that outlived one could only ever be a key nobody is holding.
-    pub proposal_tokens: HashMap<SessionId, (u64, String)>,
-    /// Stories already filed for a review thread, so a retry reuses one rather
-    /// than filing a second. A cache, not a ledger — `crate::story` explains why
-    /// losing it costs latency and not correctness.
-    pub stories: Durable<crate::model::Cache>,
     /// Your own GitHub login, from the PR poll's `viewer { login }`. The vendored
     /// prompts take it as `{{LOGIN}}`.
     pub viewer: Option<String>,
@@ -651,7 +625,7 @@ impl Inner {
     ///
     /// Reads still go straight at the fields: they are many, harmless, and requiring
     /// an accessor for each would be noise. It is *mutation* that has to carry the
-    /// write with it. `with_stories` below is the same shape.
+    /// write with it.
     /// [`crate::model::AutomationStore::take_back`], carrying its own write.
     pub fn take_back_fix_run(
         &mut self,
@@ -696,21 +670,6 @@ impl Inner {
         if changed {
             if let Err(e) = crate::store::save_spare(&self.spare) {
                 tracing::warn!("could not save spare.json ({why}): {e:#}");
-            }
-        }
-        changed
-    }
-
-    pub fn with_stories(
-        &mut self,
-        why: &str,
-        f: impl FnOnce(&mut crate::model::Cache) -> bool,
-    ) -> bool {
-        let changed = f(&mut self.stories.0);
-        if changed {
-            // A cache that failed to persist costs a search next time, nothing more.
-            if let Err(e) = crate::store::save_stories(&self.stories) {
-                tracing::warn!("could not save stories.json ({why}): {e:#}");
             }
         }
         changed
@@ -959,10 +918,7 @@ impl AppState {
                 prs: Vec::new(),
                 prs_ended: Vec::new(),
                 pending_outcome: Vec::new(),
-                proposals: HashMap::new(),
-                proposal_tokens: HashMap::new(),
                 foreign_heads: HashMap::new(),
-                stories: Default::default(),
                 spare: Default::default(),
                 viewer: None,
                 pr_error: None,
@@ -1957,38 +1913,6 @@ impl AppState {
         }
     }
 
-    /// Mint the proposals credential for `pr`, and record it as the one that route
-    /// will accept.
-    ///
-    /// **Called on every spawn of a posting run, resumes included**, which is the
-    /// whole reason it is a function. A resume rebuilds the environment from scratch
-    /// (`spawn::spawn_session`), so a review session that came back from a restart or
-    /// from the rail's resume button had a fresh ask token and *no* post token: it
-    /// could still ask you questions and could no longer post its proposals, which
-    /// reached the agent as `ORCH_POST_TOKEN is absent from this environment` and
-    /// reached the user as a review that had read everything and could not hand it
-    /// over.
-    ///
-    /// Re-minted rather than persisted, exactly like [`crate::model::Session::ask_token`]:
-    /// the value is only ever compared against this record, so a new pair costs
-    /// nothing, and the record is dropped with the process that minted it.
-    /// **Keyed by session, with the PR it opens beside it.** It was keyed by PR,
-    /// on the argument that two holders of one PR's token could not coexist
-    /// because a worktree admits one live session — and `orch new` breaks that on
-    /// purpose, putting a helper in the caller's live tree. A second mint for the
-    /// same PR then replaced the first and silently locked the earlier run out of
-    /// the one route it exists to call. By session, each run holds its own, and
-    /// what the token opens is unchanged: that PR's proposals and nothing else.
-    pub async fn mint_post_token(&self, session: SessionId, pr: u64) -> String {
-        let token = crate::secret::random_token();
-        self.inner
-            .write()
-            .await
-            .proposal_tokens
-            .insert(session, (pr, token.clone()));
-        token
-    }
-
     pub async fn workspace_path(&self, id: &str) -> Option<PathBuf> {
         self.inner
             .read()
@@ -2668,15 +2592,6 @@ pub struct SessionView {
     /// Whether this session still owes you the rest of a turn. The nudge is only
     /// true of these; every other resumed session is sitting at its prompt done.
     pub interrupted: bool,
-    /// A review that ended by handing its PR's checks to a `fix-pr` run.
-    ///
-    /// Here rather than left for the overlay to infer, because the two facts it
-    /// would have to infer it from arrive apart: the session is marked `Exited`
-    /// straight away and the run's record only exists once `ensure_pr_worktree` and
-    /// a spawn have finished. In that gap the overlay would put its finished-review
-    /// report up and then take it away again a second later, which is a worse thing
-    /// to show than either state.
-    pub handed_off: bool,
     /// Waiting to be respawned on the `claude` installed now — see
     /// [`Session::restart_queued`]. The row says so, because a session that
     /// restarts itself the moment you finish a turn is a surprise otherwise.
@@ -2732,7 +2647,6 @@ impl SessionView {
             interaction: s.interaction.clone(),
             forked_from: s.forked_from,
             interrupted: s.interrupted,
-            handed_off: s.fix_pr_on_exit,
             restart_queued: s.restart_queued,
             agent_stale: s.agent_stale,
             agent: s.agent,

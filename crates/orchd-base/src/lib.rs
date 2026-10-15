@@ -22,7 +22,6 @@ pub mod headroom;
 pub mod install;
 pub mod model;
 pub mod proc;
-pub mod proposal;
 pub mod pty;
 pub mod secret;
 pub mod timing;

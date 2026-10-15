@@ -449,22 +449,6 @@ export async function sandbox({
      *  environment — see `recordToken` in `fake-claude.mjs`. */
     askToken: (id) => fs.readFileSync(path.join(root, 'ask-tokens', id), 'utf8').trim(),
 
-    /** The same, for the token a posting run hands its proposals over with. A
-     *  different credential on purpose — it is keyed on the PR, not the session —
-     *  so a flow standing in for the agent needs both. */
-    postToken: (id) => fs.readFileSync(path.join(root, 'post-tokens', id), 'utf8').trim(),
-
-    /** Every `gh` the daemon ran, in order: `{ argv, body }` per call.
-     *
-     *  This is where a review's outward acts are asserted. Empty until something
-     *  writes, and absent as a file until then, which reads as no calls rather
-     *  than as an error. */
-    ghCalls: () => {
-      const p = path.join(root, 'gh.jsonl')
-      if (!fs.existsSync(p)) return []
-      return fs.readFileSync(p, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l))
-    },
-
     /** What the next GitHub poll sees. See `fake-curl.mjs` for the fields. */
     setPrs: (prs, viewer, extra = {}) =>
       fs.writeFileSync(

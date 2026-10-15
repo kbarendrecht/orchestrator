@@ -30,7 +30,7 @@ and `--no-verify` is still the way past a mid-refactor commit.
 **`check.yml` runs them too now, and the hook is no longer the only thing that
 does.** It was: no workflow ran `tools/e2e/run.mjs` at all, so a fresh clone, a
 `--no-verify` habit or anybody who never said `git config core.hooksPath
-.githooks` skipped all 47 flows, and the class of fault they exist for reached
+.githooks` skipped every flow, and the class of fault they exist for reached
 nobody. The bar this entry set was to measure the flake rate first, because the
 flows had flaked twice and a flaky gate is worse than no gate: **seven
 consecutive clean runs, 168 flow executions**, and both known flakes have a fix
@@ -144,10 +144,7 @@ And `el()` is generic on its tag (`@template {keyof HTMLElementTagNameMap}`)
 rather than returning `HTMLElement`, which is what keeps `el('input').value`
 checked instead of sending every form control through `ctl`.
 The types come from Rust wherever there is a struct to take them from, so the
-diff pane and the review overlay are checked against the daemon rather than a
-hand-written guess. `/api/pr/:n/review` builds a `json!` literal with no struct
-behind it, and that is the one shape `review.js` still describes by hand; it
-says so where it does.
+diff pane is checked against the daemon rather than a hand-written guess.
 
 ## `catch (e)` gives you `unknown`, and `core.reason(e)` is the one answer.
 46 catch blocks all said `e.message`, which is `undefined` for a thrown string,

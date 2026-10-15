@@ -148,6 +148,10 @@ ORCHD_LIVE_REPO=<your-login>/orchd-fixture ORCHD_LIVE_PR=<n> \
 It posts a real reply and reaction to the PR's first thread, so **rebuild the
 fixture after running it** to restore clean awaiting-you threads.
 
+Both that test and `post.rs` went with the overlay review: the daemon no longer
+posts to GitHub at all, and the review skill posts through the agent's own `gh`.
+The measurement stands for anyone who brings a daemon-side write back.
+
 Teardown and its archive are **done** — the first thing driven against the
 fixture. Creating a worktree, killing its session and tearing it down proved the
 archive auto-run correct and, in the same pass, turned up a bug the compile

@@ -163,11 +163,6 @@ function render() {
   Drawer.renderDrawer();
   Diff.renderFiles();
   Queue.render();
-  // The review overlay reacts to its session's ask on this same tick — a
-  // decision ask means the read is done, a post ask means the change is. It reads
-  // the ask from the snapshot, so no polling and no second source of truth.
-  Review.tick();
-  Review.bar();
   renderInteraction();
   renderUpdate();
   renderAgentUpdate();
@@ -178,13 +173,6 @@ function render() {
   stackBars();
   renderLegalNotice();
 }
-
-/** The one option value the review overlay owns.
- *
- *  An ask carrying it is a checkpoint in the review flow, and the cards answer
- *  it. An ask that does not is the agent asking something of its own, and every
- *  rule below turns on that difference. */
-const DECISIONS = 'decisions';
 
 const askDrawn = { sig: null, name: 'ask' };
 
@@ -228,31 +216,6 @@ function askShowing() {
   return !host.hidden && !host.classList.contains('min');
 }
 
-/* **Two panels dock at the same place, and one of them has to move.**
- *
- * `.oq` and `.rvbar` both sit at `bottom: var(--oq-clear)` — deliberately, so the
- * review bar clears the agent's input line exactly as the question does. What that
- * overlooked is both being up at once: the question grows *upward* from that edge,
- * so the bar landed across its lower half, over the answer field and the buttons
- * (#21). Same anchor, same `z-index`, and nothing saying which is on top.
- *
- * So the bar is offset by however tall the question currently is. Measured rather
- * than guessed, because the box has no fixed height: it holds the agent's own
- * words, it can carry a diff, and folding it (`.oq.min`) makes it one line. A
- * `ResizeObserver` is what keeps the offset true across all three without
- * `renderInteraction` having to remember to publish it.
- *
- * `offsetHeight` rather than the entry's `contentRect`: the box has padding and a
- * border, and the bar has to clear the whole thing. It is also 0 while `[hidden]`
- * is `display:none`, which is exactly the answer wanted then. */
-new ResizeObserver((entries) => {
-  const box = /** @type {HTMLElement} */ (entries[0]?.target);
-  const h = box ? box.offsetHeight : 0;
-  // The gap belongs to the offset rather than to a margin: at 0 the bar has to sit
-  // where it always did, and a margin would raise it by 6px with nothing above it.
-  document.documentElement.style.setProperty('--oq-h', h ? `${Math.round(h) + 6}px` : '0px');
-}).observe($('oq'));
-
 /** The question the selected session is blocked on.
  *
  *  Rendered from the snapshot rather than held locally, so it survives a reload
@@ -267,38 +230,15 @@ function renderInteraction() {
   const host = $('oq');
   const s = currentSession();
   const q = s && s.interaction && !s.interaction.answer ? s.interaction : null;
-  // The PR a review pass is answering, or null for every other session. Its
-  // checkpoints are the overlay's cards, so this box behaves differently below.
-  // Both commands, because the triage pass reaches the same cards.
-  const rvPr = q && s?.pass
-    && (s.pass.command === 'review' || s.pass.command === 'triage') ? s.pass.pr : null;
-  const mine = !!q && q.options.some((o) => o.value === DECISIONS);
   /* **Rebuilt only when it would come out different**, like every other pane.
      This one had no guard, and the box is up precisely while an agent is taking
      turns: ~7 snapshots a second, each one replacing the header and the option
      buttons under the pointer, so `:hover` strobed and a click split across two
      rebuilds was never delivered. It also threw away what you had typed into the
-     free-text answer on every push, which is the same fault with a worse cost.
-     The overlay's claim is in the signature because a box hidden while the cards
-     own the ask has to come back when they let go of it. */
-  if (unchanged(askDrawn, [s && s.id, q, rvPr, mine, Review.state.session, askFolded, askFree])) return;
+     free-text answer on every push, which is the same fault with a worse cost. */
+  if (unchanged(askDrawn, [s && s.id, q, askFolded, askFree])) return;
   if (!q || !s) { host.hidden = true; host.replaceChildren(); return; }
 
-  /* **Only a checkpoint belongs to the overlay.** This used to be true of every
-     ask a review session made, and that is what stranded one: the session hit a
-     problem, asked about it in its own words, and this box refused to render the
-     answer while the cards had no idea the question existed. It could be answered
-     from neither place, and the session sat on "needs your call" for good.
-     Anything the overlay does not own is answered right here, like any other
-     session's question. */
-  /* **Whether the overlay is open or not.** It used to be `&& Review.state.open`,
-     which was right while the flow ended by opening the overlay for you: closed,
-     the box was the only way in. The bar is that now, and it says the same thing
-     one line lower ("triage done · 7 threads need your call"), so the pair read as
-     two questions where there is one. The cards are still a chord away. */
-  if (rvPr !== null && mine && Review.state.session === s.id) {
-    host.hidden = true; host.replaceChildren(); return;
-  }
   const folded = askFolded === q.id;
 
   host.replaceChildren();
@@ -330,24 +270,7 @@ function renderInteraction() {
   if (q.detail) host.appendChild(detailEl(q.detail));
 
   const opts = el('div', 'oqopts');
-  // The way back into the cards, first because it is the answer to the question.
-  // Only for a checkpoint: on any other ask this button pointed at a screen that
-  // could not answer it.
-  if (rvPr !== null && mine) {
-    const back = el('button', 'oqopt');
-    back.appendChild(el('div', 'ol', 'back to the review'));
-    back.appendChild(el('div', 'od', 'the cards are where this is answered'));
-    back.onclick = () => Review.open(rvPr);
-    opts.appendChild(back);
-  }
   for (const o of q.options) {
-    /* The overlay's own payload — the decision set, the replies as edited —
-       carried in a free-text option. Answering it here would send the agent prose
-       where it parses JSON, so it is dropped by *value*. It used to be dropped for
-       being free-text at all, which took every ad-hoc question's only answer with
-       it: the prompt's own template gives an ask one free option, so a session
-       asking anything else offered nothing to press. */
-    if (rvPr !== null && o.value === DECISIONS) continue;
     const b = el('button', 'oqopt' + (o.free ? ' esc' : ''));
     b.appendChild(el('div', 'ol', o.label));
     if (o.sub) b.appendChild(el('div', 'od', o.sub));
@@ -912,11 +835,6 @@ async function goToLine() {
 }
 
 // ---------------------------------------------------------------------------
-// Review overlay
-// ---------------------------------------------------------------------------
-import * as Review from './js/review.js';
-
-// ---------------------------------------------------------------------------
 // Review queue (§6b)
 // ---------------------------------------------------------------------------
 
@@ -938,20 +856,6 @@ onSelection((id, auto) => {
   // Picking a session is going back to work: the legend was an aside, and leaving
   // it up over the pane you just chose is the app arguing with you.
   closeLegend();
-  // Same rule for the review overlay, which covers the centre column: picking a
-  // session in the rail did change the selection, it just changed it behind an
-  // overlay, so the rail looked broken. Its own session is the exception, because
-  // the overlay *is* that session's view and it selects it when it spawns. So is
-  // selecting nothing, which is what the snapshot does when a session ends: the
-  // review session ending is when the overlay has its report to show, and the
-  // snapshot then lands you on another session on its own.
-  if (id && !auto && Review.state.open && id !== Review.state.session) Review.close();
-  /* **Arriving at a review's session does not open the overlay.** It used to,
-     because the overlay was that session's only view and landing on the pane left
-     you with an ask box over it and no way back to the cards. The bar is that way
-     back now: it names the phase, it carries `open · MOD⇧R`, and it is on screen
-     exactly when the overlay is not. Reopening on arrival meant every glance at
-     another session cost a full screen on the way back. */
   const s = currentSession();
   // A session created a moment ago is not in the snapshot yet. Blanking the
   // terminal here would strand it: the next snapshot sees `selected` already
@@ -1728,36 +1632,13 @@ function keymap(/** @type {KeyboardEvent} */ e) {
       return;
     }
   }
-  /* The overlay wants bare Enter, j/k and digits, and this handler is registered
-     with capture:true — it runs before any element listener wherever focus is.
-     So the focus guard is not optional here the way it was for Escape/Ctrl+←. */
-  if (Review.state.open) {
-    const typing = !!/** @type {HTMLElement} */ (e.target).closest?.('textarea, input, [contenteditable="true"]');
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      // Blur rather than close, or Escape out of a half-typed reply discards it.
-      if (typing) /** @type {HTMLElement} */ (e.target).blur();
-      else Review.close();
-      return;
-    }
-    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-      e.preventDefault();
-      Review.send();
-      return;
-    }
-    // Bare only: a modified key is the app's (the Ctrl layer), never a card's.
-    if (!typing && !e.altKey && !e.ctrlKey && !e.metaKey && Review.key(e)) {
-      e.preventDefault();
-      return;
-    }
-  }
   /* Below the overlays and above the terminal, which is where the box itself
      sits. It folds rather than closes: `Esc` dismisses the topmost thing, and the
      topmost thing here is a panel over the pty, not the question in it. */
-  if (e.key === 'Escape' && askShowing() && !Review.state.open && !Diff.state.open) {
+  if (e.key === 'Escape' && askShowing() && !Diff.state.open) {
     e.preventDefault();
-    // The same rule the review overlay follows: blur first, because folding out
-    // of a half-written free-text answer would discard it.
+    // Blur first, because folding out of a half-written free-text answer would
+    // discard it.
     const writing = /** @type {HTMLElement} */ (e.target).closest?.('.oq textarea');
     if (writing) /** @type {HTMLElement} */ (e.target).blur();
     else foldOpenAsk();
@@ -1853,16 +1734,6 @@ function keymap(/** @type {KeyboardEvent} */ e) {
     if (e.key === '`' || (e.shiftKey && k === 't')) {
       e.preventDefault(); void newShell(); return;
     }
-    // Back to a review from anywhere. Shift, like the rest of this layer, and `r`
-    // was free; a browser tab spends it on a hard reload, the same trade `Ctrl+N`
-    // and `Ctrl+Shift+N` already make for the webview this is built for.
-    if (e.shiftKey && k === 'r') {
-      if (!Review.state.session) return;   // nothing to go back to; let the pty have it
-      e.preventDefault();
-      if (Review.state.open) return toast('the review is already open');
-      void Review.open(Review.state.pr);
-      return;
-    }
     /* Find in files. Shift rather than plain, by the rule at the top of this
        handler: a plain `Ctrl+F` is readline's forward-char and the pty's to keep.
        The filename half of the same feature is Shift-Shift (see `doubleShift`),
@@ -1875,7 +1746,6 @@ function keymap(/** @type {KeyboardEvent} */ e) {
     // Shift, not plain: Ctrl+D is EOF and still has to exit a shell.
     if (e.shiftKey && k === 'd') {
       e.preventDefault();
-      if (Review.state.open) return toast('close the review first');
       void (Diff.state.open ? Diff.close() : Diff.open());
       return;
     }

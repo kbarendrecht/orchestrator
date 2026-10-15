@@ -16,9 +16,9 @@ back to `config.json`; changes take effect on restart.
 | `reviews_rules` | *(empty)* | what `custom` lists and how it ranks. See below. |
 | `reviews_command` | *(empty — the built-in queue)* | argv printing the review queue as JSON. See below. Used when `reviews_source` is `command`. |
 | `main_processes` | *(empty)* | long-running processes shown in the drawer. See below. |
-| `tracker` | `none` | where an out-of-scope review point can be filed as a story. Three fields — `mcp_server`, `host` and an optional `token_env` — so pointing it at another tracker is a config edit rather than a release. Its token is **not** a config key — set `ORCHD_TRACKER_TOKEN` in the daemon's environment, or let `env_source` read the checkout's own. It also needs the repo to declare a matching **MCP server** — see below. |
+| `tracker` | `none` | the tracker's MCP server, which every session the daemon spawns is allowed, so `handle-review` can file a story for a point that is fair but out of scope. Its token is **not** a config key — set `ORCHD_TRACKER_TOKEN` in the daemon's environment, or let `env_source` read the checkout's own. It also needs the repo to declare a matching **MCP server** — see below. |
 | `env_source` | `mise` | which tool is asked what a session's own directory exports — `mise`, `direnv`, or `none`. Config file only, not in the settings panel. See below. |
-| `default_language` | `English` | the language the agent *writes* replies and stories in. Prompts and code stay English regardless. |
+| `default_language` | `English` | the language the agent *writes* replies in when the thread does not settle it. Prompts and code stay English regardless. |
 | `worktree_init` / `worktree_setup` | *(empty)* | two commands run in every worktree the daemon cuts itself. See below. |
 | `worktree_retention_days` | `60` | remove the worktree of a conversation not worked in for this many days, hourly, and one that no conversation points at at all. Age is the transcript's last write, not the session's start, so a conversation you kept open for weeks is not old the day after you stop; an orphaned tree is dated by its own directory. **The tree, never the row**: the session stays in the rail and a resume rebuilds the tree, so this reclaims disk rather than losing work, and it removes nothing the teardown preflight would refuse — a dirty tree, an unpushed commit, a live session or a running process all keep it. `0` turns it off. It exists because `claude --worktree` removes its own tree when its session ends and never gets to: the daemon owns the pty and kills it. |
 
@@ -31,11 +31,10 @@ repos leave them at the default:
 | `worktrees_subdir` | `.claude/worktrees` | where worktrees live, relative to `main_checkout`. Point it at the same place a repo's own `WorktreeCreate` hook puts them, so the daemon recognises its own worktrees. Kept relative and inside main on purpose. |
 | `port` | `7777` | the loopback port the daemon serves the SPA and API on. Never bound to anything but `127.0.0.1`. |
 | `repo` | *(derived)* | `owner/name` override, when it cannot be read off the upstream remote. |
-| `github_token_file` | *(none)* | a `0600` file holding a read-only GitHub token, outside the repo. An alternative to `ORCHD_GITHUB_TOKEN` or `gh auth token`. Reads only: the writes go through `gh`. |
+| `github_token_file` | *(none)* | a `0600` file holding a read-only GitHub token, outside the repo. An alternative to `ORCHD_GITHUB_TOKEN` or `gh auth token`. Reads only: the daemon writes nothing to GitHub. |
 | `worktree_processes` | *(empty)* | managed processes for worktree workspaces, the counterpart to `main_processes`. Empty means a shell is opened on demand instead. |
 | `poll_seconds` | `300` | how often the PR poll runs. One query per period, negligible against the API budget. |
 | `review_timeout_seconds` | `240` | ceiling for a configured `reviews_command` before the poller gives up on it. The built-in queue is one bounded `curl` and does not read it. |
-| `story_timeout_seconds` | `300` | ceiling for the borrowed story-filing agent — the one timeout in the daemon, because its caller is a blocking request rather than a rail entry someone is watching. |
 | `allow_several_in_main` | `false` | let main hold more than one live session. Off because one checkout is one working tree and one git index: two agents there share both, the changed-file pane merges their edits without saying who wrote what, and one agent's `git add` stages the other's work. Moving main's checkout still refuses while any session is live in it. Editable in the settings panel. |
 | `default_agent` | unset | what a plain `+` starts when Claude Code and Codex are both installed: `"claude"`, `"codex"`, or unset for the one picked last. One that is not on PATH falls back to the last pick. Editable in the settings panel. |
 | `auto_resume` | `true` | relaunch sessions that were live when the daemon last went down, with `--resume`, so a crash costs the scrollback rather than the conversation. |
@@ -118,14 +117,15 @@ when the source is broken is what would cost a colleague a day.
 
 ## Filing stories in a tracker
 
-With `tracker` set, a review point that is fair but out of scope can be filed as a
-story and answered with its id. The tracker is reached over MCP, by an agent the
-daemon borrows, so three things have to line up:
+With `tracker` set, `handle-review` can file a review point that is fair but out of
+scope as a story, and answer the thread with its id. The agent reaches the tracker
+over MCP, so three things have to line up:
 
-- **`tracker` is three fields**, one shape only: `{"mcp_server": "shortcut",
-  "host": "app.shortcut.com", "token_env": "SHORTCUT_API_TOKEN"}`. `token_env` is
-  optional — name it and the daemon pushes that variable into the agent's
-  environment instead of the server authenticating itself.
+- **`tracker` is one shape:** `{"mcp_server": "shortcut", "host":
+  "app.shortcut.com", "token_env": "SHORTCUT_API_TOKEN"}`. `token_env` is optional
+  — name it and the daemon pushes that variable into the session's environment
+  instead of the server authenticating itself. `host` is no longer read; it stays
+  in the shape so an existing file still parses.
 - **`.mcp.json` declares a server named by `tracker.mcp_server`.** The daemon
   approves that one server for the sessions it spawns, never all of them.
 - **A tracker skill** (`.claude/skills/*/SKILL.md`) holds the team id, the
@@ -133,8 +133,7 @@ daemon borrows, so three things have to line up:
   settings.
 
 Get the server name wrong and Claude Code drops it **silently**: the tool is
-simply absent and the run burns its timeout mid-review. The daemon checks at boot
-and says so.
+simply absent mid-review. The daemon checks at boot and says so.
 
 ## The environment a session gets
 

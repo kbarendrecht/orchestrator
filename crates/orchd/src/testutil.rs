@@ -25,7 +25,7 @@
 pub use orchd_base::testutil::{git, scratch, scratch_repo, TRUE_BIN};
 /// The forge fixtures moved with `forge` itself, and are re-exported for the same
 /// reason as the three above: one `pr(1)` in the workspace, not two.
-pub use orchd_repo::testutil::{comment, pr, test_config, thread};
+pub use orchd_repo::testutil::{pr, test_config};
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

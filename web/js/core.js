@@ -228,11 +228,12 @@ export function setCheckouts(next) {
   CHECKOUTS = next.map(reachable);
 }
 
-/** The review-preview page's fallback target.
+/** The fallback target for a page served with no checkout list.
  *
- *  That page is served by the host with no checkout list, and it reaches the
- *  daemon for a diff. One entry on this origin with the page's own token, which is
- *  the host's — the same value a solo `orchd` gives both.
+ *  One entry on this origin with the page's own token, which is the host's — the
+ *  same value a solo `orchd` gives both. A review-overlay preview page was the
+ *  first such page; it went with the overlay, and the fallback stays because an
+ *  empty list must still resolve to somewhere.
  *
  *  @type {Target}
  */

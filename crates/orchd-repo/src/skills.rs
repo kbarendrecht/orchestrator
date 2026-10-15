@@ -57,37 +57,11 @@ pub const FIX_PR: &str = include_str!("../../../skills/fix-pr/SKILL.md");
 /// Vendored from the monorepo's own `/resolve`, which is where it was proven —
 /// and generalised on the way, per this repo's own rule about one repo not being
 /// the specification: no owner/repo hardcoded, no tracker tool named (the repo's
-/// tracker skill knows those), the task runner hedged, and the story dedup line
-/// spelled the way the daemon's own story pass spells it so a later search finds
-/// what this pass filed.
+/// tracker skill knows those), and the task runner hedged.
 ///
 /// It asks with `AskUserQuestion` rather than over the ask channel, which is right
-/// for a pane and wrong for the overlay: nobody is reading a card here.
+/// for a pane: the person is reading the terminal.
 pub const HANDLE_REVIEW: &str = include_str!("../../../skills/handle-review/SKILL.md");
-
-/// Filing the stories a human approved on the cards.
-///
-/// Converted from `commands/story.md`, which was the one prompt left — and the
-/// thing that had kept it a prompt was a comment claiming `--allowedTools` stops
-/// this run invoking a skill. Measured against 2.1.263: `claude -p "/orchd:orch"`
-/// under `--allowedTools "Read Write"` runs the skill, because the allowlist gates
-/// tool calls and a typed command is expanded before the model acts.
-///
-/// It names no tracker tool, deliberately. `config::Tracker`'s docblock has the
-/// research; the short of it is that Linear does not publish its tool names and
-/// Atlassian's are versioned, so the repo's own tracker skill is the only place
-/// that knowledge can live without going stale in a release.
-pub const STORY: &str = include_str!("../../../skills/story/SKILL.md");
-
-/// The overlay session: read the threads, propose, make what the human picked, post.
-///
-/// Converted from `commands/review-session.md`, the most interpolated of them —
-/// nine substitutions, and the values reach it through `/api/pr/:n/triage-context`
-/// at the start of the pass, because a skill is static. `upstream` was added to
-/// `triage-context` for it: the prompt used it for "CI red or behind the base is
-/// fix-pr's job", and deriving it in the skill would have been a second answer to
-/// what "behind" means.
-pub const REVIEW: &str = include_str!("../../../skills/review/SKILL.md");
 
 /// The four values a fix run finds in its environment.
 ///
@@ -104,10 +78,6 @@ pub const VAR_LOGIN: &str = "ORCH_LOGIN";
 /// skills read it rather than asking whose name is on the head repo — which is
 /// the question the daemon stopped asking because it was wrong both ways.
 pub const VAR_MAY_PUSH: &str = "ORCH_MAY_PUSH";
-/// The story pass: what to file, where to report, and the host a URL must be on.
-pub const VAR_STORIES: &str = "ORCH_STORIES";
-pub const VAR_DROP: &str = "ORCH_DROP";
-pub const VAR_TRACKER_HOST: &str = "ORCH_TRACKER_HOST";
 /// The pane review pass: what language to write a reply in when the thread it
 /// answers does not settle it.
 pub const VAR_LANGUAGE: &str = "ORCH_LANGUAGE";
@@ -120,8 +90,6 @@ pub const VAR_LANGUAGE: &str = "ORCH_LANGUAGE";
 pub const VENDORED: &[(&str, &str)] = &[
     ("orch", ORCH),
     ("fix-pr", FIX_PR),
-    ("review", REVIEW),
-    ("story", STORY),
     ("handle-review", HANDLE_REVIEW),
 ];
 
@@ -342,11 +310,6 @@ mod tests {
                     VAR_MAY_PUSH,
                 ][..],
             ),
-            (
-                "story",
-                STORY,
-                &[VAR_STORIES, VAR_DROP, VAR_TRACKER_HOST][..],
-            ),
             // The pane pass gets three and reads all of them. It deliberately does
             // *not* read `VAR_LOGIN`, which its run does not set: its authorship
             // stop reads the daemon's `VAR_MAY_PUSH`, and asks `gh` the same
@@ -436,12 +399,12 @@ mod tests {
     }
 
     /// The language a run writes replies in is a setting, and a skill cannot have
-    /// it substituted — so it has to *ask*. Moved here from `prompt.rs`, where the
-    /// same rule was checked against the rendered template this replaced.
+    /// it substituted — so it has to *read* it. Moved here from `prompt.rs`, where
+    /// the same rule was checked against the rendered template this replaced.
     #[test]
-    fn the_review_skill_asks_for_the_language_rather_than_naming_one() {
+    fn the_review_skill_reads_the_language_rather_than_naming_one() {
         assert!(
-            REVIEW.contains("$LANGUAGE"),
+            HANDLE_REVIEW.contains(&format!("${VAR_LANGUAGE}")),
             "the review skill hardcodes a language"
         );
         for (name, body) in VENDORED {

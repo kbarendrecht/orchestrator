@@ -140,7 +140,7 @@ doing, and what breaks when it stops.
 | **Claude Code** or **Codex** (`claude` or `codex` on `PATH`, signed in) | The daemon spawns one for every session. With neither, a session exits the instant it starts, so the daemon says so at boot rather than letting you find out that way. |
 | **git 2.23 or newer** | Worktrees, branch moves, diffs — all of it. 2.23 is `switch`/`restore`, the oldest thing the daemon spells. One repo setting needs more: `core.fsmonitor` is a boolean from 2.37 and a *hook path* before it, so on an older git the daemon leaves it alone. |
 | **WebKitGTK 4.1** (Linux only) | The desktop window. Ubuntu 22.04 / Debian 12 or newer; 20.04 ships 4.0 and will not work. macOS uses the system WebView. |
-| **`gh`**, signed in | Reads go out with `curl`, and for those `github_token_file` replaces it. Every write (a thread reply, a 👍, a re-requested review) shells `gh` and uses its credential. |
+| **`gh`**, signed in | The review skills post through the agent's own `gh`. The daemon only reads, with `curl`, and takes its token from `gh auth token` unless `github_token_file` or `ORCHD_GITHUB_TOKEN` is set. |
 
 A fresh checkout also needs Claude Code's **workspace trust**, accepted once in
 its dialog. Until then its sessions die on spawn.
@@ -152,8 +152,8 @@ is missing and what stops working, and starts anyway.
 
 Bound to `127.0.0.1`, with Origin and Host validation and a per-start token on the
 WebSocket and every mutating route. GitHub reads use `ORCHD_GITHUB_TOKEN`, a
-`0600` `github_token_file` or `gh auth token`; every write shells `gh` and uses
-its credential.
+`0600` `github_token_file` or `gh auth token`. The daemon writes nothing to
+GitHub: a reply is the agent's, through its own `gh`.
 
 **The trust boundary is your user account, not the process.** `GET /` hands out
 the token, so any process running as you can hold everything, including a live

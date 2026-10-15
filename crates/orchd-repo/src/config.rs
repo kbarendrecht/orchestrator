@@ -51,11 +51,11 @@ pub struct Config {
     /// A `0600` file holding a read-only GitHub token, outside the repo.
     #[serde(default)]
     pub github_token_file: Option<PathBuf>,
-    /// Which tracker a `story+reply` position files into.
+    /// Which tracker's MCP server a session is allowed, and where its token comes
+    /// from.
     ///
     /// Absent for a repo with no tracker, which is a supported setup rather than a
-    /// gap: every reader takes `None` as "`story+reply` is not on offer". [`Tracker`]
-    /// has the shape and why it is explicit rather than detected.
+    /// gap. [`Tracker`] has the shape and why it is explicit rather than detected.
     ///
     /// Its credential is **not** a config key: `ORCHD_TRACKER_TOKEN` in the
     /// daemon's environment, and nowhere else. See `config::resolve_token`.
@@ -69,14 +69,6 @@ pub struct Config {
     /// it there.
     #[serde(default)]
     pub env_source: EnvSourceKind,
-    /// How long the borrowed story-filing agent gets before it is killed.
-    ///
-    /// The one timeout in this daemon, because it is the one agent whose caller is
-    /// a blocking HTTP request rather than a rail entry somebody is watching. Sized
-    /// from the skill's real workload — read an epic, search, create, follow up —
-    /// so minutes, not seconds.
-    #[serde(default = "default_story_timeout")]
-    pub story_timeout_seconds: u64,
     /// The language the agent *writes* in — reviewer replies and story text.
     ///
     /// A **fallback**, which is what the name says: the agent matches a thread's
@@ -658,19 +650,17 @@ fn default_review_timeout() -> u64 {
 pub struct Tracker {
     /// The MCP server's name in the repo's `.mcp.json`.
     ///
-    /// Used twice, and they have to agree: `enabledMcpjsonServers` in the hook
-    /// settings approves it (a project server stays *pending* and is dropped
-    /// silently otherwise), and `--allowedTools` scopes the story run to
-    /// `mcp__<name>`. Transport-independent — a remote server is a name in that
-    /// file like any other.
+    /// `enabledMcpjsonServers` in the hook settings approves it — a project server
+    /// stays *pending* and is dropped silently otherwise. Transport-independent: a
+    /// remote server is a name in that file like any other.
     pub mcp_server: String,
     /// The host its story URLs live on: `app.shortcut.com`, `linear.app`, or your
     /// own `<site>.atlassian.net`.
     ///
-    /// Used to check that a URL the *agent* reported is really this tracker's. The
-    /// id and the URL both come out of agent output, whose input is third-party
-    /// comment text, and the pair ends up as a permanent public link in a reply on
-    /// somebody's review. See `story::StoryRef::consistent`.
+    /// **Read by nothing now.** It checked that a story URL the daemon's own
+    /// filer reported was this tracker's, and that filer went with the overlay
+    /// review. Kept so the documented shape still parses; dropping it is a change
+    /// to the config format, and a separate one.
     pub host: String,
     /// The variable the MCP entry expands for its credential, e.g. a
     /// `Bearer ${SHORTCUT_API_TOKEN}` header. The daemon resolves the value itself
@@ -678,14 +668,12 @@ pub struct Tracker {
     /// prompt or a transcript.
     ///
     /// Absent means the server authenticates itself, and that is not a broken
-    /// config: the boot line says so rather than warning, and the story run stops
-    /// refusing to start for it.
+    /// config: the boot line says so rather than warning.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_env: Option<String>,
     /// Point the run at the local stub rather than the real server, for the
-    /// fixture. `tools/stub-shortcut-mcp.py` is a real stdio MCP server that
-    /// speaks the same tool names and records what it was asked to do, so the run
-    /// under test is the run that ships; only what sits behind the socket differs.
+    /// fixture. **Read by nothing now**, for the reason `host` gives; kept so a
+    /// file that says `"stub"` still parses.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub stub: bool,
 }
@@ -868,10 +856,6 @@ fn unknown_keys(raw: &str, cfg: &Config) -> Vec<String> {
         .collect();
     unknown.sort_unstable();
     unknown
-}
-
-fn default_story_timeout() -> u64 {
-    300
 }
 
 fn default_language_value() -> String {

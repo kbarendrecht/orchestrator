@@ -116,10 +116,10 @@ fn origin_allowed(origin: &str, port: u16, host_origin: Option<&str>) -> bool {
 /// - a hook, which comes from a `claude` subprocess and is a write-only observer
 ///   that can never trigger a spawn, a push or a teardown;
 /// - a GET, so a same-origin read from the address bar works;
-/// - **anything else carrying a valid token.** This is the vendored prompts'
-///   shape: `skills/triage/SKILL.md` POSTs its proposals with `curl`, which sends no
-///   Origin, and this arm's absence meant the one route an agent calls answered
-///   403 to the only caller it has. Driving it by hand *with* an Origin header
+/// - **anything else carrying a valid token.** This is the vendored skills'
+///   shape: an agent calls the daemon with `curl`, which sends no Origin, and this
+///   arm's absence once meant the one route an agent called answered 403 to the
+///   only caller it had. Driving it by hand *with* an Origin header
 ///   during development is what hid that.
 ///
 ///   Safe because Origin is a CSRF control, and CSRF is a browser problem: a page
@@ -145,7 +145,7 @@ pub fn origin_ok(
 /// A list rather than a growing chain of `ends_with`, because it has been
 /// outgrown once already — see the note in [`guard`].
 fn is_ask_route(path: &str) -> bool {
-    const ASK_ROUTES: [&str; 10] = [
+    const ASK_ROUTES: [&str; 7] = [
         "/ask",
         "/wait",
         // The worktree grant, asked by the agent and read by the push guard —
@@ -153,9 +153,6 @@ fn is_ask_route(path: &str) -> bool {
         // session's ask token and no Origin, exactly like a vendored prompt.
         "/outside",
         "/spawn",
-        // A review session posting one thread's reply. The rules the words go
-        // through are `post_one`'s; see `review_api::thread_reply`.
-        "/reply",
         "/process",
         // `orch kill`. Not `/kill` or `/delete`, which are the SPA's own routes on
         // any session — a suffix matcher cannot tell those apart from a narrower
@@ -164,33 +161,8 @@ fn is_ask_route(path: &str) -> bool {
         // `orch teardown`. Safe as a suffix only because the SPA's own teardown is
         // `/api/workspace/:id/teardown`, outside the `/api/session/` prefix.
         "/teardown",
-        // The end of phase 3: who still owes the PR a look. Which reviewers are
-        // asked is the daemon's, off a fresh fetch — see `session_rerequest`.
-        "/rerequest",
-        // Phase 4 of `skills/review/SKILL.md`: the review saying it is done.
-        "/handoff",
     ];
     path.starts_with("/api/session/") && ASK_ROUTES.iter().any(|s| path.ends_with(s))
-}
-
-/// Where a triage or review-session run POSTs what it proposed.
-///
-/// Separate from [`is_ask_route`] because it is keyed on a *PR*, not a session,
-/// so it cannot share that matcher's `/api/session/` prefix. It carries the same
-/// kind of credential: narrow, minted per run, and good for nothing else.
-fn is_proposals_route(path: &str) -> bool {
-    path.starts_with("/api/pr/") && path.ends_with("/proposals")
-}
-
-/// The two routes the vendored `triage` skill calls before it can propose
-/// anything to start: the repo, the login, the language, the tracker and the base.
-///
-/// Keyed on a PR like the proposals route and carrying the same run credential.
-/// A route missing from here is refused twice over, and neither refusal names the
-/// cause: the Origin check has no arm for it, and `needs_token` then wants a
-/// credential the agent is deliberately not given.
-fn is_triage_route(path: &str) -> bool {
-    path.starts_with("/api/pr/") && path.ends_with("/triage-context")
 }
 
 /// Every route an *agent* calls, on a credential that is not the app token.
@@ -199,7 +171,7 @@ fn is_triage_route(path: &str) -> bool {
 /// them — skip `needs_token`, and accept a missing `Origin` — and splitting that
 /// is how `…/committed` once shipped reachable by neither. See [`guard`].
 fn is_agent_route(path: &str) -> bool {
-    is_ask_route(path) || is_proposals_route(path) || is_triage_route(path)
+    is_ask_route(path)
 }
 
 /// Reject anything that is not the SPA's own origin.
@@ -953,43 +925,6 @@ pub(crate) async fn ask_token_ok(
         refuse!("bad ask token for session {id}");
     }
     Ok(())
-}
-
-/// Is this caller the triage run this PR is expecting proposals from?
-///
-/// The sibling of [`ask_token_ok`] for the one agent route that is keyed on a PR
-/// rather than a session. Same shape and same reasoning: the app token is taken
-/// too, so the SPA and the tests can drive the endpoint, but a run is given only
-/// the narrow one.
-///
-/// A PR with no token recorded refuses everything except the app token — there is
-/// no run to be, so there is nothing to authenticate as.
-pub(crate) async fn proposal_token_ok(
-    app: &Arc<AppState>,
-    pr: u64,
-    headers: &axum::http::HeaderMap,
-) -> Result<(), ApiError> {
-    let given = headers
-        .get("x-orch-token")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or_default();
-    if given == app.token {
-        return Ok(());
-    }
-    let inner = app.inner.read().await;
-    // Any run's token for *this* PR. Keyed by session so two runs on one PR each
-    // keep theirs; the PR beside it is what keeps each one to its own route.
-    let held = inner
-        .proposal_tokens
-        .values()
-        .any(|(for_pr, want)| *for_pr == pr && !given.is_empty() && given == want);
-    if held {
-        Ok(())
-    } else {
-        Err(ApiError(anyhow::anyhow!(
-            "bad proposals token for PR #{pr}"
-        )))
-    }
 }
 
 #[derive(Deserialize)]
@@ -1977,9 +1912,8 @@ async fn revive(app: &Arc<AppState>, id: Uuid) -> ApiResult<serde_json::Value> {
             .with_context(|| format!("session {id}"))?
     };
 
-    // Its recorded pass, not `None`: the run's PR and command are what
-    // `posts_proposals` reads for the post token, and what the bar reads to say
-    // which PR this session is a pass over.
+    // Its recorded pass, not `None`: the run's PR and command are what the bar
+    // reads to say which PR this session is a pass over.
     let pass = {
         let inner = app.inner.read().await;
         inner.sessions.get(&id).and_then(|s| s.pass.clone())
@@ -2960,24 +2894,8 @@ fn open_external(url: &str, settle: Option<std::time::Duration>) -> anyhow::Resu
 // ---------------------------------------------------------------------------
 // The forge, for whoever asks
 //
-// The overlay's own routes are `crate::review_api`. These five stayed because the
-// thread routes above and `open_file` ask for them too.
+// What the routes that reach the forge share.
 // ---------------------------------------------------------------------------
-
-/// The forge the config selects, built for reads: repo + read token. The one
-/// spot the four-line resolve/token/build dance lived; now the same for every
-/// read endpoint, and dispatched by `cfg.forge`.
-pub(crate) fn read_forge(app: &Arc<AppState>) -> Result<crate::forge::ForgeImpl, ApiError> {
-    let (owner, name) = repo_of(app)
-        .ok_or_else(|| anyhow::anyhow!("no GitHub repo configured and none on the remote"))?;
-    let token = crate::forge::resolve_token(app.cfg.github_token_file.as_deref())?;
-    Ok(crate::forge::ForgeImpl::for_kind(
-        app.cfg.forge,
-        owner,
-        name,
-        token.value,
-    ))
-}
 
 /// The same, for writes. Writes shell their own tool, so no read token is
 /// needed — the forge carries only the repo it writes to.
@@ -3012,28 +2930,6 @@ pub(crate) fn repo_of(app: &Arc<AppState>) -> Option<(String, String)> {
         .or_else(|| crate::resolve_repo(app))
 }
 
-/// Fetch a PR's threads and hand back the parsed set.
-///
-/// Shared by the endpoints that need to know what is awaiting an answer *now*.
-/// Always refetches straight from the forge: a stale thread list is the one
-/// thing this flow must never act on, which is why nothing here caches.
-pub(crate) async fn fetch_threads(
-    app: &Arc<AppState>,
-    pr: u64,
-) -> Result<crate::forge::Threads, ApiError> {
-    // `read_forge` shells out as well — `gh auth token` for the credential — so it
-    // goes in the *same* hop as the fetch rather than running on a worker just
-    // before it. The PR poller wraps its own copy of that call for the same
-    // reason.
-    let app = app.clone();
-    let fetched = crate::proc::run_blocking("the thread fetch", move || {
-        let forge = read_forge(&app).map_err(|e| e.0)?;
-        forge.threads(pr)
-    })
-    .await??;
-    Ok(fetched)
-}
-
 pub(crate) fn pr_from_poll(
     prs: &[crate::forge::Pr],
     number: u64,
@@ -3053,16 +2949,13 @@ pub(crate) fn pr_from_poll(
 /// Still **not** what §8 describes: a run never starts because a PR went red. The
 /// difference that rule is protecting is between a tool that helps and one that
 /// rebases your branches while you are looking elsewhere, and that turns on whether
-/// a *person* set the run in motion — not on which line of code spawns it. Two
-/// things now do: this, and a review handing on the CI it is forbidden to fix
-/// (`session_handoff`), which you started by sending the decisions and which
-/// announces itself in the same rail chip. The guard table is the same either way,
-/// because it is the whole of what makes a run safe to start.
+/// a *person* set the run in motion — not on which line of code spawns it. This
+/// is the only thing that does.
 pub async fn fix_pr(
     State(app): State<Arc<AppState>>,
     Path(number): Path<u64>,
 ) -> ApiResult<serde_json::Value> {
-    let session = crate::fix_pr::start(&app, number, crate::fix_pr::Asked::ByPress).await?;
+    let session = crate::fix_pr::start(&app, number).await?;
     Ok(Json(json!({ "session": session })))
 }
 
@@ -3671,8 +3564,6 @@ mod tests {
         for p in [
             "/api/session/<id>/ask",
             "/api/session/<id>/ask/<ask>/wait",
-            // A review session posting one thread's reply.
-            "/api/session/<id>/thread/PRRT_x/reply",
             "/api/session/<id>/spawn",
             // `orch run`. Named processes only, so this exemption widens what an
             // agent can start without widening it to arbitrary commands (§12).
@@ -3683,11 +3574,6 @@ mod tests {
             "/api/session/<id>/spawned/<child>/discard",
             // `orch teardown`. Any worktree, through the ordinary preflight.
             "/api/session/<id>/teardown",
-            // The end of phase 3. Which reviewers are asked is derived from a
-            // fresh fetch, so the agent supplies nothing but the call.
-            "/api/session/<id>/rerequest",
-            // Phase 4 of `skills/review/SKILL.md`: the review saying it is done.
-            "/api/session/<id>/handoff",
             // `orch outside`, and the push guard's read of what it granted. The
             // guard is a `command` hook: it has the session's ask token and no
             // app token, so a missing entry here would make the grant unreadable
@@ -3714,112 +3600,6 @@ mod tests {
         ] {
             assert!(!is_ask_route(p), "{p} is not the agent's to call");
         }
-    }
-
-    /// The guard consults [`is_agent_route`], not [`is_ask_route`]. A route the
-    /// prompts really curl that is missing from it is refused twice over — `bad
-    /// origin` first, because the agent's curl carries none, and then for want of
-    /// an app token it is deliberately not given. That is how `…/committed` shipped
-    /// unreachable by its only caller.
-    #[test]
-    fn the_proposals_post_is_an_agent_route_and_reachable_without_an_origin() {
-        let p = "/api/pr/10001/proposals";
-        assert!(is_proposals_route(p));
-        assert!(
-            is_agent_route(p),
-            "{p} is curled by the triage and review skills"
-        );
-        // Not an *ask* route: it is keyed on a PR, and has no session to check.
-        assert!(!is_ask_route(p));
-        // The Origin allowance the agent's curl depends on.
-        assert!(
-            ok(None, true, false, false),
-            "no Origin must pass for an agent route"
-        );
-        // Neighbours that stay the SPA's, on the app token.
-        for other in [
-            "/api/pr/10001/review",
-            "/api/pr/10001/fix-pr",
-            "/api/pr/10001",
-        ] {
-            assert!(!is_agent_route(other), "{other} is not the agent's to call");
-        }
-    }
-
-    /// The two the vendored `triage` skill calls before it can propose anything.
-    ///
-    /// Same trap as the proposals route and the same reason for a test: the skill
-    /// is the only caller, it curls with no Origin and the run credential, and a
-    /// route missing from `is_agent_route` is refused twice over without either
-    /// refusal naming the cause.
-    #[test]
-    fn the_review_skill_can_reach_the_route_it_opens_with() {
-        let p = "/api/pr/10001/triage-context";
-        assert!(is_triage_route(p));
-        assert!(is_agent_route(p), "{p} is curled by skills/review/SKILL.md");
-        // Keyed on a PR, so not an ask route: there is no session in the path.
-        assert!(!is_ask_route(p));
-        // The run that *starts* a review session is the SPA's, on the app token.
-        assert!(!is_agent_route("/api/pr/10001/review-session"));
-    }
-
-    #[tokio::test]
-    async fn a_run_posts_proposals_on_a_token_that_opens_nothing_else() {
-        let (app, dir) = crate::testutil::app("proposaltok");
-        let pr = 10001u64;
-        let narrow = app.mint_post_token(Uuid::new_v4(), pr).await;
-
-        let hdr = |v: &str| {
-            let mut h = axum::http::HeaderMap::new();
-            h.insert("x-orch-token", v.parse().unwrap());
-            h
-        };
-
-        // The run's own credential works for its own PR.
-        assert!(proposal_token_ok(&app, pr, &hdr(&narrow)).await.is_ok());
-        // The app token still works, so the SPA and these tests can drive it.
-        assert!(proposal_token_ok(&app, pr, &hdr(&app.token)).await.is_ok());
-        // A wrong one, an empty one, and no header at all are all refused.
-        assert!(proposal_token_ok(&app, pr, &hdr("nope")).await.is_err());
-        assert!(proposal_token_ok(&app, pr, &hdr("")).await.is_err());
-        assert!(proposal_token_ok(&app, pr, &axum::http::HeaderMap::new())
-            .await
-            .is_err());
-        // Scoped to the PR it was minted for: the same token is nothing on another.
-        assert!(proposal_token_ok(&app, 999, &hdr(&narrow)).await.is_err());
-        // And a PR with no run recorded authenticates nobody but the app.
-        assert!(proposal_token_ok(&app, 999, &hdr(&app.token)).await.is_ok());
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// Two runs on one PR each keep their own token.
-    ///
-    /// It was keyed by PR, so the second mint replaced the first and locked the
-    /// earlier run out of the one route it exists to call — reachable because `orch
-    /// new` puts a helper into the caller's live tree on purpose, which is the case
-    /// the old "one live session per worktree" argument ruled out.
-    #[tokio::test]
-    async fn a_second_run_on_a_pr_does_not_lock_the_first_out() {
-        let (app, dir) = crate::testutil::app("proposaltok-two");
-        let pr = 10002u64;
-        let (first, second) = (Uuid::new_v4(), Uuid::new_v4());
-        let a = app.mint_post_token(first, pr).await;
-        let b = app.mint_post_token(second, pr).await;
-        let hdr = |v: &str| {
-            let mut h = axum::http::HeaderMap::new();
-            h.insert("x-orch-token", v.parse().unwrap());
-            h
-        };
-        assert!(
-            proposal_token_ok(&app, pr, &hdr(&a)).await.is_ok(),
-            "the first run was locked out by the second"
-        );
-        assert!(proposal_token_ok(&app, pr, &hdr(&b)).await.is_ok());
-        // A resume re-mints under the same id, and the old value stops working.
-        let a2 = app.mint_post_token(first, pr).await;
-        assert!(proposal_token_ok(&app, pr, &hdr(&a)).await.is_err());
-        assert!(proposal_token_ok(&app, pr, &hdr(&a2)).await.is_ok());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -33,7 +33,6 @@ const sources = [
   ...readdirSync(`${root}/web/js`).filter((f) => f.endsWith('.js')).map((f) => `web/js/${f}`),
   'web/app.js',
   'web/index.html',
-  'web/review-preview.html',
 ];
 const src = sources.map(read).join('\n');
 const prefixes = [...src.matchAll(/['"`]([A-Za-z][A-Za-z0-9_-]*-)['"`]/g)].map((m) => m[1]);

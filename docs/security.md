@@ -8,10 +8,10 @@ required on the WebSocket and every mutating route. Hook endpoints are exempt fr
 the token, because a hook Claude Code spawns cannot easily carry a per-start one.
 They are confined to their own prefix and a schema that can only ever update state.
 GitHub **reads** resolve `ORCHD_GITHUB_TOKEN`, then a `0600` `github_token_file`,
-then `gh auth token`, and read scopes are all they need. **Writes are the other
-half**: a thread reply, a 👍 and a re-requested review shell `gh` and use gh's own
-credential, whatever you set here. So a read-only token does not make the daemon
-read-only, and the resolve flow wants `gh` signed in.
+then `gh auth token`, and read scopes are all they need. **The daemon writes
+nothing to GitHub.** A review reply or a 👍 is the agent's, through its own `gh`
+in a pane you are watching, and a fix run pushes with the agent's own git. So the
+token here can be read-only, and `gh` signed in is what the *agent* needs.
 
 **The trust boundary is your user account, not the process.** Loopback keeps the
 network out and the Origin check keeps other web pages out. But `GET /` returns
@@ -26,9 +26,8 @@ discovery the tooling depends on. It is written down because the alternative is 
 sentence that earns trust it has not got.
 
 Agents get narrower credentials than the SPA does, and that part *is* enforced: a
-session asks with `ORCH_ASK_TOKEN`, good for its own session's routes, and a review
-session posts with `ORCH_POST_TOKEN`, good for one route on one PR. Neither is the app
-token — which matters because those are the runs that read other people's review
+session asks with `ORCH_ASK_TOKEN`, good for its own session's routes. It is not the
+app token — which matters because a review run reads other people's review
 comments.
 
 There is a `PreToolUse` guard on the agent's git (`orch guard push`) with three

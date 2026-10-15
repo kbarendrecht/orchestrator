@@ -486,12 +486,10 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
     {
         let mut inner = app.inner.write().await;
         inner.automation = state::Durable::new(store::load_automation());
-        inner.stories = state::Durable::new(store::load_stories());
-        // Said out loud at boot, because `tracker` decides whether a whole option
-        // appears on every review card. A misconfigured one must not read as
-        // "triage never proposes stories".
+        // Said out loud at boot, because a tracker whose token does not resolve
+        // leaves every session's MCP server unauthenticated, and says so nowhere.
         match app.cfg.tracker.as_ref().map(|t| t.mcp_server.as_str()) {
-            None => tracing::info!("tracker: none — `story+reply` is off"),
+            None => tracing::info!("tracker: none"),
             /* A tracker that names no token variable authenticates itself — both
             official Linear and Atlassian servers are OAuth-first — so there is
             nothing to resolve, and a warning here would be about a credential
@@ -502,20 +500,14 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
                 .as_ref()
                 .and_then(|t| t.token_env.as_deref())
             {
-                None => tracing::info!(
-                    "tracker: {server}, authenticating itself, {} story/ies cached",
-                    inner.stories.len()
-                ),
+                None => tracing::info!("tracker: {server}, authenticating itself"),
                 Some(var) => {
-                    // The main checkout's own environment is the filer's fallback,
+                    // The main checkout's own environment is a session's fallback,
                     // so the boot line has to read it too. Without this it would
-                    // warn about a missing token that a run then finds.
+                    // warn about a missing token that a session then finds.
                     let checkout = env_source::read(app.cfg.env_source, &app.cfg.main_checkout);
                     match config::resolve_token(&checkout, var) {
-                        Ok(_) => tracing::info!(
-                            "tracker: {server}, token resolved, {} story/ies cached",
-                            inner.stories.len()
-                        ),
+                        Ok(_) => tracing::info!("tracker: {server}, token resolved"),
                         Err(e) => tracing::warn!("tracker: {server} but no usable token — {e:#}"),
                     }
                 }
@@ -741,22 +733,6 @@ fn daemon_router(app: Arc<AppState>) -> Router {
             "/api/session/:id/teardown",
             post(api::teardown_from_session),
         )
-        .route(
-            "/api/session/:id/handoff",
-            post(review_api::session_handoff),
-        )
-        // Where a review session's replies actually leave the machine; the rules
-        // live in `post_one` rather than in the skill. See `thread_reply`.
-        .route(
-            "/api/session/:id/thread/:thread/reply",
-            post(review_api::thread_reply),
-        )
-        // Who is asked to look again is derived from a fresh fetch, not from what
-        // the session believes it posted. See `session_rerequest`.
-        .route(
-            "/api/session/:id/rerequest",
-            post(review_api::session_rerequest),
-        )
         .route("/api/session/:id/tell", post(api::tell_session))
         .route("/api/session/:id/ask", post(api::ask))
         .route("/api/session/:id/ask/:ask/wait", get(api::ask_wait))
@@ -804,24 +780,11 @@ fn daemon_router(app: Arc<AppState>) -> Router {
         .route("/api/open/file", post(api::open_file))
         .route("/api/open/reveal", post(api::reveal_path))
         .route("/api/file/verb", post(api::file_verb))
-        .route("/api/pr/:number/review", get(review_api::pr_review))
-        // The overlay session's first call: everything only the daemon knows.
-        .route(
-            "/api/pr/:number/triage-context",
-            get(review_api::pr_triage_context),
-        )
-        // The rail's default review verb: one agent and one pane, which the
-        // overlay is not good enough to replace yet.
+        // The rail's review verb: one agent and one pane.
         .route(
             "/api/pr/:number/handle-review",
             post(review_api::pr_handle_review),
         )
-        .route(
-            "/api/pr/:number/review-session",
-            post(review_api::pr_review_session),
-        )
-        // The one route a subprocess calls. Hostile input; see `pr_proposals`.
-        .route("/api/pr/:number/proposals", post(review_api::pr_proposals))
         // A plain session on the PR's branch, in a worktree or in main: no skill
         // is typed, so it is the PR to work on rather than a pass over it.
         .route("/api/pr/:number/open", post(review_api::open_pr))
@@ -1172,30 +1135,6 @@ fn settle_run(
         if exit.pass.command == model::Pass::FIX_PR {
             fix_pr::settle(&app, exit.pass.pr, exit.session).await;
         }
-        /* The review that asked, on its way out, for the CI it is not allowed to
-        touch to be picked up by a run. The branch is free by now, which is the only
-        reason this waits for the exit.
-
-        A refusal is not raised, because by here nobody is waiting: the guard table's
-        reasons are written for whoever asked, and the rail's own `fix` button is
-        still there to be pressed and will say the same thing. But it is *taken
-        back*. `handed_off` is what tells the overlay to hold its report and wait for
-        a run, so a refusal that left the flag standing would strand the review on
-        "applying" for good — the fault this whole hand-off was built to fix. */
-        if exit.hand_off {
-            let pr = exit.pass.pr;
-            match fix_pr::start(&app, pr, fix_pr::Asked::Automatically).await {
-                Ok(session) => {
-                    tracing::info!(pr, %session, "review handed the checks to a fix-pr run")
-                }
-                Err(e) => {
-                    tracing::warn!(pr, "review's hand-off to fix-pr refused: {e}");
-                    if let Some(s) = app.inner.write().await.sessions.get_mut(&exit.session) {
-                        s.fix_pr_on_exit = false;
-                    }
-                }
-            }
-        }
     })
 }
 
@@ -1543,8 +1482,7 @@ fn auto_resume(
                 .map(|s| s.workspace.clone())
                 .unwrap_or_else(|| r.workspace.clone());
             // Its recorded pass, not `None`: a resumed fix run is still the run
-            // the guard table counts, and the one `posts_proposals` mints a post
-            // token for.
+            // the guard table counts.
             match spawn::spawn_session(
                 &app,
                 &workspace,
@@ -2383,25 +2321,6 @@ mod tests {
         );
     }
 
-    /// The review preview substitutes the same three, and is reached the same way.
-    ///
-    /// Its own assertion rather than a loop over both, because it is a separate
-    /// handler with its own copy of the substitution — which is exactly the shape
-    /// that drifts.
-    #[tokio::test]
-    async fn the_review_preview_is_substituted_too() {
-        let (app, host, _dir) = app_and_host("preview-token");
-        let res = router(app.clone(), host)
-            .oneshot(req(&app, "GET", "/review-preview", false))
-            .await
-            .unwrap();
-        assert_eq!(res.status(), 200);
-        let page = body_of(res).await;
-        assert!(page.contains(&app.token));
-        assert!(!page.contains("__ORCH_TOKEN__"));
-        assert!(!page.contains("__ORCH_PLATFORM__"));
-    }
-
     /// A window command with no window degrades, and says so.
     ///
     /// This is the browser-tab case: `cargo run -p orchd` plus a tab has no Tauri
@@ -2436,49 +2355,5 @@ mod tests {
         assert_eq!(bogus.status(), 400);
         let answer: serde_json::Value = serde_json::from_str(&body_of(bogus).await).unwrap();
         assert_eq!(answer["error"], "no such window command: explode");
-    }
-
-    /// A refused hand-off takes the flag back.
-    ///
-    /// `handed_off` is what tells the overlay to hold its report and wait for a
-    /// run, so a refusal that left the flag standing strands the review on
-    /// "applying" for good — the fault the hand-off was built to fix. The start is
-    /// refused here because the PR is not in the poll, which is the cheapest real
-    /// refusal there is.
-    ///
-    /// **Here rather than in `spawn`**, because settling a run is this crate's job
-    /// now: `spawn` publishes the exit and [`settle_run`] is what acts on it. The
-    /// matching half — that the exit is published, and with the flag — is
-    /// `spawn::tests::a_review_exit_acts_on_its_hand_off_flag`.
-    #[tokio::test]
-    async fn a_refused_hand_off_takes_the_flag_back() {
-        let (app, dir) = orchd::testutil::app("handoff-refused");
-        let id = uuid::Uuid::new_v4();
-        let pass = model::Pass {
-            pr: 4242,
-            command: model::Pass::REVIEW.to_string(),
-        };
-        {
-            let mut inner = app.inner.write().await;
-            let mut s = model::Session::new(id, "wt".to_string(), dir.clone(), Some(pass.clone()));
-            s.fix_pr_on_exit = true;
-            inner.sessions.insert(id, s);
-        }
-
-        settle_run(
-            app.clone(),
-            orchd::state::RunExit {
-                session: id,
-                pass,
-                hand_off: true,
-            },
-        )
-        .await;
-
-        assert!(
-            !app.inner.read().await.sessions[&id].fix_pr_on_exit,
-            "the refusal left the overlay waiting on a run that never started"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

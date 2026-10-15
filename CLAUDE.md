@@ -121,7 +121,7 @@ mise run paint-check                # which panes rebuild while agents work
 mise run hover-check                # does a hovered row survive a rebuild
 mise run types                      # regenerate the four generated .d.ts, in the one safe order
 mise run notices                    # regenerate THIRD-PARTY-RUST.md
-mise run e2e                        # 47 flows against a real daemon
+mise run e2e                        # 46 flows against a real daemon
 mise run deflake                    # each flow 8x, to name the flaky ones
 cargo run -p orchestrator-desktop   # the app, daemon embedded in-process
 mise run shot                       # screenshot the running SPA (drives Chrome)
@@ -354,7 +354,6 @@ together: same entries, same order, same groups.
 
 - Hooks are observers, not gatekeepers.
 - Every hook finds its session, and the window where one did not is closed.
-- `forge/github_write.rs` will not resolve a thread, approve, merge or open a PR.
 - The daemon no longer asks Claude Code to cut a worktree, and the isolation pin is why.
 - Claude Code pins worktree isolation in the transcript, and the daemon clears it by writing to that same file.
 - Opening a PR in a worktree can move main's branch out from under you
@@ -391,9 +390,6 @@ together: same entries, same order, same groups.
 
 - The keyboard map has a contract, and it is the reason the next binding is obvious.
 - `page-check --mac` ran the Linux branch for its whole life, because of one letter.
-- The rail's `handle` button starts a pane, not the overlay.
-- An ask the review overlay does not own must still be answerable in the box.
-- Two panels dock at the bottom of the terminal, and they must not sit on each other.
 - Shift-Shift is the one gesture that costs no chord, and the guard is the whole of it.
 - The find viewer draws a band of the file, and the spacers are what make it scroll.
 - The mouse's back button undoes a jump, and no gate here can prove the webview delivers it.

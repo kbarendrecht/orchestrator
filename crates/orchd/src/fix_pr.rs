@@ -1,7 +1,7 @@
 use serde::Serialize;
 use std::time::SystemTime;
 
-use crate::forge::{Checks, Pr};
+use crate::forge::Pr;
 use crate::model::{PrAutomation, SessionId};
 
 // ---------------------------------------------------------------------------
@@ -15,10 +15,6 @@ pub struct GuardInput<'a> {
     pub automation: Option<&'a PrAutomation>,
     /// Your login, for the authorship guard.
     pub viewer: &'a str,
-    /// Whether a worktree holding this PR's branch has a live session in it.
-    /// `spawn::branch_busy` is the one definition; an idle session counts, because
-    /// the spawn refuses one too.
-    pub branch_busy: bool,
 }
 
 /* **There is no cap on concurrent runs, and 2 was the wrong number for it.**
@@ -27,8 +23,8 @@ fired on its own (§8's transition rules, never implemented — every run is
 hand-triggered, so passing the cap meant pressing the button three times while
 watching), and the capability subsystem that tracked shared resources, which was
 deleted. At 2 it was neither serialization nor resource protection: `headroom`
-does the latter at spawn with real numbers, `branch_busy` and the one-run-per-PR
-rule above stop the collisions that matter, and the only thing left was a
+does the latter at spawn with real numbers, the press hand-off and the
+one-run-per-PR rule stop the collisions that matter, and the only thing left was a
 runaway API caller — on a route that needs the app token, which agents
 deliberately do not hold. */
 
@@ -69,16 +65,6 @@ pub fn evaluate(input: &GuardInput) -> Verdict {
         ));
     }
 
-    // Never remediate a PR whose branch is checked out in a workspace holding a
-    // live session — you are working on it (§8). Idle counts: the session is open,
-    // and a rebase under it is the thing this refuses.
-    if input.branch_busy {
-        return no(format!(
-            "you have a live session on {}; fix-pr would fight it",
-            pr.head_ref
-        ));
-    }
-
     Verdict::Go
 }
 
@@ -86,58 +72,19 @@ fn no(reason: String) -> Verdict {
     Verdict::No { reason }
 }
 
-/// Whether the PR is red: failing checks, or a conflict with its base.
-fn ended_red(pr: &Pr) -> bool {
-    pr.checks == Checks::Failing || pr.mergeable == "CONFLICTING"
-}
-
-/// Whether a PR still has something a fix run would watch.
-///
-/// Asked at the end of a review, which has just force-pushed: the checks are
-/// running against a head that did not exist a minute ago, so `Pending` counts —
-/// that *is* the watching. Green and mergeable means the review is simply over and
-/// there is nothing to hand on.
-///
-/// Deliberately wider than [`ended_red`] by exactly one case, and phrased as such so
-/// the two cannot drift on what counts as red.
-///
-/// `Unknown` does not count. It is the answer when the poll could not say, and a run
-/// rebases and force-pushes: the one thing this must not do is start one because it
-/// could not tell.
-pub fn wants_watching(pr: &Pr) -> bool {
-    ended_red(pr) || pr.checks == Checks::Pending
-}
-
-/// Who is starting a fix run, which decides what a session already on the branch
-/// means.
-///
-/// **A press may hand the job to that session; nothing else may.** The `fix`
-/// button is you choosing the session you have open, so typing `/orchd:fix-pr`
-/// into it is what you asked. A review handing its CI on when it exits is not: it
-/// typed the command into your own idle conversation with nobody pressing
-/// anything. That path is refused as it always was, and the review takes its
-/// hand-off back.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Asked {
-    /// The rail's `fix` button, through `POST /api/pr/:n/fix-pr`.
-    ByPress,
-    /// A finished review handing on the checks it may not fix.
-    Automatically,
-}
-
 /// Start a run: the guard table, the spawn, and the record, in that order.
 ///
-/// One function because there are two callers now — the rail's button and a review
-/// handing on what it is not allowed to finish — and the guard table is the whole
-/// of what makes starting one safe. A second call site carrying its own copy of the
-/// checks is how one of them ends up a version behind, quietly.
+/// One function because the guard table is the whole of what makes starting one
+/// safe, and a second call site carrying its own copy of the checks is how one of
+/// them ends up a version behind, quietly. The only caller is the rail's `fix`
+/// button: a review used to hand its CI on here when it exited, and went with the
+/// overlay.
 ///
 /// The refusal comes back as the error, verbatim: `fix-pr` refusals are written to
 /// be read by whoever asked.
 pub async fn start(
     app: &std::sync::Arc<crate::state::AppState>,
     number: u64,
-    asked: Asked,
 ) -> anyhow::Result<SessionId> {
     /* **Claimed before anything is read, because the guard cannot close this
     window on its own.** `Running` is only recorded *after*
@@ -183,11 +130,6 @@ pub async fn start(
             // there — but an empty one still fails the guard closed, so this must
             // stay the real viewer rather than anything derived from the PR.
             viewer: inner.viewer.as_deref().unwrap_or_default(),
-            /* A session on the branch is where a *press* sends the job: see
-            below. Every other rule still answers first, so a PR you cannot push
-            to is refused before any session is asked to try. Anything else that
-            starts a run still treats that session as yours, and is refused. */
-            branch_busy: branch_busy && asked == Asked::Automatically,
         })
     };
 
@@ -203,7 +145,9 @@ pub async fn start(
     typed the skill a fresh run gets, which works in any session because each
     variable it reads has a fallback, and no automation record is written: no
     unattended run started, the session you were in did. */
-    if branch_busy && asked == Asked::ByPress {
+    // Every rule above still answers first, so a PR you cannot push to is
+    // refused before any session is asked to try.
+    if branch_busy {
         if let Some(id) = crate::triage::hand_to_live_session(
             app,
             number,
@@ -298,6 +242,7 @@ fn settle_in(inner: &mut crate::state::Inner, pr: u64, session: SessionId) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::forge::Checks;
 
     /// A PR a run would legitimately be started for: red, and yours to push to.
     fn pr(number: u64) -> Pr {
@@ -315,45 +260,7 @@ mod tests {
             pr: p,
             automation: None,
             viewer: "kbarendrecht",
-            branch_busy: false,
         }
-    }
-
-    /// A review handing its CI on must never type into a session you have open on
-    /// the branch: only a press may. The automatic start is refused, as it was
-    /// before a press could hand off, and nothing is recorded as running.
-    #[tokio::test]
-    async fn an_automatic_start_never_types_into_your_open_session() {
-        let (app, dir) = crate::testutil::app("fix-auto");
-        let p = pr(7);
-        app.register_worktree("pr-7", dir.clone(), Some(p.head_ref.clone()))
-            .await;
-        {
-            let mut inner = app.inner.write().await;
-            inner.prs = vec![p.clone()];
-            inner.viewer = Some("kbarendrecht".into());
-            if let Some(w) = inner.workspaces.get_mut("pr-7") {
-                w.tree.branch = Some(p.head_ref.clone());
-            }
-            let mut s =
-                crate::model::Session::new(uuid::Uuid::new_v4(), "pr-7".into(), dir.clone(), None);
-            s.state = crate::model::State::Working;
-            // A pid that is alive, which is what `live_sessions_in` asks.
-            s.pid = Some(std::process::id());
-            inner.sessions.insert(s.id, s);
-        }
-        let err = format!(
-            "{:#}",
-            start(&app, 7, Asked::Automatically)
-                .await
-                .expect_err("an automatic start must not take a session you have open")
-        );
-        assert!(err.contains("would fight it"), "{err}");
-        assert!(
-            app.inner.read().await.automation.get(7).is_none(),
-            "a refused start records no run"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -374,49 +281,6 @@ mod tests {
         assert!(matches!(evaluate(&i), Verdict::No { .. }));
     }
 
-    #[test]
-    fn a_branch_you_are_working_on_is_left_alone() {
-        let p = pr(1);
-        let mut i = input(&p);
-        i.branch_busy = true;
-        match evaluate(&i) {
-            Verdict::No { reason } => assert!(reason.contains("would fight it"), "{reason}"),
-            other => panic!("expected No, got {other:?}"),
-        }
-    }
-
-    /// What a finishing review asks before handing anything on.
-    ///
-    /// `Pending` is the case worth stating: a review's last act in phase 2 is a
-    /// force-push, so the checks it is asking about were queued seconds ago and are
-    /// almost never anything else. Reading pending as "fine" would make the hand-off
-    /// fire approximately never, which is a feature that does nothing rather than one
-    /// that fails.
-    #[test]
-    fn a_review_hands_on_a_pr_with_something_left_to_watch() {
-        let mut p = pr(1);
-        for (checks, mergeable, want) in [
-            (Checks::Pending, "MERGEABLE", true),
-            (Checks::Failing, "MERGEABLE", true),
-            (Checks::Passing, "CONFLICTING", true),
-            (Checks::Passing, "MERGEABLE", false),
-            // Not "probably fine" and not "probably red": it is the poll saying it
-            // could not tell, and a run rebases and force-pushes.
-            (Checks::Unknown, "MERGEABLE", false),
-        ] {
-            p.checks = checks.clone();
-            p.mergeable = mergeable.into();
-            assert_eq!(wants_watching(&p), want, "{checks:?} / {mergeable}");
-        }
-    }
-
-    /// The guard asks about push access, not about whose name is on the repo.
-    ///
-    /// Both readings agreed on a fork you own and disagreed everywhere else: the
-    /// old owner-versus-login test refused an org PR you have write on (so `fix-pr`
-    /// could not run outside a fork layout at all) and passed a same-repo PR merely
-    /// because you owned the repo. Each direction is asserted, because getting only
-    /// one of them right is what shipped.
     #[test]
     fn the_guard_asks_whether_you_can_push_not_who_owns_it() {
         // A repo that is not yours, and you cannot push to it.

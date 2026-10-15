@@ -36,15 +36,12 @@ where a session's state comes from. [README.md](../README.md) is what it does;
   git-only: see the push guard below. Teardown is a seven-check preflight, then your
   repo's `WorktreeRemove` hooks, then `git worktree remove`. Never `rm -rf`, because
   a worktree is full of symlinks into main.
-- **The review flow, and there are two.** The rail's `handle` button starts
-  `/orchd:handle-review` in a pane: one agent in the PR's worktree, reading the
-  threads, applying what is right, asking you about the rest, and drafting replies
-  it posts only on an explicit go. That is the default because the other one is not
-  finished. The other one is the review session — the same agent, in the same
-  worktree, but it proposes a stance per thread and the overlay puts those on
-  cards; it then writes the code and drafts each reply, which the daemon posts on
-  its own credentials. It is the second review item in a PR row's menu. Resolving
-  a thread stays your button either way, by design.
+- **The review flow.** The rail's `handle` button starts `/orchd:handle-review`
+  in a pane: one agent in the PR's worktree, reading the threads, applying what is
+  right, asking you about the rest, and drafting replies it posts through its own
+  `gh` only on an explicit go. The daemon writes nothing to GitHub. Resolving a
+  thread stays your button, by design. There was a second flow, an overlay of
+  cards over one review session; it was removed.
 - **`fix-pr` is hand-triggered, never automatic.** The guards that protect the
   machine and the repo remain (authorship, one run per PR, a busy branch, the push
   guard below); the automatic trigger does not. It is a gate you read before starting, not one that trips
@@ -69,7 +66,6 @@ crates/orchd-base/    the primitives. Nothing here may import anything below.
   atomic.rs       write-and-rename for every durable file, and setting aside one
                   that will not parse
   model.rs        the shared value types: ChangedFile, FileSet, DiffFile, Bank
-  proposal.rs     what a review session proposes: Stance × Mode, positions, stories
   guard.rs        the git rules (push blast radius, reach), run by `orch guard push`
   edit.rs         file read/write with containment and conflict detection
   headroom.rs     the pre-spawn resource check every session goes through
@@ -83,8 +79,8 @@ crates/orchd-repo/    one checkout, described. No session state lives here.
   launch.rs       the environment and argv a session's process is built with
   agent.rs        which agent a session runs, Claude Code or Codex, and its argv
   codex.rs        Codex's hooks as -c overrides, their trust, its rollouts
-  forge/          the Forge seam: trait + dispatch (mod.rs), agnostic model
-                  (model.rs), the GitHub impl (github.rs, github_write.rs)
+  forge/          the Forge seam, reads only: trait + dispatch (mod.rs), agnostic
+                  model (model.rs), the GitHub impl (github.rs)
   diff.rs         numstat, hunk parsing, word-level LCS
   patch.rs        what git says changed: the numstat parser and the dirty list
   skills.rs       the vendored skills in skills/: a plugin dir for Claude Code's
@@ -102,18 +98,16 @@ crates/orchd/         the runtime core: the `orchd` library, what the daemon kno
   preview.rs      the file pane's html preview: a sandboxed frame's token and route
   relocate.rs     the swap, the move out of main, and the conversation that travels
   restart.rs      respawn sessions in place on the installed agent, each when idle
-  review_api.rs   the review overlay's routes: the threads, the proposals, one
-                  thread's reply, the hand-off
+  review_api.rs   the PR routes that start work, and the file pane's reads and
+                  writes
   state.rs        the daemon's owned state, snapshots, reconcile, durable writes
   store.rs        session record persistence, orphan reaping
   spawn.rs        session / worktree / process spawning, and worktree_setup
   worktree.rs     cutting a tree and the hooks that finish it; teardown preflight,
                   archive, revive, removal
   spare.rs        the pool of one: a worktree cut before anybody asks for one
-  triage.rs       the review session's spawn, and the gates a worktree must pass
-  post.rs         one thread's outward words: the story, the reply, the reaction
+  triage.rs       the handle-review spawn, and the gates a worktree must pass
   fix_pr.rs       automation state, the fix-pr guard table, a run's verdict
-  story.rs        filing a tracker story for a fair-but-out-of-scope point
   update.rs       both upgrade bars: is the agent behind, and what this
                   install's own upgrade command is, so the app can run it
   health.rs       a managed process's output → health

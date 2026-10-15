@@ -34,16 +34,6 @@ writes the record, then spawns, and takes the record back out on failure.
 two of the four spawners, so the rail's new-worktree button, the fork path and
 the story filer had no check at all.
 
-## `forge/github_write.rs` will not resolve a thread, approve, merge or open a PR.
-That is a design boundary, not a gap. Resolving is the comment author's button.
-Which means **`is_resolved` can never stand for "handled"**: the daemon never
-sets it, so every thread it has ever answered is still unresolved. A re-request
-guard derived from `!is_resolved` shipped and could never fire — read
-`post::rerequest_all`, and ask "did *we* settle it" instead. The neighbouring
-trap is `answerable`, which flips the moment you post: it answers "is anyone
-owed a reply", so it is only "who reviewed" on a fetch taken *before* the
-posting.
-
 ## The daemon no longer asks Claude Code to cut a worktree, and the isolation pin is why.
 `claude --worktree` was the creation path at Claude Code's own layout,
 and every session it starts is pinned into worktree isolation. That pin refuses
@@ -294,18 +284,17 @@ proposals — reported by the agent as `ORCH_POST_TOKEN is absent from this
 environment`, after it had read every thread. Two ways in, neither exotic: the
 app restarting (`auto_resume` resumes every session that was live, runs
 included) and the rail's own resume button (`api::revive` carries the recorded
-`Pass`). The rule now lives
-in `triage::mint_post_token` / `posts_proposals`, called by every spawn that
-posts.
+`Pass`). The rule lived in `triage::mint_post_token` / `posts_proposals`, called by
+every spawn that posted, until the post token went with the overlay review. The
+lesson is the seam below, and it still holds for the ask token.
 **`spawn::run_env` is the seam, and `clippy::disallowed_methods` now refuses
 `launch::session_env` anywhere else.** Three sites built a session's environment
 themselves — the worktree spawner, the story filer and `run_env` — and the two
 that bypassed it were right only because neither carries a `Pass` today. The
 difference between the two spellings is one variable an agent reports missing
 hours later, which is what this entry is about.
-`proposal_tokens` says it is deliberately not persisted, and that is still right
-— the token is only ever compared against the record, so re-minting is the fix
-and persisting would be the wrong one.
+A token compared only against the record is re-minted on a resume, never
+persisted: persisting would be the wrong fix.
 
 ## A spare worktree is a workspace with no session, and that is the shape the reaper hunts.
 The pool (`crate::spare`) keeps `spare_worktrees` trees cut and based ahead of

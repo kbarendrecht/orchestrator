@@ -235,8 +235,8 @@ const autoTurns = turnsFile && fs.existsSync(turnsFile)
 
 /** Leave a token the daemon handed this session where a flow can find it.
  *
- *  Both are minted per spawn and deliberately never persisted (see
- *  `proposal_tokens`), so the session's own environment is the only place either
+ *  It is minted per spawn and deliberately never persisted (see
+ *  `Session::ask_token`), so the session's own environment is the only place it
  *  exists — and a flow standing in for the agent has no other way to hold one.
  *  Written under the sandbox, one file per session. Test-only, in a temp dir,
  *  alongside a fake agent that has no credentials of its own.
@@ -307,8 +307,6 @@ function note(line) {
 
 const started = async () => {
   recordToken('ask-tokens', 'ORCH_ASK_TOKEN')
-  // Only a posting run gets this one; every other session simply writes nothing.
-  recordToken('post-tokens', 'ORCH_POST_TOKEN')
   await recorded()
   for (let i = 0; i < autoTurns; i++) await turn(`e2e turn ${i + 1}`)
   // Typed input is a turn too, so a flow can drive one over the pty websocket.

@@ -247,13 +247,6 @@
       <div class="fnsrc" id="fvsrc"></div>
     </div>
 
-    <!-- ============ REVIEW OVERLAY ============ -->
-    <!-- Rendered entirely by renderReview(): it is six screens rather than one
-         layout, so markup here would be five hidden shells. Ids inside take an
-         `rv-` prefix — classes can be shared with the diff overlay above, ids
-         cannot. -->
-    <div class="overlay rv" id="rvoverlay"></div>
-
     <!-- What the running session is blocked on. Overlays the pty, docked near the
          bottom but raised clear of the agent's input box (--oq-clear) so the
          question sits over the conversation without covering the line you would type
@@ -293,13 +286,6 @@
         <pre class="startout" id="startout" hidden></pre>
       </div>
 
-      <!-- What a review is doing, while its overlay is closed. Inside the terminal
-           region so it sits over the pty rather than over the drawer, and outside
-           `#rvoverlay` because `renderReview` replaces that element's children on
-           every snapshot and would tear this out about once a second. `showTerm`
-           only appends and hides hosts, so a sibling here is safe — `#termempty`
-           has always been one. -->
-      <div class="rvbar" id="rvbar" hidden></div>
     </div>
 
     <!-- Process drawer: available on every workspace, not just main. -->

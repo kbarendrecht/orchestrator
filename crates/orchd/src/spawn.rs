@@ -783,19 +783,14 @@ async fn spawn_session_with_id(
         session.forked_from = Some(prev);
     }
 
-    // A resume rebuilds the environment from nothing, so the run's own credential
-    // has to be re-handed here as well as at a fresh spawn: through the same seam,
-    // because this is the path that forgot it once. See [`post_token_for`].
-    let post = post_token_for(app, id, &session.pass).await;
     // Off the runtime. `session_env` asks the checkout's own env source, which is a
     // bounded child process (`mise env`, `direnv export`) that `run_bounded` polls
     // with `thread::sleep` for up to five seconds — on *every* spawn. Parked on a
     // tokio worker that is the whole board freezing while a session starts.
     let (env, unset) = {
         let (app, at, tok) = (app.clone(), path.clone(), session.ask_token.clone());
-        let post = post.clone();
         crate::proc::run_blocking("reading the session environment", move || {
-            run_env(&app.cfg, &at, id, Some(&tok), post.as_deref(), &[])
+            run_env(&app.cfg, &at, id, Some(&tok), &[])
         })
         .await?
     };
@@ -1125,15 +1120,13 @@ pub async fn spawn_worktree_session(
     // per directory.
     // Off the runtime — see the note in `spawn_session`; this is a child process
     // on the spawn path too.
-    // Through `run_env`, the seam every other spawner uses, with no post token: a
-    // worktree session carries no `Pass`, so it has nothing to post. Spelled as the
-    // same call rather than `session_env` directly, because the difference between
-    // the two is one variable an agent reports missing hours later — which is how
-    // the resume path lost `ORCH_POST_TOKEN` once.
+    // Through `run_env`, the seam every other spawner uses, rather than
+    // `session_env` directly: the difference between the two is one variable an
+    // agent reports missing hours later.
     let (env, unset) = {
         let (app, at, tok) = (app.clone(), spawn_cwd.clone(), ask_token.clone());
         crate::proc::run_blocking("reading the session environment", move || {
-            run_env(&app.cfg, &at, id, Some(&tok), None, &[])
+            run_env(&app.cfg, &at, id, Some(&tok), &[])
         })
         .await?
     };
@@ -1279,38 +1272,14 @@ impl RunSpec {
 ///
 /// Extracted because this is the seam that decides *which* credential a run holds,
 /// and it used to be `app.token`: the whole API, handed to the pass whose input is
-/// other people's review comments. `ask` is `None` for a run with nobody to ask,
-/// `post` is `Some` only for a run that posts proposals. Both go in the environment
-/// rather than the prompt, because prompt text lands in a transcript and a pty
-/// buffer.
-/// The proposals credential a session with this pass is handed, minted and recorded,
-/// or `None` for one with nothing to post.
-///
-/// Its own function because the *resume* path is where this rule was forgotten
-/// once: `spawn_session` rebuilds a session's environment from nothing, so a
-/// resumed review run came back able to ask questions and unable to post its
-/// proposals, reporting `ORCH_POST_TOKEN is absent from this environment` after it
-/// had read every thread. Re-minted rather than persisted, like the ask token: the
-/// value is only ever compared against the record this write updates.
-pub(crate) async fn post_token_for(
-    app: &Arc<AppState>,
-    id: SessionId,
-    pass: &Option<Pass>,
-) -> Option<String> {
-    match pass {
-        Some(Pass { pr, command }) if Pass::posts_proposals(command) => {
-            Some(app.mint_post_token(id, *pr).await)
-        }
-        _ => None,
-    }
-}
-
+/// other people's review comments. `ask` is `None` for a run with nobody to ask.
+/// It goes in the environment rather than the prompt, because prompt text lands in
+/// a transcript and a pty buffer.
 pub(crate) fn run_env(
     cfg: &crate::config::Config,
     cwd: &Path,
     id: SessionId,
     ask: Option<&str>,
-    post: Option<&str>,
     extra: &[(String, String)],
 ) -> (Vec<(String, String)>, Vec<&'static str>) {
     #[expect(
@@ -1318,9 +1287,6 @@ pub(crate) fn run_env(
         reason = "this is the one call the lint funnels every spawner into"
     )]
     let (mut env, unset) = crate::launch::session_env(cfg, cwd, id, ask);
-    if let Some(token) = post {
-        env.push(("ORCH_POST_TOKEN".to_string(), token.to_string()));
-    }
     env.extend(extra.iter().cloned());
     (env, unset)
 }
@@ -1413,16 +1379,15 @@ pub(crate) async fn spawn_run(
     // the record: the agent reads `ORCH_ASK_TOKEN`, and `/ask`/`/wait` check it
     // against `session.ask_token`.
     let ask = spec.asks.then(|| session.ask_token.clone());
-    // Narrow credentials, no broad one: asks are authenticated against this
-    // session, proposals against this PR. Neither opens anything else, which is
-    // what keeps "the daemon owns outward writes" an API rule rather than a
-    // sentence in a prompt this run's own input could argue with.
-    let post = post_token_for(app, id, &session.pass).await;
+    // A narrow credential, no broad one: an ask is authenticated against this
+    // session and opens nothing else, which is what keeps "the daemon owns
+    // outward writes" an API rule rather than a sentence in a prompt this run's own
+    // input could argue with.
     // Off the runtime — see the note in `spawn_session`.
     let (env, unset) = {
         let (app, at, extra) = (app.clone(), path.clone(), spec.extra_env.clone());
         crate::proc::run_blocking("reading the session environment", move || {
-            run_env(&app.cfg, &at, id, ask.as_deref(), post.as_deref(), &extra)
+            run_env(&app.cfg, &at, id, ask.as_deref(), &extra)
         })
         .await?
     };
@@ -2257,16 +2222,15 @@ fn watch_ready(app: Arc<AppState>, id: SessionId, handle: Arc<PtyHandle>) {
 }
 
 /// The one observer of a session's pty exit: it settles the record and dispatches
-/// whatever that session's pass owes on its way out. Every spawner arms it,
-/// `triage::spawn_posting_run` included — a review session that had its own
-/// watcher never reached the hand-off below, so `fix_pr_on_exit` was set, the
-/// session was killed, and no run ever started.
+/// whatever that session's pass owes on its way out. Every spawner arms it: a
+/// spawner that armed a watcher of its own once left a run whose end nothing
+/// settled.
 pub(crate) fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<PtyHandle>) {
     tokio::spawn(async move {
         let code = handle.wait().await;
         /* What this session *was*, read while the lock is already held and acted on
         below. A run's end is owed to the module that started it — a fix run's
-        verdict to `fix_pr`, the review's hand-off to the same — and this is the
+        verdict to `fix_pr` — and this is the
         only place that learns a pty is over, which is why the news is *published*
         here rather than dispatched by name. `state::RunObserver` says why that
         inversion is the shape and a hook on `RunSpec` is not. */
@@ -2275,10 +2239,6 @@ pub(crate) fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<
         // it is closed here: nothing else would ever notice that the thing working
         // through it had stopped, and threads left `pending` then read as imminent
         // for as long as the daemon runs.
-        // A run whose success is "proposals arrived", not "exited zero": an agent
-        // can finish cleanly having posted nothing, and that is the failure the
-        // user would otherwise stare at an empty overlay wondering about.
-        let mut posting_for: Option<u64> = None;
         // A turnless interactive session leaves nothing to come back to, so rather
         // than archive an empty row it is forgotten outright — and its headers-only
         // transcript is deleted here, outside the lock. `(cwd, recorded)` is what
@@ -2298,9 +2258,6 @@ pub(crate) fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<
                     return;
                 }
             }
-            // Its post token goes with the process: keyed by session now, nothing
-            // else would ever drop it, and a resume mints a fresh one.
-            inner.proposal_tokens.remove(&id);
             match inner.sessions.get_mut(&id) {
                 Some(s) => {
                     if s.state.is_live() {
@@ -2314,18 +2271,9 @@ pub(crate) fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<
                     // this session, it has run and stopped since.
                     app.resume_settled(id);
                     if let Some(pass) = &s.pass {
-                        if Pass::posts_proposals(&pass.command) {
-                            posting_for = Some(pass.pr);
-                        }
                         ended = Some(crate::state::RunExit {
                             session: id,
                             pass: pass.clone(),
-                            // Only a review that said so. Every other way one ends
-                            // — you closed it, it fell over reading, you killed it
-                            // mid-cards — leaves the flag false and hands on
-                            // nothing, which is the whole difference between this
-                            // and a run that trips behind you.
-                            hand_off: s.fix_pr_on_exit,
                         });
                     }
                     // Last chance to find the conversation. A session closed
@@ -2418,11 +2366,6 @@ pub(crate) fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<
                         }
                     }
                 }
-            }
-        }
-        if let Some(pr) = posting_for {
-            if !app.inner.read().await.proposals.contains_key(&pr) {
-                tracing::warn!(pr, session = %id, "the run exited without posting proposals");
             }
         }
         app.release_main(id).await;
@@ -3474,15 +3417,13 @@ mod tests {
     static PUBLISHED: std::sync::Mutex<Vec<crate::state::RunExit>> =
         std::sync::Mutex::new(Vec::new());
 
-    /// A review that asked for its checks to be handed on says so when its pty ends.
+    /// A run says so when its pty ends.
     ///
-    /// The review spawner used to arm a watcher of its own that never reached the
-    /// hand-off, so the flag stayed set and nothing started. What is asserted is the
-    /// *published* exit, since settling one is `orchd-serve`'s now
-    /// ([`crate::state::RunObserver`]) — and the payload is the stronger assertion
-    /// anyway: the old test could only watch a refusal take the flag back.
+    /// A spawner once armed a watcher of its own, and the run's end never reached
+    /// whoever was owed it. What is asserted is the *published* exit, since
+    /// settling one is `orchd-serve`'s ([`crate::state::RunObserver`]).
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_review_exit_acts_on_its_hand_off_flag() {
+    async fn a_runs_exit_is_published() {
         use crate::pty::PtyHandle;
 
         let (app, dir) = crate::testutil::app("handoff-exit");
@@ -3504,12 +3445,11 @@ mod tests {
                 dir.clone(),
                 Some(Pass {
                     pr: 4242,
-                    command: Pass::REVIEW.to_string(),
+                    command: Pass::FIX_PR.to_string(),
                 }),
             );
             s.pty = Some(pty.handle.clone());
             s.set_state(State::Working);
-            s.fix_pr_on_exit = true;
             inner.sessions.insert(id, s);
         }
 
@@ -3540,8 +3480,7 @@ mod tests {
         let exit = published.expect("the exit was never published");
         assert_eq!(exit.session, id);
         assert_eq!(exit.pass.pr, 4242);
-        assert_eq!(exit.pass.command, Pass::REVIEW);
-        assert!(exit.hand_off, "the review asked for the hand-off");
+        assert_eq!(exit.pass.command, Pass::FIX_PR);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

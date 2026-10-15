@@ -1502,7 +1502,6 @@ pub async fn serve(
 pub fn router(host: Arc<Host>) -> Router {
     Router::new()
         .route("/", get(index))
-        .route("/review-preview", get(review_preview))
         .route("/app.js", get(asset_js))
         .route("/app.css", get(asset_css))
         .route("/js/:file", get(module))
@@ -1534,7 +1533,6 @@ pub fn router(host: Arc<Host>) -> Router {
 const INDEX: &str = include_str!("../../../web/index.html");
 const APP_JS: &str = include_str!("../../../web/app.js");
 const APP_CSS: &str = include_str!("../../../web/app.css");
-const REVIEW_PREVIEW: &str = include_str!("../../../web/review-preview.html");
 
 /// The substitutions every served page gets.
 ///
@@ -1571,16 +1569,6 @@ async fn index(State(host): State<Arc<Host>>) -> Response {
     (
         [(header::CACHE_CONTROL, "no-store, must-revalidate")],
         Html(page(&host, INDEX)),
-    )
-        .into_response()
-}
-
-/// The review-overlay preview page, substituted the same way, because the module
-/// graph reads `window.__ORCH__` at import time.
-async fn review_preview(State(host): State<Arc<Host>>) -> Response {
-    (
-        [(header::CACHE_CONTROL, "no-store, must-revalidate")],
-        Html(page(&host, REVIEW_PREVIEW)),
     )
         .into_response()
 }
@@ -1638,8 +1626,6 @@ async fn module(UrlPath(file): UrlPath<String>) -> Response {
         "editor.js" => include_str!("../../../web/js/editor.js"),
         "editkeys.js" => include_str!("../../../web/js/editkeys.js"),
         "merge.js" => include_str!("../../../web/js/merge.js"),
-        "review.js" => include_str!("../../../web/js/review.js"),
-        "review-diff.js" => include_str!("../../../web/js/review-diff.js"),
         "queue.js" => include_str!("../../../web/js/queue.js"),
         "settings.js" => include_str!("../../../web/js/settings.js"),
         "open.js" => include_str!("../../../web/js/open.js"),

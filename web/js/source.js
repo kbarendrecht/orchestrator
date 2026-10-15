@@ -1,12 +1,10 @@
 // Syntax colour for source, as ranges rather than markup.
 //
-// **Lifted out of `diff.js`, where four modules were already reaching in for it.**
-// `review.js` and `review-diff.js` import these three functions and nothing else
-// about diffs; `diff.js` itself is a thousand lines of changed-files pane, hunk
-// renderer and editor around them. A search viewer would have been the fourth
-// importer of a module it has no other business with — so the shared thing moved
-// down rather than growing a fourth caller, and `review-diff.js` now depends on
-// no viewer at all.
+// **Lifted out of `diff.js`, where other modules were already reaching in for it.**
+// They imported these functions and nothing else about diffs; `diff.js` itself is
+// a thousand lines of changed-files pane, hunk renderer and editor around them. So
+// the shared thing moved down rather than growing another caller of a module the
+// search viewer has no other business with.
 //
 // The rule that keeps it here: this file is **pure presentation of a string**. No
 // fetch, no state, no snapshot. Anything that needs to know which workspace or

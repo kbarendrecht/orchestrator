@@ -18,29 +18,6 @@ time: number, summary: string, };
 
 export type Checks = "passing" | "failing" | "pending" | "unknown";
 
-/**
- * One comment in a review thread.
- */
-export type Comment = { 
-/**
- * REST id. The reply endpoint is keyed on this, not on the GraphQL node id.
- */
-database_id: bigint, author: string, body: string, created_at: string, url: string, 
-/**
- * The anchored patch text. GitHub hangs it off every comment; only the
- * first one's is worth rendering, so `Thread::diff_hunk` reads that.
- */
-diff_hunk: string | null, 
-/**
- * You have 👍'd this comment.
- *
- * Fetched because the poll and the resolve flow have to agree on what a
- * thumbs-up means, and only the poll could see one: the detailed thread query
- * did not ask for reactions, so `is_answerable` re-offered every thread the
- * flow had already answered with a 👍 — the review's §3 finding.
- */
-viewer_thumbed: boolean, };
-
 export type DiffSummary = { base: string, files: Array<DiffFile>, added: number, deleted: number, };
 
 /**
@@ -250,28 +227,6 @@ words: [number, number][] | undefined,
 no_eol: true | undefined, };
 
 export type RowKind = "context" | "del" | "add";
-
-/**
- * An unresolved conversation on a PR.
- */
-export type Thread = { 
-/**
- * `PRRT_…`. **Not** a resolve target — closing a thread is the comment
- * author's button, never ours — but the join key between a thread and the
- * finding the triage agent returns for it.
- */
-id: string, path: string | null, 
-/**
- * `null` on an outdated thread; the finding can still stand.
- */
-line: number | null, start_line: number | null, original_line: number | null, is_resolved: boolean, is_outdated: boolean, comments: Array<Comment>, 
-/**
- * [`Thread::is_answerable`] against the fetch's own viewer, resolved by
- * [`Threads::mark_answerable`] so the SPA does not have to reimplement the
- * rule. Always false straight out of parsing, which has no viewer to judge
- * by.
- */
-answerable: boolean, };
 
 /**
  * Where the daemon's GitHub token came from.

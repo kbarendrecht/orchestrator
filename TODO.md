@@ -5,68 +5,6 @@ this file, which churned it from every build; that feature is gone.
 
 ## Next
 
-- **The review session is the contender, and the pane is what works.**
-  The batch flow — a headless triage pass, cards, then a resolve run carrying out
-  what the cards decided — is deleted. It was the third of three flows over one
-  review, it had never answered a real reviewer through the UI, and it was what
-  made the overlay six screens deep. What it took with it: `skills/triage`,
-  `skills/resolve-run`, the manual phase, the plan and run records, both their
-  stores, and `patch.rs`'s apply-and-fold ladder, which only the batch used.
-
-  **The fold machinery went too, and that was a decision rather than a sweep.**
-  `review_commit` — `amend_target`, which commit owns a reviewed line and may it be
-  rewritten — plus `git::fold_in`, `pre_commit`, `blame_line`, `restore_paths`,
-  `effective_email`, `authors_in`, `is_merge`, `rev_exists`, `is_ancestor` and
-  `user_email`, with their fourteen tests. It looked worth keeping for the session
-  flow, and it is not: both surviving flows hand the amending to the agent, in prose
-  — `skills/handle-review/SKILL.md:67` and `skills/review/SKILL.md:198` both say
-  amend into the commit that owns the change. That machinery was the batch's way of
-  doing it *without* an agent, and there is no longer a caller that has no agent.
-  Stage 4 posts a reply; it applies no patch. git remembers it if the question
-  reopens.
-
-  **The overlay is three screens now**: card → approval → report, with `reading`
-  and `changing` as the two the session owns and you only watch. `intake`, the
-  worktree `gate` and the before-tally overview are gone — all three were the
-  batch's, and the rail's review verb starts the session itself. The gate went
-  whole rather than as a screen: `POST /api/pr/:n/commit` and `/stash`, the `gate`
-  field in the `/review` payload, `git::commit_all`, `git::stash` and
-  `triage::gate_allowing_your_edits`. A dirty tree is still refused, at the one
-  place that can act on it — `spawn_posting_run` bails with `Gate::say()` and the
-  toast carries the sentence — instead of being fetched with a `git status` on
-  every open for a screen in front of a flow that no longer starts there.
-
-  Two things it was right about, kept: a card that waits for you rather than a
-  timeout that posts on your behalf, and `Skip` as the absence of a decision rather
-  than a stance of its own.
-
-  What is left is two flows. `/orchd:handle-review` in a pane is the default and the
-  one proven on real reviews. The review session is the same agent with the overlay
-  in front of it, and the open question is whether card-then-approve beats reading
-  the pane. It has to be driven on real work before the pane's button changes.
-
-  **Phase 3 goes through the daemon now.** The skill posted with `gh api` and was
-  asked to remember four rules while doing it; it makes one call per thread to
-  `POST /api/session/:id/thread/:thread/reply` instead, and one call to
-  `POST /api/session/:id/rerequest` after the last of them. The footer and the
-  refuse-a-duplicate rule live in `post_one` where eleven tests hold them, and
-  *which* reviewers are asked is derived from a fresh fetch rather than from what the
-  session believes it posted — so a reply that did not go out holds its author back
-  on its own. That gave `forge::rerequest` back the caller the batch took with it,
-  and made the approval page's `re-request` rows the daemon's promise rather than
-  prose in a skill.
-
-  *Still unproven in the session flow.* The story arm has never run (the fixture
-  daemon has `tracker: none`), and `session_rerequest` has not either, because the
-  fixture's threads are posted by `github-actions[bot]` and a bot cannot be a
-  requested reviewer. That is the fixture's identity, not the code.
-
-  **And nothing in the UI can mean "handled".** `is_resolved` is never set by the
-  daemon, because `github_write` will not resolve a thread by design — so a thread
-  you have answered looks exactly like one you have not. Settle that in the same
-  drive: either the overlay stops implying it, or resolving becomes a write the
-  daemon is allowed to make.
-
 - **Stacked-PR support.** Two halves. First, a context-menu `stack` action on a
   PR row that opens a session starting from that PR's code — a new branch based
   on the selected PR's head, its own worktree (cwd = main, via the existing
@@ -150,48 +88,18 @@ this file, which churned it from every build; that feature is gone.
     Code fact, so the seam has to be "put this skill where *this* agent looks",
     with the placement mechanism per agent — not one flag with the agent's name
     swapped.
-  - **Give the tracker the same seam the forge has, and let it own its transport.**
-    A tracker is now three config fields (`config::Tracker`) rather than four
-    constants in an enum arm, so the naming half is done; what is left is that
-    reaching it is still spread through `story.rs` — the allowlist, the MCP entry's
-    variable, and the URL rule in `StoryRef::consistent`. Mirror `ForgeImpl`: a
-    `Tracker` trait plus enum-dispatch keyed on `config.tracker`, holding the MCP
-    id and tool allowlist, the token env/file, the story-URL grammar, and a
-    tracker-agnostic `Story` beside it. Two things to settle while doing it — the
-    token ladder is Shortcut-named, and `Stub` should become the trait's test
-    double rather than the `--strict-mcp-config` special case it is.
-
-    **The transport is the same item, which is why it is one entry and not two.**
-    `Tracker::mcp_server()` names a server orchd expects to find in *the repo's*
-    `.mcp.json` — `hooks::write_settings` approves it through
-    `enabledMcpjsonServers`, `--allowedTools mcp__<name>` scopes the run to it, and
-    the daemon pushes the credential in under the variable `token_env()` names. So
-    a feature of orchd works only where somebody else happened to configure a
-    server with the right name, over a transport we do not control (one repo's is
-    `http` to `mcp.shortcut.com`), and the failure lands mid-run on a thread rather
-    than at startup: the daemon warns about a missing *token* and says nothing
-    about a missing or renamed *server*. **The skill half moved rather than went
-    away**, which is worth knowing before this is built: `skills/story` used to
-    spell `mcp__shortcut__*` itself and now deliberately names no tool, deferring
-    to the repo's own tracker skill for the search tool, the team, the workflow
-    state and the epic. So a repo has to supply two things rather than one — an MCP
-    server under the name `Tracker::mcp_server()` expects, and a tracker skill of
-    its own — and neither absence is checked at startup.
-
-    **The small version is the one to build, and the mechanism is already here.**
-    A tracker with `stub: true` passes `--mcp-config` plus `--strict-mcp-config`,
-    which ignores every configured server; doing that for the live tracker too
-    keeps the agent and the MCP shape and drops the repo dependency. The larger
-    version is to call the tracker's API from Rust and drop the agent from filing
-    — search and create are two calls, and the agent is in that path only for the
-    routing rules the repo's tracker skill holds, which would then need another
-    home. Either way `Tracker` starts owning *how it is reached* rather than only
-    naming a server somebody else configured.
-
-  - **Two GitHub-shaped leaks** for a real second forge: `ThreadRoot`'s `comment_id`
-    is a REST id, and both `GitHubForge::detect`'s URL parsing and the read-token
-    ladder are github.com-specific — `for_kind`'s single `token` argument does not
-    yet model per-forge credentials.
+  - **The tracker config has two fields nothing reads, and it leans on the repo.**
+    `config::Tracker`'s `host` and `stub` were the daemon's story filer's, which went
+    with the overlay review; dropping them is a config-format change, and
+    `migrate.rs` is where it belongs. What is left is real: `hooks::write_settings`
+    approves the server through `enabledMcpjsonServers` and the daemon pushes the
+    credential in under `token_env`, so `handle-review` can file a story only where
+    the repo's `.mcp.json` happens to declare a server by that name, plus a tracker
+    skill of its own. The daemon warns at boot about a missing *token* and about an
+    undeclared server; it cannot see a missing tracker skill.
+  - **GitHub-shaped leaks** for a real second forge: `GitHubForge::detect`'s URL
+    parsing and the read-token ladder are github.com-specific — `for_kind`'s single
+    `token` argument does not yet model per-forge credentials.
 
 - ~~**Drag and drop in the rail.**~~ **Done.** Dragging a session row reorders
   the list, the order is kept per checkout in `localStorage` (`core.sessionOrder`), a session the order has never seen falls
@@ -210,34 +118,14 @@ this file, which churned it from every build; that feature is gone.
   same rail. The pointer maths in `startTabDrag` earns its keep on a strip that is
   horizontal and scrolls.
 
-- **One credential, and it stops being `gh`'s.** *`gh` must not be a requirement* —
-  that is the reason, and it outranks what the change costs below. A person who
-  installs orchd should need a token, not somebody else's CLI, and the review queue
-  already proved the shape by dropping `gh` for a `curl` on the resolved token.
-
-  Reads already go out over curl with
-  a resolved token (`forge/github.rs`); two places shell `gh` at all:
-  `gh auth token` for the credential (`forge/github.rs`, in `Source::Gh`) and every
-  write (`forge/github_write.rs`, which shells it throughout — the module banner
-  says so). The review queue used to be a third and is not:
-  it is a `curl` on the resolved token like every other read. So the plan is to
-  move the writes onto the same curl transport, keep
-  `gh auth token` as *discovery* when gh happens to be installed, and prompt for a
-  token when it is not. A GitHub OAuth flow is the later shape.
-
-  **What it costs, said up front.** Today's read path is documented as wanting a
-  read-only PAT precisely because the writes borrow gh's wider credential
-  (`forge/github.rs:14-18`). One transport means one token carrying write scopes, so
-  "the daemon never pushes and needs read only" stops being true, and the boot
-  warning that treats `TokenSource::GhCli` as too wide loses its subject. The README
-  describes today's split rather than this plan.
-
-  **Which is a cost to pay, not a reason to stop.** The read-only PAT is a real
-  property and it is one orchd can keep offering: two tokens, a read one and a
-  write one, is the shape that survives the change — the writes need their own
-  credential whether it comes from `gh` or from a field in settings. What goes is
-  the *accident* that the wide one is gh's, and with it the requirement that gh be
-  installed at all.
+- **`gh` stops being a requirement of the daemon.** A person who installs orchd
+  should need a token, not somebody else's CLI. The daemon now shells `gh` for one
+  thing only: `gh auth token`, as the last rung of the credential ladder
+  (`forge/github.rs`, `TokenSource::GhCli`). The writes that used to shell it went
+  with the overlay review, and the review skill posts through the agent's own
+  `gh`. So what is left is to prompt for a read token when no `gh` is installed;
+  a GitHub OAuth flow is the later shape. The *agent* still wants `gh`, and that is
+  the skills' requirement rather than the daemon's.
 
 - **The archive is a list you cannot find anything in.** 91 rows behind one caret,
   each carrying a name and an age, with no grouping by date and no PR number —
@@ -333,30 +221,16 @@ this file, which churned it from every build; that feature is gone.
   own** `base_ref`, now sent by the daemon, which is also the right answer for a
   stacked PR whose base is another PR's head.
 
-- **`handle review in UI` becomes `handle review`, with the diff and the comments
-  on the question.** The two verbs in `prMenu` are one intent with two answering
-  surfaces, and the decision is which surface wins: the pane does, and the cards
-  are to be rebuilt into it rather than gated or deleted.
+- **The diff and the thread's comments, drawn on a review question.** The overlay
+  review — `handle review in UI`, its cards, its state machine, the daemon-side
+  posting and the story filer — is deleted. `handle review` in a pane is the one
+  review verb, and it stays exactly as it is until something better exists.
 
-  **`handle review` does not change.** The pane pass works, and it stays exactly as
-  it is until something better exists. Nothing in this entry is licence to
-  restructure it.
-
-  **The second verb loses its screens and keeps its job.** Today it reads
-  everything, then hands the whole set over on cards with their own state machine.
-  What is wanted is the same single flow the pane already runs, with **the diff and
-  the thread's comments drawn above each question** — so the context arrives with
-  the question being asked rather than in a surface you switch to.
-
-  The seam is `renderInteraction` in `web/app.js`, which draws the `.oq` box for a
-  session's ask. Two things there are already the right shape: the box **can carry
-  a diff** — its own notes say so, and a `ResizeObserver` keeps the review bar clear
-  of it at any height — and `review-diff.js` is four pure functions over diff text
-  with no `reviewState`, split out of the overlay precisely because it owns no
-  screens. So the rendering half exists; what has to go is the state machine around
-  it. The ask already carries the value the overlay claims on (`decisions`), which
-  is what says which question is a review decision and which is the session asking
-  something of its own.
+  What the overlay was right about is still open: the context belongs with the
+  question being asked, not in a surface you switch to. The seam is
+  `renderInteraction` in `web/app.js`, which draws the `.oq` box for a session's
+  ask, and that box can already carry a diff (`detail`). The pure diff rendering
+  the cards used, `review-diff.js`, is in git history from before the removal.
 
 - **Codex: two things are still unmeasured, and `/new` can eat what the daemon
   types.** Measured on 0.162.1 with `codex` from mise, driven in a real pty with a

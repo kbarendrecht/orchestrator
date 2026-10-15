@@ -134,11 +134,9 @@ settles at `ready`.
 - **A real round trip to GitHub.** `mise run fixture` is that, and it needs
   credentials. These flows are the offline half — what they pin is the request the
   daemon *built*, not what GitHub does with it.
-- **A real agent running the review skill.** Flow 25 drives the overlay session's
-  whole path, but the fake agent does not read `skills/review/SKILL.md`: the flow
-  stands in for it at the three points the skill would speak — the proposals, the
-  ask it raises, and the calls that post. So the routes and their rules are covered
-  and the prompt that drives them is not.
+- **A real agent running the review skill.** Flow 15 starts `handle-review` in a
+  pane, but the fake agent does not read the skill; it posts through its own `gh`,
+  which the daemon never sees.
 - **`claude --resume` semantics.** The fake agent replays a transcript; it does not
   prove Claude Code resolves a conversation by id wherever the file sits. That was
   measured separately against 2.1.240.

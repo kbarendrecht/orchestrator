@@ -132,7 +132,7 @@ last_used_ms: number,
 may_be_live: boolean, agent: Agent, };
 
 /**
- * Why a triage run cannot start.
+ * Why a review run cannot start.
  *
  * These are the worktree-readiness gates: the review flow writes into this
  * worktree, and every guarantee downstream — the check ladder, the complete file
@@ -209,11 +209,10 @@ export type Offer = { "kind": "button", command: string, } | { "kind": "advice",
  *
  * **What reads `command`, and why a skill cannot answer it.** The instructions
  * live in `skills/` now, so this is no longer "which prompt did the daemon type".
- * It is the five things the daemon has to know *around* the agent rather than
+ * It is the things the daemon has to know *around* the agent rather than
  * inside it: which settle path an exit dispatches to (`spawn::watch_session_exit`),
- * which spawn is handed `ORCH_POST_TOKEN` (`triage::posts_proposals`), that a
- * resolve run may not ask questions (`api::ask`), that one triage pass per PR is
- * enough (`triage::is_triage_of`), and which PR the review bar is reporting on.
+ * that a resolve run may not ask questions (`api::ask`), and that one pass per PR
+ * is enough.
  * Every one of those happens before the first turn or after the last.
  *
  * It carries **no opinion about attention.** `Kind::Automation` used to, and the
@@ -385,17 +384,6 @@ forked_from: string | null,
  * true of these; every other resumed session is sitting at its prompt done.
  */
 interrupted: boolean, 
-/**
- * A review that ended by handing its PR's checks to a `fix-pr` run.
- *
- * Here rather than left for the overlay to infer, because the two facts it
- * would have to infer it from arrive apart: the session is marked `Exited`
- * straight away and the run's record only exists once `ensure_pr_worktree` and
- * a spawn have finished. In that gap the overlay would put its finished-review
- * report up and then take it away again a second later, which is a worse thing
- * to show than either state.
- */
-handed_off: boolean, 
 /**
  * Waiting to be respawned on the `claude` installed now — see
  * [`Session::restart_queued`]. The row says so, because a session that
@@ -580,31 +568,6 @@ export type State = { "state": "starting" } | { "state": "working" } | { "state"
  * which the restart throws away.
  */
 covers: TurnReason, } | { "state": "error", message: string, } | { "state": "exited" } | { "state": "archived", resumable: boolean, };
-
-/**
- * A story that exists in the tracker.
- *
- * Both halves come from the tool response and neither is ever constructed by
- * `format!`: the org slug in the URL belongs to your tracker workspace and the daemon has no
- * business knowing it.
- */
-export type StoryRef = { 
-/**
- * Short form, `sc-12345`. What the report shows.
- *
- * Private, with [`StoryRef::new`] the only way in, because the pair is agent
- * text that ends up as a link in a public comment: a value that has not been
- * through [`StoryRef::consistent`] must not be constructible outside this
- * module — `model` now, with `story` one of its callers. Serde is the
- * exception it cannot police — a `stories.json` written before the id was
- * checked deserializes straight past the constructor, which is why
- * [`Cache::get`] re-checks on the way out.
- */
-id: string, 
-/**
- * The clickable one, `https://app.shortcut.com/<org>/story/12345`.
- */
-url: string, };
 
 /**
  * Why a session is waiting on you.

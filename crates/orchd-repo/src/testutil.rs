@@ -2,7 +2,7 @@
 //!
 //! Behind a `test-util` feature for the reason `orchd-base`'s copy gives: a
 //! `#[cfg(test)]` module is invisible to a dependent crate's tests. `orchd`
-//! re-exports these three, so there is one `pr(1)` in the workspace.
+//! re-exports them, so there is one `pr(1)` in the workspace.
 //!
 //! What is *deliberately* different stays at the call site. These are neutral
 //! defaults, meant to be overridden with struct-update syntax
@@ -17,7 +17,7 @@
 /// test in this crate says `testutil::scratch` like every other.
 pub use orchd_base::testutil::{git, scratch, scratch_repo};
 
-use crate::forge::{Checks, Comment, Pr, Thread};
+use crate::forge::{Checks, Pr};
 
 /// A PR with nothing remarkable about it: open, mergeable, checks unknown, no
 /// stack. Override what a test is actually about.
@@ -41,32 +41,6 @@ pub fn pr(number: u64) -> Pr {
         changes_requested: false,
         needs_you: false,
         children: vec![],
-    }
-}
-/// One comment by `author`, of the shape a review thread carries.
-pub fn comment(id: u64, author: &str, body: &str) -> Comment {
-    Comment {
-        database_id: id,
-        author: author.into(),
-        body: body.into(),
-        created_at: "2026-08-17T00:00:00Z".into(),
-        url: "u".into(),
-        diff_hunk: None,
-        viewer_thumbed: false,
-    }
-}
-/// An open, answerable thread carrying one comment by `author`.
-pub fn thread(id: &str, path: Option<&str>, line: Option<u32>, author: &str) -> Thread {
-    Thread {
-        id: id.into(),
-        path: path.map(str::to_string),
-        line,
-        start_line: None,
-        original_line: None,
-        is_resolved: false,
-        is_outdated: false,
-        comments: vec![comment(100, author, "you call this twice")],
-        answerable: true,
     }
 }
 

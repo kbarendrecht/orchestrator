@@ -1,14 +1,11 @@
 use anyhow::{bail, Context, Result};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
 
-use super::github_write::Target;
-use super::model::{
-    Checks, Comment, EndedPr, LastComment, Pr, PrOutcome, Thread, ThreadRoot, Threads,
-};
+use super::model::{Checks, EndedPr, Pr, PrOutcome};
 use super::Forge;
 
 /// Where the daemon's GitHub token came from.
@@ -304,22 +301,6 @@ impl Forge for GitHubForge {
         outcome(&self.token, &self.owner, &self.name, pr)
     }
 
-    fn threads(&self, pr: u64) -> Result<Threads> {
-        fetch_threads(&self.token, &self.owner, &self.name, pr)
-    }
-
-    fn reply(&self, at: &Path, root: &ThreadRoot, body: &str) -> Result<()> {
-        self.target(at).reply(root, body).map(|_| ())
-    }
-
-    fn thumbs_up(&self, at: &Path, last: &LastComment) -> Result<()> {
-        self.target(at).thumbs_up(last).map(|_| ())
-    }
-
-    fn rerequest(&self, at: &Path, pr: u64, login: &str) -> Result<()> {
-        self.target(at).rerequest(pr, login)
-    }
-
     /// github.com's blob grammar. The host is a constant rather than carried on
     /// the forge because `repo_from_remote` only recognises github.com remotes
     /// in the first place — an Enterprise host never gets this far, so storing
@@ -354,19 +335,6 @@ impl Forge for GitHubForge {
             esc(r#ref),
             esc(path)
         )
-    }
-}
-
-impl GitHubForge {
-    /// A `gh`-shelling write handle rooted at `at`. The working dir varies per
-    /// caller — the resolve run writes from the worktree, the API from main — so
-    /// it is a parameter, never baked into the forge.
-    fn target(&self, at: &Path) -> Target {
-        Target {
-            cwd: at.to_path_buf(),
-            owner: self.owner.clone(),
-            name: self.name.clone(),
-        }
     }
 }
 
@@ -504,12 +472,19 @@ pub fn outcome(token: &str, owner: &str, name: &str, pr: u64) -> Result<Option<E
     }))
 }
 
+/// Threads come back 100 at a time when a PR's first page was capped. The poll
+/// query itself stays at [`PAGE`].
+const THREAD_PAGE: u32 = 100;
+
+/// A runaway guard, not a real ceiling: 100 pages is 10,000 threads.
+const MAX_THREAD_PAGES: usize = 100;
+
 /// One PR's remaining review-thread pages, with the poll's slim per-thread fields
-/// rather than the detailed fetch's comment bodies. Only issued for a PR the first
+/// rather than comment bodies. Only issued for a PR the first
 /// page reported as capped, so the poll's fan-out over every PR stays one query.
 fn summary_threads_query(owner: &str, name: &str, pr: u64, after: &str) -> String {
     // JSON-encode the cursor rather than pasting it in quotes, so a stray quote in
-    // GitHub's opaque string cannot break the document (as in `threads_query`).
+    // GitHub's opaque string cannot break the document.
     let after = serde_json::Value::String(after.to_string()).to_string();
     format!(
         r#"{{
@@ -560,7 +535,7 @@ fn thread_connection(pull_request: &mut Value, pr: u64) -> Result<&mut Value> {
 }
 
 /// The raw thread nodes of one page plus the cursor for the next. Split out so
-/// paging is testable without a round trip, matching [`parse_thread_page`].
+/// paging is testable without a round trip.
 ///
 /// Takes the page by value so the nodes are moved out rather than cloned; the
 /// caller has just parsed it out of the response body and wants nothing else
@@ -616,12 +591,9 @@ fn all_summary_threads(
 /// Follow `reviewThreads` cursors from `next` until the last page or the runaway
 /// guard.
 ///
-/// Both callers hold their own first page before they get here — the poll's came
-/// with the PR, the overlay's is fetched by [`fetch_threads`] — so `next` is a
-/// plain cursor and `None` simply means there is nothing more to fetch. That also
-/// makes [`MAX_THREAD_PAGES`] mean the same thing to both: pages *after* the
-/// first. It did not, while one caller spent an iteration on a page the other
-/// already had.
+/// The caller holds its own first page before it gets here — the poll's came with
+/// the PR — so `next` is a plain cursor and `None` simply means there is nothing
+/// more to fetch, and [`MAX_THREAD_PAGES`] counts pages *after* the first.
 ///
 /// Each fetched page goes to `on_page`, and the return says whether the guard
 /// fired, in which case what was gathered is a floor rather than the whole. One
@@ -680,9 +652,8 @@ fn acknowledged(thread: &Value, viewer: &str) -> bool {
 
 /// Did you 👍 this comment? Read out of a `reactionGroups` selection.
 ///
-/// Its own function because two queries select it and both hand it to the same
-/// rule — the poll's, straight off the JSON, and the detailed fetch's, on its way
-/// into [`Comment::viewer_thumbed`].
+/// Its own function so the poll's reading of a 👍 stays one rule, beside
+/// [`crate::forge::model::answered`] which judges it.
 fn viewer_thumbed(comment: &Value) -> bool {
     comment
         .get("reactionGroups")
@@ -883,226 +854,6 @@ fn next_cursor(root: &Value) -> Option<String> {
     root.pointer("/pageInfo/endCursor")
         .and_then(|c| c.as_str())
         .map(String::from)
-}
-
-// ---------------------------------------------------------------------------
-// Review threads
-// ---------------------------------------------------------------------------
-
-/// Threads come back 100 at a time. The poll query stays at [`PAGE`]; this is
-/// the on-demand fetch for one PR, and it pages to the end rather than
-/// reporting `50+` (§6).
-const THREAD_PAGE: u32 = 100;
-
-/// A runaway guard, not a real ceiling: 100 pages is 10,000 threads.
-const MAX_THREAD_PAGES: usize = 100;
-
-fn threads_query(owner: &str, name: &str, pr: u64, after: Option<&str>) -> String {
-    // The cursor is GitHub's own opaque string; encoding it as JSON rather than
-    // pasting it in quotes keeps a stray quote from breaking the document.
-    let after = match after {
-        Some(c) => serde_json::Value::String(c.to_string()).to_string(),
-        None => "null".to_string(),
-    };
-    format!(
-        r#"{{
-  viewer {{ login }}
-  repository(owner: "{owner}", name: "{name}") {{
-    pullRequest(number: {pr}) {{
-      headRefOid
-      reviewThreads(first: {THREAD_PAGE}, after: {after}) {{
-        pageInfo {{ hasNextPage endCursor }}
-        nodes {{
-          id
-          isResolved
-          isOutdated
-          path
-          line
-          startLine
-          originalLine
-          comments(first: 50) {{
-            nodes {{ databaseId author {{ login }} body createdAt url diffHunk
-              reactionGroups {{ content viewerHasReacted }} }}
-          }}
-        }}
-      }}
-    }}
-  }}
-}}"#
-    )
-}
-
-/// Every review thread on a PR, paged to the end.
-///
-/// Separate from [`poll`] on purpose: the 5-minute poll only needs a count, and
-/// pulling every comment body for every open PR to get one would be a large
-/// query on a short timer. This runs when the review overlay opens, for one PR.
-/// Reached through [`GitHubForge::threads`].
-fn fetch_threads(token: &str, owner: &str, name: &str, pr: u64) -> Result<Threads> {
-    // The first page is fetched here rather than inside the loop, so that
-    // `page_threads` only ever deals in a real cursor. See its doc for why the
-    // two callers now agree on what the page budget counts.
-    let first = graphql(token, &threads_query(owner, name, pr, None))?;
-    let (mut out, cursor) = parse_thread_page(first, pr)?;
-    page_threads(
-        token,
-        pr,
-        cursor,
-        |after| threads_query(owner, name, pr, Some(after)),
-        |v| parse_thread_page(v, pr),
-        |page: Threads| {
-            if out.viewer.is_empty() {
-                out.viewer = page.viewer;
-            }
-            if out.head_sha.is_none() {
-                out.head_sha = page.head_sha;
-            }
-            out.items.extend(page.items);
-        },
-    )?;
-    out.mark_answerable();
-    out.sort_for_review();
-    Ok(out)
-}
-
-/// One page of the thread query, plus the cursor for the next one.
-///
-/// Split out from [`Forge::threads`] so the paging and parsing can be tested
-/// without a network round trip.
-fn parse_thread_page(mut v: Value, pr: u64) -> Result<(Threads, Option<String>)> {
-    let viewer = v
-        .pointer("/data/viewer/login")
-        .and_then(|s| s.as_str())
-        .unwrap_or_default()
-        .to_string();
-    let node = v
-        .pointer_mut("/data/repository/pullRequest")
-        .filter(|n| n.is_object())
-        .with_context(|| format!("no pull request {pr} in the response"))?;
-    let head_sha = node
-        .get("headRefOid")
-        .and_then(|s| s.as_str())
-        .map(|s| s.to_string());
-
-    let root = thread_connection(node, pr)?;
-    let next = next_cursor(root);
-    // Moved out rather than iterated by reference: these nodes carry every
-    // comment body and every diff hunk on the PR, and cloning them to
-    // deserialize meant holding two copies of the page at once.
-    let items = root
-        .get_mut("nodes")
-        .and_then(|n| n.as_array_mut())
-        .map(std::mem::take)
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(parse_thread)
-        .collect();
-
-    Ok((
-        Threads {
-            pr,
-            viewer,
-            head_sha,
-            items,
-        },
-        next,
-    ))
-}
-
-/// One `reviewThreads` node as GitHub sends it. A mirror struct rather than
-/// pointer-poking, so the shape is written once and a missing field is a named
-/// default rather than a chain of `and_then`. Everything but the id is optional
-/// with `default`, because GitHub nulls fields freely (a deleted account, an
-/// outdated thread with no line) and a null must read as absent, not as a bad node.
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ThreadNode {
-    id: String,
-    #[serde(default)]
-    path: Option<String>,
-    #[serde(default)]
-    line: Option<u32>,
-    #[serde(default)]
-    start_line: Option<u32>,
-    #[serde(default)]
-    original_line: Option<u32>,
-    #[serde(default)]
-    is_resolved: bool,
-    #[serde(default)]
-    is_outdated: bool,
-    #[serde(default)]
-    comments: Nodes,
-}
-
-/// A GraphQL connection's `nodes`, kept as raw values so one bad comment drops
-/// that comment and not the thread.
-#[derive(Deserialize, Default)]
-struct Nodes {
-    #[serde(default)]
-    nodes: Vec<Value>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CommentNode {
-    database_id: u64,
-    #[serde(default)]
-    author: Option<Login>,
-    #[serde(default)]
-    body: String,
-    #[serde(default)]
-    created_at: String,
-    #[serde(default)]
-    url: String,
-    #[serde(default)]
-    diff_hunk: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct Login {
-    #[serde(default)]
-    login: Option<String>,
-}
-
-fn parse_thread(n: Value) -> Option<Thread> {
-    let t: ThreadNode = serde_json::from_value(n).ok()?;
-    Some(Thread {
-        id: t.id,
-        path: t.path,
-        line: t.line,
-        start_line: t.start_line,
-        original_line: t.original_line,
-        is_resolved: t.is_resolved,
-        is_outdated: t.is_outdated,
-        comments: t
-            .comments
-            .nodes
-            .into_iter()
-            .filter_map(parse_comment)
-            .collect(),
-        // Filled in by `Threads::mark_answerable`, which knows the viewer.
-        answerable: false,
-    })
-}
-
-fn parse_comment(n: Value) -> Option<Comment> {
-    // Read before the node is consumed, so the one rule for "did you 👍 this"
-    // stays in `viewer_thumbed` and is not restated on a typed mirror.
-    let thumbed = viewer_thumbed(&n);
-    let c: CommentNode = serde_json::from_value(n).ok()?;
-    Some(Comment {
-        database_id: c.database_id,
-        // A deleted account leaves the comment with a null author.
-        author: c
-            .author
-            .and_then(|a| a.login)
-            .unwrap_or_else(|| "ghost".to_string()),
-        body: c.body,
-        created_at: c.created_at,
-        url: c.url,
-        diff_hunk: c.diff_hunk,
-        viewer_thumbed: thumbed,
-    })
 }
 
 /// PR B is stacked on A when `B.baseRefName == A.headRefName` (§6).
@@ -1502,122 +1253,6 @@ mod tests {
         assert_eq!(count_open(&threads, "me"), (2, 1));
     }
 
-    // -- review threads ----------------------------------------------------
-
-    /// One page of the thread query. `next` becomes `endCursor`/`hasNextPage`.
-    fn thread_page(viewer: &str, nodes: &str, next: Option<&str>) -> Value {
-        let page_info = match next {
-            Some(c) => format!(r#"{{"hasNextPage":true,"endCursor":"{c}"}}"#),
-            None => r#"{"hasNextPage":false,"endCursor":null}"#.to_string(),
-        };
-        node(&format!(
-            r#"{{"data":{{"viewer":{{"login":"{viewer}"}},
-                "repository":{{"pullRequest":{{"headRefOid":"abc123",
-                  "reviewThreads":{{"pageInfo":{page_info},"nodes":[{nodes}]}}}}}}}}}}"#
-        ))
-    }
-
-    fn thread_node(id: &str, resolved: bool, outdated: bool, authors: &[&str]) -> String {
-        let comments: Vec<String> = authors
-            .iter()
-            .enumerate()
-            .map(|(i, a)| {
-                format!(
-                    r#"{{"databaseId":{},"author":{{"login":"{a}"}},"body":"b{i}",
-                        "createdAt":"2026-08-01T00:00:00Z","url":"u","diffHunk":"@@ -1 +1 @@\n+x"}}"#,
-                    100 + i
-                )
-            })
-            .collect();
-        format!(
-            r#"{{"id":"{id}","isResolved":{resolved},"isOutdated":{outdated},
-                "path":"src/Foo.php","line":42,"startLine":null,"originalLine":40,
-                "comments":{{"nodes":[{}]}}}}"#,
-            comments.join(",")
-        )
-    }
-
-    #[test]
-    fn a_thread_page_yields_its_threads_and_the_next_cursor() {
-        let v = thread_page(
-            "viewer",
-            &thread_node("PRRT_1", false, false, &["alice"]),
-            Some("Y3Vy"),
-        );
-        let (page, next) = parse_thread_page(v, 10001).unwrap();
-
-        assert_eq!(page.viewer, "viewer");
-        assert_eq!(page.head_sha.as_deref(), Some("abc123"));
-        assert_eq!(next.as_deref(), Some("Y3Vy"));
-
-        let t = &page.items[0];
-        assert_eq!(t.id, "PRRT_1");
-        assert_eq!(t.path.as_deref(), Some("src/Foo.php"));
-        assert_eq!(t.line, Some(42));
-        assert_eq!(t.start_line, None);
-        assert_eq!(t.original_line, Some(40));
-        assert_eq!(t.author(), Some("alice"));
-        assert_eq!(t.diff_hunk(), Some("@@ -1 +1 @@\n+x"));
-        assert_eq!(t.comments[0].database_id, 100);
-    }
-
-    #[test]
-    fn the_last_page_reports_no_cursor() {
-        let v = thread_page(
-            "viewer",
-            &thread_node("PRRT_1", false, false, &["alice"]),
-            None,
-        );
-        assert_eq!(parse_thread_page(v, 10001).unwrap().1, None);
-    }
-
-    #[test]
-    fn a_next_page_without_a_cursor_stops_rather_than_looping() {
-        // hasNextPage with a null endCursor would re-request the same page
-        // forever; the cursor, not the flag, is what continues the loop.
-        let v = node(
-            r#"{"data":{"viewer":{"login":"viewer"},"repository":{"pullRequest":{
-                "headRefOid":"abc123","reviewThreads":{
-                  "pageInfo":{"hasNextPage":true,"endCursor":null},"nodes":[]}}}}}"#,
-        );
-        assert_eq!(parse_thread_page(v, 10001).unwrap().1, None);
-    }
-
-    #[test]
-    fn a_missing_pull_request_is_an_error_not_an_empty_list() {
-        // A deleted or mistyped PR must not read as "no threads to answer".
-        let v = node(r#"{"data":{"viewer":{"login":"viewer"},"repository":{"pullRequest":null}}}"#);
-        assert!(parse_thread_page(v, 10001).is_err());
-    }
-
-    /// **A nulled connection is not an empty one**, and this is the pair of tests
-    /// that keeps [`accept`]'s tolerance from reaching where it does not belong.
-    ///
-    /// GraphQL nulls the nearest nullable ancestor of a failure, so a timeout
-    /// inside a large `reviewThreads` nulls the connection while leaving the
-    /// `pullRequest` above it an object. Walked with pointers that yields no nodes
-    /// and no cursor, and the paging loop reads that as the last page: the overlay
-    /// opens on a PR with threads and offers nothing to answer, silently.
-    #[test]
-    fn a_nulled_thread_connection_is_an_error_not_an_empty_page() {
-        let detailed = node(
-            r#"{"data":{"viewer":{"login":"me"},"repository":{"pullRequest":
-                {"headRefOid":"abc","reviewThreads":null}}},
-                "errors":[{"message":"Something went wrong while executing your query"}]}"#,
-        );
-        let err = parse_thread_page(detailed, 10001).unwrap_err().to_string();
-        assert!(err.contains("nulled"), "{err}");
-
-        let summary = node(
-            r#"{"data":{"repository":{"pullRequest":{"reviewThreads":null}}},
-                "errors":[{"message":"timeout"}]}"#,
-        );
-        assert!(parse_summary_thread_page(summary, 10001).is_err());
-    }
-
-    /// The other half: the poll's *list* keeps the tolerance, because there the
-    /// "one unreadable node must not hide the rest" argument holds — each PR
-    /// degrades on its own, and the next poll fixes it.
     #[test]
     fn a_partial_search_page_still_yields_the_prs_it_could_read() {
         let partial = serde_json::json!({
@@ -1629,165 +1264,6 @@ mod tests {
         let v = accept(partial).expect("errors beside data are usable");
         let nodes = v.pointer("/data/search/nodes").unwrap().as_array().unwrap();
         assert_eq!(parse_pr(&nodes[0], "me").unwrap().number, 7);
-    }
-
-    #[test]
-    fn a_resolved_thread_needs_no_answer() {
-        let v = thread_page(
-            "viewer",
-            &thread_node("PRRT_1", true, false, &["alice"]),
-            None,
-        );
-        let (page, _) = parse_thread_page(v, 10001).unwrap();
-        assert!(!page.items[0].is_answerable("viewer"));
-    }
-
-    #[test]
-    fn an_outdated_thread_still_needs_an_answer() {
-        // The code moved, but the point may still stand — unlike the rail's
-        // unresolved count, triage keeps these.
-        let v = thread_page(
-            "viewer",
-            &thread_node("PRRT_1", false, true, &["alice"]),
-            None,
-        );
-        let (page, _) = parse_thread_page(v, 10001).unwrap();
-        assert!(page.items[0].is_answerable("viewer"));
-    }
-
-    #[test]
-    fn a_thread_you_answered_last_needs_no_second_answer() {
-        let v = thread_page(
-            "viewer",
-            &thread_node("PRRT_1", false, false, &["alice", "viewer"]),
-            None,
-        );
-        let (page, _) = parse_thread_page(v, 10001).unwrap();
-        assert!(!page.items[0].is_answerable("viewer"));
-
-        // ...but one where they got the last word still does.
-        let v = thread_page(
-            "viewer",
-            &thread_node("PRRT_2", false, false, &["alice", "viewer", "alice"]),
-            None,
-        );
-        let (page, _) = parse_thread_page(v, 10001).unwrap();
-        assert!(page.items[0].is_answerable("viewer"));
-    }
-
-    #[test]
-    fn a_deleted_author_reads_as_ghost_rather_than_dropping_the_comment() {
-        let v = node(
-            r#"{"data":{"viewer":{"login":"viewer"},"repository":{"pullRequest":{
-                "headRefOid":"abc","reviewThreads":{"pageInfo":{"hasNextPage":false},
-                "nodes":[{"id":"PRRT_1","isResolved":false,"isOutdated":false,
-                  "comments":{"nodes":[
-                    {"databaseId":1,"author":null,"body":"b","createdAt":"t","url":"u"}]}}]}}}}}"#,
-        );
-        let (page, _) = parse_thread_page(v, 10001).unwrap();
-        assert_eq!(page.items[0].comments[0].author, "ghost");
-        assert_eq!(page.items[0].diff_hunk(), None);
-    }
-
-    /// Smoke-test the live query. Ignored by default: it needs the network and
-    /// a `gh` login, and it asserts against a PR whose threads can change.
-    ///
-    /// `cargo test --lib -- --ignored --nocapture fetches_real_threads`
-    #[test]
-    #[ignore = "hits the GitHub API"]
-    fn fetches_real_threads() {
-        let token = resolve_token(None).expect("a token");
-        let got = GitHubForge::new("acme", "monorepo", token.value)
-            .threads(10001)
-            .expect("the fetch");
-
-        assert!(!got.viewer.is_empty(), "viewer login came back empty");
-        assert!(got.head_sha.is_some(), "no head sha");
-        for t in &got.items {
-            assert!(t.id.starts_with("PRRT_"), "odd thread id: {}", t.id);
-            assert!(!t.comments.is_empty(), "{} has no comments", t.id);
-            // An outdated thread reports a null `line` but keeps `originalLine`,
-            // which is why the card falls back to it.
-            if t.is_outdated {
-                assert!(t.line.is_none() || t.original_line.is_some());
-            }
-        }
-        eprintln!(
-            "viewer={} head={:?} threads={}",
-            got.viewer,
-            got.head_sha,
-            got.items.len()
-        );
-    }
-
-    #[test]
-    fn a_thread_root_is_the_opening_comment_of_the_fetched_pr() {
-        // The reply endpoint is nested under a PR *and* keyed on a comment id;
-        // both come off the same fetch so they cannot disagree.
-        let v = thread_page(
-            "viewer",
-            &thread_node("PRRT_1", false, false, &["alice", "viewer", "alice"]),
-            None,
-        );
-        let (page, _) = parse_thread_page(v, 10001).unwrap();
-        let root = page.root_for("PRRT_1").expect("a root");
-        assert_eq!(root.pr(), 10001);
-        // The opening comment, not the latest one — replying to the last comment
-        // would still thread, but the root is the only id we ever legitimately
-        // post to, so it is the only one this hands out.
-        assert_eq!(root.comment_id(), 100);
-    }
-
-    /// The 👍 goes on the last comment, because that is the one `answered` reads.
-    /// Aimed at the root, a thread with a follow-up stayed waiting after the
-    /// daemon had answered it.
-    #[test]
-    fn a_thumbs_up_is_aimed_at_the_last_comment_and_a_reply_at_the_first() {
-        let v = thread_page(
-            "viewer",
-            &thread_node("PRRT_1", false, false, &["alice", "viewer", "alice"]),
-            None,
-        );
-        let (page, _) = parse_thread_page(v, 10001).unwrap();
-        let root = page.root_for("PRRT_1").expect("a root");
-        let last = page.last_for("PRRT_1").expect("a last comment");
-        assert_eq!(root.comment_id(), 100);
-        assert_eq!(last.comment_id(), 102);
-        assert!(page.last_for("PRRT_other").is_none());
-    }
-
-    #[test]
-    fn a_thread_id_that_is_not_in_the_fetch_yields_no_root() {
-        // The triage agent's own input includes comments other people wrote, so an
-        // id it hands back has to be looked up rather than trusted. There is no
-        // other constructor: an unvalidated id cannot reach `gh`.
-        let v = thread_page(
-            "viewer",
-            &thread_node("PRRT_1", false, false, &["alice"]),
-            None,
-        );
-        let (page, _) = parse_thread_page(v, 10001).unwrap();
-        assert!(page.root_for("PRRT_somebody_elses_pr").is_none());
-        assert!(page.root_for("").is_none());
-    }
-
-    #[test]
-    fn a_thread_with_no_comments_yields_no_root() {
-        let v = node(
-            r#"{"data":{"viewer":{"login":"viewer"},"repository":{"pullRequest":{
-                "headRefOid":"abc","reviewThreads":{"pageInfo":{"hasNextPage":false},
-                "nodes":[{"id":"PRRT_1","isResolved":false,"isOutdated":false,
-                  "comments":{"nodes":[]}}]}}}}}"#,
-        );
-        let (page, _) = parse_thread_page(v, 1).unwrap();
-        assert!(page.root_for("PRRT_1").is_none());
-    }
-
-    #[test]
-    fn the_cursor_is_json_encoded_into_the_query() {
-        let q = threads_query("o", "n", 7, Some(r#"cur"sor"#));
-        assert!(q.contains(r#"after: "cur\"sor""#), "{q}");
-        assert!(threads_query("o", "n", 7, None).contains("after: null"));
     }
 
     #[test]

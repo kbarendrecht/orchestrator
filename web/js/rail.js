@@ -3,7 +3,6 @@
 
 import { $, activeCheckout, AGENT_LABEL, ageLabel, bandOf, byNewest, call, callFor, callHost, callOn, caret, checkoutOf, CHECKOUTS, chooseBox, clock, confirmBox, copyText, creating, creatingIn, creatingIntoMain, dotClass, el, enterCheckout, getHost, getOn, handedToPr, hasPr, inTrouble, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, QUEUE_MAX, reason, refreshButton, repoSummary, safeHref, selected, sessionDot, sessionsOf, sessionOrder, setPendingSelect, setSelected, setSessionOrder, snap, snapshotFor, snapshotOf, startingShown, stateClass, stateLabel, terms, toast, paintSig, reconcile, unchanged, watchStarting } from './core.js';
 import * as Open from './open.js';
-import * as Review from './review.js';
 import * as Term from './term.js';
 
 /* Expanded per group and kept across renders. Main's two conversations and the
@@ -775,14 +774,10 @@ let picked = null;
  *  gestures for one menu and none for the action everybody wanted. A right-click
  *  still opens the menu; this is the verb.
  *
- *  **And the verb is the pane pass, not the overlay.** `/orchd:handle-review` in a
- *  session you watch: one agent, `AskUserQuestion` for the calls it cannot make,
- *  replies drafted and posted only on a go. The overlay flow is the menu's second
- *  review item — one session that reads everything, hands the set over once and
- *  carries out what you pick — but the cards are not good enough to be the only way
- *  through a review yet, and a button whose result you have to learn a new screen
- *  for is a worse default than one that hands you a terminal. It keeps the button
- *  until the other has been used in anger and earned it. */
+ *  **And the verb is the pane pass.** `/orchd:handle-review` in a session you
+ *  watch: one agent, `AskUserQuestion` for the calls it cannot make, replies
+ *  drafted and posted only on a go. There was a second review verb, an overlay of
+ *  cards; a review you finish in a terminal won, and the overlay was removed. */
 function reviewButtons(/** @type {import('../snapshot').PrView} */ p) {
   const wrap = el('span', 'prpair');
   /* `handle`, not `resolve`. GitHub has a literal "Resolve conversation" button,
@@ -820,21 +815,7 @@ function prMenu(/** @type {import('../snapshot').PrView} */ p, /** @type {HTMLBu
   return /** @type {[string, string | null, (() => void) | null][]} */ ([
     ['open in main checkout', null, () => openPr(p.number, 'main')],
     ['open in worktree', null, () => openPr(p.number, 'worktree')],
-    /* Two review verbs, and the first is the button's. Both are one agent you
-       watch and both read the threads; the difference is where you answer. The pane
-       asks as it goes, in the terminal. The other reads everything first, hands the
-       whole set over at once, and takes your answers on the cards — then the same
-       session applies and posts. Having two is deliberate for now: the cards are a
-       contender rather than the default, so the flow that needs no new screen keeps
-       the button and this menu is where the other one lives.
-       **Named after the job, not after the machinery.** They read `handle in a
-       pane` and `read into the cards`, which named where the work happened and how
-       it was carried — two things a person picking a menu item does not yet know
-       and has no way to choose between. Both are the same verb, so both say it,
-       and the only difference the label has to carry is that the second one puts a
-       screen in front of you. */
     ['handle review', null, () => startHandleReview(p.number, btn)],
-    ['handle review in UI', null, () => void Review.startSession(p.number, btn)],
   ]);
 }
 
@@ -1105,7 +1086,7 @@ function prRow(/** @type {any} */ p) {
          refusal said if it is mid-turn or asking you something. */
       /* **Only where a press can do what it says.** The daemon hands the job to
          an ordinary conversation in the PR's worktree. Beside a pass (a `handle`
-         pane or a review in the overlay, whose `pass` stays set) it refuses by
+         pane or a `fix-pr` run, whose `pass` stays set) it refuses by
          name, and a session in main is not one it looks for: both were buttons
          whose only outcome was an error toast. */
       const holder = p.session

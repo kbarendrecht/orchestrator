@@ -25,10 +25,11 @@ modules.
 gone with them. The conversion has one rule worth knowing: a prompt was
 substituted per run and written to a file, a skill is static and typed as one
 line, so every value a template interpolated has to arrive another way. Two ways
-are in use, and which one is not a style choice. A run that already has a token
-asks `/api/pr/:n/triage-context` (`review`). A run that deliberately has none
-reads its values out of the environment (`fix-pr`, `story`), because a route would have meant handing an unattended force-pushing
-run a credential to read what the daemon can just put there. `skills::VAR_*`
+were in use, and which one was not a style choice. A run that already had a token
+asked `/api/pr/:n/triage-context` (the overlay's `review`, since removed). A run
+that deliberately has none reads its values out of the environment (`fix-pr`,
+`handle-review`), because a route would have meant handing an unattended
+force-pushing run a credential to read what the daemon can just put there. `skills::VAR_*`
 names those variables once, since the spawner sets them and the skill reads them
 and a rename on one side alone is silent.
 **`--allowedTools` does not gate a typed skill, and the opposite was written in
@@ -122,15 +123,16 @@ this was built against:
   authenticates out of a login the user did earlier and the boot line says
   "authenticating itself" rather than warning about a variable.
 - **No tracker tool name may live in the daemon.** Linear does not publish theirs
-  and Atlassian's are versioned. `skills/story/SKILL.md` says "your tracker's own
-  search" and leans on the repo's tracker skill, which is where the README already
-  put the team id, the workflow state and the epic routing.
+  and Atlassian's are versioned. `skills/handle-review/SKILL.md` leans on the
+  repo's own tracker skill, which is where the README already put the team id,
+  the workflow state and the epic routing.
 - **The id/URL agreement rule was Shortcut-shaped.** `StoryRef::consistent`
   required a path segment equal to the id's *digits*, which is true of
   `sc-12345` → `/story/12345` and false of every Linear (`/issue/ENG-123`) and
-  Jira (`/browse/ABC-123`) URL there is. It accepts the whole id in a segment too
-  now. It would have refused every story either tracker filed, as "the agent
-  reported an id and URL that disagree".
+  Jira (`/browse/ABC-123`) URL there is. It came to accept the whole id in a
+  segment too, before it would have refused every story either tracker filed, as
+  "the agent reported an id and URL that disagree". `StoryRef` went with the
+  overlay review's story filer.
 
 ## Session names come from an undocumented field.
 `store::ai_title` tails the
