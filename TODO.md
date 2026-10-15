@@ -101,23 +101,6 @@ this file, which churned it from every build; that feature is gone.
     parsing and the read-token ladder are github.com-specific — `for_kind`'s single
     `token` argument does not yet model per-forge credentials.
 
-- ~~**Drag and drop in the rail.**~~ **Done.** Dragging a session row reorders
-  the list, the order is kept per checkout in `localStorage` (`core.sessionOrder`), a session the order has never seen falls
-  where `byNewest` would have put it, and `sort by newest` in the row's menu puts
-  it back. Driven in a real browser — three worktrees, a drag, a reload, the menu —
-  and now gated in `tools/e2e/page.mjs`, which was already booting a browser and a
-  sandbox daemon. The gate was checked by breaking it: dropping `sessionOrder` from
-  the rail's paint signature fails both drag lines, dropping the `localStorage`
-  write fails the reload line. The **mid-drag render guard** is the one part it
-  cannot hold — a synthetic drag is over before a snapshot can rebuild the rail
-  under the pointer — and `page.mjs` says so where the check is.
-
-  One thing settled while doing the reorder: the rail uses **HTML5 drag-and-drop**,
-  not the drawer's pointer maths. The rail is one column, so `dragover` answers the
-  only question there is, and `checkoutHead` was already doing exactly that on the
-  same rail. The pointer maths in `startTabDrag` earns its keep on a strip that is
-  horizontal and scrolls.
-
 - **Sign in to GitHub from the app, and the daemon stops borrowing `gh`'s
   token.** A person who installs orchd should sign in once in the window, not set
   an environment variable or install somebody else's CLI. Today the daemon's read
@@ -162,98 +145,11 @@ this file, which churned it from every build; that feature is gone.
   app without `gh` gets a token.
 
 - **The archive is a list you cannot find anything in.** 91 rows behind one caret,
-  each carrying a name and an age, with no grouping by date and no PR number —
-  search landed, and the paragraph below is what it is. `archivedRow` says out loud
-  that this is the list you scan weeks later, and scanning is the one thing it does
-  not support. Group by week, and put the PR number on the row where there is one.
-
-  ~~**And the thing worth finding is not on the row at all.**~~ **Done, and it
-  reads what was *said* rather than what a tool printed.** Every archived session
-  leaves its transcript at `<config dir>/transcripts/<session id>.jsonl`, and
-  `store::first_spoken_match` now reads them back: only `user` and `assistant`
-  records count and only `text` blocks inside them, so a `tool_result` is skipped
-  by shape and an oversized record by size before it is parsed. That selectivity
-  *is* the feature — measured at 286 transcripts and 363MB, `rebase` matched 215 of
-  them when tool output counted, and a filter answering "almost all of them" is not
-  a filter. The matched line is what the row then shows, in place of its state.
-  `tools/e2e/flows/33-archive-search.mjs` drives it.
-
-  The reading half stays open: there is still no grouping by week and no PR number
-  on the row, so a search answers "which session touched the pty ring buffer" while
-  scanning the 91 rows is what it always was.
-
-- ~~**A repo with nothing configured still pays for every pane.**~~ **Done, and it
-  found a snapshot that disagreed with the daemon.** A checkout with no forge drew
-  a PR pane reading `unavailable` and a review queue reading `off` beside it — two
-  headers, two counts, two refresh buttons, two carets, every label honest and the
-  sum reading as a broken install. It is one quiet line now, `noForge` in
-  `rail.js`, and the review block is not drawn at all. `stack down` went earlier,
-  with the compose entry above.
-
-  **`repos.upstream` is the signal, and fixing it was the real work.** `Repos` was
-  built from the git remote alone while `resolve_repo` takes `cfg.repo` first, so a
-  checkout that pins its repo in config polled that repo and reported no upstream —
-  harmless while nothing read the field, and the moment the panes hid themselves on
-  it they vanished from a checkout whose PRs were being fetched. Found exactly that
-  way. `08-fix-pr` now asserts the snapshot names the repo the daemon polls.
-
-  **The `Processes + Shell` bar stays**, and that is a decision rather than an
-  oversight: `+ Shell` is a real action available on every checkout, configured or
-  not. A bar offering something you can press is not chrome. What was chrome were
-  the panes describing a feature that does not apply.
-
-  `page-check` holds both halves, each checked by breaking it: drawing the PR pane
-  anyway fails, drawing the queue anyway fails, and reverting the `repos` fix fails
-  the e2e flow.
-
-- ~~**The guard rule is not one rule.**~~ **Done, and the rule is: only destructive
-  asks.** Destructive means work that cannot be got back. Four boxes are left and
-  each is one — orchd's copy of a transcript, banked work git keeps no copy of, a
-  file's uncommitted content, unsaved typing in the editor.
-
-  **Three were removed, each verified reversible first.** Closing a checkout keeps
-  every conversation and offers them on reopen; a swap or a move out of main is
-  undone by moving back, and both carry their uncommitted work; the teardown
-  preflight refuses a tree that is dirty, unpushed or occupied, and writes the
-  record `revive` rebuilds from at the same path. None of them loses anything.
-
-  **The two that never asked still do not**, and that is the same rule rather than
-  an exception: `fix` force-pushes with `--force-with-lease` behind a guard that
-  denies the base branch, and `open in main checkout` moves a branch. Loud, not
-  lossy. What actually stops a wrong move is the daemon — the swap lock, the push
-  guard, the preflight — and those work whether or not anybody read a box.
-
-  Loudness is answered with a toast now instead of a question: closing a checkout
-  says how many sessions stopped, the teardown says which checks passed, and the
-  swap's in-flight toast finally matches the menu item you pressed.
-
-  The rule is written at `confirmBox` in `core.js`, because **nothing static can
-  tell destructive from loud**, and `page-check` holds it from both sides — checked
-  by growing a box back on the swap and by taking one off the delete.
-
-  **The four were then re-read against what the code actually does, and one claim
-  was wrong.** Discarding banked work said "git keeps no copy"; `discard_wip` is
-  `git update-ref -d`, which drops the ref and leaves the commit **dangling** until
-  gc — so `git show` still has the work for about a fortnight, for anyone holding
-  the sha. The daemon already knew the sha and put it in a `tracing::info!`, which
-  is the same fault the boot warnings had: the recovery handle went somewhere a
-  launcher-started app cannot show you. It is in the response and the toast now,
-  asserted in `21-rebase` by checking the sha is a real commit object after the
-  ref is gone. The box stays — it is what stops the sha being needed — and its
-  wording says what git actually does.
-
-  The other three hold as written. Deleting a session removes the row and
-  `remove_file`s orchd's copy; Claude Code's own `.jsonl` survives, at a path
-  slugged from a directory that no longer exists, which is not a recovery anyone
-  will make. The two file discards are uncommitted content and unsaved typing.
-  The two `chooseBox` calls are not guards at all — "Resume or start empty" is a
-  real question only the person can answer.
-
-  Two hardcoded branch names fell out of reading this: the fix button's tooltip
-  said *"Rebase on develop"* on every repo, and the review header said *"conflicts
-  with develop"*. The tooltip reads `upstream_ref`; the header reads the **PR's
-  own** `base_ref`, now sent by the daemon, which is also the right answer for a
-  stacked PR whose base is another PR's head.
+  each carrying a name and an age, with no grouping by date and no PR number.
+  Search already finds a session by what was said in it (`store::first_spoken_match`),
+  but `archivedRow` says out loud that this is the list you scan weeks later, and
+  scanning is the one thing it does not support. Group by week, and put the PR
+  number on the row where there is one.
 
 - **The diff and the thread's comments, drawn on a review question.** The overlay
   review — `handle review in UI`, its cards, its state machine, the daemon-side
@@ -346,10 +242,7 @@ this file, which churned it from every build; that feature is gone.
   whose agents write screenshots, that is the one file type you most want to look
   at without leaving the window.
 
-  **Showing one is done**, and it took the route: `/api/file/image` serves image
-  types only, through `resolve_in_workspace`, under a CSP that forbids scripts,
-  and `viewer.js` paints it as an `<img>`. `preview.rs` says why nothing else goes
-  through it.
+  Showing one image is done (`/api/file/image`, painted by `viewer.js`).
 
   **Differing one** is the part with a design question rather than a mechanism.
   Side by side is the least surprising, a slider or an onion-skin reads better for
@@ -415,54 +308,6 @@ this file, which churned it from every build; that feature is gone.
   successful start instead, which meant the bound never bit and a daemon dying on
   boot restarted forever. Leaving the ask in invited somebody to build a guard that
   exists.
-
-- ~~**Say which git the daemon needs, and stop exceeding it by accident.**~~ **Done,
-  and the open question was a live bug in this very checkout.** The floor is stated
-  in the README as **2.23**, and the `core.fsmonitor` question is answered: on git
-  below 2.37 the value is a **hook path**, so `core.fsmonitor true` made every
-  `git status` run a program called `true` and then warn `Empty last update token`.
-  Measured here on git 2.34.1 — `trace: run_command: …; true 2 ''` — and confirmed
-  clean on 2.39.5 in a `debian:bookworm` container. Nothing broke: the empty token
-  sends git back to the full scan it would have done anyway, so the cost was a
-  process and a warning per command and the speed-up the line exists for was never
-  there. `let _ =` is why it went unseen.
-
-  `configure_repo` now writes it only at 2.37 and above, and **clears the exact
-  value `true` below that** — a repair rather than a migration, because that
-  function already runs on every daemon start for every checkout, so an older
-  build's config is fixed when its daemon next comes up. Only that literal is
-  touched: a *path* there is somebody's real fsmonitor and survives, which is its
-  own test. `git_version` is the capability read the entry asked for.
-
-  What the entry asked for and this did not do: a probe cache in Orca's shape. One
-  machine, one git, read once — the version is the whole of it here. The notes
-  below are kept for the reasoning.
-
-  There is
-  no stated minimum git version, no `git --version` read and no capability probe,
-  so a flag newer than the reader's git fails silently in whatever way that call
-  site happens to fail. One was found by reading `stablyai/orca`'s
-  `docs/reference/git-compatibility.md` and is fixed: `rebase_in_progress` asked
-  for `rev-parse --path-format=absolute --git-dir` (git 2.31) inside a
-  `let Ok(..) else { return false }`, so on Ubuntu 20.04's git 2.25 or Debian 11's
-  2.30 every caller — `bank`, `triage`, `relocate`, `reconcile`, `rebase_onto` —
-  would read "not rebasing" and act on a tree stopped mid-rebase. It says
-  `--absolute-git-dir` now, which is git 2.13 and already the spelling in
-  `git::head_file`.
-
-  What is left is the statement and one open question. The oldest flag still in use
-  is `switch`/`restore` (2.23), so **2.23 is the honest floor** and belongs in the
-  README beside the other requirements. The open one is
-  `git config core.fsmonitor true` in `configure_repo`: as a boolean that is git
-  2.37, and older git reads `core.fsmonitor` as a *hook path*, so it would try to
-  run a hook named `true` on every status. It is written `let _ =`, so nothing
-  would say so. Worth answering on an old git before the floor is written down.
-
-  Orca's own answer to the general problem is a `GitCapabilityCache` that probes
-  behaviour per execution host and remembers the refusal, explicitly *not*
-  branching on a parsed `git --version`. That is the right shape for a product
-  running git over SSH and WSL. orchd runs git on one machine, so the cheap version
-  is the whole version: name the floor, and do not exceed it.
 
 - **Deferred: a worktree could be given files by copy, not only by symlink.** orchd
   puts a worktree's untracked files there by symlinking back to main, and the
