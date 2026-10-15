@@ -118,14 +118,48 @@ this file, which churned it from every build; that feature is gone.
   same rail. The pointer maths in `startTabDrag` earns its keep on a strip that is
   horizontal and scrolls.
 
-- **`gh` stops being a requirement of the daemon.** A person who installs orchd
-  should need a token, not somebody else's CLI. The daemon now shells `gh` for one
-  thing only: `gh auth token`, as the last rung of the credential ladder
-  (`forge/github.rs`, `TokenSource::GhCli`). The writes that used to shell it went
-  with the overlay review, and the review skill posts through the agent's own
-  `gh`. So what is left is to prompt for a read token when no `gh` is installed;
-  a GitHub OAuth flow is the later shape. The *agent* still wants `gh`, and that is
-  the skills' requirement rather than the daemon's.
+- **Sign in to GitHub from the app, and the daemon stops borrowing `gh`'s
+  token.** A person who installs orchd should sign in once in the window, not set
+  an environment variable or install somebody else's CLI. Today the daemon's read
+  token comes from a ladder in `forge::resolve_token`: `ORCHD_GITHUB_TOKEN`, then
+  `github_token_file`, then `gh auth token`. The first does not reach an app
+  started from a launcher — `desktop/src/login_path.rs` adopts the login shell's
+  `PATH` and nothing else — so on a desktop the choice is really the file or `gh`.
+
+  **The shape is GitHub's device flow, through a GitHub App.** It is what
+  `gh auth login` does itself: `POST github.com/login/device/code` with a public
+  client id and no secret, show the user code and a link to
+  `github.com/login/device`, poll for the token, keep it in the OS keychain
+  (Keychain on macOS, the Secret Service on Linux). Two endpoints and a polling
+  loop over the `curl` transport the reads already use, plus one screen.
+
+  **A GitHub App, not an OAuth App, and that is the decision rather than a
+  detail.** An OAuth App's scopes are coarse: reading a private repo's PRs needs
+  `repo`, which is read *and write* to every repo you can reach, and that ends the
+  read-only property `docs/security.md` rests on. A GitHub App asks for
+  pull requests, checks and contents, read only. What it costs:
+  - Its user tokens expire after 8 hours, so the daemon needs a refresh path (the
+    refresh token lasts 6 months) and a re-sign-in when that lapses.
+  - It has to be installed on the org that owns the repo, which at a company org
+    may need an admin's approval. An OAuth App can hit the same wall through an
+    org's OAuth access policy, so this is not a reason to pick one.
+  - Somebody has to register it and enable device flow on it, once, by hand.
+
+  **What it does not remove.** The *agent* still needs `gh`: `handle-review` posts
+  replies through the agent's own `gh`, and pushes go through the agent's git
+  credentials. Dropping that would mean handing agents a write token, in the
+  process that reads strangers' review comments — the credential the security
+  design keeps out of them. So `gh` stays the skills' requirement, and the README
+  should say so in those words.
+
+  **Where the ladder ends up.** The app's own sign-in first; `ORCHD_GITHUB_TOKEN`
+  kept as the escape hatch for a headless or CI daemon; `gh auth token` kept as a
+  silent fallback for people who already have it. `github_token_file` goes —
+  except as the keyring's fallback on a Linux box with no Secret Service, where
+  the app writes a `0600` file of its own rather than asking you to.
+
+  Until this is built the token file stays: it is the one way a launcher-started
+  app without `gh` gets a token.
 
 - **The archive is a list you cannot find anything in.** 91 rows behind one caret,
   each carrying a name and an age, with no grouping by date and no PR number —
