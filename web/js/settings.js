@@ -585,7 +585,7 @@ const TABS = {
   tracker: 'This checkout\'s config. A draft until Save.',
   reviews: 'This checkout\'s config. A draft until Save.',
   agent: 'This checkout\'s config. A draft until Save.',
-  other: 'Wheel speed applies at once and is kept in this browser. The usage ping applies at once, for every checkout. Processes are this checkout\'s config, a draft until Save, and restart the daemon.',
+  other: 'Wheel speed applies at once and is kept in this browser. Processes are this checkout\'s config, a draft until Save, and restart the daemon. The usage ping applies at once.',
 };
 const TAB_KEY = 'orch.settings.tab';
 
