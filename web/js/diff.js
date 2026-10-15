@@ -258,6 +258,10 @@ function fileRow(/** @type {import('../snapshot').WorkspaceView} */ w, /** @type
     const row = el('button', sum ? 'dfrow' : 'frow');
     if (sum) row.setAttribute('aria-current', String(f.path === diffState.path));
     const letter = (f.status || 'M')[0];
+    /* The letter is the class too: `.fst.M`, `.fst.A`, `.fst.D`, `.fst.R` and
+       `.fst.U` colour git's modified, added, deleted, renamed and untracked. Named
+       here because `check-dead-css` looks for a class by its literal name, and
+       `.fst.R` had only ever passed by the legend's MOD+Shift+R. */
     row.appendChild(el('span', 'fst ' + letter, letter));
     const n = el('span', 'fname');
     n.textContent = '\u202a' + f.path;
