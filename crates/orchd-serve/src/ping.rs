@@ -18,6 +18,10 @@
 //! with `CI` set — `app-check` drives the release bundle on a fresh config dir
 //! every run, and each of those would be a brand-new install.
 //!
+//! **The first try waits ten minutes.** A new install is on by default, and the
+//! person has to be able to find the checkbox before anything goes; a start is
+//! also the slowest moment the app has, and a curl does not belong in it.
+//!
 //! Best effort in every direction: no network, no `curl`, a Worker that is down —
 //! each is a debug line and another try next hour. It can never break a start.
 
@@ -40,18 +44,19 @@ struct State {
     day: u64,
 }
 
+/// How long after start the first try waits. See the module docs.
+const FIRST_TRY: Duration = Duration::from_secs(10 * 60);
+
 /// Start pinging, once a day, for as long as the process runs.
 ///
 /// Hourly rather than once at start, because the app is left open for days and a
 /// ping only at launch would count somebody who never restarts it once.
 pub fn start(allowed: fn() -> bool) {
-    if cfg!(debug_assertions)
-        || cfg!(any(test, feature = "test-util"))
-        || std::env::var_os("CI").is_some()
-    {
+    if cfg!(debug_assertions) || orchd::config::TEST_BUILD || on_ci(std::env::var("CI").ok()) {
         return;
     }
     tokio::spawn(async move {
+        tokio::time::sleep(FIRST_TRY).await;
         loop {
             match tokio::task::spawn_blocking(move || ping_if_due(allowed)).await {
                 Ok(Err(e)) => tracing::debug!("the usage ping did not go: {e:#}"),
@@ -61,6 +66,14 @@ pub fn start(allowed: fn() -> bool) {
             tokio::time::sleep(Duration::from_secs(60 * 60)).await;
         }
     });
+}
+
+/// Whether `CI` says this is a CI run.
+///
+/// The value, not the presence: `CI=false` is set by some dev containers and tool
+/// setups, and reading it as true silently left those installs out of the count.
+fn on_ci(value: Option<String>) -> bool {
+    value.is_some_and(|v| !matches!(v.trim(), "" | "0" | "false" | "False" | "FALSE"))
 }
 
 /// Send today's ping, unless it has been sent or the setting says not to.
@@ -76,15 +89,27 @@ fn ping_if_due(allowed: fn() -> bool) -> anyhow::Result<()> {
         .and_then(|raw| serde_json::from_str(&raw).ok())
         .unwrap_or_default();
     let today = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() / 86_400;
+    let had = state.id.clone();
     if !due(&mut state, today) {
         return Ok(());
     }
+    /* **A new id is kept before it is sent, and not sent if it cannot be kept.**
+    It used to be written only with the day, after the Worker answered — so a
+    timeout after the row landed, or a config dir that cannot be written, minted
+    another id next hour, and one machine counted as up to 24 installs a day. */
+    if state.id != had {
+        save(&path, &state)?;
+    }
     send(&state.id)?;
-    // Written only after the Worker accepted it, so a ping that failed is tried
+    // The day only after the Worker accepted it, so a ping that failed is tried
     // again next hour rather than skipped for the day.
     state.day = today;
-    let text = serde_json::to_string_pretty(&state)? + "\n";
-    orchd::atomic::write(&path, text.as_bytes())
+    save(&path, &state)
+}
+
+fn save(path: &Path, state: &State) -> anyhow::Result<()> {
+    let text = serde_json::to_string_pretty(state)? + "\n";
+    orchd::atomic::write(path, text.as_bytes())
 }
 
 /// Whether a ping is owed today, minting an id first when there is no valid one.
@@ -160,6 +185,16 @@ mod tests {
         assert!(!due(&mut state, 20_000), "the same day does not ping twice");
         assert!(due(&mut state, 20_001), "the next day does");
         assert_eq!(state.id, id, "and keeps the install's id");
+    }
+
+    #[test]
+    fn ci_is_read_by_its_value_not_its_presence() {
+        assert!(on_ci(Some("true".into())));
+        assert!(on_ci(Some("1".into())));
+        for off in ["false", "0", "", "FALSE"] {
+            assert!(!on_ci(Some(off.into())), "CI={off:?} is not a CI run");
+        }
+        assert!(!on_ci(None));
     }
 
     #[test]

@@ -110,36 +110,52 @@ function openSettings() {
   void loadUsagePing();
 }
 
+/** The usage ping's last write, so a read waits for it rather than racing it. */
+let pingSaving = Promise.resolve();
+/** Whether a read is in flight, so a write finishing under it leaves the box
+ *  disabled — the read is what enables it. */
+let pingLoading = false;
+
 /** Read the usage ping's setting into its checkbox.
  *
  *  Disabled until the host answers, so a click cannot land on a box showing a
- *  guess. One that never answers stays disabled, which is the honest state. */
+ *  guess. One that never answers stays disabled, which is the honest state.
+ *  **After any write in flight**: reopening the pane while a toggle is still
+ *  saving used to read the old value, or let the write's `finally` enable the box
+ *  before this read had answered. */
 async function loadUsagePing() {
   const box = ctl('setping');
   box.disabled = true;
+  pingLoading = true;
   try {
+    await pingSaving;
     box.checked = !!(await getHost('/api/host/usage-ping')).on;
     box.disabled = false;
   } catch (e) {
     $('setnote').textContent = `could not read the usage ping setting: ${reason(e)}`;
+  } finally {
+    pingLoading = false;
   }
 }
 
 /** Write the checkbox to `host.json`, at once: it is the install's, not part of
  *  the checkout's draft that Save sends. A write that fails puts the box back, so
  *  it never shows the opposite of what the file holds. */
-async function saveUsagePing() {
+function saveUsagePing() {
   const box = ctl('setping');
   const on = !!box.checked;
   box.disabled = true;
-  try {
-    await callHost('/api/host/usage-ping', { on });
-  } catch (e) {
-    box.checked = !on;
-    $('setnote').textContent = `could not save the usage ping setting: ${reason(e)}`;
-  } finally {
-    box.disabled = false;
-  }
+  pingSaving = (async () => {
+    try {
+      await callHost('/api/host/usage-ping', { on });
+    } catch (e) {
+      box.checked = !on;
+      $('setnote').textContent = `could not save the usage ping setting: ${reason(e)}`;
+    } finally {
+      if (!pingLoading) box.disabled = false;
+    }
+  })();
+  return pingSaving;
 }
 
 async function loadConfigInto(force = false) {

@@ -27,7 +27,11 @@ export default {
     } catch {
       return new Response(null, { status: 400 })
     }
-    if (!ID.test(body?.id ?? '')) return new Response(null, { status: 400 })
+    // A string first: `test` coerces, so `["<32 hex>"]` passed and then made
+    // `bind` throw, which answered 500 rather than refusing.
+    if (typeof body?.id !== 'string' || !ID.test(body.id)) {
+      return new Response(null, { status: 400 })
+    }
     // The day is the server's, so a client clock that is wrong cannot invent one.
     // A second ping the same day keeps the row and takes its version: an upgrade
     // mid-day is then counted on the build it ended the day on.

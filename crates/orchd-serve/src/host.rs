@@ -1037,21 +1037,41 @@ fn name_the_set(checkouts: &mut [Checkout]) {
 /// its checkouts, and refusing the `add` that could not be recorded would cost
 /// this one.
 pub fn remember_checkouts(checkouts: &[PathBuf]) {
-    // Read first, so a hand-set `checkout_retention_days` survives every add and
-    // close. A writer that rebuilds the file from what it knows is how one setting
-    // nobody touched disappears.
-    let mut file = read_host_file().unwrap_or_default();
-    file.checkouts = checkouts
+    let open = checkouts
         .iter()
         .map(|p| p.to_string_lossy().into_owned())
         .collect();
-    let write = || -> anyhow::Result<()> {
-        let text = serde_json::to_string_pretty(&file)? + "\n";
-        orchd::atomic::write(&host_file()?, text.as_bytes())
-    };
-    if let Err(e) = write() {
+    if let Err(e) = update_host_file(|file| file.checkouts = open) {
         tracing::error!("could not record the open checkouts: {e:#}");
     }
+}
+
+/// Held for the whole of one read-change-write of the host file.
+static HOST_FILE_WRITE: Mutex<()> = Mutex::new(());
+
+/// Change the host file: read it, apply `change`, write it back. Blocking file IO.
+///
+/// **The one writer, and it holds a lock.** Every field is a read-change-write of
+/// the whole file, because rebuilding it from what one caller knows is how a
+/// setting nobody touched disappears. Two of those at once lose one: a checkout
+/// add racing the usage-ping checkbox either dropped the new checkout or turned
+/// the ping back on behind the person who had just turned it off.
+///
+/// **No file starts from what [`remembered_checkouts`] would open**, not from an
+/// empty list. An install that predates the file opens `config.json`'s checkout,
+/// and a first write that only meant to set the ping used to pin that to nothing.
+fn update_host_file(change: impl FnOnce(&mut HostFile)) -> anyhow::Result<()> {
+    let _held = locked(&HOST_FILE_WRITE);
+    let mut file = read_host_file().unwrap_or_else(|| HostFile {
+        checkouts: remembered_checkouts()
+            .into_iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect(),
+        ..HostFile::default()
+    });
+    change(&mut file);
+    let text = serde_json::to_string_pretty(&file)? + "\n";
+    orchd::atomic::write(&host_file()?, text.as_bytes())
 }
 
 /// The retention the host file names, in days.
@@ -1068,20 +1088,13 @@ pub fn usage_ping() -> bool {
     read_host_file().map_or_else(default_usage_ping, |f| f.usage_ping)
 }
 
-/// Turn the daily usage ping on or off.
-///
-/// Read, change one field, write — the shape [`remember_checkouts`] uses, and for
-/// its reason: rebuilding the file from defaults would reset every key the person
-/// set by hand. Blocking file IO.
+/// Turn the daily usage ping on or off. Blocking file IO.
 ///
 /// **An error, not a logged shrug**, unlike `remember_checkouts`: this answers a
 /// checkbox, and a checkbox that stays ticked over a write that failed says the
 /// opposite of what the file holds.
 pub fn set_usage_ping(on: bool) -> anyhow::Result<()> {
-    let mut file = read_host_file().unwrap_or_default();
-    file.usage_ping = on;
-    let text = serde_json::to_string_pretty(&file)? + "\n";
-    orchd::atomic::write(&host_file()?, text.as_bytes())
+    update_host_file(|file| file.usage_ping = on)
 }
 
 fn checkout_retention_days() -> u32 {

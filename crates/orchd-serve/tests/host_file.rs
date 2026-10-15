@@ -44,6 +44,18 @@ fn a_missing_host_file_falls_back_to_the_configured_checkout() {
         vec![repo.clone()]
     );
 
+    /* **A first write that is not about checkouts keeps the fallback.** Turning the
+    usage ping off on an install with no host file wrote `checkouts: []`, which is
+    an answer — and the next launch opened nothing instead of `config.json`'s
+    checkout. */
+    orchd_serve::host::set_usage_ping(false).unwrap();
+    assert_eq!(
+        orchd_serve::host::remembered_checkouts(),
+        vec![repo.clone()],
+        "turning the ping off forgot the configured checkout"
+    );
+    std::fs::remove_file(cfg.join("host.json")).unwrap();
+
     // And once the file exists it is the answer, config or no config.
     orchd_serve::host::remember_checkouts(&[]);
     assert!(

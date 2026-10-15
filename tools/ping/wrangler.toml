@@ -2,6 +2,12 @@ name = "orchd-ping"
 main = "worker.js"
 compatibility_date = "2026-10-01"
 
+# Off, and said here so every deploy keeps it off: Workers Logs would keep each
+# request's metadata, the client address with it, and the README promises the
+# address is not stored.
+[observability]
+enabled = false
+
 [[d1_databases]]
 binding = "DB"
 database_name = "orchd-pings"

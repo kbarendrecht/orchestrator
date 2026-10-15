@@ -1003,6 +1003,16 @@ pub enum ForgeKind {
     GitHub,
 }
 
+/// Whether this build is a test, by the rule [`Config::config_dir`] uses to stay
+/// off the real config dir.
+///
+/// **Public, because `cfg!` does not cross a crate line.** A crate whose
+/// integration tests link it sees its own `cfg(test)` as false, and its own
+/// `test-util` may be off for them — but every crate's dev-dependencies turn this
+/// crate's feature on. The usage ping found that out: it asked the question with
+/// its own `cfg!` and integration tests built with `--release` pinged.
+pub const TEST_BUILD: bool = cfg!(any(test, feature = "test-util"));
+
 /// Where state lives under a given home, with the platform split in one place.
 ///
 /// Split out from [`Config::config_dir`] with `home` injected so it is testable:
@@ -1073,7 +1083,7 @@ impl Config {
         real arm disappears under `test-util` and takes the only call to
         [`default_config_dir`] with it — which `cargo clippy --all-targets` then
         reports as dead code, and CI denies warnings. */
-        if cfg!(any(test, feature = "test-util")) {
+        if TEST_BUILD {
             let dir = std::env::temp_dir().join(format!("orchd-test-cfg-{}", std::process::id()));
             std::fs::create_dir_all(&dir)?;
             return Ok(dir);
