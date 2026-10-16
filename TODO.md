@@ -5,27 +5,6 @@ this file, which churned it from every build; that feature is gone.
 
 ## Next
 
-- **Stacked-PR support.** Two halves. First, a context-menu `stack` action on a
-  PR row that opens a session starting from that PR's code — a new branch based
-  on the selected PR's head, its own worktree (cwd = main, via the existing
-  `worktree-create`/`worktree-link` hooks), and an interactive session. This is
-  the `/resolve` spawn machinery pointed at a *new* branch off a PR head rather
-  than the PR's own branch. The stack is then detected for free: `link_stacks`
-  (`crates/orchd-repo/src/forge/github.rs`) already matches `child.base_ref == parent.head_ref`. Second,
-  a semi-automation in the spirit of `fix-pr` — a `/restack` (or `sync`) skill
-  that keeps a stack in sync: when a base PR's head moves (amend/rebase), rebase
-  the children onto it bottom-up and re-push, within the existing push guards
-  (`--force-with-lease` only, never the base branch). Reuses the
-  `PrAutomation` per-PR run model and the skill-spawn path; the bottom-up
-  serialized ordering is the piece §8 described but never built. Two known
-  wrinkles: the stack DAG is stored children-only (`Pr.children`), so a restack
-  must derive the parent chain by inverting it — there is no `parent`/`base`
-  pointer; and if it rides an agent session like `fix-pr`, the `git rebase
-  --onto <new-parent-head> <old-parent-head> <child>` logic lives in the skill
-  itself (a new `skills/restack/SKILL.md` plus its line in `skills::VENDORED`), so
-  no new Rust git primitive is strictly required. The per-PR-keyed guards
-  (`authorship`/`branch_busy`) would need a chain-aware variant.
-
 - **Make it run somewhere other than this machine.** The hardcoded assumptions are
   gone: the six stack-specific settings are `#[serde(default)]` values editable in
   the settings panel, `worktrees_subdir` makes the layout configurable, `docker` and
@@ -250,28 +229,42 @@ this file, which churned it from every build; that feature is gone.
   Worth doing when a screenshot is the thing being reviewed. Recorded now because
   the file pane landed today and this is the first thing it cannot show.
 
-- **Setup can fail and say nothing.** `worktree_init` and `worktree_setup` are
-  non-fatal, the second runs even after the first failed, and `env_source` failures
-  are silent by design — a degraded session beats a lost one, and that stays. What
-  is missing is the *report*: a session whose setup did not finish then misbehaves
-  with nothing on screen to explain it. `get-bb/bb` splits the two
-  (`docs/environment-provisioning.md`): creation failure is terminal and loud, setup
-  failure leaves a usable workspace and is shown as retryable, with no automatic
-  retry ladder. That split is the part worth copying — the policy, not the state
-  machine.
+- **Deferred: setup can fail and say nothing.** `worktree_init` and
+  `worktree_setup` are non-fatal, the second runs even after the first failed, and
+  `env_source` failures are silent by design — a degraded session beats a lost one,
+  and that stays. What is missing is the *report*: a session whose setup did not
+  finish then misbehaves with nothing on screen to explain it. `get-bb/bb` splits
+  the two (`docs/environment-provisioning.md`): creation failure is terminal and
+  loud, setup failure leaves a usable workspace and is shown as retryable, with no
+  automatic retry ladder. That split is the part worth copying — the policy, not
+  the state machine.
 
-  **Promoted on evidence from another subsystem, because the shape is the same.**
-  The trigger this entry waited for — a session traced back to a setup step that
-  failed quietly — has still not fired. What has fired is the same failure shape in
-  the release gate: `hdiutil -quiet` swallowed the one sentence saying why an attach
-  failed, and three release runs ended as `exit 1` with an empty log before anybody
-  could act on one. Roughly two hours, for a missing error message. The cost of a
-  silent failure is measured now, so waiting for it to be measured a second time in
-  a session is waiting for nothing.
+  **Demoted again on 2026-10-16, because no checkout reaches this path.** It was
+  promoted on the `hdiutil -quiet` release-gate failure, which has the same shape
+  but is another subsystem. Measured against the two live checkouts:
+  `worktree_init` and `worktree_setup` are empty in both. The monorepo cuts
+  through its own `WorktreeCreate`, which fails the create loudly, and does its
+  setup in a link hook on Claude Code's `SessionStart` — a hook the daemon never
+  sees, so a report built here would not catch that failure either. The trigger
+  this entry waits for — a session traced back to a setup step that failed
+  quietly — has still not fired.
 
-  Checked while promoting, so the gap is not assumed: `degraded` (`spawn.rs`) is the
-  only report of this kind the page renders, and it means a relocation that forked
-  instead of resuming. Nothing surfaces a setup failure at all.
+  The earlier note here, that nothing surfaces a setup failure at all, was wrong.
+  A loud cut does: `run_worktree_hook` calls `create_failed`, and the starting
+  overlay turns `failed` (`renderStarting` in `web/app.js`). The real gap is
+  narrower, and it is three things:
+  - The mark lives on `CreateRun`, so it goes when the overlay goes — the moment
+    the session boots, which is before anybody has read it.
+  - A spare is cut with `Board::Quiet`, so its hooks failing reach only
+    `orchd.log`, and claiming the spare carries nothing forward.
+  - `spare::refresh` re-runs `worktree_setup` through `relink`, also quietly.
+
+  The shape when it becomes real: a `setup_failed` on the workspace record (the
+  step, the exit code and the stderr tail), set by quiet and loud runs alike and
+  cleared by the next successful one; the rail row and the context bar saying so;
+  and one route that re-runs `run_worktree_hooks` for that workspace, by hand
+  only. It becomes real when a checkout configures `worktree_setup`, or when a
+  repo's setup moves from `SessionStart` into the daemon.
 
 - **Deferred: a restart of the daemon does not have to kill the terminals.**
   `mise run app-check` asserts that a session survives a restart, and it survives
@@ -301,26 +294,3 @@ this file, which churned it from every build; that feature is gone.
   successful start instead, which meant the bound never bit and a daemon dying on
   boot restarted forever. Leaving the ask in invited somebody to build a guard that
   exists.
-
-- **Deferred: a worktree could be given files by copy, not only by symlink.** orchd
-  puts a worktree's untracked files there by symlinking back to main, and the
-  editor follows such a link because the checkout is its bound. `get-bb/bb` does
-  the same job declaratively and with the other semantics (`docs/worktrees.md`): a
-  `.worktreeinclude` file in gitignore syntax names untracked files to **copy** in,
-  after the tree is cut and before setup runs, and an edit in the worktree then does
-  not touch main. The two are not the same feature — a per-worktree `.env` cannot be
-  a symlink — and orchd has no answer for that today except a `worktree_setup`
-  script. Nothing has gone wrong, so this is recorded, not planned. It becomes real
-  the first time a shared file has to differ per worktree.
-
-  **The symlink is the deliberate half, and copy would not replace it.** A worktree
-  is volatile — cut for a session, reaped when the session leaves — so a folder that
-  must outlive it belongs in main with a link pointing at it, and copying would lose
-  the writes when the tree goes. Three places are already built around that: hook
-  paths are resolved through realpath before attribution, or an edit through a
-  shared folder lands in the wrong pane (`hooks.rs`); the isolation guard is
-  **git-only** rather than refusing writes, because the wider version made a
-  `../../../.plan` symlink unwritable from the tree it was linked into
-  (`guard.rs`); and the editor's bound is the checkout so it follows such a link
-  (§34). So copy is a second mode beside this one, for the per-worktree `.env`
-  case, and never a migration away from it.
