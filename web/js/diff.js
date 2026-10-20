@@ -757,9 +757,17 @@ function renderDiff() {
     // The hunk's section heading — git's text after the second @@, the function
     // or class the change sits in — pinned so it stays in view while you scroll a
     // long hunk, the way the review overlay's hunk header already does. Empty for
-    // a top-of-file hunk, so it is only drawn when it says something.
-    const section = (h.header && h.header.split('@@')[2] || '').trim();
-    if (section) body.appendChild(el('div', 'diffhh', section));
+    // a top-of-file hunk, so it is only drawn when it says something. And only
+    // under a fold: with nothing hidden above, the line it names is on screen, and
+    // with every fold opened the heading sat in the middle of continuous code.
+    // Nor when it repeats the hunk above, whose heading is still pinned.
+    const sectionOf = (/** @type {import('../repo').Hunk} */ x) => (x.header && x.header.split('@@')[2] || '').trim();
+    const section = sectionOf(h);
+    const seen = diffState.reveal.get(hi) ?? { top: 0, bottom: 0 };
+    const folded = h.gap_before > seen.top + seen.bottom;
+    if (section && folded && (hi === 0 || section !== sectionOf(f.hunks[hi - 1]))) {
+      body.appendChild(el('div', 'diffhh', section));
+    }
 
     if (diffState.split) {
       let splitInBlock = false;
