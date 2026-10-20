@@ -2953,7 +2953,8 @@ try {
   const offered = await page.waitForSelector('#ctxmenu:not([hidden])', { timeout: 3000 })
     .then(() => page.$$eval('#ctxmenu .ctxmenu-item', (bs) => bs.map((b) => b.textContent)))
     .catch(() => [])
-  check(offered.includes('copy other.md:2') && offered.includes('copy path'),
+  // The labels name what is copied, not its value: the value is in the toast.
+  check(offered.includes('copy path:line') && offered.includes('copy path'),
     `a row offers its path and line, got ${JSON.stringify(offered)}`)
   await page.keyboard.press('Escape')
   await page.keyboard.press('Escape')
