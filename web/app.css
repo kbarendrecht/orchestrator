@@ -492,7 +492,7 @@ button.ctx-btn:hover{color:var(--text)}
    each other across the middle of it. Same width and colour; only the edge
    differs, which is why it is a second rule rather than a variable. */
 .rv-of-checkout{border-right:3px solid var(--band)}
-.addco{width:100%;text-align:left;color:var(--faint-solid);cursor:pointer;background:none;border:0}
+.addco{width:100%;text-align:left;color:var(--faint-solid);cursor:pointer;background:none;border:0;transition:color .12s}
 .addco:hover{color:var(--text)}
 
 .plus{
