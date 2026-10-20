@@ -718,11 +718,12 @@ function renderContext() {
   $('ctxdot').className = s ? sessionDot(s) : 'dot sdot idle';
   $('ctxname').textContent = s ? Rail.rowName(s, { id: wsId }) : (wsId || 'no session');
   $('ctxforked').hidden = !(s && s.forked_from);
-  /* The agent, when it is a question at all: a checkout that has only Claude Code
-     says nothing, which is what the header said before there was a choice. */
+  /* The agent, when it is a question at all: only when this checkout's open
+     sessions run on more than one. Two installed is not enough, since with Codex
+     on the PATH every Claude Code session said so while nothing else was running. */
   const agent = $('ctxagent');
-  const several = (snap.agents ?? []).length > 1;
-  agent.hidden = !s || (!several && s.agent === 'claude');
+  const mixed = new Set(snap.sessions.filter((x) => !isArchived(x)).map((x) => x.agent)).size > 1;
+  agent.hidden = !s || !mixed;
   agent.textContent = s ? AGENT_LABEL[s.agent] ?? s.agent : '';
   /* **`branch`, not `branches[0]`.** `branches` is every branch this workspace has
      ever held and never prunes, in no order at all — so the header labelled with
