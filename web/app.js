@@ -795,18 +795,12 @@ import { toggleBlame } from './js/viewer.js';
    **A URL is a file too, as far as the webview is concerned.** A guard that
    asked only for `Files` let a PDF from the file manager through on WebKitGTK,
    and the app became a PDF viewer; asking for `text/uri-list` as well holds.
-   The page's own drags are told apart by `dragstart`, so dragging one of its
-   links is refused quietly. */
+   One of the page's own links dragged onto a terminal types its URL, the way a
+   terminal takes one. Telling those apart by a flag from `dragstart` was tried,
+   and a drag that never ended left it set and every file drop after it typed
+   nothing. */
 const carriesFiles = (/** @type {DragEvent} */ e) =>
   [...(e.dataTransfer?.types ?? [])].some((t) => t === 'Files' || t === 'text/uri-list');
-let ownDrag = false;
-document.addEventListener('dragstart', (e) => {
-  ownDrag = true;
-  // A refused start (the titlebar refuses them) never gets its `dragend`, so ask
-  // once the event has been through every listener.
-  setTimeout(() => { if (e.defaultPrevented) ownDrag = false; });
-}, true);
-document.addEventListener('dragend', () => { ownDrag = false; }, true);
 const overTerminal = (/** @type {DragEvent} */ e) =>
   !!(/** @type {HTMLElement} */ (e.target).closest?.('#termwrap')) && !!currentSession();
 /** Whether the last `dragover` was on a session's terminal. A drop the desktop
@@ -816,7 +810,7 @@ let overTerm = false;
 window.addEventListener('dragover', (e) => {
   if (!carriesFiles(e)) return;
   e.preventDefault();
-  const on = !ownDrag && overTerminal(e);
+  const on = overTerminal(e);
   overTerm = on;
   if (e.dataTransfer) e.dataTransfer.dropEffect = on ? 'copy' : 'none';
   $('termwrap').classList.toggle('dropping', on);
@@ -845,7 +839,6 @@ window.addEventListener('drop', (e) => {
   if (!carriesFiles(e)) return;
   e.preventDefault();
   $('termwrap').classList.remove('dropping');
-  if (ownDrag) return;
   const s = currentSession();
   if (!s || !overTerminal(e) || !e.dataTransfer) {
     toast('drop a file on a session\'s terminal to hand the agent its path');
