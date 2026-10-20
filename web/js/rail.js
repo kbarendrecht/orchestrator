@@ -816,6 +816,7 @@ function prMenu(/** @type {import('../snapshot').PrView} */ p, /** @type {HTMLBu
     ['open in main checkout', null, () => openPr(p.number, 'main')],
     ['open in worktree', null, () => openPr(p.number, 'worktree')],
     ['handle review', null, () => startHandleReview(p.number, btn)],
+    ['copy PR number', null, () => { void copyText(String(p.number)).then((ok) => { if (ok) toast(`copied ${p.number}`); }); }],
   ]);
 }
 

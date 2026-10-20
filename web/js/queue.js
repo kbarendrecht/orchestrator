@@ -3,7 +3,7 @@
 // The first seam to become a real module: five names, one of which leaves. What
 // it needs from elsewhere is now an import list rather than an assumption about
 // what happens to be in scope.
-import { $, activeCheckout, bandOf, call, caret, CHECKOUTS, CHROME, clock, compactAge, confirmBox, el, icon, keyActivate, QUEUE_MAX, refreshButton, safeHref, snap, toast, unchanged } from './core.js';
+import { $, activeCheckout, bandOf, call, caret, CHECKOUTS, CHROME, clock, compactAge, confirmBox, copyText, el, icon, keyActivate, openMenu, QUEUE_MAX, refreshButton, safeHref, snap, toast, unchanged } from './core.js';
 
 /** Above this many, the press asks first.
  *
@@ -311,6 +311,10 @@ function renderReviews() {
     if (anyFiles) a.appendChild(el('span', 'fc', r.changed_files != null ? String(r.changed_files) : '·'));
     const why = reviewReason(r);
     if (why) a.appendChild(el('span', 'why', why));
+    // The number the row leaves out, for a branch name, a `gh` command or a reply.
+    a.oncontextmenu = (ev) => openMenu(ev, [
+      ['copy PR number', null, () => { void copyText(String(r.number)).then((ok) => { if (ok) toast(`copied ${r.number}`); }); }],
+    ]);
     return a;
   };
 
