@@ -2029,7 +2029,10 @@ function sessionRow(/** @type {import('../snapshot').SessionView} */ s, /** @typ
   // Which pass it is. The name above says which PR, and `fix-pr` and
   // `handle-review` do very different things to it.
   if (s.pass) sub.appendChild(el('span', 'sess-cmd', s.pass.command));
-  sub.appendChild(el('span', 'sess-state ' + stateClass(s), stateLabel(s)));
+  const word = sub.appendChild(el('span', 'sess-state ' + stateClass(s), stateLabel(s)));
+  // A session that opened several PRs names the worst and counts the rest; the
+  // pane header draws them all.
+  if (handedToPr(s) && s.prs.length > 1) word.appendChild(el('span', 'sess-more', ` +${s.prs.length - 1}`));
   /* **Said on the row, because the restart is deferred.** A session queued
      mid-turn respawns the moment its turn ends, and without this the pane you are
      watching clears and reattaches for no reason you can see. */

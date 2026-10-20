@@ -476,6 +476,20 @@ impl Inner {
     /// daemon on a busy repo from carrying every PR it ever saw; the rail only
     /// ever draws the handful whose worktrees are still here.
     pub fn remember_ended(&mut self, ended: crate::forge::EndedPr) {
+        // The sessions keep it past the ten this list holds, and past a restart.
+        for s in self.sessions.values_mut() {
+            for p in s.prs.iter_mut().filter(|p| p.number == ended.number) {
+                p.outcome = Some(ended.outcome);
+                // A PR the session only knew by number, from a record older than
+                // the list: the answer names it.
+                if p.title.is_empty() {
+                    p.title.clone_from(&ended.title);
+                }
+                if p.url.is_empty() {
+                    p.url.clone_from(&ended.url);
+                }
+            }
+        }
         self.prs_ended.retain(|p| p.number != ended.number);
         self.prs_ended.insert(0, ended);
         self.prs_ended.truncate(ENDED_MAX);
@@ -489,19 +503,136 @@ impl Inner {
     /// (`foreign_heads`) is skipped: a fork's PR on a same-named branch is not
     /// this session's. Called after every successful poll; the notify that
     /// follows the poll writes the records.
+    ///
+    /// Every branch the session held, not only the one it started on, so an agent
+    /// that opens a second PR gets it on its record: each is appended to
+    /// `Session::prs` once and refreshed while open. `Session::pr` stays the last
+    /// one seen, for the archive row.
     pub fn note_session_prs(&mut self) {
         for s in self.sessions.values_mut() {
-            let Some(branch) = s.branch.as_deref() else {
+            // A record from before the list knew only `pr`: that one is the start
+            // of it, named once the poll or `session_prs_to_ask` answers for it.
+            if s.prs.is_empty() {
+                if let Some(n) = s.pr {
+                    s.prs.push(crate::model::SessionPr {
+                        number: n,
+                        title: String::new(),
+                        url: String::new(),
+                        outcome: None,
+                    });
+                }
+            }
+            let heads: Vec<&str> = s
+                .branch
+                .iter()
+                .chain(s.branches.iter())
+                .map(String::as_str)
+                .collect();
+            if heads.is_empty() {
                 continue;
-            };
-            let found = self
+            }
+            let mut found: Vec<&crate::forge::Pr> = self
                 .prs
                 .iter()
-                .find(|p| p.head_ref == branch && !self.foreign_heads.contains_key(&p.number));
-            if let Some(p) = found {
+                .filter(|p| {
+                    heads.contains(&p.head_ref.as_str())
+                        && !self.foreign_heads.contains_key(&p.number)
+                })
+                .collect();
+            // Opened order is number order on one repo.
+            found.sort_by_key(|p| p.number);
+            for p in &found {
+                match s.prs.iter_mut().find(|k| k.number == p.number) {
+                    Some(k) => {
+                        k.title.clone_from(&p.title);
+                        k.url.clone_from(&p.url);
+                        // Open in the poll again, so a reopened PR is open again.
+                        k.outcome = None;
+                    }
+                    None => s.prs.push(crate::model::SessionPr {
+                        number: p.number,
+                        title: p.title.clone(),
+                        url: p.url.clone(),
+                        outcome: None,
+                    }),
+                }
+            }
+            // Number order is opened order on one repo, and the poll finds them one
+            // at a time rather than oldest first.
+            s.prs.sort_by_key(|k| k.number);
+            if let Some(p) = found.last() {
                 s.pr = Some(p.number);
             }
         }
+    }
+
+    /// Live sessions' PRs that are neither in the poll nor known to have ended.
+    ///
+    /// **The PRs that ended while the daemon was down.** `outcomes_to_ask` only
+    /// sees a PR leave the open list between two polls of one run, and the ended
+    /// list is memory, so after a restart a merged PR was simply gone from its
+    /// session. The caller asks each number once per run (`asked`), so a PR the
+    /// forge will not answer for costs one request, not one per poll.
+    pub fn session_prs_to_ask(
+        &self,
+        fresh: &[crate::forge::Pr],
+        asked: &mut HashSet<u64>,
+    ) -> Vec<u64> {
+        let mut out = Vec::new();
+        for s in self.sessions.values().filter(|s| s.state.is_live()) {
+            for p in s.prs.iter().filter(|p| p.outcome.is_none()) {
+                if !fresh.iter().any(|f| f.number == p.number) && asked.insert(p.number) {
+                    out.push(p.number);
+                }
+            }
+        }
+        out
+    }
+
+    /// Branches of live sessions with no PR known on them, to ask the forge about.
+    ///
+    /// **A PR that opened and ended between two runs left no number to ask
+    /// about**, only the branch it was on. Each branch is asked once per run
+    /// (`asked`); one with an open PR in the poll needs no question.
+    pub fn session_heads_to_ask(
+        &self,
+        fresh: &[crate::forge::Pr],
+        asked: &mut HashSet<String>,
+    ) -> Vec<String> {
+        let mut out = Vec::new();
+        for s in self.sessions.values().filter(|s| s.state.is_live()) {
+            for b in s.branch.iter().chain(s.branches.iter()) {
+                if fresh.iter().any(|p| &p.head_ref == b) {
+                    continue;
+                }
+                if asked.insert(b.clone()) {
+                    out.push(b.clone());
+                }
+            }
+        }
+        out
+    }
+
+    /// An ended PR found by its branch: onto every session that held the branch,
+    /// in number order, and into the ended list like any other.
+    pub fn note_ended_on_head(&mut self, ended: crate::forge::EndedPr) {
+        for s in self.sessions.values_mut() {
+            let held = s.branch.as_deref() == Some(ended.head_ref.as_str())
+                || s.branches.contains(&ended.head_ref);
+            if held && !s.prs.iter().any(|p| p.number == ended.number) {
+                let at = s.prs.partition_point(|p| p.number < ended.number);
+                s.prs.insert(
+                    at,
+                    crate::model::SessionPr {
+                        number: ended.number,
+                        title: ended.title.clone(),
+                        url: ended.url.clone(),
+                        outcome: Some(ended.outcome),
+                    },
+                );
+            }
+        }
+        self.remember_ended(ended);
     }
 
     /// Forget an ended PR, for the one case that un-ends: a reopened number
@@ -2229,6 +2360,21 @@ impl AppState {
             // a spinner for the life of the daemon.
             w.tree.measured = true;
         }
+        /* A worktree's own branch history, for a session that has none yet: one
+        recorded before `Session::branches` existed. A worktree is cut for one
+        conversation, so what it held is that conversation's. Never main's, whose
+        history is every branch anybody ever checked out there. Sorted, because the
+        set has no order and the list is read oldest first. */
+        let history: Vec<String> = inner
+            .workspaces
+            .get(workspace)
+            .filter(|w| !w.is_main())
+            .map(|w| {
+                let mut h: Vec<String> = w.branches.iter().cloned().collect();
+                h.sort();
+                h
+            })
+            .unwrap_or_default();
         for s in inner.sessions.values_mut() {
             if s.workspace == workspace {
                 s.dirty_paths.clear();
@@ -2241,7 +2387,16 @@ impl AppState {
                 // "that branch happens to be here now", which is the difference a
                 // swap depends on to know who travels.
                 if s.state.is_live() && before.contains(&s.id) {
+                    if s.branches.is_empty() {
+                        s.branches.clone_from(&history);
+                    }
                     if let Some(b) = branch.clone() {
+                        // Kept as well as followed: `branch` is only ever the
+                        // current one, and the PRs on the ones before it are still
+                        // this conversation's.
+                        if !s.branches.contains(&b) {
+                            s.branches.push(b.clone());
+                        }
                         s.branch = Some(b);
                     }
                 }
@@ -2619,6 +2774,9 @@ pub struct SessionView {
     /// archive row shows it, because the forge no longer remembers it.
     #[cfg_attr(any(test, feature = "test-util"), ts(type = "number | null"))]
     pub pr: Option<u64>,
+    /// Every PR this session opened, oldest first. The rail names the worst of
+    /// them and counts the rest; the pane header draws one chip each.
+    pub prs: Vec<crate::model::SessionPr>,
     /// Whether this session still owes you the rest of a turn. The nudge is only
     /// true of these; every other resumed session is sitting at its prompt done.
     pub interrupted: bool,
@@ -2677,6 +2835,7 @@ impl SessionView {
             interaction: s.interaction.clone(),
             forked_from: s.forked_from,
             pr: s.pr,
+            prs: s.prs.clone(),
             interrupted: s.interrupted,
             restart_queued: s.restart_queued,
             agent_stale: s.agent_stale,
@@ -3727,6 +3886,144 @@ mod tests {
             inner.sessions[&id].pr,
             Some(7),
             "the PR outlives the open list"
+        );
+    }
+
+    /// A session that moved on to a second branch keeps the PR of its first.
+    ///
+    /// `branch` follows the tree, so matching on it alone dropped the first PR the
+    /// moment the agent cut the next branch, and the rail fell back to whatever
+    /// had merged. The list keeps both, in the order they were opened, and an end
+    /// is written onto the one that ended.
+    #[tokio::test]
+    async fn a_session_keeps_every_pr_of_the_branches_it_held() {
+        let app = app().await;
+        let id = live_in_main(&app).await;
+        let mut inner = app.inner.write().await;
+        {
+            let s = inner.sessions.get_mut(&id).expect("the session");
+            s.branches = vec!["story-1".into(), "story-2".into()];
+            s.branch = Some("story-2".into());
+        }
+        inner.prs = vec![
+            crate::forge::Pr {
+                head_ref: "story-2".into(),
+                ..crate::testutil::pr(12)
+            },
+            crate::forge::Pr {
+                head_ref: "story-1".into(),
+                ..crate::testutil::pr(11)
+            },
+            crate::forge::Pr {
+                head_ref: "someone-else".into(),
+                ..crate::testutil::pr(99)
+            },
+        ];
+        inner.note_session_prs();
+        let numbers: Vec<u64> = inner.sessions[&id].prs.iter().map(|p| p.number).collect();
+        assert_eq!(
+            numbers,
+            [11, 12],
+            "both of its PRs, oldest first, and no other"
+        );
+        assert_eq!(inner.sessions[&id].pr, Some(12));
+
+        // The first one merges and leaves the poll.
+        inner.prs.retain(|p| p.number != 11);
+        inner.remember_ended(crate::forge::EndedPr {
+            number: 11,
+            title: "first".into(),
+            url: String::new(),
+            head_ref: "story-1".into(),
+            outcome: crate::forge::PrOutcome::Merged,
+        });
+        inner.note_session_prs();
+        let prs = &inner.sessions[&id].prs;
+        assert_eq!(prs.len(), 2, "an ended PR stays on the list");
+        assert_eq!(prs[0].outcome, Some(crate::forge::PrOutcome::Merged));
+        assert_eq!(prs[1].outcome, None, "the second is still open");
+    }
+
+    /// A PR that ended while the daemon was down is asked about once.
+    ///
+    /// The ended list is memory and only sees a PR leave between two polls, so a
+    /// session whose PR merged overnight came back with no PR at all. A record from
+    /// before the list starts it from `pr`.
+    #[tokio::test]
+    async fn a_pr_that_ended_while_down_is_asked_about_once() {
+        let app = app().await;
+        let id = live_in_main(&app).await;
+        let mut inner = app.inner.write().await;
+        // Only the number survived, from a record older than the list.
+        inner.sessions.get_mut(&id).expect("the session").pr = Some(40);
+        inner.note_session_prs();
+        assert_eq!(inner.sessions[&id].prs.len(), 1, "started from `pr`");
+
+        let mut asked = HashSet::new();
+        let open = [crate::testutil::pr(41)];
+        assert_eq!(inner.session_prs_to_ask(&open, &mut asked), [40]);
+        assert!(
+            inner.session_prs_to_ask(&open, &mut asked).is_empty(),
+            "once per run, not once per poll"
+        );
+
+        inner.remember_ended(crate::forge::EndedPr {
+            number: 40,
+            title: "the old one".into(),
+            url: "https://example.test/40".into(),
+            head_ref: "story-40".into(),
+            outcome: crate::forge::PrOutcome::Merged,
+        });
+        let p = &inner.sessions[&id].prs[0];
+        assert_eq!(p.outcome, Some(crate::forge::PrOutcome::Merged));
+        assert_eq!(
+            p.title, "the old one",
+            "the answer names a PR known only by number"
+        );
+    }
+
+    /// A PR that opened and ended between runs is found by its branch.
+    ///
+    /// No number was ever written down for it, so the branch is the only question
+    /// left to ask. Asked once per run, never for a branch with an open PR, and the
+    /// answer lands on the session in number order.
+    #[tokio::test]
+    async fn an_ended_pr_is_found_by_the_branch_it_was_on() {
+        let app = app().await;
+        let id = live_in_main(&app).await;
+        let mut inner = app.inner.write().await;
+        {
+            let s = inner.sessions.get_mut(&id).expect("the session");
+            s.branches = vec!["story-1".into(), "story-2".into()];
+            s.branch = Some("story-2".into());
+        }
+        inner.prs = vec![crate::forge::Pr {
+            head_ref: "story-2".into(),
+            ..crate::testutil::pr(22)
+        }];
+        inner.note_session_prs();
+
+        let mut asked = HashSet::new();
+        let fresh = inner.prs.clone();
+        assert_eq!(
+            inner.session_heads_to_ask(&fresh, &mut asked),
+            ["story-1"],
+            "the branch with an open PR needs no question"
+        );
+        assert!(inner.session_heads_to_ask(&fresh, &mut asked).is_empty());
+
+        inner.note_ended_on_head(crate::forge::EndedPr {
+            number: 21,
+            title: "first".into(),
+            url: "u21".into(),
+            head_ref: "story-1".into(),
+            outcome: crate::forge::PrOutcome::Merged,
+        });
+        let numbers: Vec<u64> = inner.sessions[&id].prs.iter().map(|p| p.number).collect();
+        assert_eq!(numbers, [21, 22], "in the order they were opened");
+        assert_eq!(
+            inner.sessions[&id].prs[0].outcome,
+            Some(crate::forge::PrOutcome::Merged)
         );
     }
 }

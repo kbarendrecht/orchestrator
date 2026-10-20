@@ -3,7 +3,7 @@
 // The SPA is a module now, so what it reaches for is written down. `core.js` holds
 // the primitives every part needs; `queue.js` is the first seam extracted whole.
 import {
-$, AGENT_LABEL, el, toast, reason, safeHref, copyText, call, callHost, get, activeCheckout, CHECKOUTS, setCheckouts, HOST, snapshotOf, repoSummary, everySession, enterCheckout, snap, receive, keyActivate, setZoom, setUiPx, uiPx, saveZoom, onScaleChange, ZOOM, selected, setSelected, onSelection, prForWorkspace, terms, CHROME, stateLabel, sessionDot, isWaiting, isArchived, byNewest, currentSession, activeWorkspaceId, currentWorkspaceId, closeMenu, menuOpen, openMenu, callOn, newSession, newWorktree, newShell, mainWorkspace, workspaceById, prState, handedToPr, drawerCollapsed, setDrawerCollapsed, pendingSelect, setPendingSelect, onDrawerChange, onCreatingChange, creating, creatingIn, startingShown, appMod, IS_MAC, MOD_LABEL, closeLegend, toggleLegend, typingElsewhere, mark, reportBoot, dialogOpen, dismissDialog, promptBox, bytesOn, unchanged, tick,
+$, AGENT_LABEL, el, toast, reason, safeHref, copyText, call, callHost, get, activeCheckout, CHECKOUTS, setCheckouts, HOST, snapshotOf, repoSummary, everySession, enterCheckout, snap, receive, keyActivate, setZoom, setUiPx, uiPx, saveZoom, onScaleChange, ZOOM, selected, setSelected, onSelection, prForWorkspace, terms, CHROME, stateLabel, sessionDot, isWaiting, isArchived, byNewest, currentSession, activeWorkspaceId, currentWorkspaceId, closeMenu, menuOpen, openMenu, callOn, newSession, newWorktree, newShell, mainWorkspace, workspaceById, prState, prSeverity, prsOf, handedToPr, drawerCollapsed, setDrawerCollapsed, pendingSelect, setPendingSelect, onDrawerChange, onCreatingChange, creating, creatingIn, startingShown, appMod, IS_MAC, MOD_LABEL, closeLegend, toggleLegend, typingElsewhere, mark, reportBoot, dialogOpen, dismissDialog, promptBox, bytesOn, unchanged, tick,
 } from './js/core.js';
 import { onThemeChange } from './js/theme.js';
 import { detailEl, symbolAt } from './js/source.js';
@@ -742,11 +742,35 @@ function renderContext() {
   ws.textContent = wsLabel;
   ws.hidden = !wsLabel || $('ctxname').textContent === wsLabel;
   const pr = wsId ? prForWorkspace(wsId) : null;
+  const own = prsOf(s);
   const bits = [];
-  if (s) bits.push(stateLabel(s));
+  // The chips name the PR when the session's label would; saying it in both is
+  // saying it twice.
+  if (s && !(own.length && handedToPr(s))) bits.push(stateLabel(s));
   // Not when the session label is already the PR's, or the header says it twice.
-  if (pr && s && !handedToPr(s)) bits.push(`#${pr.number} ${prState(pr)}`);
+  if (pr && s && !own.length && !handedToPr(s)) bits.push(`#${pr.number} ${prState(pr)}`);
   $('ctxstate').textContent = bits.join(' · ');
+  /* **Every PR this session opened, oldest first.** The rail can only name one,
+     the worst; this is where the rest are, next to the session you are reading.
+     Five at most, because the strip shares the bar with the name and the branch. */
+  const strip = $('ctxprs');
+  strip.replaceChildren();
+  for (const p of own.slice(-5)) {
+    const sev = prSeverity(p);
+    const state = prState(p);
+    const chip = el('a', 'prchip' + (sev === 'bad' || sev === 'merged' ? ` ${sev}` : ''));
+    chip.href = safeHref(p.url);
+    chip.target = '_blank';
+    chip.rel = 'noreferrer';
+    chip.title = `#${p.number} ${p.title}${state ? `\n${state}` : ''}`;
+    chip.appendChild(el('span', `dot sdot ${sev === 'bad' ? 'build' : sev || 'pr'}`));
+    chip.appendChild(document.createTextNode(`#${p.number}`));
+    chip.oncontextmenu = (ev) => openMenu(ev, [
+      ['copy PR number', null, () => { void copyText(String(p.number)).then((ok) => { if (ok) toast(`copied ${p.number}`); }); }],
+    ]);
+    strip.appendChild(chip);
+  }
+  if (own.length > 5) strip.appendChild(el('span', 'ctx-sep', `+${own.length - 5}`));
   $('killbtn').style.display = s && s.alive ? '' : 'none';
 
 }

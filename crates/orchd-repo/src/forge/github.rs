@@ -301,6 +301,10 @@ impl Forge for GitHubForge {
         outcome(&self.token, &self.owner, &self.name, pr)
     }
 
+    fn prs_ended_on(&self, head: &str) -> Result<Vec<EndedPr>> {
+        ended_on(&self.token, &self.owner, &self.name, head)
+    }
+
     /// github.com's blob grammar. The host is a constant rather than carried on
     /// the forge because `repo_from_remote` only recognises github.com remotes
     /// in the first place — an Enterprise host never gets this far, so storing
@@ -478,6 +482,65 @@ pub fn outcome(token: &str, owner: &str, name: &str, pr: u64) -> Result<Option<E
             .to_string(),
         outcome,
     }))
+}
+
+/// Your merged and closed PRs whose head is `head`, oldest first.
+///
+/// `headRefName` matches the branch name in any repository, so a fork's PR on a
+/// same-named branch comes back too; only the viewer's own are kept, which is the
+/// rule the poll's `author:@me` already applies.
+pub fn ended_on(token: &str, owner: &str, name: &str, head: &str) -> Result<Vec<EndedPr>> {
+    // JSON-encoded, so a quote in a branch name cannot break the document.
+    let head_lit = serde_json::Value::String(head.to_string()).to_string();
+    let q = format!(
+        r#"{{
+  viewer {{ login }}
+  repository(owner: "{owner}", name: "{name}") {{
+    pullRequests(headRefName: {head_lit}, states: [MERGED, CLOSED], first: 20,
+                 orderBy: {{ field: CREATED_AT, direction: ASC }}) {{
+      nodes {{ number title url headRefName state author {{ login }} }}
+    }}
+  }}
+}}"#
+    );
+    Ok(parse_ended_on(&graphql(token, &q)?))
+}
+
+fn parse_ended_on(v: &Value) -> Vec<EndedPr> {
+    let viewer = v
+        .pointer("/data/viewer/login")
+        .and_then(|x| x.as_str())
+        .unwrap_or_default();
+    let Some(nodes) = v
+        .pointer("/data/repository/pullRequests/nodes")
+        .and_then(|x| x.as_array())
+    else {
+        return Vec::new();
+    };
+    let text = |n: &Value, k: &str| {
+        n.get(k)
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string()
+    };
+    nodes
+        .iter()
+        .filter(|n| n.pointer("/author/login").and_then(|x| x.as_str()) == Some(viewer))
+        .filter_map(|n| {
+            let outcome = match n.get("state").and_then(|s| s.as_str())? {
+                "MERGED" => PrOutcome::Merged,
+                "CLOSED" => PrOutcome::Closed,
+                _ => return None,
+            };
+            Some(EndedPr {
+                number: n.get("number").and_then(|x| x.as_u64())?,
+                title: text(n, "title"),
+                url: text(n, "url"),
+                head_ref: text(n, "headRefName"),
+                outcome,
+            })
+        })
+        .collect()
 }
 
 /// Threads come back 100 at a time when a PR's first page was capped. The poll
@@ -1049,6 +1112,26 @@ mod tests {
         let pr = parse_pr(&without, "me").expect("parsed");
         assert_eq!(pr.head_repo, None);
         assert_eq!(pr.head_pushable, None, "absent is unknown, not `false`");
+    }
+
+    #[test]
+    fn ended_on_keeps_only_your_own_ended_prs() {
+        let v: Value = serde_json::from_str(
+            r#"{"data":{"viewer":{"login":"me"},"repository":{"pullRequests":{"nodes":[
+              {"number":3,"title":"mine","url":"u3","headRefName":"b","state":"MERGED","author":{"login":"me"}},
+              {"number":4,"title":"a fork's","url":"u4","headRefName":"b","state":"CLOSED","author":{"login":"other"}},
+              {"number":5,"title":"odd","url":"u5","headRefName":"b","state":"OPEN","author":{"login":"me"}}
+            ]}}}}"#,
+        )
+        .unwrap();
+        let got = parse_ended_on(&v);
+        assert_eq!(
+            got.len(),
+            1,
+            "another author's and an open one are left out"
+        );
+        assert_eq!(got[0].number, 3);
+        assert_eq!(got[0].outcome, PrOutcome::Merged);
     }
 
     #[test]

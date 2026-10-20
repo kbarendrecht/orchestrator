@@ -118,6 +118,11 @@ pub struct SessionRecord {
     /// The PR this conversation was about. See `Session::pr`.
     #[serde(default)]
     pub pr: Option<u64>,
+    /// See `Session::branches` and `Session::prs`.
+    #[serde(default)]
+    pub branches: Vec<String>,
+    #[serde(default)]
+    pub prs: Vec<crate::model::SessionPr>,
     /// Whether the last turn was cut off rather than finished.
     ///
     /// The one thing a resumed session cannot work out for itself: it comes back
@@ -181,6 +186,8 @@ impl SessionRecord {
             was_live: s.state.is_live(),
             forked_from: s.forked_from,
             pr: s.pr,
+            branches: s.branches.clone(),
+            prs: s.prs.clone(),
             interrupted: s.interrupted,
             had_a_turn: s.had_a_turn,
             branch: s.branch.clone(),
@@ -209,6 +216,8 @@ impl SessionRecord {
         // the number was reused — see `SessionRecord::pid`.
         s.forked_from = self.forked_from;
         s.pr = self.pr;
+        s.branches = self.branches;
+        s.prs = self.prs;
         s.interrupted = self.interrupted;
         s.had_a_turn = self.had_a_turn;
         s.branch = self.branch;
@@ -1730,6 +1739,8 @@ mod tests {
                 was_live: false,
                 forked_from: None,
                 pr: None,
+                branches: Vec::new(),
+                prs: Vec::new(),
                 interrupted: false,
                 had_a_turn: false,
                 branch: None,

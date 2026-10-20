@@ -6,7 +6,7 @@
 //! own API. Keeping the types here rather than in the GitHub module is what lets
 //! a second forge exist without depending on the first.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -29,7 +29,7 @@ pub enum Checks {
 /// simply stops being in the answer — and a row that showed `#41 open` falls back
 /// to the session's own state with nothing ever saying which of the two happened.
 /// Merged is the one worth saying: it is the moment the worktree can go.
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(
     any(test, feature = "test-util"),

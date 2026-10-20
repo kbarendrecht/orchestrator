@@ -35,6 +35,26 @@ pub type WorkspaceId = String;
 // Workspace
 // ---------------------------------------------------------------------------
 
+/// One PR a session opened, as the session remembers it.
+///
+/// Title and link are kept so the pane header can still name and open a PR the
+/// poll has stopped reporting; the open ones are drawn from the poll's own row.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(
+    any(test, feature = "test-util"),
+    derive(ts_rs::TS),
+    ts(export, export_to = "snapshot.d.ts")
+)]
+pub struct SessionPr {
+    #[cfg_attr(any(test, feature = "test-util"), ts(type = "number"))]
+    pub number: u64,
+    pub title: String,
+    pub url: String,
+    /// Set once the PR has ended; `None` while it is open, or when it ended while
+    /// the daemon was not looking.
+    pub outcome: Option<crate::forge::PrOutcome>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[cfg_attr(
@@ -622,6 +642,20 @@ pub struct Session {
     /// [`crate::state::Inner::note_session_prs`] and never cleared: a PR that
     /// merged is still the PR this conversation was about.
     pub pr: Option<u64>,
+    /// Every branch this session's tree held while the session was live, oldest
+    /// first, beside [`Self::branch`] which follows the tree and so is only ever the
+    /// current one.
+    ///
+    /// **What lets a session own more than one PR.** An agent cuts a branch off its
+    /// own PR and opens the next one, and a session that only knew its current
+    /// branch lost the PRs behind it: the rail said `merged` while the next one was
+    /// red. Credited to every live session in the tree, so main with
+    /// sharing on gives each of them the branch; there is no way yet to tell which
+    /// of them moved it.
+    pub branches: Vec<String>,
+    /// Every PR seen on [`Self::branches`], in the order they were opened, kept
+    /// after they end for the reason [`Self::pr`] is.
+    pub prs: Vec<SessionPr>,
     /// The session whose `orch new` created this one.
     ///
     /// What makes `orch kill` an undo rather than a remote control: the ask token
@@ -725,6 +759,8 @@ impl Session {
             had_a_turn: false,
             forked_from: None,
             pr: None,
+            branches: Vec::new(),
+            prs: Vec::new(),
             spawned_by: None,
             spawn_cut_worktree: false,
             outside_grants: Vec::new(),

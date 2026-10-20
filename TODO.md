@@ -229,6 +229,24 @@ this file, which churned it from every build; that feature is gone.
   Worth doing when a screenshot is the thing being reviewed. Recorded now because
   the file pane landed today and this is the first thing it cannot show.
 
+- **A session that opens several PRs: what is left.** This replaces the
+  stacked-PR entry. Stacking is not orchd's job: the agents cut a branch off their
+  own PR and restack it well enough, and a `stack` action plus a `/restack` skill
+  would be the daemon doing their work. What orchd owns is *showing* what an agent
+  did. A session now keeps every branch it held and every PR opened on them
+  (`Session::branches`, `Session::prs`), the rail names the worst PR with a count
+  of the rest, and the pane header draws one chip per PR. A PR that ended while
+  the daemon was down is asked about once per run, by number or by its branch.
+  Options and reasoning: https://claude.ai/artifact/QXAB6HmLZRAAGLupnYd7He. Two
+  things are not done:
+  - **Main with sharing on credits a branch to every live session in it.** The
+    reconcile cannot tell which session moved the tree, so two conversations in
+    main each get the other's PRs. Crediting the one that was mid-turn when the
+    branch changed is the likely fix, once the turn timing is known to be reliable.
+  - **The PR pane could group by session** and show the stack as an indent from
+    `base_ref` (option C on the page). Worth it only if the flat list starts to
+    hide which PRs belong together.
+
 - **Deferred: setup can fail and say nothing.** `worktree_init` and
   `worktree_setup` are non-fatal, the second runs even after the first failed, and
   `env_source` failures are silent by design — a degraded session beats a lost one,

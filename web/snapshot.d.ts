@@ -333,6 +333,19 @@ upstream: string | null,
  */
 fork: string | null, };
 
+/**
+ * One PR a session opened, as the session remembers it.
+ *
+ * Title and link are kept so the pane header can still name and open a PR the
+ * poll has stopped reporting; the open ones are drawn from the poll's own row.
+ */
+export type SessionPr = { number: number, title: string, url: string, 
+/**
+ * Set once the PR has ended; `None` while it is open, or when it ended while
+ * the daemon was not looking.
+ */
+outcome: PrOutcome | null, };
+
 export type SessionView = { id: string, workspace: string, state: State, pass: Pass | null, 
 /**
  * What to call this session — the name you gave it, else Claude Code's own
@@ -385,6 +398,11 @@ forked_from: string | null,
  * archive row shows it, because the forge no longer remembers it.
  */
 pr: number | null, 
+/**
+ * Every PR this session opened, oldest first. The rail names the worst of
+ * them and counts the rest; the pane header draws one chip each.
+ */
+prs: Array<SessionPr>, 
 /**
  * Whether this session still owes you the rest of a turn. The nudge is only
  * true of these; every other resumed session is sitting at its prompt done.

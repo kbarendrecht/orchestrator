@@ -284,6 +284,18 @@ body[data-chrome="custom"] .resizers{display:block}
 .ctx-copy:hover{color:var(--text)}
 .ctx-pr{font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--dim);white-space:nowrap;flex:0 1 auto;overflow:hidden;text-overflow:ellipsis}
 .ctx-sep{color:var(--ghost);font-size:calc(10.5px * var(--fs))}
+/* Every PR the session opened, one chip each, outlined like the `fork` mark and
+   coloured by the PR's own severity. The strip gives way before the name does. */
+.ctx-prs{display:flex;gap:6px;flex:0 1 auto;min-width:0;overflow:hidden}
+.prchip{
+  display:inline-flex;align-items:center;gap:5px;flex:0 0 auto;
+  font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--dim);
+  border:1px solid var(--line);border-radius:2px;padding:0 6px;line-height:1.7;
+  text-decoration:none;transition:color .12s,border-color .12s;
+}
+.prchip:hover{color:var(--text);border-color:var(--faint-solid)}
+.prchip.bad{color:var(--bad)}
+.prchip.merged{color:var(--merged)}
 .ctx-right{margin-left:auto;display:flex;align-items:center;gap:12px;flex:0 0 auto}
 .ctx-btn{font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid)}
 /* Every dismiss control, in one place. They were four sizes, two glyphs and
@@ -603,6 +615,8 @@ button.ctx-btn:hover{color:var(--text)}
 .sess-state.ok{color:var(--ok)}
 .sess-state.merged{color:var(--merged)}
 .sess-state.pr{color:var(--faint-solid)}
+/* How many more PRs than the one named, in the clock's grey: a count, not a state. */
+.sess-more{color:var(--faint-solid)}
 /* A restart waiting on the turn: the work colour, because it is about to act on
    this row, not asking you to. */
 .sess-restart{color:var(--work);margin-left:6px}

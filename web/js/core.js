@@ -2147,7 +2147,7 @@ export function inTrouble(p) {
   return p.checks === 'failing' || p.mergeable === 'CONFLICTING';
 }
 
-export function prState(/** @type {import('../snapshot').PrView | import('../snapshot').EndedPrView} */ p) {
+export function prState(/** @type {import('../snapshot').PrView | import('../snapshot').EndedPrView | import('../snapshot').SessionPr} */ p) {
   /* **An ended PR answers first, because it has no other state left.** `merged`
      and `closed` come from `prs_ended`, which the daemon fills by asking what
      became of a PR that left the open poll. */
@@ -2192,6 +2192,26 @@ export function prSeverity(/** @type {any} */ p) {
  *  next move is on the PR, and the PR's own state is the useful thing to show.
  *  A question or a permission prompt is still about this session, so those keep
  *  the amber and their own words. */
+/** Where a PR sorts when one has to speak for several: the worst first, in the
+ *  order the dot paints them. */
+function prRank(/** @type {import('../snapshot').PrView} */ p) {
+  if (p.mergeable === 'CONFLICTING' || p.checks === 'failing') return 0;
+  if (p.checks === 'pending') return 1;
+  if (p.is_draft) return 3;
+  return 2;
+}
+
+/** Every PR a session opened, oldest first, each as the freshest row there is
+ *  for it: the poll's while it is open, the ended list's or the session's own
+ *  memory once it is not. */
+export function prsOf(/** @type {import('../snapshot').SessionView | null} */ s) {
+  if (!s?.prs?.length) return [];
+  const state = snapshotFor(s.id);
+  return s.prs.map((k) => (state.prs || []).find((p) => p.number === k.number)
+    || (state.prs_ended || []).find((p) => p.number === k.number)
+    || k);
+}
+
 /** The PR a session's work belongs to, whether by branch or by its pass. */
 function prOf(/** @type {import('../snapshot').SessionView} */ s) {
   if (!s) return null;
@@ -2205,6 +2225,14 @@ function prOf(/** @type {import('../snapshot').SessionView} */ s) {
   if (s.pass) {
     return (state.prs || []).find((p) => p.number === s.pass?.pr) || null;
   }
+  /* **The session's own PRs, the worst of them, when it has any.** Matched by
+     workspace, an agent that cut a second branch lost its open PR the moment the
+     tree moved on, and the rail fell back to whichever had merged. The workspace
+     rule stays for a session the daemon has not credited with a PR yet. */
+  if (s.prs.length) {
+    const open = s.prs.map((k) => (state.prs || []).find((p) => p.number === k.number));
+    return open.filter((p) => !!p).sort((a, b) => prRank(a) - prRank(b))[0] || null;
+  }
   return (state.prs || []).find((p) => p.workspace === s.workspace) || null;
 }
 
@@ -2217,11 +2245,23 @@ function prOf(/** @type {import('../snapshot').SessionView} */ s) {
  *  Only consulted when there is no *open* PR: a reopened number is in both lists
  *  for one poll, and the open one is the true answer.
  */
+/** @returns {import('../snapshot').EndedPrView | import('../snapshot').SessionPr | null} */
 function endedOf(/** @type {import('../snapshot').SessionView} */ s) {
   if (!s) return null;
   // The session's own checkout, for the reason `prOf` gives.
-  const ended = snapshotFor(s.id).prs_ended || [];
+  const state = snapshotFor(s.id);
+  const ended = state.prs_ended || [];
   if (s.pass) return ended.find((p) => p.number === s.pass?.pr) || null;
+  if (s.prs.length) {
+    // The newest that ended, from the ended list or the session's own memory of it.
+    for (const k of [...s.prs].reverse()) {
+      if ((state.prs || []).some((p) => p.number === k.number)) continue;
+      const e = ended.find((p) => p.number === k.number);
+      if (e) return e;
+      if (k.outcome) return k;
+    }
+    return null;
+  }
   return ended.find((p) => p.workspace === s.workspace) || null;
 }
 

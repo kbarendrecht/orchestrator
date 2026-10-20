@@ -1175,6 +1175,10 @@ fn start_pr_poller(app: Arc<AppState>) {
         the genuinely concurrent cases (a manual reconcile, the workspace
         watcher, a later tick that overruns). */
         let mut boot_already_did_this = true;
+        // Session PRs already asked about this run; see `session_prs_to_ask`.
+        let mut asked_once = std::collections::HashSet::new();
+        // And branches asked about this run; see `session_heads_to_ask`.
+        let mut heads_asked = std::collections::HashSet::new();
         // Boot's sweep is the first one, so the clock starts there.
         let mut last_sweep = std::time::Instant::now();
         loop {
@@ -1268,7 +1272,13 @@ fn start_pr_poller(app: Arc<AppState>) {
                             happens after it is dropped, because the question is
                             a network call and this lock is held across the whole
                             snapshot. */
-                            let ask = inner.outcomes_to_ask(&prs);
+                            let mut ask = inner.outcomes_to_ask(&prs);
+                            for n in inner.session_prs_to_ask(&prs, &mut asked_once) {
+                                if !ask.contains(&n) {
+                                    ask.push(n);
+                                }
+                            }
+                            let heads = inner.session_heads_to_ask(&prs, &mut heads_asked);
                             inner.foreign_heads = prs
                                 .iter()
                                 .filter_map(|p| {
@@ -1311,6 +1321,38 @@ fn start_pr_poller(app: Arc<AppState>) {
                                     }
                                     Err(e) => {
                                         tracing::warn!(pr = number, "pr outcome task failed: {e}");
+                                    }
+                                }
+                            }
+                            // Once per branch per run, so a failure is not retried
+                            // until the next start; a PR found here is one the poll
+                            // never saw.
+                            for head in heads {
+                                let f = asker.clone();
+                                let h = head.clone();
+                                match tokio::task::spawn_blocking(move || f.prs_ended_on(&h)).await
+                                {
+                                    Ok(Ok(found)) => {
+                                        if found.is_empty() {
+                                            continue;
+                                        }
+                                        let mut inner = app.inner.write().await;
+                                        for ended in found {
+                                            tracing::info!(
+                                                pr = ended.number,
+                                                head = %head,
+                                                "found an ended pr by its branch"
+                                            );
+                                            inner.note_ended_on_head(ended);
+                                        }
+                                        drop(inner);
+                                        app.notify().await;
+                                    }
+                                    Ok(Err(e)) => {
+                                        tracing::warn!(head = %head, "prs by branch failed: {e:#}");
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(head = %head, "prs by branch task failed: {e}");
                                     }
                                 }
                             }

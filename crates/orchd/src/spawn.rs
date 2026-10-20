@@ -448,6 +448,10 @@ struct Carried {
     /// next poll writes it back — and an archived one is never polled again.
     /// Not carried on a fork: a fork cuts its own branch, so its PR is its own.
     pr: Option<u64>,
+    /// Resume only, for the reason `pr` is: the list is the conversation's, and a
+    /// fork cuts its own branches and opens its own PRs.
+    branches: Vec<String>,
+    prs: Vec<crate::model::SessionPr>,
     /// When this conversation actually began, which a resume otherwise loses.
     ///
     /// `Session::new` stamps it with *now*, and a resume rebuilds the record under
@@ -498,6 +502,12 @@ impl Carried {
             // for a resume of a session that was already a fork.
             forked_from: if fork { None } else { prev.forked_from },
             pr: if fork { None } else { prev.pr },
+            branches: if fork {
+                Vec::new()
+            } else {
+                prev.branches.clone()
+            },
+            prs: if fork { Vec::new() } else { prev.prs.clone() },
             // Resume only. A fork is a new conversation and started when it was
             // forked, so the files you rewrote before it existed are news to it.
             created_at: (!fork).then_some(prev.created_at),
@@ -537,6 +547,8 @@ impl Carried {
         session.spawn_cut_worktree = self.spawn_cut_worktree;
         session.forked_from = self.forked_from;
         session.pr = self.pr;
+        session.branches = self.branches;
+        session.prs = self.prs;
         session.agent = self.agent;
         session.agent_session_id = self.agent_session_id;
         if self.transcript.is_some() {

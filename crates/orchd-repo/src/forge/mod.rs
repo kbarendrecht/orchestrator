@@ -62,6 +62,12 @@ pub trait Forge: Send + Sync + Clone + 'static {
     /// disappearance, never per tick.
     fn pr_outcome(&self, pr: u64) -> Result<Option<EndedPr>>;
 
+    /// Your PRs from `head` that have already merged or closed, oldest first.
+    ///
+    /// The other half of [`Forge::pr_outcome`]: that one needs a number, and a PR
+    /// that opened and ended while nobody was polling left none behind. The branch
+    /// is all a session remembers of it.
+    fn prs_ended_on(&self, head: &str) -> Result<Vec<EndedPr>>;
 
     /// A browser URL for one file at one ref.
     ///
@@ -120,6 +126,11 @@ impl Forge for ForgeImpl {
     fn pr_outcome(&self, pr: u64) -> Result<Option<EndedPr>> {
         match self {
             ForgeImpl::GitHub(f) => f.pr_outcome(pr),
+        }
+    }
+    fn prs_ended_on(&self, head: &str) -> Result<Vec<EndedPr>> {
+        match self {
+            ForgeImpl::GitHub(f) => f.prs_ended_on(head),
         }
     }
     fn blob_url(&self, r#ref: &str, path: &str) -> String {
