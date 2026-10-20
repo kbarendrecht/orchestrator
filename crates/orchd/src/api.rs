@@ -2665,6 +2665,11 @@ pub struct OpenFile {
 }
 
 #[derive(Deserialize)]
+pub struct OpenCommit {
+    pub sha: String,
+}
+
+#[derive(Deserialize)]
 pub struct RevealPath {
     pub workspace: String,
     pub path: String,
@@ -2792,6 +2797,24 @@ pub async fn open_file(
     }
     let forge = url_forge(&app)?;
     let url = forge.blob_url(&r#ref, path);
+    open_detached(&url).await?;
+    Ok(Json(json!({ "opened": url })))
+}
+
+/// Open one commit on the forge, in the browser: the blame gutter's link.
+///
+/// The sha is checked to be one rather than trusted, because it is spliced into a
+/// URL the OS opener is handed. A commit that never left this machine 404s on
+/// the forge, which is the honest answer, the same as [`open_file`]'s.
+pub async fn open_commit(
+    State(app): State<Arc<AppState>>,
+    Json(body): Json<OpenCommit>,
+) -> ApiResult<serde_json::Value> {
+    let sha = body.sha.trim();
+    if !(7..=64).contains(&sha.len()) || !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+        refuse!("{sha} is not a commit sha");
+    }
+    let url = url_forge(&app)?.commit_url(sha);
     open_detached(&url).await?;
     Ok(Json(json!({ "opened": url })))
 }

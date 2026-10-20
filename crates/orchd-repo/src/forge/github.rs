@@ -336,6 +336,14 @@ impl Forge for GitHubForge {
             esc(path)
         )
     }
+
+    /// The caller hands a sha, which needs no escaping; the route checks it is one.
+    fn commit_url(&self, sha: &str) -> String {
+        format!(
+            "https://github.com/{}/{}/commit/{sha}",
+            self.owner, self.name
+        )
+    }
 }
 
 const PAGE: u32 = 50;
@@ -1041,6 +1049,15 @@ mod tests {
         let pr = parse_pr(&without, "me").expect("parsed");
         assert_eq!(pr.head_repo, None);
         assert_eq!(pr.head_pushable, None, "absent is unknown, not `false`");
+    }
+
+    #[test]
+    fn commit_url_names_the_repo_and_the_sha() {
+        let f = GitHubForge::new("acme", "monorepo", "t");
+        assert_eq!(
+            f.commit_url("abc123"),
+            "https://github.com/acme/monorepo/commit/abc123"
+        );
     }
 
     #[test]

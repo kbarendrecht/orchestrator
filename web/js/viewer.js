@@ -14,7 +14,7 @@
 // document is as tall as the band and scrolling stops after 320 lines, which
 // reads as a truncated file rather than a broken viewer.
 
-import { activeCheckout, appMod, call, copyText, el, get, openMenu, reason, safeHref, toast } from './core.js';
+import { activeCheckout, appMod, call, copyText, el, FORGE_LABEL, get, openMenu, reason, safeHref, snap, toast } from './core.js';
 import { byteRange, charRanges, hlTokens, langFor, paintRanges } from './source.js';
 import { parse } from './markdown.js';
 
@@ -248,6 +248,11 @@ export function create(on) {
      leading `/` against the workspace root, as GitHub reads it — and `#L42` as a
      line. A link that climbs out of the workspace goes nowhere. */
   on.mount.addEventListener('click', (ev) => {
+    // A run's blame label opens its commit, the way a forge's blame view does.
+    const label = /** @type {HTMLElement | null} */ (/** @type {HTMLElement} */ (ev.target).closest?.('b.blame[data-b]'));
+    const n = label?.parentElement?.querySelector('i')?.dataset.n;
+    const sha = n ? blame.get(Number(n))?.commit : '';
+    if (sha) return openCommit(sha);
     const a = /** @type {HTMLElement | null} */ (/** @type {HTMLElement} */ (ev.target).closest?.('a.md-file'));
     if (!a || !on.onFile || !view.file) return;
     ev.preventDefault();
@@ -292,11 +297,22 @@ export function create(on) {
     const items = [];
     const picked = String(window.getSelection() ?? '');
     if (picked) items.push(['copy selection', null, copy(picked)]);
-    if (n) items.push([`copy ${path}:${n}`, null, copy(`${path}:${n}`)]);
     items.push(['copy path', null, copy(path)]);
+    if (n) items.push(['copy path:line', null, copy(`${path}:${n}`)]);
     if (view.mode === 'source') items.push([blameOn ? 'hide blame' : 'show blame', null, toggleBlame]);
+    // The commit behind the line, from the blame column only: it is the column's
+    // answer, and on the code it read as a fact about the code. A line nobody has
+    // committed has no commit to open.
+    const inGutter = /** @type {HTMLElement} */ (ev.target).closest?.('b.blame');
+    const sha = inGutter && n ? blame.get(Number(n))?.commit : '';
+    if (sha) items.push([`open ${sha.slice(0, 7)} on ${FORGE_LABEL[snap.forge]}`, null, () => openCommit(sha)]);
     openMenu(ev, items);
   });
+
+  /** Open a blamed commit on the forge. */
+  const openCommit = (/** @type {string} */ sha) => {
+    call('/api/open/commit', { sha }).catch((err) => toast(reason(err), true));
+  };
 
   /** Keep the band under the viewport as it is scrolled. */
   on.mount.addEventListener('scroll', () => {

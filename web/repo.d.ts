@@ -32,6 +32,13 @@ export type EndedPr = { number: number, title: string, url: string, head_ref: st
 export type FileDiff = { path: string, hunks: Array<Hunk>, binary: boolean, truncated: boolean, };
 
 /**
+ * Which code-hosting platform the repo lives on. The read/write seam is
+ * `crate::forge`; adding a platform is a new arm here plus a new `Forge` impl,
+ * not a change to any caller.
+ */
+export type ForgeKind = "github";
+
+/**
  * One matching line. `col` and `len` are **byte** offsets within the line, the
  * same units `diff::Row::words` uses and for the same reason: they come from
  * Rust and the page converts, rather than the daemon guessing at UTF-16.

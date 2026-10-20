@@ -975,6 +975,11 @@ pub struct QueueRules {
 /// not a change to any caller.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(
+    any(test, feature = "test-util"),
+    derive(ts_rs::TS),
+    ts(export, export_to = "repo.d.ts")
+)]
 pub enum ForgeKind {
     /// Spelled out rather than left to `rename_all`, which would make this
     /// `git_hub`: nobody writes that, and the obvious `"github"` would then be

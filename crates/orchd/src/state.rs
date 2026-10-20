@@ -1594,6 +1594,7 @@ impl AppState {
             agent_error: inner.agent_error.clone(),
             agents: inner.agents.clone(),
             default_agent: self.default_agent(&inner),
+            forge: self.cfg.forge,
             machine: inner.machine.clone(),
             pr_age_ms: inner
                 .pr_fetched
@@ -2306,6 +2307,9 @@ pub struct Snapshot {
     pub agents: Vec<crate::agent::Agent>,
     /// What a plain `+` starts.
     pub default_agent: crate::agent::Agent,
+    /// Which forge the checkout is on, so the page can name it: "open on GitHub"
+    /// rather than "open on forge".
+    pub forge: crate::config::ForgeKind,
     /// What the boot preflight found; see `Inner::machine`. The board shows it in
     /// a bar, because these are the causes behind panes that read `unavailable`
     /// and `off` and there is nowhere else in the window they appear.

@@ -1609,6 +1609,10 @@ export async function copyText(/** @type {string} */ text) {
 /** What a menu calls an agent, and the pane header beside the session's name. */
 export const AGENT_LABEL = /** @type {Record<import('../repo').Agent, string>} */ ({ claude: 'Claude Code', codex: 'Codex' });
 
+/** What a menu calls the forge: "open on GitHub". Keyed on the kind, so a second
+ *  forge is a line here rather than a word to find in every menu. */
+export const FORGE_LABEL = /** @type {Record<import('../repo').ForgeKind, string>} */ ({ github: 'GitHub' });
+
 export function openMenu(/** @type {MouseEvent} */ ev, /** @type {MenuItem[]} */ items) {
   ev.preventDefault();
   const menu = $('ctxmenu');

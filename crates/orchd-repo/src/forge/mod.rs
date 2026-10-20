@@ -62,6 +62,7 @@ pub trait Forge: Send + Sync + Clone + 'static {
     /// disappearance, never per tick.
     fn pr_outcome(&self, pr: u64) -> Result<Option<EndedPr>>;
 
+
     /// A browser URL for one file at one ref.
     ///
     /// On the trait rather than built in the SPA because the path grammar is the
@@ -74,6 +75,10 @@ pub trait Forge: Send + Sync + Clone + 'static {
     /// wrong one costs a 404 in the browser, not a failed call. Hence no
     /// `Result` — there is nothing to fail.
     fn blob_url(&self, r#ref: &str, path: &str) -> String;
+
+    /// A browser URL for one commit, for the blame gutter. On the trait for the
+    /// reason [`Forge::blob_url`] is.
+    fn commit_url(&self, sha: &str) -> String;
 }
 
 /// The forge the config selected, dispatched at runtime.
@@ -120,6 +125,11 @@ impl Forge for ForgeImpl {
     fn blob_url(&self, r#ref: &str, path: &str) -> String {
         match self {
             ForgeImpl::GitHub(f) => f.blob_url(r#ref, path),
+        }
+    }
+    fn commit_url(&self, sha: &str) -> String {
+        match self {
+            ForgeImpl::GitHub(f) => f.commit_url(sha),
         }
     }
 }

@@ -6,7 +6,7 @@
 // knows about strings and nothing about changesets. Three other modules wanted
 // it and none of them wanted a diff.
 
-import { $, activeWorkspaceId, borrowFocus, call, confirmBox, currentSession, el, get, openMenu, pending, prForWorkspace, returnFocus, snap, reason, toast, paintSig, reconcile, unchanged, workspaceById } from './core.js';
+import { $, FORGE_LABEL, activeWorkspaceId, borrowFocus, call, confirmBox, currentSession, el, get, openMenu, pending, prForWorkspace, returnFocus, snap, reason, toast, paintSig, reconcile, unchanged, workspaceById } from './core.js';
 import * as Editor from './editor.js';
 import { changeBlocks, revertedText } from './revert.js';
 import { charRanges, langFor, lineSegments } from './source.js';
@@ -207,12 +207,12 @@ async function fileVerb(/** @type {import('../snapshot').WorkspaceView} */ w, /*
  *  `unstaged` come from `git status` on the daemon side for exactly this.
  *
  *  `discard` is last, being the only one that cannot be pressed back; `open on
- *  forge` stays on top because it is the one you reach for while reading. */
+ *  <forge>` stays on top because it is the one you reach for while reading. */
 function fileMenu(/** @type {import('../snapshot').WorkspaceView} */ w, /** @type {import('../base').DiffFile} */ f) {
   /** @type {[string, string | null, (() => void) | null][]} */
   const items = [];
   const linkable = f.status !== '?' && !f.path.endsWith('/');
-  items.push(['open on forge', null, linkable ? () => openFileOnForge(w, f.path) : null]);
+  items.push([`open on ${FORGE_LABEL[snap.forge]}`, null, linkable ? () => openFileOnForge(w, f.path) : null]);
   if (f.unstaged || f.status === '?') items.push(['stage', null, () => fileVerb(w, f, 'stage')]);
   if (f.staged) items.push(['unstage', null, () => fileVerb(w, f, 'unstage')]);
   if (f.unstaged) items.push(['discard changes', 'danger', () => fileVerb(w, f, 'discard')]);
@@ -290,7 +290,7 @@ function fileRow(/** @type {import('../snapshot').WorkspaceView} */ w, /** @type
       }
     };
     /* The row's menu: the file on the forge, and what git can be asked to do with
-       it. `open on forge` is greyed rather than hidden for the two rows the forge
+       it. `open on <forge>` is greyed rather than hidden for the two rows the forge
        cannot serve, because a missing item reads as a missing feature:
 
          * `status: '?'` is untracked (`DiffFile::untracked`). Git has never seen

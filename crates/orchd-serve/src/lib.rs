@@ -779,6 +779,7 @@ fn daemon_router(app: Arc<AppState>) -> Router {
         .route("/api/open", post(api::open_url))
         .route("/api/open-all", post(api::open_urls))
         .route("/api/open/file", post(api::open_file))
+        .route("/api/open/commit", post(api::open_commit))
         .route("/api/open/reveal", post(api::reveal_path))
         .route("/api/file/verb", post(api::file_verb))
         // The rail's review verb: one agent and one pane.

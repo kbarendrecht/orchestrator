@@ -2366,6 +2366,9 @@ select.opfield,input.opfield{appearance:none}
   text-overflow:ellipsis;user-select:none;border-right:1px solid var(--line-soft);
 }
 .fnrow b.blame::before{content:attr(data-b)}
+/* A labelled run opens its commit on a click. */
+.fnrow b.blame[data-b]{cursor:pointer;transition:color .12s}
+.fnrow b.blame[data-b]:hover{color:var(--text)}
 .fnrow.on{background:#1B1A14;box-shadow:inset 2px 0 0 var(--attn)}
 /* The match itself, in the diff's own word-highlight shape so a marked span
    means one thing everywhere in this app. */
