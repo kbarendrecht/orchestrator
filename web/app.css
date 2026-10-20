@@ -1774,6 +1774,8 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
   padding:0 6px;cursor:pointer;
 }
 .fold-step:hover{color:var(--text);border-color:var(--faint-solid)}
+/* A rename's old path, in the colour of the list's `R`. */
+.ov-path .ov-from{color:var(--work)}
 .diffnote{padding:24px 16px;font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid);grid-column:1/-1}
 /* A hunk's section heading, pinned while you scroll a long hunk so "which
    function is this" never leaves the screen. Spans the full width in split mode,

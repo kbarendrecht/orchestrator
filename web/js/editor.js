@@ -35,6 +35,7 @@ export const SAVE_LABEL = `Save ${MOD_LABEL} S`;
  *    workspace: string,
  *    path: string,
  *    base?: string | null,
+ *    basePath?: string | null,
  *    prBase?: string | null,
  *    save: HTMLElement,
  *    edit: HTMLElement,
@@ -101,7 +102,9 @@ export async function open(host) {
     // so there is nothing to sit beside.
     [live, base] = await Promise.all([
       get(`/api/file?${query({})}`),
-      host.base ? get(`/api/file?${query({ base: host.base })}`) : Promise.resolve(null),
+      // A renamed file was somewhere else at the base.
+      host.base ? get(`/api/file?${query({ base: host.base, ...(host.basePath ? { path: host.basePath } : {}) })}`)
+        : Promise.resolve(null),
     ]);
   } catch (e) {
     state.host = null;

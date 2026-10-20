@@ -631,6 +631,13 @@ function pairRows(/** @type {import('../repo').Row[]} */ rows) {
   return out;
 }
 
+/** A rename's old path, or null. Only a rename: a copy's source still exists, so
+ *  naming it to git would diff that file as well. */
+function renamedFrom(/** @type {string | null} */ path) {
+  const f = diffState.summary?.files.find((x) => x.path === path);
+  return f?.status.startsWith('R') ? f.old_path : null;
+}
+
 function renderDiff() {
   const body = $('diffbody');
   body.replaceChildren();
@@ -638,7 +645,11 @@ function renderDiff() {
   const f = diffState.file;
 
   $('ovpath').replaceChildren();
+  const from = renamedFrom(diffState.path);
   if (diffState.path) {
+    /* A rename is named in the bar, not in the diff: a header row in the scrolling
+       body scrolled away, and scrolled part way it read as a stray border. */
+    if (from) $('ovpath').appendChild(el('span', 'ov-from', `${from} \u2192 `));
     const parts = diffState.path.split('/');
     // A path always has a last segment; `pop` cannot say so.
     const name = parts.pop() ?? '';
@@ -660,7 +671,9 @@ function renderDiff() {
     // A new file with nothing in it has no lines to show, which is not the same
     // as having no changes: it is the change.
     const listed = diffState.summary?.files.find((x) => x.path === diffState.path);
-    return note(listed?.status === '?' ? 'A new, empty file.' : 'No textual changes against this base.');
+    return note(listed?.status === '?' ? 'A new, empty file.'
+      : from ? `Renamed from ${from}, no content changes.`
+      : 'No textual changes against this base.');
   }
 
   const anchors = [];
@@ -967,6 +980,8 @@ async function loadFile(/** @type {string} */ path) {
   const q = new URLSearchParams({
     workspace: ws, base: diffState.base, path, context: String(diffState.context),
   });
+  const from = renamedFrom(path);
+  if (from) q.set('old_path', from);
   const pr = prForWorkspace(ws);
   if (pr && pr.base_ref) q.set('pr_base', pr.base_ref);
   // Show "reading the diff…" only if the fetch outlasts a couple of frames, so a
@@ -1061,6 +1076,7 @@ function openEditor() {
     workspace: ws,
     path: diffState.path,
     base: diffState.base,
+    basePath: renamedFrom(diffState.path),
     prBase: prForWorkspace(ws)?.base_ref ?? null,
     save: $('ovsave'),
     edit: $('ovedit'),
@@ -1074,6 +1090,8 @@ function openEditor() {
         path: diffState.path ?? '',
         context: String(diffState.context),
       });
+      const from = renamedFrom(diffState.path);
+      if (from) q.set('old_path', from);
       const pr = prForWorkspace(ws);
       if (pr?.base_ref) q.set('pr_base', pr.base_ref);
       try {

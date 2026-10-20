@@ -2443,6 +2443,9 @@ pub async fn blame(
 pub struct FileDiffQuery {
     pub workspace: String,
     pub path: String,
+    /// A rename's old path, so the diff pairs the two halves.
+    #[serde(default)]
+    pub old_path: Option<String>,
     #[serde(default)]
     pub base: crate::diff::Base,
     #[serde(default)]
@@ -2469,10 +2472,10 @@ pub async fn diff_file(
     // A pathological context value would ask git for the whole repo.
     let context = q.context.min(10_000);
     // Off the runtime: another `git diff`, per file you open.
-    let file = q.path.clone();
+    let (file, old) = (q.path.clone(), q.old_path.clone());
     Ok(Json(
         crate::proc::run_blocking("a file diff", move || {
-            crate::diff::file_diff(&path, &base, &file, context)
+            crate::diff::file_diff(&path, &base, &file, old.as_deref(), context)
         })
         .await??,
     ))

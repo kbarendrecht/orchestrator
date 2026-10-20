@@ -398,9 +398,22 @@ pub fn show_at(cwd: &Path, base: &str, path: &str) -> Result<String> {
 
 /// Hunks for one file. `context` widens `-U`, which is how expand-on-click is
 /// served without a second diff format.
-pub fn file_diff(cwd: &Path, base: &str, path: &str, context: u32) -> Result<FileDiff> {
+///
+/// `old` is a rename's old path, and git has to be given it: a pathspec of the new
+/// path alone hides the other half of the pair, so git cannot detect the rename and
+/// the whole file came back as added, with nothing on the left.
+pub fn file_diff(
+    cwd: &Path,
+    base: &str,
+    path: &str,
+    old: Option<&str>,
+    context: u32,
+) -> Result<FileDiff> {
     let ctx = format!("-U{context}");
-    let out = git(cwd, &["diff", &ctx, base, "--", path])?;
+    let mut args = vec!["diff", "-M", &ctx, base, "--"];
+    args.extend(old);
+    args.push(path);
+    let out = git(cwd, &args)?;
     let diff = parse_unified(path, &out);
     /* **An empty diff has two meanings, and only one of them is "nothing here".**
     A file git has never seen produces no output at all, so the pane showed every
@@ -855,6 +868,15 @@ mod tests {
         );
         assert_eq!(renamed.old_path.as_deref(), Some("old.txt"));
 
+        // The hunks pair the two halves, so only the real edit is a change. Asked
+        // for by the new path alone, git saw an added file and every line was green.
+        let d = file_diff(&dir, &base, "new.txt", Some("old.txt"), 3).unwrap();
+        assert!(
+            d.hunks.is_empty(),
+            "a pure rename has no lines to show: {:?}",
+            d.hunks
+        );
+
         let accented = s
             .files
             .iter()
@@ -1268,7 +1290,7 @@ index 111..222 100644
         // The new file, never added.
         std::fs::write(dir.join("fresh.txt"), "alpha\nbeta\n").unwrap();
 
-        let d = file_diff(&dir, "HEAD", "fresh.txt", 3).expect("a diff");
+        let d = file_diff(&dir, "HEAD", "fresh.txt", None, 3).expect("a diff");
         assert!(
             !d.hunks.is_empty(),
             "an untracked file must show its contents"
@@ -1284,7 +1306,7 @@ index 111..222 100644
 
         // And the case it must not break: a tracked file with nothing to say still
         // says nothing, rather than reporting itself as entirely new.
-        let clean = file_diff(&dir, "HEAD", "tracked.txt", 3).expect("a diff");
+        let clean = file_diff(&dir, "HEAD", "tracked.txt", None, 3).expect("a diff");
         assert!(
             clean.hunks.is_empty(),
             "an unmodified tracked file is not an addition: {:?}",
