@@ -414,6 +414,16 @@ needs a native drag gesture on a real macOS webview, which is the one thing
 `docs/traps/macos.md` has those measurements. A source-level grep for the call
 would assert the fix is spelled, not that the drop lands, and the failure it
 guards is already loud: the rail simply stops reordering.
+**Linux takes file drops natively, but not through wry.** WebKitGTK handed the
+page a file manager's PDF with neither the path nor the bytes, so the HTML5 drop
+typed nothing. wry's own GTK handler took no file drop either on WebKitGTK 2.52:
+it only counts a drag whose GTK target id is 2, and that id is WebKitGTK's
+private numbering. So it stays disabled everywhere, and `wire_file_drops` hangs
+on the webview widget's `drag-data-received` and `drag-drop` itself. It takes a
+drop only when that same drag carried file URIs, and returns `false` for
+everything else, so the rail's own drags still go to WebKit. `hand_drop` evals
+`window.orchDrop` with the paths; the page types them into the session the last
+`dragover` was on.
 
 ## The splash is replaced, never pushed, and `Backspace` is refused outside a text field.
 Two halves of one defect (#14), and they are separate because only one of them can

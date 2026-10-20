@@ -35,6 +35,9 @@ interface Window {
   orchSettings: () => void;
   /** The macOS menu bar's Close, on ⌘W, which is native and evals this name. */
   orchClose: () => void;
+  /** Files dropped on the window on Linux, with their real paths; the desktop
+   *  shell's native drop handler evals this name (`hand_drop`). */
+  orchDrop: (paths: string[]) => void;
   /** Read the paint-guard counters; with `true`, zero them and start naming what
    *  moved — see `core.unchanged`. Driven from a console or from
    *  `tools/paint-check.mjs`, never from a pane. */

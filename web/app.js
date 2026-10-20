@@ -766,24 +766,61 @@ import { toggleBlame } from './js/viewer.js';
    dropped file to the webview's default: navigate to it, and the app was gone
    until a restart. So every file drag is taken here. One dropped on a session's
    terminal types its path there, the way a terminal does; anywhere else it is
-   refused with a word about where to put it. */
-const carriesFiles = (/** @type {DragEvent} */ e) => [...(e.dataTransfer?.types ?? [])].includes('Files');
+   refused with a word about where to put it.
+   **A URL is a file too, as far as the webview is concerned.** A guard that
+   asked only for `Files` let a PDF from the file manager through on WebKitGTK,
+   and the app became a PDF viewer; asking for `text/uri-list` as well holds.
+   The page's own drags are told apart by `dragstart`, so dragging one of its
+   links is refused quietly. */
+const carriesFiles = (/** @type {DragEvent} */ e) =>
+  [...(e.dataTransfer?.types ?? [])].some((t) => t === 'Files' || t === 'text/uri-list');
+let ownDrag = false;
+document.addEventListener('dragstart', (e) => {
+  ownDrag = true;
+  // A refused start (the titlebar refuses them) never gets its `dragend`, so ask
+  // once the event has been through every listener.
+  setTimeout(() => { if (e.defaultPrevented) ownDrag = false; });
+}, true);
+document.addEventListener('dragend', () => { ownDrag = false; }, true);
 const overTerminal = (/** @type {DragEvent} */ e) =>
   !!(/** @type {HTMLElement} */ (e.target).closest?.('#termwrap')) && !!currentSession();
+/** Whether the last `dragover` was on a session's terminal. A drop the desktop
+ *  shell takes natively (`wire_file_drops` in main.rs) arrives with no position
+ *  the page can use, so this is where it landed. */
+let overTerm = false;
 window.addEventListener('dragover', (e) => {
   if (!carriesFiles(e)) return;
   e.preventDefault();
-  const on = overTerminal(e);
+  const on = !ownDrag && overTerminal(e);
+  overTerm = on;
   if (e.dataTransfer) e.dataTransfer.dropEffect = on ? 'copy' : 'none';
   $('termwrap').classList.toggle('dropping', on);
 });
 window.addEventListener('dragleave', (e) => {
+  // `overTerm` stays: GTK sends its leave just before a native drop, and every
+  // drag sets it again on its first `dragover`.
   if (!e.relatedTarget) $('termwrap').classList.remove('dropping');
 });
+/* **On Linux the drop is the desktop shell's, with the real paths.** WebKitGTK
+   hands the page a file manager's drop with neither its path nor its bytes, so
+   `main.rs` takes it off GTK and calls this instead of the page seeing a `drop`
+   at all. */
+window.orchDrop = (paths) => {
+  $('termwrap').classList.remove('dropping');
+  const s = currentSession();
+  const on = overTerm;
+  overTerm = false;
+  if (!s || !on) {
+    toast('drop a file on a session\'s terminal to hand the agent its path');
+    return;
+  }
+  typePaths(s.id, paths);
+};
 window.addEventListener('drop', (e) => {
   if (!carriesFiles(e)) return;
   e.preventDefault();
   $('termwrap').classList.remove('dropping');
+  if (ownDrag) return;
   const s = currentSession();
   if (!s || !overTerminal(e) || !e.dataTransfer) {
     toast('drop a file on a session\'s terminal to hand the agent its path');
@@ -799,12 +836,15 @@ const quotePath = (/** @type {string} */ p) =>
 
 /** Type the dropped files' paths into the session. A drop that names its files
  *  (a Linux file manager) is typed as it is; one that only carries their bytes
- *  (a Mac webview) is saved to the session's scratchpad first. */
+ *  (a Mac webview) is saved to the session's scratchpad first. A web URL is the
+ *  last resort and typed as it is, which is what a terminal does with one: an
+ *  image dragged out of a browser carries its URL *and* its bytes, and the saved
+ *  file is what the agent can read. */
 async function dropIntoSession(/** @type {string} */ session, /** @type {DataTransfer} */ dt) {
+  // `#` starts a comment line in a uri-list.
+  const uris = (dt.getData('text/uri-list') || '').split(/\r?\n/).filter((u) => u && !u.startsWith('#'));
   /** @type {string[]} */
-  const paths = (dt.getData('text/uri-list') || '').split(/\r?\n/)
-    .filter((u) => u.startsWith('file://'))
-    .map((u) => decodeURIComponent(new URL(u).pathname));
+  const paths = uris.filter((u) => u.startsWith('file://')).map((u) => decodeURIComponent(new URL(u).pathname));
   if (!paths.length) {
     for (const f of [...dt.files]) {
       try {
@@ -815,7 +855,19 @@ async function dropIntoSession(/** @type {string} */ session, /** @type {DataTra
       }
     }
   }
-  if (!paths.length) return;
+  if (!paths.length && !dt.files.length) paths.push(...uris);
+  if (!paths.length) {
+    // Said rather than swallowed: a drop that types nothing read as a drop that
+    // had not arrived.
+    toast('that drop carried no file the page can read', true);
+    return;
+  }
+  typePaths(session, paths);
+}
+
+/** Type paths into a session's terminal as one paste, the way a terminal takes a
+ *  dropped file. */
+function typePaths(/** @type {string} */ session, /** @type {string[]} */ paths) {
   if (!Term.pasteInto(activeCheckout(), `session:${session}`, paths.map(quotePath).join(' ') + ' ')) {
     toast('that session has no terminal open to type into', true);
   }

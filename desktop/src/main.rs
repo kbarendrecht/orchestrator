@@ -311,6 +311,105 @@ fn main() {
     });
 }
 
+/// Take a file dropped on the webview natively, with its real path.
+///
+/// **WebKitGTK gives the page nothing to type.** A file manager's drop reached the
+/// page's `drop` with neither the path nor the bytes, so the HTML5 route that
+/// serves macOS typed nothing here. GTK has the URIs, so they are read off the
+/// webview's own `drag-data-received`, which WebKit asks for while the drag moves.
+///
+/// **Only a drop that carried files is taken**, and only by the drag that carried
+/// them: the paths are kept with their `DragContext`, so a file drag that left
+/// without dropping cannot hand its paths to the rail's next row drag. Everything
+/// else returns `false` and WebKit handles it, which is what keeps the rail's own
+/// drag-and-drop alive. `drag-motion` is not touched, so the page still sees
+/// `dragover` and draws where the drop will land.
+#[cfg(target_os = "linux")]
+fn wire_file_drops(window: &tauri::WebviewWindow) {
+    use gtk::prelude::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    fn find_view(w: &gtk::Widget) -> Option<gtk::Widget> {
+        if w.type_().name() == "WebKitWebView" {
+            return Some(w.clone());
+        }
+        let c = w.downcast_ref::<gtk::Container>()?;
+        c.children().iter().find_map(find_view)
+    }
+    let gtk_win = match window.gtk_window() {
+        Ok(w) => w,
+        Err(e) => return tracing::warn!("no gtk window for file drops: {e:#}"),
+    };
+    let Some(view) = find_view(gtk_win.upcast_ref()) else {
+        return tracing::warn!("no webview widget to take file drops on");
+    };
+    /// The paths a drag carried, and the drag that carried them.
+    type Held = Option<(gtk::gdk::DragContext, Vec<std::path::PathBuf>)>;
+    let held: Rc<RefCell<Held>> = Rc::default();
+    {
+        let held = held.clone();
+        view.connect_drag_data_received(move |_, ctx, _, _, data, _, _| {
+            let paths: Vec<_> = data
+                .uris()
+                .iter()
+                .filter_map(|u| gtk::gio::File::for_uri(u).path())
+                .collect();
+            if !paths.is_empty() {
+                *held.borrow_mut() = Some((ctx.clone(), paths));
+            }
+        });
+    }
+    let win = window.clone();
+    view.connect_drag_drop(move |_, ctx, _, _, time| {
+        let taken = held.borrow_mut().take();
+        let Some((_, paths)) = taken.filter(|(from, _)| from == ctx) else {
+            return false;
+        };
+        ctx.drop_finish(true, time);
+        tracing::info!(files = paths.len(), "file drop");
+        hand_drop(&win, &paths);
+        true
+    });
+}
+
+/// Hand files dropped on the window to the page, which types their paths into the
+/// session the drop was over. Where it landed is the page's call: it saw the
+/// `dragover`s, and a position from here would need the webview's zoom to mean
+/// anything in CSS pixels.
+#[cfg(target_os = "linux")]
+fn hand_drop(win: &tauri::WebviewWindow, paths: &[std::path::PathBuf]) {
+    let list = paths
+        .iter()
+        .map(|p| js_string(&p.to_string_lossy()))
+        .collect::<Vec<_>>()
+        .join(",");
+    // `eval` is the whole channel, as for the menu: see `with_app_menu`.
+    if let Err(e) = win.eval(format!("window.orchDrop && window.orchDrop([{list}])")) {
+        tracing::warn!("could not hand a drop to the page: {e}");
+    }
+}
+
+/// A string as a JavaScript literal. A path may hold any character but NUL, and
+/// this is code the page runs, so everything that could end the literal or the
+/// line is escaped rather than trusted to be absent.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn js_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if c.is_control() || c == '\u{2028}' || c == '\u{2029}' => {
+                out.push_str(&format!("\\u{:04x}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
 /// Open a deep link now if the host is up, else once it is.
 fn take_link(url: String) {
     let mut queued = LINKS.lock().unwrap_or_else(poisoned_is_still_usable);
@@ -502,20 +601,6 @@ fn build_window(
     let see_through = orchd_serve::host::see_through_window();
     let mut builder = WebviewWindowBuilder::new(app_handle, "main", url)
         .title("Orchestrator")
-        /* **The rail reorders by HTML5 drag-and-drop, and the native handler eats
-        it.** wry registers an `NSDraggingDestination` on the webview whenever this
-        is left on, and that destination answers `draggingEntered` and
-        `draggingUpdated` before the page does — so `dragover` and `drop` never
-        reach JS. `dragstart` still fires, because it is page-side, which is why
-        the row ghost follows the pointer and the release does nothing. The tell in
-        #19 was the cursor: `effectAllowed = 'move'` cannot draw a copy badge, and
-        `NSDragOperationCopy` is what that destination returns.
-        A file dropped on a session is taken by the page instead (`app.js`), as an
-        HTML5 drop: the path where the drop carries one, and the bytes, saved to
-        the session's scratchpad, where it does not. That keeps the rail's drag
-        working, which a native handler through `on_drag_drop_event` would not,
-        since the two cannot both be live on one webview. */
-        .disable_drag_drop_handler()
         .transparent(see_through)
         /* **The ground is the app's, not the toolkit's white.** A webview paints
         white until a document says otherwise, and there are two moments here
@@ -546,6 +631,19 @@ fn build_window(
     Both halves are the compositor's business where the app cannot place a
     window ([`can_place_windows`]), and asking anyway is not harmless: it is
     what wrote (0,0) into the file that then suppressed the centring. */
+    /* **The rail reorders by HTML5 drag-and-drop, and on macOS the native handler
+    eats it.** wry registers an `NSDraggingDestination` on the webview whenever this
+    is left on, and that destination answers `draggingEntered` and
+    `draggingUpdated` before the page does — so `dragover` and `drop` never reach
+    JS. `dragstart` still fires, because it is page-side, which is why the row
+    ghost follows the pointer and the release does nothing. The tell in #19 was
+    the cursor: `effectAllowed = 'move'` cannot draw a copy badge, and
+    `NSDragOperationCopy` is what that destination returns. So there a file drop
+    is the page's (`app.js`): the bytes, saved to the session's scratchpad.
+    Off on Linux too, where wry's handler took no file drop at all on WebKitGTK
+    2.52: it only counts a drag whose GTK target id is 2, and that id is WebKitGTK's
+    private numbering. Linux has [`wire_file_drops`] instead. */
+    builder = builder.disable_drag_drop_handler();
     let rec = orchd::store::load_window().unwrap_or_default();
     let restore_to = rec.pos().filter(|_| can_place_windows());
     if restore_to.is_none() && center && can_place_windows() {
@@ -597,7 +695,10 @@ fn build_window(
         restore_state(&_window, &rec);
     }
     #[cfg(target_os = "linux")]
-    wire_session_switch_keys(&_window);
+    {
+        wire_session_switch_keys(&_window);
+        wire_file_drops(&_window);
+    }
     /* #29. The buttons are laid out when the window is created, so this is the
     earliest point they can be moved — and the measurement after it is what says
     they landed, both in the log and in `app-check`'s assertion. */
@@ -1678,6 +1779,17 @@ impl WindowControl for TauriWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A path is spliced into code the page runs, so the characters that would
+    /// end the literal or the line come out escaped.
+    #[test]
+    fn a_path_cannot_end_its_literal() {
+        assert_eq!(super::js_string("/tmp/a.pdf"), r#""/tmp/a.pdf""#);
+        assert_eq!(
+            super::js_string("/tmp/\"); alert(1); \"\\x\n\u{2028}é"),
+            r#""/tmp/\"); alert(1); \"\\x\u000a\u2028é""#
+        );
+    }
     use std::ffi::OsString;
 
     /// The window chrome is decided by the platform, once, here.
