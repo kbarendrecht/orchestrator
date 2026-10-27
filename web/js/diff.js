@@ -6,7 +6,7 @@
 // knows about strings and nothing about changesets. Three other modules wanted
 // it and none of them wanted a diff.
 
-import { $, FORGE_LABEL, activeWorkspaceId, borrowFocus, call, confirmBox, currentSession, el, get, openMenu, pending, prForWorkspace, returnFocus, snap, reason, toast, paintSig, reconcile, unchanged, workspaceById } from './core.js';
+import { $, FORGE_LABEL, activeWorkspaceId, borrowFocus, call, confirmBox, currentSession, el, get, icon, openMenu, pending, prForWorkspace, returnFocus, snap, reason, toast, paintSig, reconcile, unchanged, workspaceById } from './core.js';
 import * as Editor from './editor.js';
 import { changeBlocks, revertedText } from './revert.js';
 import { charRanges, langFor, lineSegments } from './source.js';
@@ -38,12 +38,20 @@ function renderDivergence(/** @type {import('../snapshot').WorkspaceView} */ w) 
      same breath — so its presence is the whole condition, and how far behind the
      branch is stops being the interesting number until it is back. */
   const bank = w.banked;
+  /* **The first row of the list, not a banner over it** (option 8 of the behind
+     review): an icon in the state's colour, the sentence, and the PR rows' button.
+     A strip tinted across the pane read as an alert about the pane; this reads as
+     one more thing that changed. */
+  const mark = (/** @type {boolean} */ bad) => box.appendChild(bad
+    ? icon('dvic', 1.4, 'M8 2.5 14 13H2z', 'M8 6.5v3', 'M8 11.4h.01')
+    : icon('dvic', 1.4, 'M5 2.5v8', 'M2.5 8 5 10.5 7.5 8', 'M11 2.7a1.8 1.8 0 1 0 0 3.6a1.8 1.8 0 1 0 0-3.6', 'M11 6.3V13.5'));
   if (w.rebasing) {
     box.className = 'diverge on bad';
+    mark(true);
     box.appendChild(el('span', 'dvtext', bank
       ? `rebase stopped on conflicts · ${files(bank)} banked`
       : 'rebase stopped on conflicts'));
-    const a = el('button', 'dvbtn', 'Abort');
+    const a = dvButton('Abort', 'M4 4l8 8M12 4l-8 8');
     // Which also puts the banked work back, because an abort is the undo of the
     // press that took it.
     a.onclick = () => act(`/api/workspace/${encodeURIComponent(w.id)}/rebase/abort`, 'aborted');
@@ -52,6 +60,7 @@ function renderDivergence(/** @type {import('../snapshot').WorkspaceView} */ w) 
   }
   if (bank) {
     box.className = 'diverge on bad';
+    mark(true);
     /* Worded for both states this reaches, which is why it does not say the apply
        failed: a rebase stopped part-way and then finished *in a session* leaves the
        bank standing and never tried, and `rebasing` is false by then. What is
@@ -63,7 +72,7 @@ function renderDivergence(/** @type {import('../snapshot').WorkspaceView} */ w) 
     box.appendChild(t);
 
     const ws = encodeURIComponent(w.id);
-    const r = el('button', 'dvbtn', 'Resolve in session');
+    const r = dvButton('Resolve in session');
     r.title = 'Hand the conflict to the session in this workspace';
     // Held down until the answer, like Rebase below. A second press here types the
     // whole message into the agent again as a second user turn, and a second press
@@ -71,7 +80,7 @@ function renderDivergence(/** @type {import('../snapshot').WorkspaceView} */ w) 
     r.onclick = () => press(r, `/api/workspace/${ws}/wip/resolve`, 'handed it over');
     box.appendChild(r);
 
-    const back = el('button', 'dvbtn', 'Put back');
+    const back = dvButton('Put back');
     back.title = 'Try the re-apply again';
     back.onclick = () => press(back, `/api/workspace/${ws}/wip/restore`, 'put back');
     box.appendChild(back);
@@ -79,7 +88,7 @@ function renderDivergence(/** @type {import('../snapshot').WorkspaceView} */ w) 
     // The one thing here git cannot undo: nothing else points at that object, so
     // once it is collected the content is gone. Same asymmetry as `discard changes`
     // on a row.
-    const d = el('button', 'dvbtn', 'Discard');
+    const d = dvButton('Discard');
     d.title = 'Forget the banked copy of your work';
     d.onclick = async () => {
       /* One of the four things this UI still asks about — see the rule at
@@ -108,11 +117,14 @@ function renderDivergence(/** @type {import('../snapshot').WorkspaceView} */ w) 
   }
 
   box.className = 'diverge on';
+  mark(false);
   const ahead = w.ahead ? `, ${w.ahead} ahead` : '';
   const base = snap.upstream_ref || 'the base';
-  box.appendChild(el('span', 'dvtext',
-    `${w.behind} behind ${base}${ahead}`));
-  const b = el('button', 'dvbtn', 'Rebase');
+  const say = el('span', 'dvtext');
+  say.append(el('b', null, `${w.behind} commit${w.behind === 1 ? '' : 's'}`), ` on ${baseLeaf()} you do not have`);
+  say.title = `${w.behind} behind ${base}${ahead}`;
+  box.appendChild(say);
+  const b = dvButton('Rebase', 'M8 3v9', 'M4.5 8.5 8 12l3.5-3.5');
   // Never a merge: history stays linear.
   b.title = `git rebase ${base} in ${w.id}`;
   b.onclick = async () => {
@@ -121,6 +133,16 @@ function renderDivergence(/** @type {import('../snapshot').WorkspaceView} */ w) 
     b.disabled = false;
   };
   box.appendChild(b);
+}
+
+/** A button on the divergence row: the PR rows' shape, an icon in the row's
+ *  colour beside the word. Only the row's own verb gets an icon; the bank's other
+ *  three are plain words, so the one that undoes the state stands out. */
+function dvButton(/** @type {string} */ label, /** @type {string[]} */ ...ds) {
+  const b = el('button', 'dvbtn');
+  if (ds.length) b.appendChild(icon('dvic', 1.4, ...ds));
+  b.append(label);
+  return b;
 }
 
 /** `3 changed files`, or `1 changed file`. */
