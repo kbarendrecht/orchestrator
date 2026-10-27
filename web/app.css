@@ -1583,7 +1583,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 span.settings-tgroup{font-size:calc(10.5px * var(--fs));letter-spacing:.06em;text-transform:uppercase;color:var(--ghost)}
 /* A project heading: a button for the others, a plain heading for the open one.
    A little air above it, so a project reads as its own group under App. */
-.settings-co{width:100%;margin-top:8px;text-align:left;border-radius:var(--r);font-size:calc(12px * var(--fs))}
+.settings-co{width:100%;margin-top:22px;text-align:left;border-radius:var(--r);font-size:calc(12px * var(--fs))}
 div.settings-co{color:var(--dim)}
 button.settings-co{color:var(--ghost)}
 button.settings-co:hover{color:var(--text);background:var(--hover)}
