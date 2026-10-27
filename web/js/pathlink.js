@@ -128,11 +128,17 @@ function looksLikeAPath(s) {
  *  page. This takes everything up to whitespace and then gives the punctuation
  *  back.
  *
+ *  **A bare host is a URL too, when it ends in one of a few TLDs.** Agents and
+ *  logs print `doi-janky.infosiftr.net` with no scheme, and it opens as `https://`.
+ *  The TLDs are a short list rather than any word, because `.md`, `.rs`, `.sh` and
+ *  `.py` are all real ones and every file name would turn into a website. `bare`
+ *  marks these, so the caller can still let a real file of that name win.
+ *
  *  @param {string} text
- *  @returns {{ kind: 'url', start: number, end: number, url: string }[]}
+ *  @returns {{ kind: 'url', start: number, end: number, url: string, bare?: boolean }[]}
  */
 export function urlsIn(text) {
-  /** @type {{ kind: 'url', start: number, end: number, url: string }[]} */
+  /** @type {{ kind: 'url', start: number, end: number, url: string, bare?: boolean }[]} */
   const out = [];
   for (const m of text.matchAll(URL_RUN)) {
     const url = trimTail(m[0]);
@@ -140,8 +146,20 @@ export function urlsIn(text) {
     if (!/^https?:\/\/[^\s/]/i.test(url)) continue;
     out.push({ kind: 'url', url, start: m.index ?? 0, end: (m.index ?? 0) + url.length });
   }
-  return out;
+  for (const m of text.matchAll(BARE_RUN)) {
+    const run = trimTail(m[0]);
+    const start = m.index ?? 0;
+    if (out.some((u) => start < u.end && u.start < start + run.length)) continue;
+    out.push({ kind: 'url', url: `https://${run}`, start, end: start + run.length, bare: true });
+  }
+  return out.sort((a, b) => a.start - b.start);
 }
+
+/** A host with no scheme, and whatever path follows it. Not after `/`, `.`, `@`
+ *  or `:`, so the middle of a URL, a longer name or an email address is not one,
+ *  and not followed by more name, so `site.com.bak` is not one either. */
+const BARE_RUN =
+  /(?<![\w.@/:-])(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+(?:com|net|org|io|dev|nl)(?![\w-]|\.\w)(?:\/[^\s<>"'`]*)?/gi;
 
 /** Whitespace and the few characters that can only be markup around a URL, never
  *  in one. The brackets and quotes are left to [`trimTail`], which knows which end
@@ -180,7 +198,7 @@ function trimTail(/** @type {string} */ run) {
  *  @param {string} text
  *  @returns {({ kind: 'path', start: number, end: number, path: string, line: number,
  *               last: number, col: number }
- *           | { kind: 'url', start: number, end: number, url: string })[]}
+ *           | { kind: 'url', start: number, end: number, url: string, bare?: boolean })[]}
  */
 export function linksIn(text) {
   const urls = urlsIn(text);

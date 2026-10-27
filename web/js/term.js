@@ -260,11 +260,20 @@ function linkPaths(term, checkout, target) {
          the daemon. So the gate is per hit rather than over the whole provider —
          it used to return nothing at all, which would now cost the URLs too. */
       const hits = linksIn(text).filter((h) => h.kind === 'url' || pathClick);
-      const paths = hits.filter((h) => h.kind === 'path');
-      if (!paths.length || !pathCheck) return answer(hits);
-      void pathCheck({ checkout: checkout.path, target, paths: paths.map((h) => h.path) })
+      /* A bare host is asked about as a file too, and a file of that name wins:
+         `notes.io` in the workspace is the file, not a website. */
+      const asked = hits.filter((h) => h.kind === 'path' || (h.bare && pathClick));
+      if (!asked.length || !pathCheck) return answer(hits);
+      const named = (/** @type {typeof hits[number]} */ h) => (h.kind === 'path' ? h.path : text.slice(h.start, h.end));
+      void pathCheck({ checkout: checkout.path, target, paths: asked.map(named) })
         .then((ok) => {
-          if (ask === newest) answer(hits.filter((h) => h.kind === 'url' || ok[paths.indexOf(h)]));
+          if (ask !== newest) return;
+          answer(hits.flatMap((h) => {
+            const i = asked.indexOf(h);
+            if (i < 0) return [h];
+            if (h.kind === 'path') return ok[i] ? [h] : [];
+            return ok[i] ? [{ kind: /** @type {const} */ ('path'), start: h.start, end: h.end, path: named(h), line: 0, last: 0, col: 0 }] : [h];
+          }));
         }, () => {
           // No list to ask is no promise to make: the URLs still stand.
           if (ask === newest) answer(hits.filter((h) => h.kind === 'url'));

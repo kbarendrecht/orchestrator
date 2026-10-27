@@ -160,6 +160,17 @@ check(linksIn('ftp://nope.example.com/a').length === 0,
   'a scheme `/api/open` refuses is never offered')
 check(linksIn('https:// and nothing').length === 0, 'a scheme with no host is not a link')
 
+/* A bare host, which agents and logs print without a scheme. The TLD list is the
+   guard: `.md` and `.rs` are TLDs too, and a file name must stay a file name. */
+check(link('this link: doi-janky.infosiftr.net') === 'url:https://doi-janky.infosiftr.net',
+  'a bare host opens as https')
+check(link('see github.com/a/b/pull/3.') === 'url:https://github.com/a/b/pull/3',
+  'with its path, and without the full stop')
+check(link('README.md') === 'path:README.md', 'a file whose extension is a TLD stays a file')
+check(link('mail kars@woodwing.com') !== 'url:https://woodwing.com', 'an email address is not a host')
+check(link('site.com.bak') !== 'url:https://site.com', 'nor the start of a longer name')
+check(link('https://example.com/a') === 'url:https://example.com/a', 'a URL with a scheme is still one link')
+
 // --- and how Claude Code breaks a long one over two rows ----------------------
 
 /* Recorded from Claude Code at 60 columns: the URL fills the row to its last cell
