@@ -2835,6 +2835,31 @@ pub async fn open_commit(
     Ok(Json(json!({ "opened": url })))
 }
 
+#[derive(Deserialize)]
+pub struct OpenRef {
+    #[serde(rename = "ref")]
+    pub reference: String,
+}
+
+/// Open a ref an agent printed, `#36356` or `sc-54841`, where it lives.
+///
+/// The page sends the text and the daemon decides what it means, for the reason
+/// [`open_file`] gives: the URL grammar is the forge's, and a story URL is this
+/// repo's setting. [`crate::forge::ref_url`] lets only digits into the URL.
+pub async fn open_ref(
+    State(app): State<Arc<AppState>>,
+    Json(body): Json<OpenRef>,
+) -> ApiResult<serde_json::Value> {
+    let r = body.reference.trim();
+    let story = app.settings().story_link;
+    let forge = url_forge(&app)?;
+    let Some(url) = crate::forge::ref_url(r, &forge, story.as_ref()) else {
+        refuse!("{r} is not a ref this checkout links: #<number>, or a story ref set in Settings > Tracker");
+    };
+    open_detached(&url).await?;
+    Ok(Json(json!({ "opened": url })))
+}
+
 /// [`open_external`], off the runtime.
 ///
 /// It probes each candidate with `which` and then spawns one, so a single click is

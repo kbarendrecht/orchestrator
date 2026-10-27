@@ -146,6 +146,9 @@ pub struct Config {
     /// too, so a fixed choice cannot leave the button starting nothing.
     #[serde(default)]
     pub default_agent: Option<crate::agent::Agent>,
+    /// What a story ref printed in a terminal or a note links to. See [`StoryLink`].
+    #[serde(default)]
+    pub story_link: Option<StoryLink>,
     /// Shadows the repo's `worktree-create` hook: **make the tree usable.**
     ///
     /// First of the two, run with cwd set to the new worktree, before
@@ -465,6 +468,41 @@ pub struct Settings {
     pub worktree_retention_days: u32,
     pub allow_several_in_main: bool,
     pub default_agent: Option<crate::agent::Agent>,
+    /// Defaulted, so a save from a page that predates it still parses.
+    #[serde(default)]
+    pub story_link: Option<StoryLink>,
+}
+
+/// A story ref the terminals and the markdown viewer turn into a link:
+/// `sc-54841`, with `prefix: "sc-"` and
+/// `url: "https://app.shortcut.com/acme/story/{id}"`.
+///
+/// **A template rather than a tracker name**, because what a ref looks like and
+/// where it lives are both the repo's convention, not the daemon's: Shortcut
+/// spells `sc-123` and needs a workspace slug no API call here knows, Linear
+/// spells `ENG-123`, Jira `PROJ-123`. Unset, a ref is plain text. The tracker's
+/// own `host` is not reused for this; it is a different question (see
+/// [`Tracker`]).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(
+    any(test, feature = "test-util"),
+    derive(ts_rs::TS),
+    ts(export, export_to = "repo.d.ts")
+)]
+pub struct StoryLink {
+    pub prefix: String,
+    pub url: String,
+}
+
+impl StoryLink {
+    /// Whether this can make a link at all: a prefix to match, and a web URL with
+    /// a place for the number. Anything else is a half-filled form, and reads as
+    /// unset rather than as a link to nowhere.
+    pub fn usable(&self) -> bool {
+        !self.prefix.trim().is_empty()
+            && self.url.contains("{id}")
+            && (self.url.starts_with("https://") || self.url.starts_with("http://"))
+    }
 }
 
 impl Settings {
@@ -483,6 +521,7 @@ impl Settings {
             worktree_retention_days: cfg.worktree_retention_days,
             allow_several_in_main: cfg.allow_several_in_main,
             default_agent: cfg.default_agent,
+            story_link: cfg.story_link.clone(),
         }
     }
 
@@ -1738,6 +1777,7 @@ mod tests {
             worktree_retention_days: 60,
             allow_several_in_main: false,
             default_agent: None,
+            story_link: None,
         };
         let out = s
             .merge_into(r#"{"main_checkout":"/tmp/x","port":8080}"#)
@@ -1818,6 +1858,7 @@ mod tests {
             worktree_retention_days: 60,
             allow_several_in_main: false,
             default_agent: None,
+            story_link: None,
         };
         assert!(
             !base.queue_differs(&base),

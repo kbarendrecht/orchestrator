@@ -17,6 +17,7 @@
 import { activeCheckout, appMod, call, copyText, el, FORGE_LABEL, get, openMenu, reason, safeHref, snap, toast } from './core.js';
 import { byteRange, charRanges, hlTokens, langFor, paintRanges } from './source.js';
 import { parse } from './markdown.js';
+import { refsIn } from './pathlink.js';
 
 /** Rows drawn around the line, and how close to the edge the viewport gets
  *  before the band moves. */
@@ -258,6 +259,13 @@ export function create(on) {
     const n = label?.parentElement?.querySelector('i')?.dataset.n;
     const sha = n ? blame.get(Number(n))?.commit : '';
     if (sha) return openCommit(sha);
+    // A ref in prose, `#36356` or `sc-54841`: the daemon knows where it lives.
+    const ref = /** @type {HTMLElement | null} */ (/** @type {HTMLElement} */ (ev.target).closest?.('a.md-ref'));
+    if (ref?.dataset.ref) {
+      ev.preventDefault();
+      call('/api/open/ref', { ref: ref.dataset.ref }).catch((err) => toast(reason(err), true));
+      return;
+    }
     const a = /** @type {HTMLElement | null} */ (/** @type {HTMLElement} */ (ev.target).closest?.('a.md-file'));
     if (!a || !on.onFile || !view.file) return;
     ev.preventDefault();
@@ -775,6 +783,27 @@ function table(/** @type {{ head: string[], rows: string[][] }} */ b) {
   return t;
 }
 
+/** Plain text, with any ref in it as a link the click handler above opens.
+ *
+ *  Only plain text: a ref inside a code span is code somebody quoted, and inside
+ *  a link it is already that link's. The story prefix is the active checkout's,
+ *  the same daemon `/api/open/ref` goes to.
+ *
+ *  @param {HTMLElement} into
+ *  @param {string} text */
+function plain(into, text) {
+  let at = 0;
+  for (const r of refsIn(text, snap.story_prefix)) {
+    if (r.start > at) into.appendChild(document.createTextNode(text.slice(at, r.start)));
+    const a = el('a', 'md-link md-ref', r.ref);
+    a.dataset.ref = r.ref;
+    a.title = `open ${r.ref}`;
+    into.appendChild(a);
+    at = r.end;
+  }
+  if (at < text.length) into.appendChild(document.createTextNode(text.slice(at)));
+}
+
 /** A markdown link that names a file rather than a place on the web: no scheme,
  *  not protocol-relative, and not only a fragment. */
 const FILE_LINK = /^(?![a-z][a-z0-9+.-]*:|\/\/|#)./i;
@@ -793,7 +822,7 @@ function inline(into, text) {
   for (;;) {
     const m = pattern.exec(rest);
     if (!m) break;
-    if (m.index) into.appendChild(document.createTextNode(rest.slice(0, m.index)));
+    if (m.index) plain(into, rest.slice(0, m.index));
     const [whole, code, strongA, strongB, emA, emB, label, href] = m;
     if (code !== undefined) {
       into.appendChild(el('code', 'md-tick', code));
@@ -830,6 +859,6 @@ function inline(into, text) {
     }
     rest = rest.slice(m.index + (whole ?? '').length);
   }
-  if (rest) into.appendChild(document.createTextNode(rest));
+  if (rest) plain(into, rest);
   return into;
 }

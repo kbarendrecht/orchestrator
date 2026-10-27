@@ -241,6 +241,20 @@ no_eol: true | undefined, };
 export type RowKind = "context" | "del" | "add";
 
 /**
+ * A story ref the terminals and the markdown viewer turn into a link:
+ * `sc-54841`, with `prefix: "sc-"` and
+ * `url: "https://app.shortcut.com/acme/story/{id}"`.
+ *
+ * **A template rather than a tracker name**, because what a ref looks like and
+ * where it lives are both the repo's convention, not the daemon's: Shortcut
+ * spells `sc-123` and needs a workspace slug no API call here knows, Linear
+ * spells `ENG-123`, Jira `PROJ-123`. Unset, a ref is plain text. The tracker's
+ * own `host` is not reused for this; it is a different question (see
+ * [`Tracker`]).
+ */
+export type StoryLink = { prefix: string, url: string, };
+
+/**
  * Where the daemon's GitHub token came from.
  *
  * §6 wants a fine-grained PAT with **read scopes only** — `pull_requests`,

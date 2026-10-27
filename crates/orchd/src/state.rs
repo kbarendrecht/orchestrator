@@ -1715,6 +1715,14 @@ impl AppState {
 
         Snapshot {
             tracker_server: self.cfg.tracker.as_ref().map(|t| t.mcp_server.clone()),
+            story_prefix: self
+                .settings
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .story_link
+                .as_ref()
+                .filter(|s| s.usable())
+                .map(|s| s.prefix.trim().to_string()),
             spare: inner.spare.ids.clone(),
             workspaces,
             sessions,
@@ -2432,6 +2440,10 @@ pub struct Snapshot {
     /// the settings pane shows it and does not offer it — and `Settings` leaves it
     /// out so a write of the whole struct cannot replace a hand-edited one.
     pub tracker_server: Option<String>,
+    /// The story ref prefix the page underlines, `sc-`, when a usable
+    /// `story_link` is set; `None` leaves story refs as plain text. The URL stays
+    /// in the daemon, which builds it on the click (`/api/open/ref`).
+    pub story_prefix: Option<String>,
     /// Workspaces the spare pool is holding — cut, based, and not yet anybody's.
     ///
     /// Here so the pool can be *seen*. A spare is deliberately an ordinary

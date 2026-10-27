@@ -85,6 +85,37 @@ pub trait Forge: Send + Sync + Clone + 'static {
     /// A browser URL for one commit, for the blame gutter. On the trait for the
     /// reason [`Forge::blob_url`] is.
     fn commit_url(&self, sha: &str) -> String;
+
+    /// A browser URL for `#n`, an issue or a PR. One URL for both: a ref in
+    /// prose does not say which, and GitHub forwards an issue number that is a PR
+    /// to the PR.
+    fn issue_url(&self, n: u64) -> String;
+}
+
+/// Where a ref an agent printed points: `#36356` on the forge, or a story ref
+/// like `sc-54841` through the configured [`StoryLink`]. `None` for anything
+/// else, including a story ref with no usable link, so the caller can refuse
+/// rather than open a guess.
+///
+/// Pure, and checked here rather than trusted: the result is handed to the OS
+/// opener, so only digits are ever spliced into a URL.
+pub fn ref_url(
+    r: &str,
+    forge: &impl Forge,
+    story: Option<&crate::config::StoryLink>,
+) -> Option<String> {
+    let digits = |s: &str| (1..=12).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_digit());
+    if let Some(n) = r.strip_prefix('#') {
+        return digits(n)
+            .then(|| n.parse().ok())
+            .flatten()
+            .map(|n| forge.issue_url(n));
+    }
+    let story = story.filter(|s| s.usable())?;
+    let prefix = story.prefix.trim();
+    let head = r.get(..prefix.len())?;
+    let id = r.get(prefix.len()..)?;
+    (head.eq_ignore_ascii_case(prefix) && digits(id)).then(|| story.url.replace("{id}", id))
 }
 
 /// The forge the config selected, dispatched at runtime.
@@ -143,6 +174,11 @@ impl Forge for ForgeImpl {
             ForgeImpl::GitHub(f) => f.commit_url(sha),
         }
     }
+    fn issue_url(&self, n: u64) -> String {
+        match self {
+            ForgeImpl::GitHub(f) => f.issue_url(n),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -158,5 +194,42 @@ mod tests {
         // And it is usable through the trait.
         fn reads(_: &impl Forge) {}
         reads(&f);
+    }
+
+    /// A ref becomes a URL only when it is exactly the shape it claims, because
+    /// what comes out is handed to the OS opener.
+    #[test]
+    fn a_ref_links_to_the_forge_or_the_story_and_nothing_else() {
+        let f = ForgeImpl::for_kind(crate::config::ForgeKind::GitHub, "acme", "mono", "");
+        let story = crate::config::StoryLink {
+            prefix: "sc-".into(),
+            url: "https://app.shortcut.com/acme/story/{id}".into(),
+        };
+        let url = |r: &str| ref_url(r, &f, Some(&story));
+        assert_eq!(
+            url("#36356").as_deref(),
+            Some("https://github.com/acme/mono/issues/36356")
+        );
+        assert_eq!(
+            url("sc-54841").as_deref(),
+            Some("https://app.shortcut.com/acme/story/54841")
+        );
+        assert_eq!(
+            url("SC-54841").as_deref(),
+            Some("https://app.shortcut.com/acme/story/54841")
+        );
+        for not in [
+            "#", "#12a", "#1/../x", "sc-", "sc-12x", "sc-1 2", "xc-12", "12", "", "s",
+        ] {
+            assert_eq!(url(not), None, "{not:?} is not a ref");
+        }
+        // Unset or half-filled, a story ref is plain text; a forge ref still links.
+        assert_eq!(ref_url("sc-1", &f, None), None);
+        let half = crate::config::StoryLink {
+            prefix: "sc-".into(),
+            url: "https://x/story".into(),
+        };
+        assert_eq!(ref_url("sc-1", &f, Some(&half)), None);
+        assert!(ref_url("#1", &f, None).is_some());
     }
 }

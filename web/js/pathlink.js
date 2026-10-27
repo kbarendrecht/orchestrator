@@ -195,15 +195,51 @@ function trimTail(/** @type {string} */ run) {
  *  this the middle of a URL underlines as a file that does not exist, while the
  *  URL around it does not underline at all.
  *
+ *  Refs come last and give way to both: `#3` inside `…/pull/3#issuecomment` is
+ *  the URL's, and a path never has a `#` to lose.
+ *
  *  @param {string} text
+ *  @param {{ story?: string | null }} [opts] the story ref prefix, see [`refsIn`]
  *  @returns {({ kind: 'path', start: number, end: number, path: string, line: number,
  *               last: number, col: number }
- *           | { kind: 'url', start: number, end: number, url: string, bare?: boolean })[]}
+ *           | { kind: 'url', start: number, end: number, url: string, bare?: boolean }
+ *           | { kind: 'ref', start: number, end: number, ref: string })[]}
  */
-export function linksIn(text) {
+export function linksIn(text, opts = {}) {
   const urls = urlsIn(text);
   const paths = pathsIn(text).filter((p) => !urls.some((u) => p.start < u.end && u.start < p.end));
-  return [...urls, ...paths].sort((a, b) => a.start - b.start);
+  const taken = [...urls, ...paths];
+  const refs = refsIn(text, opts.story).filter((r) => !taken.some((u) => r.start < u.end && u.start < r.end));
+  return [...taken, ...refs].sort((a, b) => a.start - b.start);
+}
+
+/** The refs in `text`: `#36356`, and `sc-54841` when `story` is the prefix a
+ *  story link is set up for.
+ *
+ *  **The daemon makes the URL** (`/api/open/ref`), so this only has to say where a
+ *  ref is. What it refuses is the useful half again: `#` after a word character,
+ *  `&` or `/` is an anchor, an entity or a path (`a#b`, `&#38;`, `/#/x`); a run
+ *  of digits that keeps going into letters is a colour or a hash (`#fff`,
+ *  `#1a2b`); and a prefix glued onto a word (`misc-12`) is not one. Up to twelve
+ *  digits, the same bound the daemon checks.
+ *
+ *  @param {string} text
+ *  @param {string | null} [story]
+ *  @returns {{ kind: 'ref', start: number, end: number, ref: string }[]} */
+export function refsIn(text, story = null) {
+  /** @type {{ kind: 'ref', start: number, end: number, ref: string }[]} */
+  const out = [];
+  const push = (/** @type {RegExpMatchArray} */ m) => {
+    const start = m.index ?? 0;
+    out.push({ kind: 'ref', start, end: start + m[0].length, ref: m[0] });
+  };
+  for (const m of text.matchAll(/(?<![\w&/#])#\d{1,12}(?![\w-])/g)) push(m);
+  const prefix = (story ?? '').trim();
+  if (prefix) {
+    const escaped = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    for (const m of text.matchAll(new RegExp(`(?<![\\w-])${escaped}\\d{1,12}(?![\\w-])`, 'gi'))) push(m);
+  }
+  return out.sort((a, b) => a.start - b.start);
 }
 
 /** Whether a row carries on a link the row above ran out of room for, when the

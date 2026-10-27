@@ -348,6 +348,11 @@ impl Forge for GitHubForge {
             self.owner, self.name
         )
     }
+
+    /// `/issues/`, which GitHub forwards to `/pull/` when the number is a PR.
+    fn issue_url(&self, n: u64) -> String {
+        format!("https://github.com/{}/{}/issues/{n}", self.owner, self.name)
+    }
 }
 
 const PAGE: u32 = 50;

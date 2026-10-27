@@ -126,7 +126,7 @@ const link = (text) => {
   const found = linksIn(text)
   if (found.length !== 1) return `${found.length} links`
   const f = found[0]
-  return `${f.kind}:${f.kind === 'url' ? f.url : f.path}`
+  return `${f.kind}:${f.kind === 'url' ? f.url : f.kind === 'ref' ? f.ref : f.path}`
 }
 
 /** What a click would underline, which is what decides where the link ends. */
@@ -170,6 +170,18 @@ check(link('README.md') === 'path:README.md', 'a file whose extension is a TLD s
 check(link('mail kars@woodwing.com') !== 'url:https://woodwing.com', 'an email address is not a host')
 check(link('site.com.bak') !== 'url:https://site.com', 'nor the start of a longer name')
 check(link('https://example.com/a') === 'url:https://example.com/a', 'a URL with a scheme is still one link')
+
+/* Refs. The daemon makes the URL, so these only say where a ref is; the refusals
+   are the half that keeps colours, anchors and entities from underlining. */
+const refs = (text, story = 'sc-') => linksIn(text, { story }).filter((h) => h.kind === 'ref').map((h) => h.ref).join(' ')
+check(refs('fixes #36356, see sc-54841.') === '#36356 sc-54841', 'a forge ref and a story ref, without the punctuation')
+check(refs('SC-9') === 'SC-9', 'a story prefix matches in any case')
+check(refs('#fff #1a2b') === '', 'a colour or a hash is not a ref')
+check(refs('a#12 &#38; x/#3') === '', 'nor an anchor, an entity or a path fragment')
+check(refs('misc-12 sc- sc-12x') === '', 'nor a prefix glued to a word, a bare prefix, or one running into letters')
+check(refs('sc-54841', null) === '', 'a story ref is plain text until a story link is set')
+check(refs('https://github.com/a/b/pull/3#issue-9') === '', 'a # inside a URL is the URL\'s')
+check(link('#36356') === 'ref:#36356', 'and a ref is one link')
 
 // --- and how Claude Code breaks a long one over two rows ----------------------
 

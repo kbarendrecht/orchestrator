@@ -457,6 +457,12 @@ export type Snapshot = {
  */
 tracker_server: string | null, 
 /**
+ * The story ref prefix the page underlines, `sc-`, when a usable
+ * `story_link` is set; `None` leaves story refs as plain text. The URL stays
+ * in the daemon, which builds it on the click (`/api/open/ref`).
+ */
+story_prefix: string | null, 
+/**
  * Workspaces the spare pool is holding — cut, based, and not yet anybody's.
  *
  * Here so the pool can be *seen*. A spare is deliberately an ordinary

@@ -2,7 +2,7 @@
 // over a websocket. The DOM renderer is deliberate under WebKitGTK, and only
 // there — see the renderer comment below, and CLAUDE.md.
 
-import { $, CHECKOUTS, CHROME, IS_MAC, callOn, copyText, el, mark, note, openMenu, reason, reportBoot, selected, terms, termKey, toast, typingElsewhere, uiScale, wheelScale } from './core.js';
+import { $, CHECKOUTS, CHROME, IS_MAC, callOn, copyText, el, mark, note, openMenu, reason, reportBoot, selected, snapshotOf, terms, termKey, toast, typingElsewhere, uiScale, wheelScale } from './core.js';
 import { fontStack, theme } from './theme.js';
 import { termColours } from './palette.js';
 import { continues, linksIn } from './pathlink.js';
@@ -184,6 +184,14 @@ function openUrl(/** @type {import('./core.js').Target} */ checkout, /** @type {
   callOn(checkout, '/api/open', { url }).catch((e) => note(reason(e)));
 }
 
+/** Open a ref, `#36356` or `sc-54841`, where it lives. The daemon builds the URL
+ *  (`/api/open/ref`): the forge's grammar and the repo's story link are both its
+ *  to know, and the page only says which text was clicked. Aimed at this pane's
+ *  checkout for the reason [`openUrl`] is. */
+function openRef(/** @type {import('./core.js').Target} */ checkout, /** @type {string} */ ref) {
+  callOn(checkout, '/api/open/ref', { ref }).catch((e) => note(reason(e)));
+}
+
 /** Offer the paths and URLs in a row as links.
  *
  *  **A plain click follows them, and the underline follows the pointer**, which is
@@ -234,7 +242,7 @@ function linkPaths(term, checkout, target) {
       /** @param {ReturnType<typeof linksIn>} hits */
       const answer = (hits) => {
         const links = hits.map((h) => ({
-          text: h.kind === 'url' ? h.url : h.path,
+          text: h.kind === 'url' ? h.url : h.kind === 'ref' ? h.ref : h.path,
           // `end` is the last cell rather than one past it, which is xterm's own
           // convention — read from the OSC-8 provider in the vendored build.
           range: { start: cell(h.start, map, from), end: cell(h.end - 1, map, from) },
@@ -248,6 +256,7 @@ function linkPaths(term, checkout, target) {
             if (Math.hypot(ev.clientX - down.x, ev.clientY - down.y) > DRAG_PX) return;
             ev.preventDefault();
             if (h.kind === 'url') { openUrl(checkout, h.url); return; }
+            if (h.kind === 'ref') { openRef(checkout, h.ref); return; }
             pathClick?.({
               checkout: checkout.path, target, path: h.path, line: h.line, last: h.last, col: h.col, ev,
             });
@@ -259,10 +268,13 @@ function linkPaths(term, checkout, target) {
       /* A path needs somewhere to open, and that is wired at boot; a URL needs only
          the daemon. So the gate is per hit rather than over the whole provider —
          it used to return nothing at all, which would now cost the URLs too. */
-      const hits = linksIn(text).filter((h) => h.kind === 'url' || pathClick);
+      /* The story prefix is this pane's checkout's: two projects can track
+         their work in two places, and a ref means what its own repo says. */
+      const story = snapshotOf(checkout.path)?.story_prefix ?? null;
+      const hits = linksIn(text, { story }).filter((h) => h.kind !== 'path' || pathClick);
       /* A bare host is asked about as a file too, and a file of that name wins:
          `notes.io` in the workspace is the file, not a website. */
-      const asked = hits.filter((h) => h.kind === 'path' || (h.bare && pathClick));
+      const asked = hits.filter((h) => h.kind === 'path' || (h.kind === 'url' && h.bare && pathClick));
       if (!asked.length || !pathCheck) return answer(hits);
       const named = (/** @type {typeof hits[number]} */ h) => (h.kind === 'path' ? h.path : text.slice(h.start, h.end));
       void pathCheck({ checkout: checkout.path, target, paths: asked.map(named) })
@@ -275,8 +287,8 @@ function linkPaths(term, checkout, target) {
             return ok[i] ? [{ kind: /** @type {const} */ ('path'), start: h.start, end: h.end, path: named(h), line: 0, last: 0, col: 0 }] : [h];
           }));
         }, () => {
-          // No list to ask is no promise to make: the URLs still stand.
-          if (ask === newest) answer(hits.filter((h) => h.kind === 'url'));
+          // No list to ask is no promise to make: the URLs and refs still stand.
+          if (ask === newest) answer(hits.filter((h) => h.kind !== 'path'));
         });
     },
   });
@@ -433,6 +445,15 @@ function openTerm(checkout, target, parent) {
       openMenu(e, [
         ['Open link', null, () => openUrl(checkout, url)],
         ['Copy link', null, () => void copyText(url).then((ok) => { if (ok) toast('copied the link'); })],
+      ]);
+      return;
+    }
+    if (found.kind === 'ref') {
+      e.stopPropagation();
+      const ref = found.ref;
+      openMenu(e, [
+        [`Open ${ref}`, null, () => openRef(checkout, ref)],
+        [`Copy ${ref}`, null, () => void copyText(ref).then((ok) => { if (ok) toast(`copied ${ref}`); })],
       ]);
       return;
     }

@@ -176,6 +176,8 @@ async function loadConfigInto(force = false) {
      "a config field marks the pane unsaved" failing one run in three. */
   if (dirty && !force) return;
   ctl('setlang').value = cfg.default_language || '';
+  ctl('setstoryref').value = cfg.story_link?.prefix || '';
+  ctl('setstoryurl').value = cfg.story_link?.url || '';
   /* Read-only, and the pane says so. A tracker is three fields, one of them a
      per-site host, so the old dropdown of two names cannot spell one — and a
      control that writes part of it is how a hand-edited tracker would get
@@ -392,6 +394,11 @@ function draftBody() {
   const list = (/** @type {string} */ s) => s.split(',').map((/** @type {string} */ x) => x.trim()).filter(Boolean);
   return {
     default_language: ctl('setlang').value.trim(),
+    /* Both or neither: half a story link is no link, and the daemon would read
+       it as unset anyway (`StoryLink::usable`). */
+    story_link: ctl('setstoryref').value.trim() && ctl('setstoryurl').value.trim()
+      ? { prefix: ctl('setstoryref').value.trim(), url: ctl('setstoryurl').value.trim() }
+      : null,
     upstream_ref: ctl('setupref').value.trim(),
     upstream_remote: ctl('setupremote').value.trim(),
     reviews_command: argvOf('setreviews'),

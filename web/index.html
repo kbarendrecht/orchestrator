@@ -701,6 +701,22 @@
       </label>
       <p class="settings-help">What the agents write replies and stories in. Blank
         leaves it to the repo's own convention.</p>
+
+      <!-- Two fields rather than a tracker name: what a ref looks like and where
+           it lives are this repo's convention (`config::StoryLink`). -->
+      <label class="settings-field">
+        <span class="settings-k">Story ref</span>
+        <input class="settings-in" id="setstoryref" type="text" spellcheck="false" placeholder="sc-">
+      </label>
+      <label class="settings-field">
+        <span class="settings-k">Story link</span>
+        <input class="settings-in" id="setstoryurl" type="text" spellcheck="false"
+               placeholder="https://app.shortcut.com/your-workspace/story/{id}">
+      </label>
+      <p class="settings-help">Makes a ref like <code>sc-54841</code> clickable in the
+        terminals and the markdown viewer. <code>{id}</code> is the number. Blank
+        leaves story refs as plain text; <code>#123</code> always links to the PR or
+        issue on the forge.</p>
     </section>
 
     <!-- `data-config` marks the half that is a *draft* until Save, which is what
