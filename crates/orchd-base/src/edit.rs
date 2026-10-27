@@ -14,6 +14,10 @@ pub struct FileContents {
     /// identical file with a new mtime, and that is not a conflict.
     pub version: String,
     pub bytes: u64,
+    /// The file is reached through a link out of the checkout, so it is shown and
+    /// never written: [`write()`] holds the strict bound, and the page hides Edit.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub read_only: bool,
 }
 
 /// Resolve a workspace-relative path, refusing anything that escapes the checkout.
@@ -42,6 +46,36 @@ pub struct FileContents {
 /// so the state `guard` exists to protect must not be reachable through the editor
 /// instead.
 pub fn resolve_in_workspace(workspace_root: &Path, rel: &str, checkout: &Path) -> Result<PathBuf> {
+    resolve(workspace_root, rel, checkout, false).map(|(at, _)| at)
+}
+
+/// [`resolve_in_workspace`] for a read the page only shows, and whether it left
+/// the checkout to get there.
+///
+/// **A link out of the checkout is followed here, and only here** (#48). A
+/// checkout whose `.plan` links to a plans folder of its own, outside the repo so
+/// it survives a fresh clone, had every plan refused, from main and from every
+/// worktree. The crafted branch from [`resolve_in_workspace`] still gets nothing
+/// it can use: the file is shown to the person who clicked it, on their own
+/// screen, and is never written. What a branch could *send* somewhere is the
+/// preview frame, which runs its scripts, and that stays on the strict bound, as
+/// does every write. `..`, an absolute path and `.git` are refused the same.
+pub fn resolve_to_read(
+    workspace_root: &Path,
+    rel: &str,
+    checkout: &Path,
+) -> Result<(PathBuf, bool)> {
+    resolve(workspace_root, rel, checkout, true)
+}
+
+/// Both bounds, so the checks before and after the link cannot drift apart.
+/// `outside_ok` lets a link out of the checkout through, and says it did.
+fn resolve(
+    workspace_root: &Path,
+    rel: &str,
+    checkout: &Path,
+    outside_ok: bool,
+) -> Result<(PathBuf, bool)> {
     if rel.is_empty() {
         bail!("no path given");
     }
@@ -66,7 +100,8 @@ pub fn resolve_in_workspace(workspace_root: &Path, rel: &str, checkout: &Path) -
     let real_parent = std::fs::canonicalize(&parent)
         .with_context(|| format!("resolving {}", parent.display()))?;
 
-    if !bound.holds(&real_parent) {
+    let mut outside = !bound.holds(&real_parent);
+    if outside && !outside_ok {
         bail!("{}", bound.escaped(rel, &root, &real_parent));
     }
     let resolved = real_parent.join(joined.file_name().context("path has no file name")?);
@@ -90,9 +125,14 @@ pub fn resolve_in_workspace(workspace_root: &Path, rel: &str, checkout: &Path) -
     if is_link {
         let target = std::fs::canonicalize(&resolved)
             .with_context(|| format!("resolving the symlink {rel}"))?;
-        bound.admit(rel, &target)?;
+        if outside_ok {
+            refuse_git_dir(rel, &target)?;
+            outside |= !bound.holds(&target);
+        } else {
+            bound.admit(rel, &target)?;
+        }
     }
-    Ok(resolved)
+    Ok((resolved, outside))
 }
 
 /// Where a resolved path is allowed to land: this checkout, and nothing else.
@@ -221,8 +261,8 @@ fn open_no_follow(path: &Path) -> std::io::Result<std::fs::File> {
 
 pub fn read(workspace_root: &Path, rel: &str, checkout: &Path) -> Result<FileContents> {
     use std::io::Read as _;
-    let path = resolve_in_workspace(workspace_root, rel, checkout)?;
-    // `resolve_in_workspace` checked where a link points, but a stat followed by
+    let (path, mut read_only) = resolve_to_read(workspace_root, rel, checkout)?;
+    // `resolve_to_read` checked where a link points, but a stat followed by
     // an open is two steps, and a path can be made a link between them. So the
     // open itself refuses to follow: a plain file opens; a link comes back `ELOOP`,
     // its target is checked again and opened the same way, and a target that is
@@ -234,7 +274,7 @@ pub fn read(workspace_root: &Path, rel: &str, checkout: &Path) -> Result<FileCon
                 .with_context(|| format!("resolving {}", workspace_root.display()))?;
             let target = std::fs::canonicalize(&path)
                 .with_context(|| format!("resolving the symlink {rel}"))?;
-            Bound::new(&root, checkout).admit(rel, &target)?;
+            read_only |= !Bound::new(&root, checkout).holds(&target);
             refuse_git_dir(rel, &target)?;
             open_no_follow(&target).with_context(|| format!("opening {}", target.display()))?
         }
@@ -259,6 +299,7 @@ pub fn read(workspace_root: &Path, rel: &str, checkout: &Path) -> Result<FileCon
         version: version_of(content.as_bytes()),
         bytes: md.len(),
         content,
+        read_only,
     })
 }
 
@@ -340,9 +381,12 @@ mod tests {
     /// only ever looked at the directory the link sat in.
     /// Distinct from `..._is_not_a_write_primitive` below, which links a *directory*
     /// and is caught by the parent check. This is the leaf, which was not.
+    ///
+    /// A read follows it now, marked read-only (#48): shown to whoever clicked it,
+    /// and refused by every bound that writes or serves a script.
     #[cfg(unix)]
     #[test]
-    fn a_leaf_symlink_out_of_the_workspace_is_refused() {
+    fn a_leaf_symlink_out_of_the_workspace_is_read_only() {
         // Its own scratch name: `scratch` wipes the directory, so sharing one with
         // another test makes both flaky under a parallel run.
         let d = scratch("leaf-symlink");
@@ -354,18 +398,23 @@ mod tests {
         std::fs::write(&outside, "PRIVATE KEY\n").unwrap();
         std::os::unix::fs::symlink(&outside, d.join("src/leak.txt")).unwrap();
 
-        let err = read(&d, "src/leak.txt", &d)
-            .expect_err("a symlink out of the workspace must not be readable")
+        let seen = read(&d, "src/leak.txt", &d).expect("a read follows the link");
+        assert!(seen.read_only, "and says it left the checkout");
+        let err = resolve_in_workspace(&d, "src/leak.txt", &d)
+            .map(|_| ())
+            .expect_err("the strict bound still refuses it")
             .to_string();
         assert!(err.contains("outside the checkout"), "unhelpful: {err}");
-        // And the same gate refuses the write, so neither is a way in.
-        assert!(write(&d, "src/leak.txt", "x", "", &d).is_err());
+        assert!(write(&d, "src/leak.txt", "x", &seen.version, &d).is_err());
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "PRIVATE KEY\n");
 
         // A link that stays inside is still fine — repos do use them, and the
         // check is about where it points, not that it is a link.
         std::fs::write(d.join("src/real.txt"), "in tree\n").unwrap();
         std::os::unix::fs::symlink(d.join("src/real.txt"), d.join("src/alias.txt")).unwrap();
-        assert_eq!(read(&d, "src/alias.txt", &d).unwrap().content, "in tree\n");
+        let inside = read(&d, "src/alias.txt", &d).unwrap();
+        assert_eq!(inside.content, "in tree\n");
+        assert!(!inside.read_only);
 
         let _ = std::fs::remove_dir_all(&d);
         let _ = std::fs::remove_file(&outside);
@@ -529,6 +578,41 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&checkout);
         let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    /// **A shared folder may live outside the checkout, and a read follows it**
+    /// (#48). Main's `.plan` links to a plans folder kept out of the repo, and a
+    /// worktree's `.plan` links to main's: two hops, the second one out. Shown
+    /// read-only; the write and the strict bound still refuse it. `.git` out
+    /// there is still `.git`.
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_linked_in_from_outside_the_checkout_reads_and_does_not_write() {
+        let checkout = crate::testutil::scratch("edit-linked-plans");
+        let plans = std::env::temp_dir().join(format!("orchd-linked-plans-{}", std::process::id()));
+        let wt = checkout.join(".claude/worktrees/feature");
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::create_dir_all(plans.join(".git")).unwrap();
+        std::fs::write(plans.join("intent.md"), "the plan\n").unwrap();
+        std::fs::write(plans.join(".git/config"), "[core]\n").unwrap();
+        std::os::unix::fs::symlink(&plans, checkout.join(".plan")).unwrap();
+        std::os::unix::fs::symlink("../../../.plan", wt.join(".plan")).unwrap();
+
+        for root in [&checkout, &wt] {
+            let seen = read(root, ".plan/intent.md", &checkout).expect("the plan opens");
+            assert_eq!(seen.content, "the plan\n");
+            assert!(seen.read_only, "from {}", root.display());
+            assert!(write(root, ".plan/intent.md", "x\n", &seen.version, &checkout).is_err());
+            assert!(resolve_in_workspace(root, ".plan/intent.md", &checkout).is_err());
+            assert!(read(root, ".plan/.git/config", &checkout).is_err());
+        }
+        assert_eq!(
+            std::fs::read_to_string(plans.join("intent.md")).unwrap(),
+            "the plan\n"
+        );
+
+        let _ = std::fs::remove_dir_all(&checkout);
+        let _ = std::fs::remove_dir_all(&plans);
     }
 
     /// **`.git` is an execution primitive, not a file** (#34).

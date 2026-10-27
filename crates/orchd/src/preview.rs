@@ -177,10 +177,11 @@ pub async fn image(State(app): State<Arc<AppState>>, Query(q): Query<ImageQuery>
     let Some(root) = app.workspace_path(&q.workspace).await else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    // The checkout is the bound; see `open` above.
+    // The bound the file pane reads text under, so an image a shared folder
+    // links in opens like the notes beside it. An `<img>` runs nothing.
     let shared = app.cfg.main_checkout.clone();
     let read = crate::proc::run_blocking("reading an image", move || {
-        let at = crate::edit::resolve_in_workspace(&root, &q.path, &shared).ok()?;
+        let (at, _) = crate::edit::resolve_to_read(&root, &q.path, &shared).ok()?;
         let md = std::fs::metadata(&at).ok()?;
         if !md.is_file() || md.len() > MAX_BYTES {
             return None;

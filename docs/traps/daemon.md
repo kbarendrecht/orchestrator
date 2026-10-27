@@ -594,3 +594,13 @@ something escaped; `first_symlink` walks the requested components and stats each
 prefix to find which one is the link, and reports where it points. **Checked
 against deliberate breakage**: bounding at the workspace again, dropping the
 `.git` refusal, and returning `None` from the walk each fail their own test.
+
+**A read follows a link out of the checkout, read-only** (#48). Main's `.plan`
+can link to a plans folder kept outside the repo, so it survives a fresh clone,
+and the bound then refused every plan from main and from every worktree.
+`resolve_to_read` lets the file pane and its image route through and marks the
+answer `read_only`, so the page hides Edit and the editor refuses to open. The
+crafted branch gets a file shown to whoever clicked it and nothing more: every
+write, the opener and the preview frame stay on `resolve_in_workspace`, and the
+preview is the one that matters, because it runs the page's scripts and a script
+can send what it reads anywhere. `.git` is refused out there too.

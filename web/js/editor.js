@@ -111,6 +111,12 @@ export async function open(host) {
     return toast(reason(e), true);
   }
 
+  // The diff opens the editor too, and only the answer knows the file is linked
+  // in from outside the checkout, where the write would be refused anyway (#48).
+  if (live.read_only) {
+    state.host = null;
+    return toast(`${host.path} is outside the checkout, so it is read-only here`, true);
+  }
   state.on = true;
   state.path = host.path;
   state.version = live.version;

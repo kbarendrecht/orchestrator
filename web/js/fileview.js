@@ -262,7 +262,7 @@ function renderHead(/** @type {boolean} */ drawn) {
   const can = drawn && viewer().renderable();
   $('fvmode').hidden = !can;
   // A picture has no source to edit, and the editor's refusal would say so late.
-  $('fvedit').hidden = (drawn && viewer().isImage()) || state.scratch;
+  $('fvedit').hidden = (drawn && viewer().isImage()) || state.scratch || viewer().readOnly();
   const html = viewer().kind() === 'html';
   $('fvmode').textContent = state.rendered ? 'Source' : html ? 'Preview' : 'Rendered';
   $('fvmode').title = state.rendered
@@ -477,6 +477,7 @@ function listed(at, ws, ttl, under = '') {
  */
 function edit() {
   if (!state.path || !state.ws || state.scratch) return toast('nothing to edit here', true);
+  if (viewer().readOnly()) return toast(`${state.path} is outside the checkout, so it is read-only here`, true);
   // Read before the buffer replaces the rows it is measured from.
   const looking = viewer().middleLine();
   return Editor.open({

@@ -85,10 +85,15 @@ export function create(on) {
    *  `ws` is the workspace the file was read from, which the preview needs to
    *  ask for its token.
    *
+   *  `readOnly` is the daemon saying the file was reached through a link out of
+   *  the checkout (#48), so it is shown and never written.
+   *
    *  @type {{ file: Loaded | null, spot: Spot | null, from: number, to: number,
    *           rowH: number, seq: number, mode: 'source' | 'markdown' | 'preview' | 'image',
-   *           ws: string | null }} */
-  const view = { file: null, spot: null, from: 0, to: 0, rowH: 0, seq: 0, mode: 'source', ws: null };
+   *           ws: string | null, readOnly: boolean }} */
+  const view = {
+    file: null, spot: null, from: 0, to: 0, rowH: 0, seq: 0, mode: 'source', ws: null, readOnly: false,
+  };
   /** Blame for the file on screen, by line, and the bands already asked for so
    *  a scroll back does not ask git again. Both cleared with the file. */
   /** @type {Map<number, import('../repo').BlameLine>} */
@@ -547,6 +552,9 @@ export function create(on) {
     /** Whether a picture is on screen, which has no source to edit. */
     isImage: () => view.mode === 'image',
 
+    /** Whether the file on screen may be shown and not written. */
+    readOnly: () => view.readOnly,
+
     /** Draw what is loaded as a page. The caller decides when: a line number is
      *  a reason to show the source, and no line number is a reason not to. */
     render: () => (kind() === 'html' ? void paintAsPreview() : paintAsMarkdown()),
@@ -633,6 +641,7 @@ export function create(on) {
         }
         // A newer `show` has been asked for while this one was in the air.
         if (mine !== view.seq) return false;
+        view.readOnly = answer.read_only === true;
         load(path, String(answer.content ?? ''));
         void askChanges();
       }

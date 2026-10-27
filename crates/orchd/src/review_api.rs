@@ -146,6 +146,7 @@ pub async fn read_file(
             // No version: a historical revision is never written back.
             version: String::new(),
             content,
+            read_only: false,
         }));
     }
     // Off the runtime: a file read, which is disk and can be a large file.
