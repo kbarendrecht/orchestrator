@@ -8,16 +8,6 @@ import { termColours } from './palette.js';
 import { continues, linksIn } from './pathlink.js';
 
 
-const THEME = {
-  background: '#101010', foreground: '#D2D2D2', cursor: '#D2D2D2',
-  black: '#101010', red: '#C9615A', green: '#5FA97C', yellow: '#E0A244',
-  blue: '#4C9AAF', magenta: '#9A7AA0', cyan: '#3E9AAF', white: '#D2D2D2',
-  brightBlack: '#5B5B5B', brightRed: '#D6756E', brightGreen: '#74BB90',
-  brightYellow: '#EDB55C', brightBlue: '#63AEC2', brightMagenta: '#B08FB6',
-  brightCyan: '#57AEC2', brightWhite: '#F0F0F0',
-  selectionBackground: '#2C2C2C',
-};
-
 /** A client that watches without reshaping what it watches.
  *
  *  `mise run shot` loads this same SPA to photograph it, and fitting a terminal
@@ -911,8 +901,11 @@ function setBadge(/** @type {import('./core.js').TermEntry} */ entry, /** @type 
      reads as a live prompt ignoring what you type, which is the opposite of what
      it is. Hidden through the theme rather than a CSS rule, because the DOM and
      the WebGL renderer draw the cursor in different places and the option is the
-     one lever that reaches both. */
-  entry.term.options.theme = state ? { ...THEME, cursor: THEME.background } : THEME;
+     one lever that reaches both. **The picked scheme, not a palette of its own**:
+     this used to set a fixed one, so the first attach put every terminal back on
+     the default colours whatever settings said. */
+  const colours = termColours(theme, theme.term);
+  entry.term.options.theme = state ? { ...colours, cursor: colours.background } : colours;
   if (!state) { b.hidden = true; return; }
   /* Middle of the pane while it is empty, corner once there is scrollback under
      it. `connecting` and `starting` are both "nothing here yet"; `reconnecting`
