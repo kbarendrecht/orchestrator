@@ -999,6 +999,15 @@
 <div class="settings keyhelp" id="keyhelp" hidden>
   <div class="settings-title">
     Help
+    <!-- In the header rather than in settings: it is the one other thing somebody
+         opening this pane from the help button is likely to be after, and the
+         pane is where the version is written. In the header rather than under
+         the shortcuts, where it sat below a long list nobody scrolls to the end
+         of. The answer reads left of the button, beside where you pressed. -->
+    <span class="keyupdate">
+      <span class="keyupdate-say" id="checkupdatesay" aria-live="polite"></span>
+      <button class="head-btn" id="checkupdate" type="button">Check for updates</button>
+    </span>
     <button class="settings-x" id="keyhelpx" type="button"
             title="Close · Esc" aria-label="Close help"><svg viewBox="0 0 16 16" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
   </div>
@@ -1084,13 +1093,6 @@
       <dt><span class="dot blocked"></span></dt><dd>asked of you by name, or a re-review</dd>
       <dt><span class="dot idle"></span></dt><dd>asked of a team you are in, or of nobody</dd>
     </dl>
-  </div>
-  <!-- Below the list rather than in settings: it is the one other thing somebody
-       opening this pane from the `?` button is likely to be after, and the pane is
-       already where the version is written. -->
-  <div class="keyupdate">
-    <button class="head-btn" id="checkupdate" type="button">Check for updates</button>
-    <span class="keyupdate-say" id="checkupdatesay" aria-live="polite"></span>
   </div>
   <!-- The AGPL's "Appropriate Legal Notices" (§0): a copyright line, no warranty,
        that it may be conveyed, and where to read the licence. Nothing obliges this

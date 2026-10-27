@@ -2618,8 +2618,10 @@ select.opfield,input.opfield{appearance:none}
 /* A link to another file in the repo has no `href` to earn a pointer from. */
 .md-file,.md-ref{cursor:pointer}
 /* The legend's update check: a button and the sentence it answers with. */
-.keyupdate{display:flex;align-items:center;gap:10px;padding:10px 16px 0;font-size:calc(12px * var(--fs))}
+.keyupdate{display:flex;align-items:center;gap:10px;margin-left:auto;font-size:calc(12px * var(--fs));font-weight:400}
 .keyupdate-say{color:var(--dim)}
+/* The update block takes the push, so the close sits right after it. */
+#keyhelp .settings-x{margin-left:0}
 .fvimagebox{
   min-height:100%;box-sizing:border-box;padding:20px;
   display:flex;align-items:center;justify-content:center;
