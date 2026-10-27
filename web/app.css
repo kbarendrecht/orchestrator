@@ -742,27 +742,35 @@ button.ctx-btn:hover{color:var(--text)}
 /* A file held over the terminal: the pane says it will take it. */
 #termwrap.dropping{box-shadow:inset 0 0 0 2px var(--work)}
 /* After a restart, above the sessions: how many it cut off, and Continue. */
-/* A raised card at the top of the rail: what happened, why, and the two answers.
-   The icon spans both text lines; the buttons sit under the words. */
+/* A card at the top of the rail: what happened, why, and the two answers.
+   **Quiet on purpose**: the amber is on the icon alone, the way the PR buttons
+   carry it. It had a solid amber Continue on a raised card, the loudest thing on
+   the rail, for something that waits patiently until you get to it. */
 .railnudge{
   flex:0 0 auto;display:grid;grid-template-columns:auto minmax(0,1fr);gap:2px 10px;align-items:start;
-  margin:8px;padding:10px 10px 10px 12px;background:var(--raised);border:1px solid var(--line);
+  margin:8px;padding:10px 10px 10px 12px;background:var(--surface);border:1px solid var(--line-soft);
   border-radius:var(--r-lg);font-size:calc(12px * var(--fs));
 }
 .railnudge[hidden]{display:none}
-.railnudge-ic{display:inline-flex;grid-row:1 / 3;margin-top:2px;color:var(--attn);font-size:calc(15px * var(--fs))}
-.railnudge-say{font-weight:600;color:var(--text)}
+.railnudge-ic{display:inline-flex;grid-row:1 / 3;margin-top:2px;color:var(--attn);font-size:calc(14px * var(--fs))}
+.railnudge-say{font-weight:500;color:var(--text)}
 .railnudge-why{grid-column:2;color:var(--faint-solid);font-size:calc(11.5px * var(--fs))}
-.railnudge-acts{grid-column:2;display:flex;gap:6px;margin-top:8px}
-.railnudge-go,.railnudge-x{
-  height:24px;padding:0 10px;border-radius:var(--r);cursor:pointer;
-  font-family:var(--sans);font-size:calc(12px * var(--fs));transition:background .15s,border-color .15s;
+.railnudge-acts{grid-column:2;display:flex;align-items:center;gap:10px;margin-top:8px}
+/* Continue is the PR row's button: raised, neutral word, amber icon. */
+.railnudge-go{
+  display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 8px 0 6px;border-radius:var(--r);
+  font-family:var(--sans);font-size:calc(11.5px * var(--fs));font-weight:500;color:var(--text);cursor:pointer;
+  background:var(--raised);border:1px solid var(--line);box-shadow:inset 0 1px 0 rgba(255,255,255,.04);
+  transition:background .15s;
 }
-.railnudge-go{font-weight:600;color:#1A1206;background:var(--attn);border:0}
-.railnudge-go:hover:not(:disabled){background:#EBB15A}
+.railnudge-go .practic{color:var(--attn)}
+.railnudge-go:hover:not(:disabled){background:var(--line-soft)}
 .railnudge-go:disabled{opacity:.5;cursor:default}
-.railnudge-x{font-weight:500;color:var(--dim);background:none;border:1px solid var(--line)}
-.railnudge-x:hover{color:var(--text);border-color:var(--faint-solid)}
+.railnudge-x{
+  font-family:var(--sans);font-size:calc(11.5px * var(--fs));color:var(--faint-solid);
+  background:none;border:0;padding:0;cursor:pointer;transition:color .15s;
+}
+.railnudge-x:hover{color:var(--text)}
 
 /* A past conversation. Quieter than a live row, and one line rather than two, so
    twenty of them still read as a list. */
@@ -2164,7 +2172,10 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
   flex:0 0 auto;white-space:nowrap;transition:background .15s;
 }
 .practic{display:inline-flex;color:var(--attn);font-size:calc(12px * var(--fs))}
-.pract:hover:not(:disabled){background:var(--hover)}
+/* Lighter than the button at rest, never darker: the row under it lights up on
+   hover too (`--hover`), and a button falling to that same fill read as the row
+   rising and the button sinking into it. */
+.pract:hover:not(:disabled){background:var(--line-soft)}
 .pract:disabled{color:var(--ghost);cursor:default}
 .pract.running{cursor:pointer}
 .pract.running .practic{color:var(--auto)}

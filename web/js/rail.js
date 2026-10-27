@@ -2616,7 +2616,8 @@ function renderNudge() {
   const say = el('span', 'railnudge-say', `${n} session${n === 1 ? '' : 's'} stopped by the restart`);
   const why = el('span', 'railnudge-why', 'They were mid-turn or waiting on work.');
   const acts = el('span', 'railnudge-acts');
-  const go = el('button', 'railnudge-go', 'Continue');
+  const go = el('button', 'railnudge-go');
+  go.append(icon('practic', 1.4, 'M5 3.5l7 4.5-7 4.5z'), 'Continue');
   go.title = 'Types "continue" into each of them; a finished turn, a question and a '
     + 'permission prompt are left alone.';
   go.onclick = async () => {
