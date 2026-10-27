@@ -458,9 +458,12 @@ if (has('--panes')) {
   await beat(2000);
   await cdp.send('Page.startScreencast', { format: 'jpeg', quality: 92, maxWidth: width, maxHeight: height });
   await beat(2400);
-  // The tab, and the watcher's own output under it.
+  /* The tab, and the watcher's own output under it. **Only when the drawer is
+     folded**: the selected tab's title is the collapse toggle, so a click on a
+     drawer that is already open folds it, and the take recorded the restart into
+     a closed bar. */
   const tab = page.locator('#dtabs button').first();
-  await tab.click().catch(() => {});
+  if (await page.locator('#drawer.collapsed').count()) await tab.click().catch(() => {});
   await beat(2600);
   /* **Restarted on camera.** A watcher that has been up for minutes has its last
      run scrolled out of the pane, so the take showed three `Restarted at …`

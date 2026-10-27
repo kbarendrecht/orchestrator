@@ -133,6 +133,10 @@ node tools/demo.mjs --port $PORT --no-seed --multi --out docs/demo-repos.gif
 It prints the size. Over about 8 MB is too much for a README, and `--scale 900` or
 `--fps 8` is the lever.
 
+It encodes with the system `ffmpeg`, which `[tools]` does not carry. Without sudo,
+`mise exec conda:ffmpeg -- sh -c 'command -v ffmpeg'` installs one and prints
+where, and that directory on `PATH` is enough.
+
 **Two things the takes need that nothing in them says.** `--panes` is cropped, and
 the value is not a default: `--crop 1440:230:0:670` is the band that holds the PR
 pane and the review queue at a 1440x900 capture, derived by recording once
@@ -209,6 +213,10 @@ nothing can reconnect. Under a host the child's death is noticed, the daemon is
 started again, and the new port and token are pushed to the page over `/ws/host` —
 which is the path the app itself runs on. `--kill <substring>` names the child by
 its `--main` argument.
+
+**A host over that one checkout, not the two-checkout one.** With two, the page
+falls back to the other checkout's session when the diff closes, so the kill
+happens off screen and the take is a minute of the wrong pane.
 
 Two things it depends on:
 
