@@ -113,9 +113,12 @@ const listDrawn = { sig: null, name: 'review-list' };
    review link that does not open *while the queue is reloading*, exactly when you
    are most likely to be reaching for one. */
 
-/** Why this row is in your queue, when there is a reason worth the width. */
+/** Why this row is in your queue, when there is a reason worth the width.
+ *
+ *  Not the blockers: a blocked row carries a red ✕ where the dot is, with the
+ *  blockers on its tooltip, and the same words again at the end of the row were
+ *  the width the title is clipped for. */
 function reviewReason(/** @type {import('../repo').Review} */ r) {
-  if (r.blockers && r.blockers.length) return r.blockers.join(', ');
   if (r.needs_re_review) return 're-requested';
   if (r.is_draft) return 'draft';
   if (r.prio === 0) return 'prio stopper';
@@ -294,11 +297,20 @@ function renderReviews() {
        waiting on the team.
        The two arms above it survive for a configured command, which may still
        emit the label ranks and a re-review; the built-in never does. */
-    const dot = r.prio <= 1 ? ' prio'
-      : blocked ? ' bad'
+    /* **A blocked row gets a ✕, not the dot**, whatever its prio: a red dot is
+       also what `prio` draws, and "urgent for you" and "broken, not yours yet"
+       looked identical from across the pane. One mark for every blocker, the
+       review's pick; which one it is stays on the tooltip. */
+    if (blocked) {
+      const x = icon('rvx', 1.8, 'M4.5 4.5l7 7M11.5 4.5l-7 7');
+      x.title = r.blockers.join(', ');
+      a.appendChild(x);
+    } else {
+      const dot = r.prio <= 1 ? ' prio'
         : r.needs_re_review ? ' blocked'
           : r.prio === 2 ? ' attn' : '';
-    a.appendChild(el('span', 'dot' + dot, undefined, blocked ? r.blockers.join(', ') : undefined));
+      a.appendChild(el('span', 'dot' + dot));
+    }
     // Age, not the PR number: how long it has waited is what tells you to pick
     // it up. The whole row already links to the PR, so the number earns nothing.
     const age = el('span', 'num', compactAge(r.age_hours || 0));

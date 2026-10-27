@@ -2153,9 +2153,11 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
    things, and a palette that ever splits them should not have to find the call
    sites first. */
 .rvrow .dot.attn{background-color:var(--attn)}
-/* A blocker the source named: conflicts, failing checks. Broken, and not yours
-   to fix — the row's own dimming says the second half. */
-.rvrow .dot.bad{background-color:var(--bad)}
+/* A blocker the source named: conflicts, failing checks. A red cross in the dot's
+   own column, so the titles still start on one line; a dot would read as `prio`,
+   which is red too. Broken, and not yours to fix — the row's own dimming says the
+   second half. */
+.rvx{display:inline-grid;place-items:center;flex:0 0 6px;width:6px;color:var(--bad);font-size:calc(10px * var(--fs))}
 /* `prio` / `prio stopper` from the source's labels. Last, so it wins over both. */
 .rvrow .dot.prio{background-color:var(--bad)}
 /* Fixed-width number column so titles start at the same offset as the PR list. */
