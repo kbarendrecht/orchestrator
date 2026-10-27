@@ -1040,14 +1040,14 @@ button.ctx-btn:hover{color:var(--text)}
   padding:4px 8px;display:flex;align-items:center;gap:8px;
 }
 .addsh:hover{color:var(--text)}
-/* A key, drawn like every other key in this app. It used to be bare faint text,
-   which read as two stray punctuation marks beside the label rather than as a
-   chord — reported as "a dakje and a backtick next to the Shell name" (#2), and
-   the dakje was itself wrong: `⌃` is Control, while the app's modifier is ⌘ on a
-   Mac. Same treatment as `#termempty kbd` and the legend's. */
-.addsh kbd{
-  font-family:var(--mono);font-size:calc(9px * var(--fs));color:var(--dim);
-  border:1px solid var(--line);border-radius:2px;padding:0 4px;background:var(--raised);
+/* A key, drawn the same everywhere it is drawn: a cap with its lower edge a step
+   heavier, which is what tells a chord from two stray punctuation marks (#2,
+   "a dakje and a backtick next to the Shell name"). One rule, where there were
+   three copies of a bordered box drifting apart. */
+kbd{
+  font-family:var(--mono);font-weight:500;font-size:.88em;line-height:1.3;color:var(--dim);
+  background:var(--raised);border:1px solid var(--line-soft);border-bottom-color:var(--line);
+  box-shadow:inset 0 -1px 0 var(--line-soft);border-radius:4px;padding:0 5px;
 }
 .dcwd{margin-left:auto;font-family:var(--mono);font-size:calc(9px * var(--fs));color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center}
 .stackdot{width:6px;height:6px;border-radius:50%;margin-right:6px;flex:0 0 auto}
@@ -1084,10 +1084,7 @@ button.ctx-btn:hover{color:var(--text)}
    to #termempty so the other empty panes keep their plain one-liner. */
 #termempty .empty-big{display:block;color:var(--dim);font-size:calc(11.5px * var(--fs));margin-bottom:11px}
 #termempty .empty-k{display:block;margin-top:5px}
-#termempty kbd{
-  font-family:var(--mono);font-size:.9em;color:var(--dim);
-  border:1px solid var(--line);border-radius:2px;padding:0 4px;background:var(--raised);
-}
+
 /* First paint: hold "connecting" until the first snapshot (body.ready, set in
    app.js), so the empty-board message and its chord hints are only ever shown
    once the daemon has actually said nothing is running. */
@@ -1279,10 +1276,7 @@ body.row-resizing{cursor:row-resize;user-select:none}
 .legal a:hover{color:var(--text)}
 .legal a:focus-visible{outline:2px solid var(--focus);outline-offset:2px;border-radius:2px}
 #legalver{font-family:var(--mono)}
-.settings-help kbd,.keys dt kbd{
-  font-family:var(--mono);font-size:.9em;padding:0 4px;border-radius:2px;
-  border:1px solid var(--line);background:var(--raised);color:var(--text);
-}
+.settings-help kbd,.keys dt kbd{color:var(--text)}
 /* A value the pane reports and no control can set — the tracker, which is three
    fields and a per-site host that no dropdown can spell. It borrowed `.settings-in`
    for its metrics and so borrowed the border, the background and the focus ring

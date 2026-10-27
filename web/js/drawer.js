@@ -11,7 +11,7 @@
 // It reaches for `term` the way `rail` does — a tab is a terminal — and for
 // nothing else of the SPA's beyond `core`.
 
-import { $, activeCheckout, call, currentSession, currentWorkspaceId, drawerCollapsed, drawerTouched, el, openMenu, pendingProcFocus, procOrder, reason, selectedProc, setDrawerCollapsed, setDrawerTouched, setPendingProcFocus, setProcOrder, setSelectedProc, snap, toast, unchanged, workspaceById, wsKey } from './core.js';
+import { $, activeCheckout, call, caret, currentSession, currentWorkspaceId, drawerCollapsed, drawerTouched, el, icon, openMenu, pendingProcFocus, procOrder, reason, selectedProc, setDrawerCollapsed, setDrawerTouched, setPendingProcFocus, setProcOrder, setSelectedProc, snap, toast, unchanged, workspaceById, wsKey } from './core.js';
 import * as Term from './term.js';
 
 /* The workspace whose tab strip is being dragged, or null. A snapshot arriving
@@ -244,7 +244,7 @@ export function renderDrawer() {
   // The same rotating caret the PR and review panes use. It was a pair of filled
   // triangles, which is a second vocabulary for the one gesture the app already
   // had a glyph for.
-  toggle.replaceChildren(el('span', 'caretr', '\u203a'), el('span', 'eyebrow', 'Processes'));
+  toggle.replaceChildren(caret(), el('span', 'eyebrow', 'Processes'));
   toggle.setAttribute('aria-expanded', String(!collapsed));
   toggle.title = collapsed ? 'Expand processes' : 'Collapse processes';
   // The plain label only stands in while there is nothing to collapse; otherwise
@@ -324,7 +324,7 @@ export function renderDrawer() {
     tab.oncontextmenu = (ev) => openMenu(ev, paneMenu(`proc:${p.id}`, label));
 
     // The same glyph every other dismiss uses; this one was a multiplication sign.
-    const x = el('span', 'x', '\u2715');
+    const x = icon('x', 1.5, 'M4 4l8 8M12 4l-8 8');
     x.title = dead ? 'Dismiss' : 'Close';
     x.onclick = (ev) => {
       ev.stopPropagation();

@@ -64,7 +64,7 @@
          shortcut you cannot look up. Deliberately smaller than the gear: it is a
          thing you need twice and then never again, so it earns a glyph, not a
          button's worth of space. -->
-    <button class="helpbtn" id="keysbtn" title="Help" aria-label="Help" aria-expanded="false">?</button>
+    <button class="helpbtn" id="keysbtn" title="Help" aria-label="Help" aria-expanded="false"><svg viewBox="0 0 16 16" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.75a6.25 6.25 0 1 0 0 12.5a6.25 6.25 0 1 0 0-12.5"/><path d="M6.3 6.2a1.8 1.8 0 0 1 3.5.6c0 1.2-1.8 1.6-1.8 2.6"/><path d="M8 11.4h.01"/></svg></button>
   </div>
 
   <div class="top top-c">
@@ -80,7 +80,7 @@
     <span class="ctx-pr" id="ctxstate"></span>
     <span class="ctx-prs" id="ctxprs"></span>
     <span class="ctx-right">
-      <button class="ctx-close" id="killbtn" title="End this session">&#10005;</button>
+      <button class="ctx-close" id="killbtn" title="End this session" aria-label="End this session"><svg viewBox="0 0 16 16" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
     </span>
   </div>
 
@@ -266,7 +266,7 @@
         <span class="empty-connecting"><span class="conn-dot"></span>connecting…</span>
         <span class="empty-big">Nothing running.</span>
         <span class="empty-k" data-mod><kbd>MOD N</kbd> new worktree · <kbd>MOD Shift N</kbd> session on main</span>
-        <span class="empty-k" data-mod><kbd>MOD `</kbd> a shell here · <kbd>MOD Shift ?</kbd> all shortcuts</span>
+        <span class="empty-k" data-mod><kbd>MOD .</kbd> a shell here · <kbd>MOD Shift ?</kbd> all shortcuts</span>
       </div>
 
       <!-- **What a press of `+` looks like before the daemon has answered.** Cutting
@@ -303,10 +303,11 @@
         </button>
         <span class="eyebrow" id="dlabel" style="margin-right:2px">Processes</span>
         <span class="dtabs" id="dtabs"></span>
-        <!-- `MOD` is resolved at boot, like the legend's rows: this used to be a
+        <!-- The chord is in the tooltip, not on the button: a key cap that only
+             showed on hover left the button wider than its label the rest of the
+             time. `MOD` is resolved at boot, in the title too; it used to be a
              literal ⌃, which is the wrong key on a Mac (#2). -->
-        <button class="addsh" id="addshell" title="New shell in this workspace">
-          + Shell <kbd data-mod>MOD `</kbd></button>
+        <button class="addsh" id="addshell" data-mod title="New shell in this workspace · MOD .">+ Shell</button>
         <span class="dcwd" id="dcwd"></span>
       </div>
       <div class="drawer-body" id="drawerbody"></div>
@@ -356,7 +357,7 @@
 <div class="updatebar" id="updatebar" hidden>
   <a class="updatebar-link" id="updatelink" target="_blank" rel="noreferrer"></a>
   <button class="agentgo" id="updatego" type="button" hidden>Upgrade</button>
-  <span class="updatebar-x" id="updatex" role="button" title="Dismiss">&#10005;</span>
+  <span class="updatebar-x" id="updatex" role="button" title="Dismiss" aria-label="Dismiss"><svg viewBox="0 0 16 16" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg></span>
 </div>
 
 <!-- A newer Claude Code. Unlike the bar above this one acts: mise installs into a
@@ -366,7 +367,7 @@
 <div class="updatebar agentbar" id="agentbar" hidden>
   <span class="updatebar-link" id="agentmsg"></span>
   <button class="agentgo" id="agentgo" type="button">Upgrade</button>
-  <span class="updatebar-x" id="agentx" role="button" title="Dismiss">&#10005;</span>
+  <span class="updatebar-x" id="agentx" role="button" title="Dismiss" aria-label="Dismiss"><svg viewBox="0 0 16 16" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg></span>
 </div>
 
 <!-- The agent would not start. No button: nothing here can repair a `claude` that
@@ -377,7 +378,7 @@
      gone — the daemon forgets a turnless row and its worktree with it. -->
 <div class="updatebar agenterrbar" id="agenterrbar" hidden>
   <span class="updatebar-bad" id="agenterrmsg"></span>
-  <span class="updatebar-x" id="agenterrx" role="button" title="Dismiss">&#10005;</span>
+  <span class="updatebar-x" id="agenterrx" role="button" title="Dismiss" aria-label="Dismiss"><svg viewBox="0 0 16 16" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg></span>
 </div>
 
 <!-- What the boot preflight found: a missing `gh`, `node` or `claude`, a checkout
@@ -389,7 +390,7 @@
      with no PATH from Finder was missing `gh`, `node` and `claude` at once. -->
 <div class="updatebar machinebar" id="machinebar" hidden>
   <div class="machinelist" id="machinelist"></div>
-  <span class="updatebar-x" id="machinex" role="button" title="Dismiss">&#10005;</span>
+  <span class="updatebar-x" id="machinex" role="button" title="Dismiss" aria-label="Dismiss"><svg viewBox="0 0 16 16" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg></span>
 </div>
 
 <!-- Right-click on a session row. Positioned at the cursor from script. -->
@@ -406,7 +407,7 @@
   <div class="settings-title">
     Settings
     <button class="settings-x" id="setclose" type="button"
-            title="Close · Esc" aria-label="Close settings">&#10005;</button>
+            title="Close · Esc" aria-label="Close settings"><svg viewBox="0 0 16 16" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
   </div>
   <!-- Five tabs rather than one long scroll: the pane was three screens tall, and it
        holds two kinds of setting that apply differently — this browser's look,
@@ -970,7 +971,7 @@
   <div class="settings-title">
     Help
     <button class="settings-x" id="keyhelpx" type="button"
-            title="Close · Esc" aria-label="Close help">&#10005;</button>
+            title="Close · Esc" aria-label="Close help"><svg viewBox="0 0 16 16" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
   </div>
   <div class="settings-card">
     <h2 class="help-section">Keyboard shortcuts</h2>
@@ -987,7 +988,7 @@
       <div class="settings-group">Create</div>
       <dt data-mod>MOD&nbsp;N</dt><dd>new worktree</dd>
       <dt data-mod>MOD&nbsp;Shift&nbsp;N</dt><dd>new session on main</dd>
-      <dt data-mod>MOD&nbsp;Shift&nbsp;T</dt><dd data-mod>new shell in this workspace (also MOD&nbsp;`)</dd>
+      <dt data-mod>MOD&nbsp;.</dt><dd data-mod>new shell in this workspace (also MOD&nbsp;Shift&nbsp;T and MOD&nbsp;`)</dd>
       <!-- A Mac's only, because it is the menu bar's: Ctrl+W elsewhere is the
            shell's delete-word, and the pty keeps it. -->
       <dt data-maconly>&#8984;&nbsp;W</dt><dd data-maconly>stop the focused session, or close the focused shell</dd>

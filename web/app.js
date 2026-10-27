@@ -1364,6 +1364,9 @@ for (const dt of document.querySelectorAll('[data-mod]')) {
   for (let n = walk.nextNode(); n; n = walk.nextNode()) {
     if (n.nodeValue) n.nodeValue = n.nodeValue.replace(/MOD/g, MOD_LABEL);
   }
+  // A tooltip names a chord too, and an attribute is not a text node.
+  const title = dt.getAttribute('title');
+  if (title) dt.setAttribute('title', title.replace(/MOD/g, MOD_LABEL));
 }
 // A chord only a Mac has, which is the menu bar's ⌘W; see `orchClose`.
 for (const row of document.querySelectorAll('[data-maconly]')) /** @type {HTMLElement} */ (row).hidden = !IS_MAC;
@@ -1803,10 +1806,14 @@ function keymap(/** @type {KeyboardEvent} */ e) {
   // Ctrl+C an interrupt, Ctrl+D an EOF and Ctrl+S flow-control.
   if (appMod(e)) {
     const k = e.key.toLowerCase();
-    // Ctrl+Shift+T beside Ctrl+`: the terminal-emulator "new tab" key, in the
-    // Ctrl+Shift zone terminals leave alone. A shell is a process in the drawer,
-    // so this is the third rung of the same ladder as Ctrl+N / Ctrl+Shift+N.
-    if (e.key === '`' || (e.shiftKey && k === 't')) {
+    // Ctrl+. first: two keys, and a key that sends no control code, so the pty
+    // loses nothing — Ctrl+T and Ctrl+J looked right and are Claude Code's own.
+    // By `code`, so it is the same key on a layout where `.` needs Shift.
+    // Ctrl+` stays for whoever learned it, and Ctrl+Shift+T is the
+    // terminal-emulator "new tab" key, in the Ctrl+Shift zone terminals leave
+    // alone. A shell is a process in the drawer, so this is the third rung of the
+    // same ladder as Ctrl+N / Ctrl+Shift+N.
+    if ((!e.shiftKey && e.code === 'Period') || e.key === '`' || (e.shiftKey && k === 't')) {
       e.preventDefault(); void newShell(); return;
     }
     /* Find in files. Shift rather than plain, by the rule at the top of this
