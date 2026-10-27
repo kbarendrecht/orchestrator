@@ -1122,7 +1122,7 @@ body:not(.ready) #termempty .empty-k{display:none}
 @media(prefers-reduced-motion:reduce){
   .conn-dot,.connbar .d{animation:none;opacity:.7}
   .rvrefresh.spin svg,.arcspin{animation:none}
-  .oq,#settings,#keyhelp,.overlay.find{animation:none}
+  .oq,#settings,#keyhelp,.overlay.find,.oppanel{animation:none}
 }
 /* Visually hidden, still read aloud — the live region that announces "needs you". */
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
@@ -2231,13 +2231,20 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
    to learn the macOS window-drag rule a second time. One screen now, over the
    board, so there is one titlebar and one set of tokens. The `op` prefix is the
    module's; `web/js/open.js` says what each panel is for. */
+/* **A card over the board, like settings and help**, rather than a page that
+   replaced it. The backdrop still stops at the top row, for the titlebar reason
+   above, and it is a dimmed board rather than a solid ground, so opening a
+   second project does not make the first one vanish. The card scrolls on its own
+   when the review is longer than the window. */
 .openco{
-  position:fixed;inset:46px 0 0 0;z-index:60;background:var(--bg);
-  overflow-y:auto;display:flex;justify-content:center;
+  position:fixed;inset:46px 0 0 0;z-index:60;background:rgba(5,5,6,.55);
+  overflow-y:auto;display:flex;align-items:center;justify-content:center;padding:32px;
 }
 .oppanel{
-  width:100%;max-width:720px;padding:40px 44px 34px;
+  width:100%;max-width:720px;max-height:100%;overflow-y:auto;padding:36px 40px 30px;
   display:flex;flex-direction:column;gap:20px;
+  background:var(--surface);border:1px solid var(--line);border-radius:14px;
+  box-shadow:0 30px 80px -10px rgba(0,0,0,.8);animation:sheetpop .22s cubic-bezier(.2,.8,.2,1) both;
 }
 /* A `display` on the class outranks the user agent's `[hidden]{display:none}` —
    same specificity, later rule — so without these the panels paint on top of each
