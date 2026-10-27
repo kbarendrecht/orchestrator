@@ -936,7 +936,11 @@ button.ctx-btn:hover{color:var(--text)}
 .oqd{
   font-family:var(--code);font-size:calc(var(--code-px,11.5px) * var(--fs));line-height:1.55;
   color:var(--dim);background:var(--bg);border:1px solid var(--line);border-radius:6px;
-  padding:8px 12px;margin:0;white-space:pre;overflow-x:auto;max-height:220px;
+  padding:8px 12px;margin:0;max-height:220px;overflow-y:auto;
+  /* Wrapped, never scrolled sideways: the box sits in a card you are reading to
+     decide, and a sentence cut at the card's edge behind a scrollbar is the part
+     you needed. `pre-wrap` keeps a diff's own line breaks and indents. */
+  white-space:pre-wrap;overflow-wrap:anywhere;
 }
 .oqopts{display:flex;flex-direction:column;gap:4px;margin-top:2px}
 .oqopt{
