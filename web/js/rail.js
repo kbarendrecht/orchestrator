@@ -2585,20 +2585,26 @@ function renderNudge() {
   bar.hidden = !want;
   if (!want) return;
   const n = ids.split(',').length;
-  const say = el('span', 'railnudge-say', `${n} cut off by the restart`);
-  say.title = 'These were mid-turn, or waiting on background work, when the app restarted. '
-    + 'Continue types "continue" into each of them; '
-    + 'a finished turn, a question and a permission prompt are left alone.';
+  /* **A card that says what happened and why, with two answers.** It was one amber
+     line, `2 cut off by the restart · Continue · ✕`, and the why lived in a
+     tooltip nobody hovered: that the sessions were mid-turn is the whole reason
+     Continue is safe to press. */
+  const mark = icon('railnudge-ic', 1.5, 'M13.5 8a5.5 5.5 0 1 1-1.6-3.9', 'M13.5 2.5v3h-3');
+  const say = el('span', 'railnudge-say', `${n} session${n === 1 ? '' : 's'} stopped by the restart`);
+  const why = el('span', 'railnudge-why', 'They were mid-turn or waiting on work.');
+  const acts = el('span', 'railnudge-acts');
   const go = el('button', 'railnudge-go', 'Continue');
+  go.title = 'Types "continue" into each of them; a finished turn, a question and a '
+    + 'permission prompt are left alone.';
   go.onclick = async () => {
     go.disabled = true;
     for (const x of by) await nudgeAll(x.c);
   };
-  const close = el('button', 'railnudge-x', '✕');
+  const close = el('button', 'railnudge-x', 'Dismiss');
   close.title = 'Hide until a restart cuts other sessions off';
-  close.setAttribute('aria-label', 'Hide');
   close.onclick = () => { nudgeDismissed = ids; renderNudge(); };
-  bar.replaceChildren(say, go, close);
+  acts.append(go, close);
+  bar.replaceChildren(mark, say, why, acts);
 }
 
 /** Send on every session a restart left parked mid-turn, in one checkout.

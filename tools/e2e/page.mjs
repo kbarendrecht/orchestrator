@@ -924,7 +924,7 @@ try {
     })
     Rail.render()
     const bar = /** @type {HTMLElement} */ (document.getElementById('railnudge'))
-    const shown = !bar.hidden && (bar.textContent ?? '').includes('1 cut off by the restart')
+    const shown = !bar.hidden && (bar.textContent ?? '').includes('1 session stopped by the restart')
     const x = /** @type {HTMLElement} */ (bar.querySelector('.railnudge-x'))
     x.click()
     const closed = bar.hidden
@@ -933,7 +933,7 @@ try {
     return JSON.stringify({ shown, closed })
   })
   check(nudge === '{"shown":true,"closed":true}',
-    `a session a restart cut off gets the Continue strip, and ✕ hides it, got ${nudge}`)
+    `a session a restart cut off gets the Continue card, and Dismiss hides it, got ${nudge}`)
 
   /* **A snapshot that changes nothing the add row draws keeps its button.** It
      was rebuilt on every snapshot, and WebKit sends no click when the press and
