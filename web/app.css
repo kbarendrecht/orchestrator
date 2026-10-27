@@ -1006,10 +1006,17 @@ button.ctx-btn:hover{color:var(--text)}
    wheel scrolls it (`app.js`), and so does dragging a tab past the edge.
    `user-select:none` because a drag across the strip would otherwise select the
    labels it passes. */
+/* Full height of the head, and one pixel past it: the open tab's underline is
+   drawn on the head's own bottom border, so it reads as the tab the pane below
+   belongs to rather than as a line floating inside the bar. The head's padding
+   is 8px each way: the top margin takes it back, and the bottom one takes it
+   and the 1px border, which also keeps the labels centred with the head's. */
 .dtabs{
   display:flex;gap:4px;min-width:0;overflow-x:auto;
   scrollbar-width:none;user-select:none;
+  align-self:stretch;margin:-8px 0 -9px;
 }
+.dtabs>.dtab{padding:0 10px}
 .dtabs::-webkit-scrollbar{display:none}
 /* With the scrollbar gone there is no cue that tabs continue off the edge, so
    the edge that has more fades out. The mask sits on the scroll container, so it
@@ -1034,7 +1041,7 @@ button.ctx-btn:hover{color:var(--text)}
 /* The one being dragged. Dimmed rather than lifted: the tabs are 20px tall and a
    shadow at that size reads as a rendering fault. */
 .dtab.dragging{opacity:.55}
-.dtab[aria-selected="true"]{color:var(--text);box-shadow:inset 0 -1.5px 0 var(--text)}
+.dtab[aria-selected="true"]{color:var(--text);box-shadow:inset 0 -2px 0 var(--text)}
 /* A finished shell keeps its buffer until dismissed, but must not read as live. */
 .dtab.dead{color:var(--ghost)}
 /* Declared in config and not running: same dimming, and it lights up on hover
