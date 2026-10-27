@@ -2306,6 +2306,14 @@ function setupChrome() {
      review builds its header at run time, after any pass over the page at boot.
      The guard below spares what is in them to press: buttons, the finder's box. */
   const TITLEBARS = '.top, .settings-title, .ov-head, .fnview-head';
+  /* What a press inside a bar may land on without moving the window: its controls,
+     and since the skin, **a splitter and a sheet**. The finder's divider hangs off
+     the top of `.fnview-head`, so pulling it to resize the index dragged the window
+     instead, and double-clicking it to reset the split maximised it. The finder,
+     settings and help are sheets over the board now, not panes under the
+     titlebar, so their headers sit mid-window where a window drag is a surprise.
+     One list for the drag and the double-click, so the two cannot disagree. */
+  const NOT_THE_BAR = 'button, input, a, kbd, .ctx-btn, .ctx-copy, .rowsplit, .colsplit, .overlay.find, #settings, #keyhelp';
   {
     document.addEventListener('mousedown', (ev) => {
       // `addEventListener` promises the handler an `Event`; narrowing in the
@@ -2316,7 +2324,7 @@ function setupChrome() {
       // swallowed clicks on the session name or the close button would make
       // the header unusable.
       if (e.button !== 0) return;
-      if (/** @type {HTMLElement} */ (e.target).closest('button, input, a, kbd, .ctx-btn, .ctx-copy')) return;
+      if (/** @type {HTMLElement} */ (e.target).closest(NOT_THE_BAR)) return;
       // A double-click is the OS gesture for maximise, so it must not also
       // start a drag; the compositor keeps the drag alive past mouseup, which
       // would eat the second click.
@@ -2368,7 +2376,7 @@ function setupChrome() {
     });
     document.addEventListener('dblclick', (e) => {
       if (!/** @type {HTMLElement} */ (e.target).closest?.(TITLEBARS)) return;
-      if (/** @type {HTMLElement} */ (e.target).closest('button, input, a, kbd, .ctx-btn, .ctx-copy')) return;
+      if (/** @type {HTMLElement} */ (e.target).closest(NOT_THE_BAR)) return;
       void wcmd('toggle-maximize');
     });
   }

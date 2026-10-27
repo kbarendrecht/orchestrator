@@ -1167,6 +1167,12 @@ body:not(.ready) #termempty .empty-k{display:none}
    and a bare `.split` rule caught it too — 7px wide and position:fixed, which is a
    diff pane that looks empty with a very long scrollbar. */
 .colsplit{position:fixed;top:0;bottom:0;width:7px;z-index:60;cursor:col-resize}
+/* **Gone while a sheet is open.** The finder, settings and help used to fill the
+   centre column, between these, and are sheets over the whole window now; a
+   handle drawn over the sheet resized panes you could not see. Hidden rather than
+   lowered: under a diff overlay, which still fills the centre column, the handles
+   on its edges have to keep working. */
+body:has(.overlay.find.on, #settings:not([hidden]), #keyhelp:not([hidden])) .colsplit{display:none}
 .colsplit::after{
   content:'';position:absolute;top:0;bottom:0;left:3px;width:1px;
   background:transparent;transition:background .12s;
