@@ -1,7 +1,7 @@
 // The rail: what is running, what is waiting on you, and the PRs beside it.
 // Twenty-four names, three out; the rest is how a row decides what it says.
 
-import { $, activeCheckout, AGENT_LABEL, ageLabel, bandOf, byNewest, call, callFor, callHost, callOn, caret, checkoutOf, CHECKOUTS, chooseBox, clock, confirmBox, copyText, creating, creatingIn, creatingIntoMain, dotClass, el, enterCheckout, icon, getHost, getOn, handedToPr, hasPr, inTrouble, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, QUEUE_MAX, reason, refreshButton, repoSummary, safeHref, selected, sessionDot, sessionsOf, sessionOrder, setPendingSelect, setSelected, setSessionOrder, snap, snapshotFor, snapshotOf, startingShown, stateClass, stateLabel, terms, toast, paintSig, reconcile, unchanged, watchStarting } from './core.js';
+import { $, activeCheckout, AGENT_LABEL, ageLabel, bandOf, byNewest, call, callFor, callHost, callOn, caret, checkoutOf, CHECKOUTS, chooseBox, clock, confirmBox, copyText, creating, creatingIn, creatingIntoMain, dotClass, el, enterCheckout, icon, iconLabel, getHost, getOn, handedToPr, hasPr, inTrouble, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, QUEUE_MAX, reason, refreshButton, repoSummary, safeHref, selected, sessionDot, sessionsOf, sessionOrder, setPendingSelect, setSelected, setSessionOrder, snap, snapshotFor, snapshotOf, startingShown, stateClass, stateLabel, terms, toast, paintSig, reconcile, unchanged, watchStarting } from './core.js';
 import * as Open from './open.js';
 import * as Term from './term.js';
 
@@ -864,11 +864,9 @@ async function startHandleReview(/** @type {number} */ number, /** @type {HTMLBu
  *  @param {boolean} [running]
  *  @returns {HTMLElementTagNameMap[T]} */
 function prAction(tag, verb, label, running = false) {
-  const b = el(tag, 'pract' + (running ? ' running' : ''));
-  b.append(verb === 'fix'
-    ? icon('practic', 1.4, 'M10.5 2.5a3 3 0 0 0-3.2 4.2L2.8 11.2a1.2 1.2 0 0 0 1.7 1.7l4.5-4.5a3 3 0 0 0 4.2-3.2l-1.8 1.8-1.6-.4-.4-1.6z')
-    : icon('practic', 1.4, 'M3 3.5h10v7H7l-3 2.5v-2.5H3z'), label);
-  return b;
+  return iconLabel(tag, 'pract' + (running ? ' running' : ''), label, verb === 'fix'
+    ? 'M10.5 2.5a3 3 0 0 0-3.2 4.2L2.8 11.2a1.2 1.2 0 0 0 1.7 1.7l4.5-4.5a3 3 0 0 0 4.2-3.2l-1.8 1.8-1.6-.4-.4-1.6z'
+    : 'M3 3.5h10v7H7l-3 2.5v-2.5H3z');
 }
 
 /** A hand-triggered run against a PR. `action` is the endpoint; `label` is what
@@ -1152,8 +1150,7 @@ function prRow(/** @type {any} */ p) {
       /* The Fix button's shape with a terminal icon in the neutral colour (option A
          of the session/fix review): one family of verbs on the row, and the amber
          stays on the one that needs you. */
-      const j = el('button', 'jump' + (here ? ' here' : ''));
-      j.append(icon('practic', 1.5, 'M3 4.5l3.5 3.5L3 11.5', 'M8 12h5'), 'Session');
+      const j = iconLabel('button', 'jump' + (here ? ' here' : ''), 'Session', 'M3 4.5l3.5 3.5L3 11.5', 'M8 12h5');
       j.title = here ? 'You are in this session' : 'Go to the session on this branch';
       j.onclick = (ev) => {
         ev.preventDefault();
@@ -2625,8 +2622,7 @@ function renderNudge() {
   const say = el('span', 'railnudge-say', `${n} session${n === 1 ? '' : 's'} stopped by the restart`);
   const why = el('span', 'railnudge-why', 'They were mid-turn or waiting on work.');
   const acts = el('span', 'railnudge-acts');
-  const go = el('button', 'railnudge-go');
-  go.append(icon('practic', 1.4, 'M5 3.5l7 4.5-7 4.5z'), 'Continue');
+  const go = iconLabel('button', 'railnudge-go', 'Continue', 'M5 3.5l7 4.5-7 4.5z');
   go.title = 'Types "continue" into each of them; a finished turn, a question and a '
     + 'permission prompt are left alone.';
   go.onclick = async () => {

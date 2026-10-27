@@ -562,6 +562,24 @@ export function icon(cls, strokeWidth, ...ds) {
   return span;
 }
 
+/** A verb with its icon: the board's raised button, an icon before the word.
+ *  One builder for Fix and Handle, Session, Rebase and Abort, and Continue, so the
+ *  icon class the CSS colours is spelled in one place.
+ *
+ *  @template {'button' | 'span'} T
+ *  @param {T} tag a span for a verb that is running, which is a link, not a press
+ *  @param {string} cls
+ *  @param {string} label
+ *  @param {...string} ds the icon's paths, none for a word alone
+ *  @returns {HTMLElementTagNameMap[T]} */
+export function iconLabel(tag, cls, label, ...ds) {
+  const b = /** @type {HTMLElementTagNameMap[T]} */ (el(tag, cls));
+  if (tag === 'button') b.setAttribute('type', 'button');
+  if (ds.length) b.appendChild(icon('practic', 1.4, ...ds));
+  b.append(label);
+  return b;
+}
+
 /** The chevron a collapsible header rotates — drawn rather than typed so it
  *  matches the gear and refresh and cannot fall out of the font. `1em`, so each
  *  header's own font-size still sets its size, and the `[aria-expanded]` rotate

@@ -341,7 +341,7 @@ function renderReviews() {
   // Sunk rather than dropped, because sometimes you still want to look — but
   // folded, so they do not pad the queue you actually work from.
   if (blocked.length) {
-    const t = el('button', 'arctoggle');
+    const t = el('button', 'rvfold');
     t.setAttribute('aria-expanded', String(showBlockedReviews));
     t.appendChild(caret());
     t.appendChild(el('span', null, `${blocked.length} not reviewable`));

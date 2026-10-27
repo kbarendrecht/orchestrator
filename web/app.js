@@ -2327,21 +2327,21 @@ function setupChrome() {
   const DRAG_SLOP = 3;
 
   /* **Every header that sits where a titlebar sits drags the window.** The
-     settings and legend headers did (`.settings-title`), and the overlays did not:
-     the diff, the finder, the file pane and the review cover the window's top and
-     their headers did nothing when you pulled them, which reads as the window being
-     stuck. One listener on the document rather than one per bar, because the
+     overlays did not: the diff, the file pane and the review cover the window's
+     top and their headers did nothing when you pulled them, which reads as the
+     window being stuck. Settings and help are sheets mid-window now, so their
+     headers are not on the list. One listener on the document rather than one per bar, because the
      review builds its header at run time, after any pass over the page at boot.
      The guard below spares what is in them to press: buttons, the finder's box. */
-  const TITLEBARS = '.top, .settings-title, .ov-head, .fnview-head';
+  const TITLEBARS = '.top, .ov-head, .fnview-head';
   /* What a press inside a bar may land on without moving the window: its controls,
      and since the skin, **a splitter and a sheet**. The finder's divider hangs off
      the top of `.fnview-head`, so pulling it to resize the index dragged the window
-     instead, and double-clicking it to reset the split maximised it. The finder,
-     settings and help are sheets over the board now, not panes under the
-     titlebar, so their headers sit mid-window where a window drag is a surprise.
+     instead, and double-clicking it to reset the split maximised it. The finder is
+     a sheet over the board now, not a pane under the titlebar, so its header sits
+     mid-window where a window drag is a surprise.
      One list for the drag and the double-click, so the two cannot disagree. */
-  const NOT_THE_BAR = 'button, input, a, kbd, .ctx-btn, .ctx-copy, .rowsplit, .colsplit, .overlay.find, #settings, #keyhelp';
+  const NOT_THE_BAR = 'button, input, a, kbd, .ctx-btn, .ctx-copy, .rowsplit, .colsplit, .overlay.find';
   {
     document.addEventListener('mousedown', (ev) => {
       // `addEventListener` promises the handler an `Event`; narrowing in the

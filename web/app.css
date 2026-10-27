@@ -340,21 +340,16 @@ button.ctx-btn:hover{color:var(--text)}
   font-weight:600;letter-spacing:.02em;color:var(--dim);
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;
 }
-.gear{
+.gear,.helpbtn{
   flex:0 0 auto;display:flex;align-items:center;justify-content:center;
   width:26px;height:26px;border-radius:var(--r);color:var(--faint-solid);
   transition:color .12s,background .12s;
 }
 .gear:hover,.gear[aria-expanded="true"]{color:var(--text);background:var(--raised)}
-/* The gear's twin: the same box and the same icon size. It was two-thirds of the
-   gear and dimmer, and next to it that read as a smaller, lesser control rather
-   than a quieter one. At 26px it is past WCAG 2.5.8's 24px target on its own. */
-.helpbtn{
-  flex:0 0 auto;display:flex;align-items:center;justify-content:center;
-  width:26px;height:26px;border-radius:var(--r);color:var(--faint-solid);
-  transition:color .12s,background .12s;
-}
-.helpbtn:hover,.helpbtn[aria-expanded="true"]{color:var(--text);background:var(--raised);opacity:1}
+/* The help button is the gear's twin (the rule above): it was two-thirds of the
+   gear and dimmer, and next to it that read as a lesser control rather than a
+   quieter one. At 26px it is past WCAG 2.5.8's 24px target on its own. */
+.helpbtn:hover,.helpbtn[aria-expanded="true"]{color:var(--text);background:var(--raised)}
 
 /* ---------- rail ---------- */
 .rail{border-right:1px solid var(--line);background:var(--panel-ground,var(--surface));display:flex;flex-direction:column;overflow:hidden}
@@ -657,19 +652,19 @@ button.ctx-btn:hover{color:var(--text)}
 .arctoggle:hover{color:var(--text);background:var(--hover)}
 /* Open is a fill, the way a pressed button reads; see `archivedToggle`. */
 .ws-add .arctoggle[aria-expanded="true"]{color:var(--text);background:var(--raised)}
-/* The review queue's `not reviewable` fold borrows the class but is still a row of
-   its own at the foot of a list, so it keeps the shape the class had before it
-   moved onto the add row: full width, left, padded like the rows above it. */
-.rvlist>.arctoggle{
-  width:100%;height:auto;margin-left:0;gap:8px;padding:8px 16px 12px;border-radius:0;
+/* The review queue's `not reviewable` fold: a row of its own at the foot of the
+   list, full width and padded like the rows above it. */
+.rvfold{
+  display:flex;align-items:center;width:100%;gap:8px;padding:8px 16px 12px;
   font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid);
+  background:none;border:0;cursor:pointer;transition:color .12s;
 }
-.rvlist>.arctoggle:hover{color:var(--dim);background:none}
-.arctoggle .caretr{display:inline-block;transition:transform .13s;font-size:calc(13px * var(--fs));line-height:1}
+.rvfold:hover{color:var(--dim)}
+.rvfold .caretr{display:inline-block;transition:transform .13s;font-size:calc(13px * var(--fs));line-height:1}
 /* The caret is a drawn SVG now (core.caret); block removes the inline-svg gap so
    it sits centred in every header that carries one. */
 .caretr svg{display:block}
-.arctoggle[aria-expanded="true"] .caretr{transform:rotate(90deg)}
+.rvfold[aria-expanded="true"] .caretr{transform:rotate(90deg)}
 /* No count beside the word any more — `archivedToggle` says why: the number is in
    the box, against the query it answers. The `margin-left:auto` above is what
    holds it to the right of the add row. */
@@ -763,14 +758,6 @@ button.ctx-btn:hover{color:var(--text)}
 .railnudge-why{grid-column:2;color:var(--faint-solid);font-size:calc(11.5px * var(--fs))}
 .railnudge-acts{grid-column:2;display:flex;align-items:center;gap:10px;margin-top:8px}
 /* Continue is the PR row's button: raised, neutral word, amber icon. */
-.railnudge-go{
-  display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 8px 0 6px;border-radius:var(--r);
-  font-family:var(--sans);font-size:calc(11.5px * var(--fs));font-weight:500;color:var(--text);cursor:pointer;
-  background:var(--raised);border:1px solid var(--line);box-shadow:inset 0 1px 0 rgba(255,255,255,.04);
-  transition:background .15s;
-}
-.railnudge-go .practic{color:var(--attn)}
-.railnudge-go:hover:not(:disabled){background:var(--line-soft)}
 .railnudge-go:disabled{opacity:.5;cursor:default}
 .railnudge-x{
   font-family:var(--sans);font-size:calc(11.5px * var(--fs));color:var(--faint-solid);
@@ -1194,18 +1181,18 @@ body.col-resizing{cursor:col-resize;user-select:none}
 body.row-resizing{cursor:row-resize;user-select:none}
 
 /* ---------- settings ---------- */
-/* A centred modal over the panes. `.settings` is the full-viewport scrim; the
-   card is centred in it. Outside `.app`, so the font-size control it carries does
-   not rescale itself as you press it. */
-/* The centre column, the way the diff overlay takes it: settings is a place you
-   go, not a dialog floating over the whole window, and covering the context bar
-   keeps its close button from sitting next to the session's own. */
+/* **A sheet over the whole window: settings and help.** It took the centre column
+   once, so its close would not sit beside the session's own, and covering the
+   context bar still does that. As a column it put six tabs in a row across a pane
+   narrower than the form and looked like a session; as a sheet the tabs are a
+   column on the left and the form keeps its label column. Outside `.app`, so the
+   font-size control it carries does not rescale itself as you press it. The
+   backdrop is a shadow spread past the window's edge, not an element, so nothing
+   has a second thing to open or close. The frame is shared with the finder. */
 .settings{
-  position:fixed;top:0;bottom:0;left:var(--rail);right:var(--files);z-index:20;
-  display:flex;flex-direction:column;background:var(--bg);
-  /* The form's measure, in one place: the card and the foot have to agree or
-     Save stops lining up with the right edge of the inputs. */
-  --setw:760px;
+  position:fixed;top:0;bottom:0;left:0;right:0;margin:auto;z-index:20;
+  width:min(1288px, calc(100vw - 64px));height:min(828px, calc(100vh - 112px));
+  display:grid;grid-template-columns:190px minmax(0,1fr);grid-template-rows:auto 1fr auto;
   /* **One label column for every row**, with the controls on the right edge. Fields
      used to start their input at 38% while rows pushed theirs right, so nothing on
      the pane shared an edge; now every control ends on the same line. */
@@ -1216,30 +1203,16 @@ body.row-resizing{cursor:row-resize;user-select:none}
    it, and unclosable, because `settingsOpen()` asks the attribute, which still
    says hidden. Any element with an author `display` needs this line. */
 .settings[hidden]{display:none}
-/* Capped and centred. Full-bleed would stretch a two-column form across a
-   1400px window, which is why the measure exists.
-   **The measure is padding, not a width, so the scrollbar stays at the edge of
-   the pane.** A capped, auto-margined box is itself the scroller, so its bar was
-   drawn against the right-hand end of the text — a rule down the middle of the
-   pane, moving with the measure. Padding the full-width box to the same measure
-   puts the content in the same place and leaves the bar where a pane's scrollbar
-   belongs. `max()` keeps the 16px gutter when the pane is narrower than the
-   measure. */
 .settings-card{
-  flex:1;min-height:0;overflow-y:auto;container-type:inline-size;
+  min-height:0;overflow-y:auto;container-type:inline-size;
   /* 40 at the foot rather than 24: the last row of the last group used to end
      within a row's height of the window edge, which reads as the pane having been
      cut off rather than as having ended. */
-  padding:16px max(16px, calc((100% - var(--setw)) / 2)) 40px;
+  padding:22px 26px 40px;
 }
-/* Its own bar across the pane, like the diff's head, rather than a caption on a
-   card that no longer exists. */
 .settings-title{
-  font-family:var(--label);font-size:calc(9px * var(--fs));font-weight:700;
-  letter-spacing:.16em;text-transform:uppercase;color:var(--faint-solid);
-  display:flex;align-items:center;gap:12px;flex:0 0 auto;
-  height:46px;padding:0 16px;border-bottom:1px solid var(--line);
-  background:var(--surface);
+  font-family:var(--sans);font-size:calc(14px * var(--fs));font-weight:600;color:var(--text);
+  display:flex;align-items:center;gap:12px;
 }
 /* One group of settings: a heading, then its fields. */
 /* **Each section is its own containing block, and that is what makes the headings
@@ -1519,7 +1492,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
    apart at each end. */
 .settings-foot{
   flex:0 0 auto;border-top:1px solid var(--line);background:var(--surface);
-  padding:10px max(16px, calc((100% - var(--setw)) / 2));
+  padding:10px 26px;
   display:flex;align-items:center;gap:11px;
 }
 .settings-foot .settings-save{margin-left:auto}
@@ -1561,19 +1534,17 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
   border:1px solid var(--line);border-radius:var(--r);background:var(--bg);
 }
 .settings-diffdemo .ln{white-space:pre;word-break:normal}
-/* The tabs, a bar of their own under the title, padded to the same measure as the
-   card so the first tab starts where the labels do. */
+/* The tabs, a column on the sheet's left. */
 .settings-tabs{
-  flex:0 0 auto;display:flex;gap:4px;
-  padding:0 max(16px, calc((100% - var(--setw)) / 2));
-  border-bottom:1px solid var(--line);background:var(--surface);
+  grid-column:1;grid-row:2 / 4;display:flex;flex-direction:column;gap:2px;padding:0 8px 14px;
+  border-right:1px solid var(--line);background:var(--bg);
 }
 .settings-tab{
-  padding:11px 12px 9px;margin-bottom:-1px;border-bottom:2px solid transparent;
-  font-family:var(--mono);font-size:calc(12.5px * var(--fs));color:var(--faint-solid);
+  display:flex;align-items:center;height:30px;padding:0 10px;border-radius:var(--r);text-align:left;
+  font-family:var(--sans);font-size:calc(12.5px * var(--fs));color:var(--dim);
 }
-.settings-tab:hover{color:var(--text)}
-.settings-tab[aria-selected="true"]{color:var(--text);border-bottom-color:var(--text)}
+.settings-tab:hover{color:var(--text);background:var(--hover)}
+.settings-tab[aria-selected="true"]{color:var(--text);background:var(--raised);box-shadow:inset 0 0 0 1px var(--line)}
 .settings-tab:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
 /* How the open tab's settings apply, said once at its top instead of once for the
    whole pane in a paragraph that scrolled away. */
@@ -1586,97 +1557,46 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
    waiting. */
 .settings:is([data-tab="theme"],[data-tab="other"]) .settings-foot:not(:has(.settings-note.dirty)) .settings-save{visibility:hidden}
 
-/* **Settings is a sheet over the window now, not the centre column.** It took the
-   column so its close button would not sit beside the session's own, and that
-   still holds: the sheet covers the context bar too. What the column cost was the
-   tabs, a row of six across a pane that is narrower than the form, and a pane
-   that looked like a session's. The tabs are a column of their own on the left,
-   the form keeps the label column it was measured for, and the backdrop is a
-   shadow spread past the window's edge rather than an element, so nothing in
-   `settings.js` has to open or close a second thing. The legend keeps `.settings`
-   as it was: it is a reference you read beside the board, not a form. */
-#settings{
-  top:0;bottom:0;left:0;right:0;margin:auto;
-  width:min(1288px, calc(100vw - 64px));height:min(828px, calc(100vh - 112px));
-  display:grid;grid-template-columns:190px minmax(0,1fr);grid-template-rows:auto 1fr auto;
+/* The frame every sheet shares: settings, help and the finder. */
+.settings,.overlay.find{
   background:var(--surface);border:1px solid var(--line);border-radius:14px;overflow:hidden;
   box-shadow:0 30px 80px -10px rgba(0,0,0,.8),0 0 0 100vmax rgba(5,5,6,.55);
   animation:sheetpop .22s cubic-bezier(.2,.8,.2,1) both;
 }
-#settings[hidden]{display:none}
-/* Help is the same sheet, one column: a reference you open over the board and put
-   away with Esc, the way settings is. */
-#keyhelp{
-  top:0;bottom:0;left:0;right:0;margin:auto;
-  width:min(1288px, calc(100vw - 64px));height:min(828px, calc(100vh - 112px));
-  background:var(--surface);border:1px solid var(--line);border-radius:14px;overflow:hidden;
-  box-shadow:0 30px 80px -10px rgba(0,0,0,.8),0 0 0 100vmax rgba(5,5,6,.55);
-  animation:sheetpop .22s cubic-bezier(.2,.8,.2,1) both;
-}
-#keyhelp[hidden]{display:none}
-#keyhelp>.settings-title{
-  height:52px;padding:0 12px 0 20px;background:none;
-  font-family:var(--sans);font-size:calc(14px * var(--fs));font-weight:600;
-  letter-spacing:0;text-transform:none;color:var(--text);
-}
-#keyhelp .settings-x{display:inline-grid;place-items:center;width:28px;height:28px}
-/* The settings sheet's grid: the header across the top, the tabs in a column on
-   the left, the open half beside them and the licence notice under it. */
-#keyhelp:not([hidden]){display:grid;grid-template-columns:190px minmax(0,1fr);grid-template-rows:auto 1fr auto}
-#keyhelp>.settings-title{grid-column:1 / 3;border-bottom:1px solid var(--line)}
-#keyhelp>.settings-tabs{
-  grid-column:1;grid-row:2 / 4;display:flex;flex-direction:column;gap:2px;padding:12px 8px;
-  border-right:1px solid var(--line);background:var(--bg);
-}
-#keyhelp>.settings-card{grid-column:2;grid-row:2;padding:22px 26px 30px}
-#keyhelp>.legal{grid-column:2;grid-row:3}
-.help-sec[hidden]{display:none}
 @keyframes sheetpop{from{opacity:0;transform:translateY(-6px) scale(.98)}to{opacity:1;transform:none}}
-#settings>.settings-title{
-  grid-column:1;grid-row:1;height:auto;padding:16px 18px 12px;
-  border-bottom:0;border-right:1px solid var(--line);background:var(--bg);
-  font-family:var(--sans);font-size:calc(14px * var(--fs));font-weight:600;
-  letter-spacing:0;text-transform:none;color:var(--text);
-}
+/* Settings: the title heads the nav column, the form fills the right. */
+#settings>.settings-title{grid-column:1;grid-row:1;padding:16px 18px 12px;border-right:1px solid var(--line);background:var(--bg)}
 /* Out of the nav and into the sheet's corner, where a close sits on any sheet. */
 #settings .settings-x{
   position:absolute;top:10px;right:10px;z-index:2;
   display:inline-grid;place-items:center;width:28px;height:28px;border-radius:var(--r);
 }
-#settings>.settings-tabs{
-  grid-column:1;grid-row:2 / 4;flex-direction:column;gap:2px;padding:0 8px 14px;
-  border-bottom:0;border-right:1px solid var(--line);background:var(--bg);
-}
-:is(#settings,#keyhelp) .settings-tab{
-  display:flex;align-items:center;height:30px;padding:0 10px;margin:0;border:0;
-  border-radius:var(--r);text-align:left;
-  font-family:var(--sans);font-size:calc(12.5px * var(--fs));color:var(--dim);
-}
-:is(#settings,#keyhelp) .settings-tab:hover{color:var(--text);background:var(--hover)}
-/* The group headings: App, then one per open project. A project heading is a
-   button, and the chosen one reads as the heading its tabs hang under. */
-#settings .settings-tgroup{
-  display:flex;align-items:center;gap:7px;padding:12px 10px 4px;
-  font-family:var(--sans);font-size:calc(10.5px * var(--fs));font-weight:600;
-  letter-spacing:.06em;text-transform:uppercase;color:var(--ghost);
-}
-#settings .settings-tgroup:first-child{padding-top:2px}
-#settings .settings-co{width:100%;text-align:left;border-radius:var(--r);text-transform:none;letter-spacing:0;font-size:calc(12px * var(--fs))}
-#settings div.settings-co{color:var(--dim)}
-#settings button.settings-co:hover{color:var(--text);background:var(--hover)}
-#settings .settings-band{width:6px;height:6px;border-radius:2px;flex:0 0 auto}
-#settings .settings-projects{display:flex;flex-direction:column;gap:2px}
-#settings .settings-projects>.settings-tab{padding-left:18px}
-:is(#settings,#keyhelp) .settings-tab[aria-selected="true"]{
-  color:var(--text);background:var(--raised);box-shadow:inset 0 0 0 1px var(--line);
-}
-#settings>.settings-card{grid-column:2;grid-row:1 / 3;padding:22px 26px 40px}
+#settings>.settings-card{grid-column:2;grid-row:1 / 3}
+#settings>.settings-foot{grid-column:2;grid-row:3}
 /* The sticky heading's offset is the card's top padding, and its band the ground
    it scrolls over; both moved with the sheet. */
 #settings .settings-sec>.settings-group{top:-22px;background:var(--surface)}
-#settings .settings-in,#settings .settings-select{border-radius:var(--r)}
-#settings>.settings-foot{grid-column:2;grid-row:3;padding:10px 26px}
-#settings .settings-save{border-radius:var(--r)}
+/* The group headings: App, then one per open project. Layout here; the spaced
+   capitals are the App label's alone, so a project heading resets nothing. */
+.settings-tgroup{display:flex;align-items:center;gap:7px;padding:12px 10px 4px;font-family:var(--sans);font-weight:600}
+.settings-tgroup:first-child{padding-top:2px}
+span.settings-tgroup{font-size:calc(10.5px * var(--fs));letter-spacing:.06em;text-transform:uppercase;color:var(--ghost)}
+/* A project heading: a button for the others, a plain heading for the open one.
+   A little air above it, so a project reads as its own group under App. */
+.settings-co{width:100%;margin-top:8px;text-align:left;border-radius:var(--r);font-size:calc(12px * var(--fs))}
+div.settings-co{color:var(--dim)}
+button.settings-co{color:var(--ghost)}
+button.settings-co:hover{color:var(--text);background:var(--hover)}
+.settings-band{width:6px;height:6px;border-radius:2px;flex:0 0 auto}
+.settings-projects{display:flex;flex-direction:column;gap:2px}
+.settings-projects>.settings-tab{padding-left:18px}
+/* Help: one header across the top, the tabs and the open half below it. */
+#keyhelp>.settings-title{grid-column:1 / 3;height:52px;padding:0 12px 0 20px;border-bottom:1px solid var(--line)}
+#keyhelp .settings-x{display:inline-grid;place-items:center;width:28px;height:28px}
+#keyhelp>.settings-tabs{padding:12px 8px}
+#keyhelp>.settings-card{grid-column:2;grid-row:2;padding-bottom:30px}
+#keyhelp>.legal{grid-column:2;grid-row:3}
+.help-sec[hidden]{display:none}
 
 /* ---------- context menu ---------- */
 /* Right-click on a session row. Above the toast, because it is the thing you
@@ -2079,7 +1999,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 /* Not while the pointer is on one of its buttons: the row is a link to the PR and
    the button is a different press, and both lighting up at once said they were
    one target. */
-.prrow:hover:not(:has(.pract:hover,.jump:hover)){background:var(--hover)}
+.prrow:hover:not(:has(button:hover)){background:var(--hover)}
 /* Already being handled. The teal dot and the jump chip say that, so this steps
    the text back one level instead of fading the whole row: at 55% opacity the
    text fell under 3:1 against the hover background and read as disappearing. */
@@ -2099,15 +2019,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
    than amber: amber is "this needs you", and going to a session is only an offer. */
 /* The Fix button's twin (`.pract`): raised, the interface font, and an icon, here
    in the neutral colour so the amber stays on the verb that needs you. */
-.prrow .jump{
-  display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 8px 0 6px;
-  font-family:var(--sans);font-size:calc(11.5px * var(--fs));font-weight:500;color:var(--text);
-  background:var(--raised);border:1px solid var(--line);border-radius:var(--r);
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.04);
-  flex:0 0 auto;white-space:nowrap;transition:background .15s;
-}
 .prrow .jump .practic{color:var(--dim)}
-.prrow .jump:hover{background:var(--line-soft)}
 /* The session you are already in: pressed in rather than raised, with its icon in
    the working blue. A state, not an offer, and it has to read without a hover,
    since the question it answers is asked *before* you press it. */
@@ -2195,19 +2107,23 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 /* Raised like the overlay buttons, with the colour on the icon alone (see
    `prAction`). Hover lifts the fill, never the border: a light ring read as a
    second, louder button. */
-.pract{
-  display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 8px 0 6px;
+/* The board's one verb button (`core.iconLabel`): Fix and Handle on a PR row,
+   Session beside them, Rebase and Abort on the behind row, Continue on the
+   restart card. One rule, so the four cannot drift apart again. */
+.pract,.dvbtn,.prrow .jump,.railnudge-go{
+  display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 8px;
   font-family:var(--sans);font-size:calc(11.5px * var(--fs));font-weight:500;color:var(--text);
   background:var(--raised);border:1px solid var(--line);border-radius:var(--r);
   box-shadow:inset 0 1px 0 rgba(255,255,255,.04);
-  flex:0 0 auto;white-space:nowrap;transition:background .15s;
+  flex:0 0 auto;white-space:nowrap;cursor:pointer;transition:background .15s;
 }
+:is(.pract,.dvbtn,.jump,.railnudge-go):has(.practic){padding-left:6px}
+:is(.pract,.dvbtn,.prrow .jump,.railnudge-go):hover:not(:disabled){background:var(--line-soft)}
+:is(.pract,.dvbtn):disabled{color:var(--ghost);cursor:default}
 .practic{display:inline-flex;color:var(--attn);font-size:calc(12px * var(--fs))}
-/* Lighter than the button at rest, never darker: the row under it lights up on
-   hover too (`--hover`), and a button falling to that same fill read as the row
-   rising and the button sinking into it. */
-.pract:hover:not(:disabled){background:var(--line-soft)}
-.pract:disabled{color:var(--ghost);cursor:default}
+/* The hover above is lighter than the button at rest, never darker: the row under
+   it lights up on hover too (`--hover`), and a button falling to that same fill
+   read as the row rising and the button sinking into it. */
 .pract.running{cursor:pointer}
 .pract.running .practic{color:var(--auto)}
 
@@ -2278,22 +2194,14 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
   font-family:var(--sans);font-size:calc(12px * var(--fs));color:var(--dim);flex:0 0 auto;
 }
 .dvic{display:inline-flex;color:var(--attn);font-size:calc(13px * var(--fs))}
-.diverge.bad .dvic{color:var(--bad)}
+.diverge.bad :is(.dvic,.practic){color:var(--bad)}
 /* Wraps rather than pushing the button under it: the pane is 300px wide and the
    sentence plus Rebase is not, and two lines of words beside a button read as one
    row where a button alone on a line read as a second one. */
 .dvtext{flex:1 1 140px;min-width:0;line-height:1.35}
 .dvtext b{color:var(--text);font-weight:500}
 /* The PR rows' button (`.pract`), so a verb looks the same wherever it is. */
-.dvbtn{
-  display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 8px;flex:0 0 auto;
-  font-family:var(--sans);font-size:calc(11.5px * var(--fs));font-weight:500;color:var(--text);
-  background:var(--raised);border:1px solid var(--line);border-radius:var(--r);
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.04);transition:background .15s;
-}
-.dvbtn:has(.dvic){padding-left:6px}
-.dvbtn:hover:not(:disabled){background:var(--line-soft)}
-.dvbtn:disabled{color:var(--ghost);cursor:default}
+
 
 /* ---------- opening a project ---------- */
 /* `46px` is the board's own top row (`grid-template-rows:46px 1fr`), left
@@ -2446,12 +2354,7 @@ select.opfield,input.opfield{appearance:none}
    spread past the window's edge, as on settings, so `find.js` opens and closes
    one element as it always did. The index and the file under it keep their
    split: only the frame moved. */
-.overlay.find{
-  gap:0;top:64px;bottom:64px;left:0;right:0;margin:0 auto;width:min(1288px, calc(100vw - 64px));
-  background:var(--surface);border:1px solid var(--line);border-radius:14px;overflow:hidden;
-  box-shadow:0 30px 80px -10px rgba(0,0,0,.8),0 0 0 100vmax rgba(5,5,6,.55);
-  animation:sheetpop .22s cubic-bezier(.2,.8,.2,1) both;
-}
+.overlay.find{gap:0;top:64px;bottom:64px;left:0;right:0;margin:0 auto;width:min(1288px, calc(100vw - 64px))}
 .overlay.find>.ov-head{height:52px;gap:10px;padding:0 12px 0 14px;background:none}
 .fnq,.fnglob{
   font-family:var(--code);font-size:calc(12px * var(--fs));color:var(--text);

@@ -206,11 +206,12 @@ function trimTail(/** @type {string} */ run) {
  *           | { kind: 'ref', start: number, end: number, ref: string })[]}
  */
 export function linksIn(text, opts = {}) {
+  /** @typedef {{ start: number, end: number }} Span */
+  const free = (/** @type {Span[]} */ taken) => (/** @type {Span} */ p) =>
+    !taken.some((u) => p.start < u.end && u.start < p.end);
   const urls = urlsIn(text);
-  const paths = pathsIn(text).filter((p) => !urls.some((u) => p.start < u.end && u.start < p.end));
-  const taken = [...urls, ...paths];
-  const refs = refsIn(text, opts.story).filter((r) => !taken.some((u) => r.start < u.end && u.start < r.end));
-  return [...taken, ...refs].sort((a, b) => a.start - b.start);
+  const taken = [...urls, ...pathsIn(text).filter(free(urls))];
+  return [...taken, ...refsIn(text, opts.story).filter(free(taken))].sort((a, b) => a.start - b.start);
 }
 
 /** The refs in `text`: `#36356`, and `sc-54841` when `story` is the prefix a
@@ -234,13 +235,24 @@ export function refsIn(text, story = null) {
     out.push({ kind: 'ref', start, end: start + m[0].length, ref: m[0] });
   };
   for (const m of text.matchAll(/(?<![\w&/#])#\d{1,12}(?![\w-])/g)) push(m);
-  const prefix = (story ?? '').trim();
-  if (prefix) {
-    const escaped = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    for (const m of text.matchAll(new RegExp(`(?<![\\w-])${escaped}\\d{1,12}(?![\\w-])`, 'gi'))) push(m);
-  }
+  const re = storyRe((story ?? '').trim());
+  if (re) for (const m of text.matchAll(re)) push(m);
   return out.sort((a, b) => a.start - b.start);
 }
+
+/** The story ref pattern for `prefix`, built once per prefix: a terminal asks for
+ *  it on every row it links. `matchAll` copies a global regex, so sharing one is safe. */
+const storyRe = (() => {
+  /** @type {{ prefix: string, re: RegExp | null }} */
+  let last = { prefix: '', re: null };
+  return (/** @type {string} */ prefix) => {
+    if (prefix !== last.prefix) {
+      const escaped = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      last = { prefix, re: prefix ? new RegExp(`(?<![\\w-])${escaped}\\d{1,12}(?![\\w-])`, 'gi') : null };
+    }
+    return last.re;
+  };
+})();
 
 /** Whether a row carries on a link the row above ran out of room for, when the
  *  break between them is a real line break rather than the terminal's own wrap.

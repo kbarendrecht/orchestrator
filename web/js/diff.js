@@ -6,7 +6,7 @@
 // knows about strings and nothing about changesets. Three other modules wanted
 // it and none of them wanted a diff.
 
-import { $, FORGE_LABEL, activeWorkspaceId, borrowFocus, call, confirmBox, currentSession, el, get, icon, openMenu, pending, prForWorkspace, returnFocus, snap, reason, toast, paintSig, reconcile, unchanged, workspaceById } from './core.js';
+import { $, FORGE_LABEL, activeWorkspaceId, borrowFocus, call, confirmBox, currentSession, el, get, icon, iconLabel, openMenu, pending, prForWorkspace, returnFocus, snap, reason, toast, paintSig, reconcile, unchanged, workspaceById } from './core.js';
 import * as Editor from './editor.js';
 import { changeBlocks, revertedText } from './revert.js';
 import { charRanges, langFor, lineSegments } from './source.js';
@@ -139,10 +139,7 @@ function renderDivergence(/** @type {import('../snapshot').WorkspaceView} */ w) 
  *  colour beside the word. Only the row's own verb gets an icon; the bank's other
  *  three are plain words, so the one that undoes the state stands out. */
 function dvButton(/** @type {string} */ label, /** @type {string[]} */ ...ds) {
-  const b = el('button', 'dvbtn');
-  if (ds.length) b.appendChild(icon('dvic', 1.4, ...ds));
-  b.append(label);
-  return b;
+  return iconLabel('button', 'dvbtn', label, ...ds);
 }
 
 /** `3 changed files`, or `1 changed file`. */
@@ -518,30 +515,51 @@ const MODES = {
 /** Same cap as the daemon's `COMMITS_CAP`; it sends one more when there are more. */
 const COMMITS_CAP = 50;
 
-/** The commits the header lists, fetched again when a count it depends on moves.
- *  `null` while the first answer is in the air, and always for `head`, which has
- *  none.
+/** @template T
+ *  @typedef {{ key: string | null, ws: string | null, val: T | null }} Fetched */
+
+/** A fetch the changes pane keeps one answer of: asked again when `key` moves,
+ *  with the previous answer left up while the newer one loads, so an edit does
+ *  not blank the list. `null` until the first answer for `ws`, which names the
+ *  workspace and the mode, so a switch never shows one mode's list under another.
  *
- *  @type {{ key: string | null, ws: string | null, list: import('../repo').Commit[] | null }} */
-const commitList = { key: null, ws: null, list: null };
-function commitsOf(/** @type {import('../snapshot').WorkspaceView} */ w) {
-  if (diffState.base === 'head') return null;
-  const key = paintSig([w.id, diffState.base, w.ahead, w.unpushed, w.changed_since]);
-  if (commitList.key !== key) {
-    commitList.key = key;
-    if (commitList.ws !== w.id) commitList.list = null;
-    const q = new URLSearchParams({ workspace: w.id, base: diffState.base });
-    get(`/api/diff/commits?${q}`).then((list) => {
-      if (commitList.key !== key) return;
-      commitList.ws = w.id;
-      commitList.list = list;
+ *  @template T
+ *  @param {Fetched<T>} slot
+ *  @param {string} ws
+ *  @param {string} key
+ *  @param {string} url
+ *  @param {(e: unknown) => T | null} fail what the slot holds when the fetch fails
+ *  @returns {T | null} */
+function fetched(slot, ws, key, url, fail) {
+  if (slot.key !== key) {
+    slot.key = key;
+    if (slot.ws !== ws) slot.val = null;
+    get(url).then((v) => {
+      if (slot.key !== key) return;
+      slot.ws = ws;
+      slot.val = v;
       renderFiles();
-    }, () => {
-      // Only the tooltip goes without: the list and the counts are the snapshot's.
-      if (commitList.key === key) commitList.list = [];
+    }, (e) => {
+      if (slot.key === key) slot.val = fail(e);
     });
   }
-  return commitList.ws === w.id ? commitList.list : null;
+  return slot.ws === ws ? slot.val : null;
+}
+
+/** @param {unknown} e */
+const toastFail = (e) => { toast(reason(e), true); return null; };
+
+/** The commits the header lists, fetched again when a count it depends on moves.
+ *  Always `null` for `head`, which has none.
+ *
+ *  @type {Fetched<import('../repo').Commit[]>} */
+const commitList = { key: null, ws: null, val: null };
+function commitsOf(/** @type {import('../snapshot').WorkspaceView} */ w) {
+  if (diffState.base === 'head') return null;
+  const q = new URLSearchParams({ workspace: w.id, base: diffState.base });
+  // Only the tooltip goes without on a failure: the list and the counts are the snapshot's.
+  return fetched(commitList, `${w.id} ${diffState.base}`, paintSig([w.id, diffState.base, w.ahead, w.unpushed, w.changed_since]),
+    `/api/diff/commits?${q}`, () => []);
 }
 
 // Kept short: the right header also carries the title and the refresh control,
@@ -606,29 +624,12 @@ try {
  *  again whenever this workspace's own measurements move. `unpushed` is in the
  *  key because a push changes nothing else the snapshot says about the tree.
  *
- *  @type {{ key: string | null, ws: string | null, summary: import('../repo').DiffSummary | null }} */
-const pushed = { key: null, ws: null, summary: null };
-
-/** The fetched summary for `w` in the current mode, or `null` while the first one
- *  is in the air. The previous answer stays up while a newer one loads, so an edit
- *  does not blank the list. */
+ *  @type {Fetched<import('../repo').DiffSummary>} */
+const pushed = { key: null, ws: null, val: null };
 function listedSummary(/** @type {import('../snapshot').WorkspaceView} */ w) {
-  const key = paintSig([w.id, diffState.base, w.changed, w.changed_since, w.unpushed, w.branch]);
-  if (pushed.key !== key) {
-    pushed.key = key;
-    if (pushed.ws !== w.id) pushed.summary = null;
-    const q = new URLSearchParams({ workspace: w.id, base: diffState.base });
-    get(`/api/diff?${q}`).then((sum) => {
-      if (pushed.key !== key) return;
-      pushed.ws = w.id;
-      pushed.summary = sum;
-      renderFiles();
-    }, (e) => {
-      if (pushed.key !== key) return;
-      toast(reason(e), true);
-    });
-  }
-  return pushed.ws === w.id ? pushed.summary : null;
+  const q = new URLSearchParams({ workspace: w.id, base: diffState.base });
+  return fetched(pushed, `${w.id} ${diffState.base}`, paintSig([w.id, diffState.base, w.changed, w.changed_since, w.unpushed, w.branch]),
+    `/api/diff?${q}`, toastFail);
 }
 
 /** An idle workspace's changed files, which the snapshot leaves out to stay
