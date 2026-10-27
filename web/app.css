@@ -1179,6 +1179,7 @@ body:has(.overlay.find.on, #settings:not([hidden]), #keyhelp:not([hidden])) .col
    drag never selects the text it passes over. */
 body.col-resizing{cursor:col-resize;user-select:none}
 body.row-resizing{cursor:row-resize;user-select:none}
+body.sheet-resizing{cursor:var(--sheetcur);user-select:none}
 
 /* ---------- settings ---------- */
 /* **A sheet over the whole window: settings and help.** It took the centre column
@@ -2354,7 +2355,24 @@ select.opfield,input.opfield{appearance:none}
    spread past the window's edge, as on settings, so `find.js` opens and closes
    one element as it always did. The index and the file under it keep their
    split: only the frame moved. */
-.overlay.find{gap:0;top:64px;bottom:64px;left:0;right:0;margin:0 auto;width:min(1288px, calc(100vw - 64px))}
+.overlay.find{
+  gap:0;inset:0;margin:auto;
+  width:var(--findw, min(1288px, calc(100vw - 64px)));height:var(--findh, calc(100vh - 128px));
+  min-width:min(560px, calc(100vw - 32px));min-height:min(320px, calc(100vh - 32px));
+  max-width:calc(100vw - 32px);max-height:calc(100vh - 32px);
+}
+/* The edges and corners `find.dragSize` drags. Inside the frame rather than
+   astride it, because the frame clips (`overflow:hidden`, for the radius). */
+.fnedge{position:absolute;z-index:3}
+.fnedge[data-edge="n"],.fnedge[data-edge="s"]{left:12px;right:12px;height:5px;cursor:ns-resize}
+.fnedge[data-edge="e"],.fnedge[data-edge="w"]{top:12px;bottom:12px;width:5px;cursor:ew-resize}
+.fnedge[data-edge="n"]{top:0}.fnedge[data-edge="s"]{bottom:0}
+.fnedge[data-edge="e"]{right:0}.fnedge[data-edge="w"]{left:0}
+.fnedge:is([data-edge="ne"],[data-edge="nw"],[data-edge="se"],[data-edge="sw"]){width:12px;height:12px}
+.fnedge[data-edge="ne"]{top:0;right:0;cursor:nesw-resize}
+.fnedge[data-edge="sw"]{bottom:0;left:0;cursor:nesw-resize}
+.fnedge[data-edge="nw"]{top:0;left:0;cursor:nwse-resize}
+.fnedge[data-edge="se"]{bottom:0;right:0;cursor:nwse-resize}
 .overlay.find>.ov-head{height:52px;gap:10px;padding:0 12px 0 14px;background:none}
 .fnq,.fnglob{
   font-family:var(--code);font-size:calc(12px * var(--fs));color:var(--text);

@@ -676,9 +676,71 @@ function dragSplit() {
   if (saved) document.documentElement.style.setProperty(SPLIT.prop, `${Math.round(saved)}px`);
 }
 
+const SIZE = { key: 'orch.findSize', minW: 560, minH: 320 };
+
+/** Drag the sheet's edges and corners to size it.
+ *
+ *  **The sheet stays centred**, so an edge moves twice what the pointer does on
+ *  the axis it sizes: the opposite edge comes along by the same amount, and the
+ *  edge under the pointer stays under it. A double-click on any edge forgets the
+ *  size, the way the split's handle forgets the split.
+ */
+function dragSize() {
+  const sheet = $('fnoverlay');
+  const root = document.documentElement.style;
+  for (const edge of ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw']) {
+    const h = el('div', 'fnedge');
+    h.dataset.edge = edge;
+    sheet.appendChild(h);
+  }
+  sheet.addEventListener('mousedown', (ev) => {
+    const e = /** @type {MouseEvent} */ (ev);
+    const edge = /** @type {HTMLElement} */ (e.target).closest?.('.fnedge')?.getAttribute('data-edge');
+    if (!edge || e.button !== 0) return;
+    e.preventDefault();
+    const start = sheet.getBoundingClientRect();
+    const sx = edge.includes('e') ? 2 : edge.includes('w') ? -2 : 0;
+    const sy = edge.includes('s') ? 2 : edge.includes('n') ? -2 : 0;
+    document.body.style.setProperty('--sheetcur', getComputedStyle(/** @type {Element} */ (e.target)).cursor);
+    document.body.classList.add('sheet-resizing');
+    const move = (/** @type {MouseEvent} */ m) => {
+      // The stylesheet's min and max clamp what is set here, so a drag past
+      // either end stops the sheet rather than turning it inside out.
+      if (sx) root.setProperty('--findw', `${Math.round(Math.max(SIZE.minW, start.width + sx * (m.clientX - e.clientX)))}px`);
+      if (sy) root.setProperty('--findh', `${Math.round(Math.max(SIZE.minH, start.height + sy * (m.clientY - e.clientY)))}px`);
+    };
+    const done = () => {
+      window.removeEventListener('mousemove', move);
+      document.body.classList.remove('sheet-resizing');
+      clampSplit();
+      const r = sheet.getBoundingClientRect();
+      try {
+        localStorage.setItem(SIZE.key, JSON.stringify({ w: Math.round(r.width), h: Math.round(r.height) }));
+      } catch (err) { /* private mode: the drag still worked for this session */ }
+    };
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', done, { once: true });
+  });
+  sheet.addEventListener('dblclick', (ev) => {
+    if (!(/** @type {HTMLElement} */ (ev.target).closest?.('.fnedge'))) return;
+    root.removeProperty('--findw');
+    root.removeProperty('--findh');
+    clampSplit();
+    try {
+      localStorage.removeItem(SIZE.key);
+    } catch (err) { /* nothing to forget */ }
+  });
+  try {
+    const saved = JSON.parse(localStorage.getItem(SIZE.key) || 'null');
+    if (saved?.w) root.setProperty('--findw', `${saved.w}px`);
+    if (saved?.h) root.setProperty('--findh', `${saved.h}px`);
+  } catch (err) { /* no storage, or not ours: the default size */ }
+}
+
 /** Wire the chrome. Called once, at boot. */
 export function init() {
   dragSplit();
+  dragSize();
   const box = /** @type {HTMLInputElement} */ ($('fnq'));
   box.oninput = () => run();
   /** @type {HTMLInputElement} */ ($('fnglob')).oninput = () => run();
