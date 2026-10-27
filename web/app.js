@@ -1293,6 +1293,34 @@ Find.init();
 FileView.init();
 $('addshell').onclick = newShell;
 $('keyhelpx').onclick = () => closeLegend();
+/* The help's two halves, driven the way the settings tabs are: a click, or the
+   arrow keys along the column. */
+{
+  const tabs = /** @type {HTMLElement[]} */ ([...document.querySelectorAll('#keyhelp [data-help].settings-tab')]);
+  const show = (/** @type {string} */ which) => {
+    for (const t of tabs) {
+      const on = t.dataset.help === which;
+      t.setAttribute('aria-selected', String(on));
+      t.setAttribute('tabindex', on ? '0' : '-1');
+    }
+    for (const sec of /** @type {HTMLElement[]} */ ([...document.querySelectorAll('#keyhelp .help-sec')])) {
+      sec.hidden = sec.dataset.help !== which;
+    }
+    /** @type {HTMLElement} */ ($('keyhelp').querySelector('.settings-card')).scrollTop = 0;
+  };
+  for (const [i, t] of tabs.entries()) {
+    t.onclick = () => show(t.dataset.help ?? 'keys');
+    t.onkeydown = (e) => {
+      const step = e.key === 'ArrowDown' || e.key === 'ArrowRight' ? 1 : e.key === 'ArrowUp' || e.key === 'ArrowLeft' ? -1 : 0;
+      if (!step) return;
+      e.preventDefault();
+      const next = tabs[(i + step + tabs.length) % tabs.length];
+      if (!next) return;
+      next.focus();
+      show(next.dataset.help ?? 'keys');
+    };
+  }
+}
 /* A check now, rather than at the next hourly one. A newer release raises the
    usual bar with its Upgrade button, so the button here only has to say what it
    found — including that it could not tell, which is not "up to date". */

@@ -1619,6 +1619,17 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
   letter-spacing:0;text-transform:none;color:var(--text);
 }
 #keyhelp .settings-x{display:inline-grid;place-items:center;width:28px;height:28px}
+/* The settings sheet's grid: the header across the top, the tabs in a column on
+   the left, the open half beside them and the licence notice under it. */
+#keyhelp:not([hidden]){display:grid;grid-template-columns:190px minmax(0,1fr);grid-template-rows:auto 1fr auto}
+#keyhelp>.settings-title{grid-column:1 / 3;border-bottom:1px solid var(--line)}
+#keyhelp>.settings-tabs{
+  grid-column:1;grid-row:2 / 4;display:flex;flex-direction:column;gap:2px;padding:12px 8px;
+  border-right:1px solid var(--line);background:var(--bg);
+}
+#keyhelp>.settings-card{grid-column:2;grid-row:2;padding:22px 26px 30px}
+#keyhelp>.legal{grid-column:2;grid-row:3}
+.help-sec[hidden]{display:none}
 @keyframes sheetpop{from{opacity:0;transform:translateY(-6px) scale(.98)}to{opacity:1;transform:none}}
 #settings>.settings-title{
   grid-column:1;grid-row:1;height:auto;padding:16px 18px 12px;
@@ -1635,12 +1646,12 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
   grid-column:1;grid-row:2 / 4;flex-direction:column;gap:2px;padding:0 8px 14px;
   border-bottom:0;border-right:1px solid var(--line);background:var(--bg);
 }
-#settings .settings-tab{
+:is(#settings,#keyhelp) .settings-tab{
   display:flex;align-items:center;height:30px;padding:0 10px;margin:0;border:0;
   border-radius:var(--r);text-align:left;
   font-family:var(--sans);font-size:calc(12.5px * var(--fs));color:var(--dim);
 }
-#settings .settings-tab:hover{color:var(--text);background:var(--hover)}
+:is(#settings,#keyhelp) .settings-tab:hover{color:var(--text);background:var(--hover)}
 /* The group headings: App, then one per open project. A project heading is a
    button, and the chosen one reads as the heading its tabs hang under. */
 #settings .settings-tgroup{
@@ -1655,7 +1666,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 #settings .settings-band{width:6px;height:6px;border-radius:2px;flex:0 0 auto}
 #settings .settings-projects{display:flex;flex-direction:column;gap:2px}
 #settings .settings-projects>.settings-tab{padding-left:18px}
-#settings .settings-tab[aria-selected="true"]{
+:is(#settings,#keyhelp) .settings-tab[aria-selected="true"]{
   color:var(--text);background:var(--raised);box-shadow:inset 0 0 0 1px var(--line);
 }
 #settings>.settings-card{grid-column:2;grid-row:1 / 3;padding:22px 26px 40px}

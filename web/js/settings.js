@@ -687,7 +687,7 @@ function currentTab() {
 }
 
 function showTab(/** @type {string} */ tab) {
-  for (const b of document.querySelectorAll('.settings-tab')) {
+  for (const b of document.querySelectorAll('#settings .settings-tab')) {
     const on = /** @type {HTMLElement} */ (b).dataset.tab === tab;
     b.setAttribute('aria-selected', String(on));
     b.setAttribute('tabindex', on ? '0' : '-1');
@@ -1044,7 +1044,7 @@ function setupSettings() {
   projectTabs = /** @type {HTMLElement[]} */ ([...document.querySelectorAll('.settings-tab[data-project]')]);
   /* Up and down as well as left and right, now the tabs are a column. The list is
      read at the key press, because `renderProjects` moves the project tabs. */
-  for (const b of /** @type {HTMLElement[]} */ ([...document.querySelectorAll('.settings-tab')])) {
+  for (const b of /** @type {HTMLElement[]} */ ([...document.querySelectorAll('#settings .settings-tab')])) {
     b.onclick = () => showTab(b.dataset.tab || 'theme');
     b.onkeydown = (e) => {
       const step = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1
