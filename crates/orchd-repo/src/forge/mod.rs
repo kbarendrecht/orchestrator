@@ -93,7 +93,7 @@ pub trait Forge: Send + Sync + Clone + 'static {
 }
 
 /// Where a ref an agent printed points: `#36356` on the forge, or a story ref
-/// like `sc-54841` through the configured [`StoryLink`]. `None` for anything
+/// like `sc-54841` through the configured [`StoryLink`](crate::config::StoryLink). `None` for anything
 /// else, including a story ref with no usable link, so the caller can refuse
 /// rather than open a guess.
 ///
