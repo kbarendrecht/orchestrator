@@ -2058,7 +2058,10 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
   display:flex;align-items:center;gap:8px;padding:4px 12px 4px 16px;width:100%;
   position:relative;text-decoration:none;color:inherit;
 }
-.prrow:hover{background:var(--hover)}
+/* Not while the pointer is on one of its buttons: the row is a link to the PR and
+   the button is a different press, and both lighting up at once said they were
+   one target. */
+.prrow:hover:not(:has(.pract:hover,.jump:hover)){background:var(--hover)}
 /* Already being handled. The teal dot and the jump chip say that, so this steps
    the text back one level instead of fading the whole row: at 55% opacity the
    text fell under 3:1 against the hover background and read as disappearing. */
