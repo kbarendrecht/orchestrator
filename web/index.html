@@ -145,12 +145,15 @@
         <span class="ov-path" id="ovpath"></span>
         <div class="ov-nav">
           <span class="ov-count" id="ovcount"></span>
-          <button class="head-btn" id="ovprev"><span data-mod>Prev MOD &#8592;</span></button>
-          <button class="head-btn" id="ovnext"><span data-mod>Next MOD &#8594;</span></button>
+          <button class="head-btn" id="ovprev"><span data-mod>Prev <kbd>MOD &#8592;</kbd></span></button>
+          <button class="head-btn" id="ovnext"><span data-mod>Next <kbd>MOD &#8594;</kbd></span></button>
           <button class="head-btn" id="ovedit">Edit</button>
-          <button class="head-btn" id="ovsave" hidden><span data-mod>Save MOD S</span></button>
-          <button class="head-btn" id="ovmode">Split</button>
-          <button class="head-btn" id="ovclose">Close ESC</button>
+          <button class="head-btn" id="ovsave" hidden><span data-mod>Save <kbd>MOD S</kbd></span></button>
+          <!-- Both modes on the control, the open one marked, rather than one
+               button naming the mode it would switch *to* — which read as the
+               mode you were in. -->
+          <button class="head-btn seg" id="ovmode" aria-label="Split or unified"><span data-v="split">Split</span><span data-v="unified">Unified</span></button>
+          <button class="head-btn" id="ovclose">Close <kbd>Esc</kbd></button>
         </div>
       </div>
       <div class="diff" id="diffbody"></div>
@@ -177,7 +180,7 @@
           <button class="fntg" id="fncase" title="Match the case written. Off is smart case: an upper-case letter already makes the search sensitive">Aa</button>
           <button class="fntg" id="fnre" title="The query is a regular expression">.*</button>
           <button class="fntg" id="fnword" title="Whole words only">W</button>
-          <button class="head-btn" id="fnclose">Close ESC</button>
+          <button class="head-btn" id="fnclose">Close <kbd>Esc</kbd></button>
         </div>
       </div>
       <div class="fnhits" id="fnhits"></div>
@@ -193,9 +196,9 @@
         <span class="ov-count" id="fnwhere"></span>
         <!-- The same file, on its own, where it gets the whole window and the
              markdown mode. The index above is for finding; this is for reading. -->
-        <button class="head-btn" id="fnopen">Open ⏎</button>
+        <button class="head-btn" id="fnopen">Open <kbd>⏎</kbd></button>
         <button class="head-btn" id="fnedit">Edit</button>
-        <button class="head-btn" id="fnsave" hidden><span data-mod>Save MOD S</span></button>
+        <button class="head-btn" id="fnsave" hidden><span data-mod>Save <kbd>MOD S</kbd></span></button>
       </div>
       <div class="fnsrc" id="fnsrc"></div>
       <div class="fnfoot" id="fnfoot"></div>
@@ -218,8 +221,8 @@
              rather than what you are looking at. -->
         <button class="head-btn" id="fvmode" hidden>Source</button>
         <button class="head-btn" id="fvedit">Edit</button>
-        <button class="head-btn" id="fvsave" hidden><span data-mod>Save MOD S</span></button>
-        <button class="head-btn" id="fvclose">Close ESC</button>
+        <button class="head-btn" id="fvsave" hidden><span data-mod>Save <kbd>MOD S</kbd></span></button>
+        <button class="head-btn" id="fvclose">Close <kbd>Esc</kbd></button>
       </div>
       <!-- Find in the file on screen, under the header rather than in it: the
            header says which file this is, and this asks a question about what is
@@ -243,7 +246,7 @@
         <button class="fntg" id="fvseekre" title="The query is a regular expression">.*</button>
         <button class="head-btn" id="fvseekprev" title="Previous match (Shift Enter)">&#8593;</button>
         <button class="head-btn" id="fvseeknext" title="Next match (Enter)">&#8595;</button>
-        <button class="head-btn" id="fvseekx">Close ESC</button>
+        <button class="head-btn" id="fvseekx">Close <kbd>Esc</kbd></button>
       </div>
       <div class="fnsrc" id="fvsrc"></div>
     </div>

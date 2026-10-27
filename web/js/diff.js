@@ -264,7 +264,13 @@ function fileRow(/** @type {import('../snapshot').WorkspaceView} */ w, /** @type
        `.fst.R` had only ever passed by the legend's MOD+Shift+R. */
     row.appendChild(el('span', 'fst ' + letter, letter));
     const n = el('span', 'fname');
-    n.textContent = '\u202a' + f.path;
+    /* The directory dim and the name in the text colour, so a column of paths
+       scans by name. The embedding mark leads the first part: the cell is
+       right-to-left so a long path loses its *start*, and the mark keeps the
+       characters in order across both parts. A whole untracked directory
+       (`src/`) is all name. */
+    const cut = f.path.lastIndexOf('/', f.path.length - 2);
+    n.append(el('i', null, '\u202a' + f.path.slice(0, cut + 1)), f.path.slice(cut + 1));
     n.title = f.old_path ? `${f.old_path} → ${f.path}` : f.path;
     row.appendChild(n);
     const nums = el('span', 'dfnum');
@@ -425,9 +431,14 @@ function renderFiles() {
     ? `${files.length} of ${total.toLocaleString()} files`
     : `${files.length} file${files.length === 1 ? '' : 's'}`];
   const lines = sum ?? listSum;
-  if (lines) bits.push(`+${lines.added} \u2212${lines.deleted}`);
   if (w.is_main) bits.push('worktrees excluded');
-  $('filesfoot').textContent = counted || (!fetched && w.measured) ? bits.join(' \u00b7 ') : 'counting\u2026';
+  /* The totals in the list's own green and red, as each row draws its counts. */
+  const foot = $('filesfoot');
+  if (counted || (!fetched && w.measured)) {
+    foot.replaceChildren(bits[0] ?? '');
+    if (lines) foot.append(' \u00b7 ', el('span', 'p', `+${lines.added}`), ' ', el('span', 'm', `\u2212${lines.deleted}`));
+    for (const b of bits.slice(1)) foot.append(` \u00b7 ${b}`);
+  } else foot.textContent = 'counting\u2026';
   /* **What the list is measured from, in words** (#47). It said `since 77c0dbf`,
      which tells nobody anything: the base is a ref you know and a number of
      commits, and the sha moves to the tooltip with the commits themselves.
@@ -743,7 +754,7 @@ function renderDiff() {
     $('ovpath').appendChild(el('span', null, parts.length ? parts.join('/') + '/' : ''));
     $('ovpath').appendChild(document.createTextNode(name));
   }
-  $('ovmode').textContent = diffState.split ? 'Unified' : 'Split';
+  $('ovmode').dataset.mode = diffState.split ? 'split' : 'unified';
 
   const note = (/** @type {string} */ t) => {
     body.appendChild(el('div', 'diffnote', t));

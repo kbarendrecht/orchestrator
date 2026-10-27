@@ -986,7 +986,10 @@ $('ovclose').onclick = Diff.close;
 $('ovprev').onclick = () => Diff.step(-1);
 $('ovnext').onclick = () => Diff.step(1);
 $('fileshead').onclick = (ev) => Diff.baseMenu(ev);
-$('ovmode').onclick = async () => {
+$('ovmode').onclick = async (ev) => {
+  // A press on the half that is already open asks for nothing.
+  const want = /** @type {HTMLElement} */ (ev.target).closest('[data-v]')?.getAttribute('data-v');
+  if (want && want === (Diff.state.split ? 'split' : 'unified')) return;
   // `closeEditor` is async — it may draw a confirm box — so the guard has to
   // await it. Un-awaited, `!promise` is always false and the mode flipped while
   // "Discard unsaved edits?" was still on screen, whatever you answered.
