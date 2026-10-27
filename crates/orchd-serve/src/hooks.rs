@@ -56,13 +56,15 @@ pub struct HookPayload {
     #[serde(default)]
     pub reason: Option<String>,
     /// What is still in flight when a `Stop` fires ([`waits_on_agents`]).
+    /// `None` when the agent sent no such field, which [`leaves_work`] has to tell
+    /// apart from an empty list.
     #[serde(default)]
-    pub background_tasks: Vec<BackgroundTask>,
+    pub background_tasks: Option<Vec<BackgroundTask>>,
     /// The session's own scheduled wake-ups when a `Stop` fires: `CronCreate`,
     /// `ScheduleWakeup`, `/loop`. Counted, never read: a restart drops every one of
     /// them, and that is all [`leaves_work`] needs to know. Codex sends none.
     #[serde(default)]
-    pub session_crons: Vec<serde_json::Value>,
+    pub session_crons: Option<Vec<serde_json::Value>>,
     /// The turn a Codex hook belongs to, which is how [`watch_turn_end`] finds
     /// that turn's end in the rollout. Claude Code sends none.
     #[serde(default)]
@@ -92,6 +94,7 @@ fn waits_on_agents(payload: &HookPayload) -> bool {
     payload
         .background_tasks
         .iter()
+        .flatten()
         .any(|t| matches!(t.kind.as_str(), "subagent" | "workflow"))
 }
 
@@ -107,9 +110,25 @@ fn waits_on_agents(payload: &HookPayload) -> bool {
 ///
 /// From the `Stop` payload, which describes these fields as the difference
 /// between "the session is done" and "it is waiting for background work to wake
-/// it" — read off the 2.1.311 binary's hook schema rather than its docs.
-fn leaves_work(payload: &HookPayload) -> bool {
-    !payload.session_crons.is_empty() || payload.background_tasks.iter().any(|t| t.kind != "shell")
+/// it". Read off the 2.1.311 binary's hook schema rather than its docs.
+///
+/// `None` when the payload carries neither field: an agent that does not report
+/// them (Codex, an older Claude Code) has said nothing, and reading that as "no
+/// work out" would turn off the transcript fallback for good.
+fn leaves_work(payload: &HookPayload) -> Option<bool> {
+    if payload.session_crons.is_none() && payload.background_tasks.is_none() {
+        return None;
+    }
+    let crons = payload
+        .session_crons
+        .as_ref()
+        .is_some_and(|c| !c.is_empty());
+    let tasks = payload
+        .background_tasks
+        .iter()
+        .flatten()
+        .any(|t| t.kind != "shell");
+    Some(crons || tasks)
 }
 
 /// Does this `SessionEnd` reason mean the process is going away?
@@ -699,21 +718,22 @@ pub async fn stop(
 
     // Recorded before the state moves, and whatever the state does: a `Stop` that
     // stays `Working` for its agents has left those agents out too.
-    let left = leaves_work(&payload);
-    app.with_session(id, |s| s.left_work = Some(left)).await;
-    // Still `Working`: its own agents will wake it, and the turn is not yours yet.
-    if !waits_on_agents(&payload) {
-        app.with_session(id, |s| {
-            // `at_rest` answers `BuildFailing` or `YourTurn`, and only the second is
-            // a wait — `Session::wait_for` is the one place that decides not to
-            // restart a clock that is already running.
-            match orchd::health::at_rest(build_failure.as_deref(), TurnReason::TurnComplete) {
-                State::YourTurn { reason, .. } => s.wait_for(reason),
-                other => s.set_state(other),
-            }
-        })
-        .await;
-    }
+    let (left, waits) = (leaves_work(&payload), waits_on_agents(&payload));
+    app.with_session(id, |s| {
+        s.left_work = left;
+        // Still `Working`: its own agents will wake it, and the turn is not yours yet.
+        if waits {
+            return;
+        }
+        // `at_rest` answers `BuildFailing` or `YourTurn`, and only the second is
+        // a wait — `Session::wait_for` is the one place that decides not to
+        // restart a clock that is already running.
+        match orchd::health::at_rest(build_failure.as_deref(), TurnReason::TurnComplete) {
+            State::YourTurn { reason, .. } => s.wait_for(reason),
+            other => s.set_state(other),
+        }
+    })
+    .await;
 
     refresh_title(&app, id).await;
     let _ = app.reconcile(&workspace).await;
@@ -1366,12 +1386,14 @@ mod tests {
             h
         };
         let stop_with = |kinds: &[&str]| HookPayload {
-            background_tasks: kinds
-                .iter()
-                .map(|k| BackgroundTask {
-                    kind: (*k).to_string(),
-                })
-                .collect(),
+            background_tasks: Some(
+                kinds
+                    .iter()
+                    .map(|k| BackgroundTask {
+                        kind: (*k).to_string(),
+                    })
+                    .collect(),
+            ),
             ..HookPayload::default()
         };
         let state = || async { app.inner.read().await.sessions[&id].state.clone() };
@@ -1426,12 +1448,21 @@ mod tests {
             AxState(app.clone()),
             headers.clone(),
             Json(HookPayload {
-                session_crons: vec![serde_json::json!({"id": "c1", "recurring": true})],
+                session_crons: Some(vec![serde_json::json!({"id": "c1", "recurring": true})]),
                 ..HookPayload::default()
             }),
         )
         .await;
         assert_eq!(left().await, Some(true), "and so is a scheduled wake-up");
+        // An agent that reports neither field said nothing, so the transcript
+        // stays the answer at the next restart.
+        let _ = stop(
+            AxState(app.clone()),
+            headers.clone(),
+            Json(HookPayload::default()),
+        )
+        .await;
+        assert_eq!(left().await, None, "no fields is not \"no work\"");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

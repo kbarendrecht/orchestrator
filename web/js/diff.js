@@ -472,8 +472,10 @@ function renderFiles() {
     mode === 'head' ? `uncommitted work on top of ${since ? since.slice(0, 7) : 'HEAD'}`
       : mode === 'pushed' ? `what the next push would send, from ${since ? since.slice(0, 7) : '…'}`
       : `everything since this workspace branched from ${snap.upstream_ref} at ${since ? since.slice(0, 7) : '…'}`,
-    ...(commits || []).map((c) => `${c.sha} ${c.subject}`),
-    ...(commits && commits.length >= COMMITS_CAP ? ['…'] : []),
+    ...(commits || []).slice(0, COMMITS_CAP).map((c) => `${c.sha} ${c.subject}`),
+    // The daemon sends one past the cap when there are more, so a list of exactly
+    // the cap is whole and gets no `…`.
+    ...(commits && commits.length > COMMITS_CAP ? ['…'] : []),
     'click to pick what this pane lists',
   ].join('\n');
 }
@@ -513,7 +515,7 @@ const MODES = {
   },
 };
 
-/** Same cap as the daemon's `COMMITS_CAP`: a full list says so with `…`. */
+/** Same cap as the daemon's `COMMITS_CAP`; it sends one more when there are more. */
 const COMMITS_CAP = 50;
 
 /** The commits the header lists, fetched again when a count it depends on moves.

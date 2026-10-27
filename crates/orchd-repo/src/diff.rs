@@ -402,8 +402,9 @@ pub struct Commit {
     pub subject: String,
 }
 
-/// How many commits [`commits`] lists. A header tooltip, not a log: past this it
-/// says how many more there are, and `ahead` in the snapshot has the real count.
+/// How many commits the header lists. A tooltip, not a log, and `ahead` in the
+/// snapshot has the real count. [`commits`] returns one more than this when there
+/// are more, so the page can tell a list of exactly 50 from a cut one.
 pub const COMMITS_CAP: usize = 50;
 
 /// The commits between `base` and `HEAD`, newest first. `base` is what
@@ -412,7 +413,7 @@ pub const COMMITS_CAP: usize = 50;
 /// a rebase-only branch has none, and on one that does, a merge subject says
 /// nothing the pane needs.
 pub fn commits(cwd: &Path, base: &str) -> Result<Vec<Commit>> {
-    let cap = format!("-n{COMMITS_CAP}");
+    let cap = format!("-n{}", COMMITS_CAP + 1);
     let out = git(
         cwd,
         &[

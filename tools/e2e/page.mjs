@@ -219,8 +219,8 @@ try {
   const clipped = await page.evaluate(() => {
     /* The strings the pane really draws, put there rather than waited for: the
        sandbox workspace has no merge base, so `#filesbase` is empty and the title
-       it competes with has nothing to lose to. `diff.js` writes exactly these two
-       — `Changeset` is the longer title, and the longest base line is the ref's
+       it competes with has nothing to lose to. `diff.js` writes exactly these two:
+       `Changeset` is the longer title, and the longest base line is the ref's
        leaf with a two-digit commit count (#47). */
     const title = document.getElementById('filestitle')
     const base = document.getElementById('filesbase')

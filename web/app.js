@@ -1838,7 +1838,7 @@ function keymap(/** @type {KeyboardEvent} */ e) {
   if (appMod(e)) {
     const k = e.key.toLowerCase();
     // Ctrl+. first: two keys, and a key that sends no control code, so the pty
-    // loses nothing — Ctrl+T and Ctrl+J looked right and are Claude Code's own.
+    // loses nothing. Ctrl+T and Ctrl+J looked right and are Claude Code's own.
     // By `code`, so it is the same key on a layout where `.` needs Shift.
     // Ctrl+` stays for whoever learned it, and Ctrl+Shift+T is the
     // terminal-emulator "new tab" key, in the Ctrl+Shift zone terminals leave

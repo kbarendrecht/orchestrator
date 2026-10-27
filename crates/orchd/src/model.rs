@@ -612,7 +612,7 @@ pub struct Session {
     /// ending are the only two things that change the answer.
     pub interrupted: bool,
     /// Whether the last `Stop` left work out that would have woken the session
-    /// later — a monitor, an agent, a scheduled wake-up, not a plain shell — as
+    /// later (a monitor, an agent, a scheduled wake-up, not a plain shell), as
     /// the hook said (`hooks::leaves_work`). A restart kills all of it, so a
     /// session with work out is as owed a "continue" as one cut off mid-turn.
     ///

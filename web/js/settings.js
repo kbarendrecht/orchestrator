@@ -13,8 +13,8 @@ const settingsOpen = () => !$('settings').hidden;
 
 /** The project the project tabs read and write, by path. Set to the active one
  *  when the pane opens, and moved by a project heading. `null` before the first
- *  open, and whenever it names a checkout that has since been closed — then the
- *  active one stands in. */
+ *  open. When it names a checkout that has since been closed, the active one
+ *  stands in for reading, and Save refuses. */
 let settingsAt = /** @type {string | null} */ (null);
 /** @returns {import('./core.js').Target} */
 const target = () => CHECKOUTS.find((c) => c.path === settingsAt) ?? activeCheckout();
@@ -230,13 +230,18 @@ async function loadConfigInto(force = false) {
   // since the read that produced the draft, and overwriting it here is exactly the
   // silent loss `dirty` exists to stop.
   if (dirty && !force) return;
+  const at = target().path;
   let cfg;
   try {
     cfg = await getOn(target(), '/api/config');
   } catch (e) {
-    $('setnote').textContent = reason(e);
+    if (target().path === at) $('setnote').textContent = reason(e);
     return;
   }
+  // Another project was picked while this was in the air, and its own read is
+  // the one the fields are for: this answer landing last would put one project's
+  // config under another's heading, and Save would write it there.
+  if (target().path !== at) return;
   /* **And again after the read**, because the pane is open and typeable while it
      is in the air: somebody who typed straight after opening lost the text to the
      answer, which then wrote `dirty = false` under it. It was page-check's
@@ -520,9 +525,17 @@ function draftBody() {
 }
 
 async function saveSettings() {
+  /* The project the draft was read from, never the stand-in: closed with a draft
+     open, `target()` falls back to the active one, and saving there would write
+     one project's config into another. */
+  const at = CHECKOUTS.find((c) => c.path === settingsAt);
+  if (!at) {
+    $('setnote').textContent = 'that project was closed, discard the changes';
+    return;
+  }
   let answer;
   try {
-    answer = await callOn(target(), '/api/config', draftBody());
+    answer = await callOn(at, '/api/config', draftBody());
   } catch (e) {
     $('setnote').textContent = reason(e);
     return;

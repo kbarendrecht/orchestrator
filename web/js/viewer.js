@@ -553,6 +553,7 @@ export function create(on) {
     showText(label, content) {
       ++view.seq;
       view.ws = null;
+      view.readOnly = false;
       load(label, content);
       paint({ line: 1, last: 0, col: 0, len: 0 });
     },
@@ -643,6 +644,7 @@ export function create(on) {
              more is not an answer, it is noise in the place the answer was. */
           if (mine !== view.seq) return false;
           view.file = null;
+          view.readOnly = false;
           if (on.path) on.path.textContent = path;
           on.mount.replaceChildren(el('div', 'fnsay', reason(e)));
           return false;

@@ -920,7 +920,7 @@ button.ctx-btn:hover{color:var(--text)}
 .oq[hidden]{display:none}
 /* Folded: the header alone, a one-line strip that keeps saying the session is
    blocked while giving the terminal back. Answering nothing, so the ring and the
-   amber stay — it is the same open question, taking less room. */
+   amber stay: it is the same open question, taking less room. */
 .oq.min{padding:7px 10px 7px 12px;gap:0;border-radius:10px;overflow:visible;cursor:pointer;animation:none}
 .oq.min .oqh{cursor:pointer}
 .oqh{
@@ -1137,8 +1137,8 @@ body:not(.ready) #termempty .empty-k{display:none}
   animation:connbr 1.6s ease-in-out infinite}
 @keyframes connbr{0%,100%{opacity:.3}50%{opacity:1}}
 /* One block for every infinite animation, so a viewer who asked their OS to
-   reduce motion gets none of them — the connecting and reconnecting pulses and
-   the refresh spinner alike — and for the three modals' entrances with them. */
+   reduce motion gets none of them (the connecting and reconnecting pulses and
+   the refresh spinner alike), and for the three modals' entrances with them. */
 @media(prefers-reduced-motion:reduce){
   .conn-dot,.connbar .d{animation:none;opacity:.7}
   .rvrefresh.spin svg,.arcspin{animation:none}
@@ -1856,7 +1856,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 /* The buttons are a fixed set, and with key caps on them they outgrew a narrow
    overlay: the path was squeezed to `READ…` while the count beside it kept every
    word. So the nav may shrink, the count gives way inside it, and the path keeps
-   at least a third of the head — the file's name is the one thing in it you came
+   at least a third of the head: the file's name is the one thing in it you came
    to read. */
 .ov-nav{margin-left:auto;display:flex;align-items:center;gap:8px;flex:0 1 auto;min-width:0}
 .ov-head>.ov-path{flex:0 1 auto;min-width:min(33%, 260px)}
@@ -2177,7 +2177,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 .rvrow .dot.attn{background-color:var(--attn)}
 /* A blocker the source named: conflicts, failing checks. A red cross in the dot's
    own column, so the titles still start on one line; a dot would read as `prio`,
-   which is red too. Broken, and not yours to fix — the row's own dimming says the
+   which is red too. Broken, and not yours to fix, the row's own dimming says the
    second half. */
 .rvx{display:inline-grid;place-items:center;flex:0 0 auto;width:10px;margin:0 -1px 0 -3px;color:var(--bad);font-size:calc(10px * var(--fs))}
 /* `prio` / `prio stopper` from the source's labels. Last, so it wins over both. */

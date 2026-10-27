@@ -130,7 +130,7 @@ pub struct SessionRecord {
     /// conversation that was interrupted from one that was done.
     #[serde(default)]
     pub interrupted: bool,
-    /// What the last `Stop` said was left out — see [`Session::left_work`].
+    /// What the last `Stop` said was left out, see [`Session::left_work`].
     /// Absent in a record from before it, which reads as `None`: not known.
     #[serde(default)]
     pub left_work: Option<bool>,

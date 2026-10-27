@@ -1535,16 +1535,18 @@ impl AppState {
             //
             // **The `Stop` hook's answer first, the transcript only without one.**
             // The hook names monitors and scheduled wake-ups, which the transcript
-            // patterns miss, and leaves out a plain shell, which they count — so a
+            // patterns miss, and leaves out a plain shell, which they count, so a
             // dev server alone no longer reads as work cut off. A record from before
-            // the field has `None`, and the transcript still answers for it.
-            let left = match s.left_work {
+            // the field has `None`, and the transcript still answers for it, but
+            // only behind the cheap checks: it is a tail read per session, under
+            // this write lock, and most records are archived ones.
+            let left = || match s.left_work {
                 Some(left) => left,
                 None => {
                     crate::store::left_background_work(s.id, &s.cwd, s.transcript_path.as_deref())
                 }
             };
-            if was_live && s.had_a_turn && !s.interrupted && left {
+            if was_live && s.had_a_turn && !s.interrupted && left() {
                 s.interrupted = true;
             }
             inner.sessions.entry(s.id).or_insert(s);
