@@ -27,29 +27,33 @@
   font-weight:400;font-style:normal;font-display:swap}
 
 :root{
-  --bg:#101010;
-  --surface:#171717;
-  --raised:#212121;
+  --bg:#0A0A0B;
+  --surface:#101012;
+  --raised:#1C1C1E;
   /* One step below --raised, for a row under the cursor. Selected keeps --raised,
      so hovering a row no longer paints it the same fill as the one you are on. */
-  --hover:#1D1D1D;
-  --line:#2C2C2C;
-  --line-soft:#262626;
-  --text:#D2D2D2;
-  --dim:#A8A8A8;
+  --hover:#171719;
+  --line:#28282A;
+  --line-soft:#212123;
+  --text:#E8E8EA;
+  --dim:#B8B8BA;
   --faint:#00000000;
-  --faint-solid:#8E8E8E;
-  --ghost:#787878;
+  --faint-solid:#9A9A9C;
+  --ghost:#818183;
 
   /* Keyboard focus, kept deliberately off the state palette: one neutral
      near-white signal — a ring on controls, a border on text inputs — so amber
      stays "needs you" and never doubles as "you are here". */
   --focus:#C9C9C9;
+  /* Corners: `--r` for anything you press or type into, `--r-lg` for what floats
+     over the board (menus, tips, toasts). Marks inside text keep 2px, because a
+     round highlight on one character reads as a blob. */
+  --r:6.5px;--r-lg:10px;
 
   --attn:#E0A244;        /* needs you — deliberately not green or red */
-  --work:#4C9AAF;
-  --ok:#5FA97C;
-  --bad:#D4726B;
+  --work:#5AA9BE;
+  --ok:#62B282;
+  --bad:#DB7A72;
   /* The checkout bands: one per open checkout, as reinforcement for the name
      beside them rather than as information of their own — nothing is ever *only*
      a colour here. Chosen to sit clear of `--attn` and `--bad`, which mean
@@ -149,9 +153,12 @@ a{cursor:pointer}
    the coral of an error and the muted syntax colours keep their own hue under it. */
 ::selection{background:rgba(76,154,175,.30)}
 
+/* A pane's name, said the way a heading is: sentence case in the interface font.
+   It was spaced capitals at 9px, which read as a label on the pane rather than
+   its title, and the skin design settled on this. */
 .eyebrow{
-  font-family:var(--label);font-size:calc(9px * var(--fs));font-weight:700;
-  letter-spacing:.16em;text-transform:uppercase;color:var(--faint-solid);
+  font-family:var(--sans);font-size:calc(12px * var(--fs));font-weight:600;
+  letter-spacing:0;color:var(--text);
 }
 
 /* ---------- shell ---------- */
@@ -290,7 +297,7 @@ body[data-chrome="custom"] .resizers{display:block}
 .prchip{
   display:inline-flex;align-items:center;gap:5px;flex:0 0 auto;
   font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--dim);
-  border:1px solid var(--line);border-radius:2px;padding:0 6px;line-height:1.7;
+  border:1px solid var(--line);border-radius:var(--r);padding:0 6px;line-height:1.7;
   text-decoration:none;transition:color .12s,border-color .12s;
 }
 .prchip:hover{color:var(--text);border-color:var(--faint-solid)}
@@ -307,7 +314,7 @@ body[data-chrome="custom"] .resizers{display:block}
    sits inside a chip. */
 .ctx-close,.settings-x,.updatebar-x,.dtab .x{
   font-size:calc(11.5px * var(--fs));line-height:1;color:var(--faint-solid);
-  border-radius:2px;transition:color .12s,background .12s;
+  border-radius:var(--r);transition:color .12s,background .12s;
 }
 .ctx-close,.settings-x,.updatebar-x{padding:2px 6px}
 .ctx-close:hover,.dtab .x:hover{color:var(--bad);background:var(--raised)}
@@ -335,7 +342,7 @@ button.ctx-btn:hover{color:var(--text)}
 }
 .gear{
   flex:0 0 auto;display:flex;align-items:center;justify-content:center;
-  width:26px;height:26px;border-radius:2px;color:var(--faint-solid);
+  width:26px;height:26px;border-radius:var(--r);color:var(--faint-solid);
   transition:color .12s,background .12s;
 }
 .gear:hover,.gear[aria-expanded="true"]{color:var(--text);background:var(--raised)}
@@ -344,7 +351,7 @@ button.ctx-btn:hover{color:var(--text)}
 .helpbtn{
   flex:0 0 auto;display:flex;align-items:center;justify-content:center;
   position:relative;
-  width:17px;height:17px;margin-left:1px;border-radius:2px;
+  width:17px;height:17px;margin-left:1px;border-radius:var(--r);
   font-family:var(--label);font-size:calc(10.5px * var(--fs));font-weight:700;
   color:var(--faint-solid);opacity:.75;
   transition:color .12s,background .12s,opacity .12s;
@@ -424,7 +431,7 @@ button.ctx-btn:hover{color:var(--text)}
    not one. */
 .sess-main{
   font-family:var(--mono);font-size:calc(8.5px * var(--fs));color:var(--faint-solid);
-  border:1px solid var(--line);border-radius:2px;padding:0 4px;flex:0 0 auto;
+  border:1px solid var(--line);border-radius:var(--r);padding:0 4px;flex:0 0 auto;
   letter-spacing:.04em;
 }
 
@@ -509,7 +516,7 @@ button.ctx-btn:hover{color:var(--text)}
 
 .plus{
   font-family:var(--mono);font-size:calc(15px * var(--fs));line-height:1;color:var(--ghost);
-  padding:2px 4px 4px;border-radius:2px;margin-left:9px;
+  padding:2px 4px 4px;border-radius:var(--r);margin-left:9px;
 }
 .plus:hover:not(:disabled){color:var(--text);background:var(--raised)}
 .plus:disabled{color:#2E2E2E;cursor:not-allowed}
@@ -582,16 +589,18 @@ button.ctx-btn:hover{color:var(--text)}
    nothing else does. The creation age that used to sit hard right is in the row's
    tooltip now: two clocks on one row was one too many, and it was taking the
    width the name was being clipped for. */
+/* The interface font, not mono: a session name is what somebody called the work,
+   and mono is kept for what is a git or file name (branches, paths, counts). */
 .sess-name{
-  font-family:var(--mono);font-size:calc(11.5px * var(--fs));flex:1 1 auto;min-width:0;
+  font-family:var(--sans);font-size:calc(12.5px * var(--fs));font-weight:500;flex:1 1 auto;min-width:0;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
 }
 /* The rename box, in place of the name. Same metrics as `.sess-name` so the row
    does not shift when it opens, with a visible edge so it reads as editable. */
 .sess-rename{
-  font-family:var(--mono);font-size:calc(11.5px * var(--fs));flex:1;min-width:0;
+  font-family:var(--sans);font-size:calc(12.5px * var(--fs));font-weight:500;flex:1;min-width:0;
   color:var(--text);background:var(--bg);
-  border:1px solid var(--text);border-radius:2px;padding:0 4px;margin:-1px 0;
+  border:1px solid var(--text);border-radius:var(--r);padding:0 4px;margin:-1px 0;
 }
 .sess-rename:focus{outline:none}
 /* A worktree with no name yet. Italic because it is a description of what is
@@ -630,7 +639,7 @@ button.ctx-btn:hover{color:var(--text)}
   flex:0 0 auto;
   font-family:var(--mono);font-size:calc(9px * var(--fs));letter-spacing:.06em;
   text-transform:uppercase;color:var(--faint-solid);
-  border:1px solid var(--faint-solid);border-radius:2px;
+  border:1px solid var(--faint-solid);border-radius:var(--r);
   padding:0 4px;line-height:1.6;opacity:.75;
 }
 /* No author `display` above, and this keeps it that way: one has beaten
@@ -741,7 +750,7 @@ button.ctx-btn:hover{color:var(--text)}
 }
 .railnudge-go{
   font:inherit;color:var(--attn);background:none;border:1px solid currentColor;
-  border-radius:2px;padding:0 7px;cursor:pointer;
+  border-radius:var(--r);padding:0 7px;cursor:pointer;
 }
 .railnudge-go:disabled{opacity:.5;cursor:default}
 .railnudge-x{margin-left:auto;font:inherit;color:var(--faint-solid);background:none;border:0;cursor:pointer}
@@ -916,7 +925,7 @@ button.ctx-btn:hover{color:var(--text)}
 .oqopts{display:flex;flex-direction:column;gap:4px;margin-top:2px}
 .oqopt{
   text-align:left;width:100%;min-height:34px;padding:7px 10px;border:1px solid var(--line);
-  border-radius:6.5px;background:none;transition:background .15s,border-color .15s;
+  border-radius:var(--r);background:none;transition:background .15s,border-color .15s;
 }
 .oqopt:hover:not(:disabled){border-color:var(--faint-solid);background:var(--hover)}
 .oqopt:focus-visible{outline:1px solid var(--focus);outline-offset:-1px}
@@ -931,13 +940,13 @@ button.ctx-btn:hover{color:var(--text)}
   resize:vertical;display:block;width:100%;min-height:74px;
   font-family:var(--sans);font-size:calc(12.5px * var(--fs));line-height:1.5;
   color:var(--text);background:var(--bg);border:1px solid var(--line);
-  border-radius:6.5px;padding:8px 12px;
+  border-radius:var(--r);padding:8px 12px;
 }
 .oqfree .box:focus{outline:none;border-color:var(--focus)}
 .oqfoot{display:flex;align-items:center;gap:8px}
 .oqsend{
   font-family:var(--sans);font-size:calc(12px * var(--fs));font-weight:600;
-  padding:5px 12px;border-radius:6.5px;color:#1A1206;background:var(--attn);
+  padding:5px 12px;border-radius:var(--r);color:#1A1206;background:var(--attn);
 }
 .oqsend:disabled{color:var(--ghost);background:none;border:1px solid var(--line);cursor:default}
 .oqback{font-family:var(--sans);font-size:calc(12px * var(--fs));color:var(--faint-solid)}
@@ -1006,7 +1015,7 @@ button.ctx-btn:hover{color:var(--text)}
   mask-image:linear-gradient(90deg,transparent,#000 26px,#000 calc(100% - 26px),transparent)}
 .dtab{
   font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid);
-  padding:4px 8px;border-radius:2px;display:flex;align-items:center;gap:8px;
+  padding:4px 8px;border-radius:var(--r);display:flex;align-items:center;gap:8px;
   /* Keep their size and let the strip scroll, rather than squeezing every tab
      narrower as tabs are added. */
   flex:0 0 auto;white-space:nowrap;
@@ -1301,7 +1310,7 @@ body.row-resizing{cursor:row-resize;user-select:none}
 }
 .settings-step{justify-self:end;display:flex;flex-wrap:wrap;justify-content:flex-end;align-items:center;gap:6px 4px;min-width:0;max-width:100%}
 .stepbtn{
-  width:28px;height:28px;border-radius:2px;border:1px solid var(--line);
+  width:28px;height:28px;border-radius:var(--r);border:1px solid var(--line);
   font-family:var(--mono);font-size:calc(13px * var(--fs));line-height:1;color:var(--dim);
 }
 .stepbtn:hover:not(:disabled){color:var(--text);background:var(--bg)}
@@ -1336,7 +1345,7 @@ body.row-resizing{cursor:row-resize;user-select:none}
 }
 .thswatch i{width:6px;height:6px;border-radius:50%;display:block}
 .settings-select{
-  min-width:0;max-width:100%;padding:5px 8px;border:1px solid var(--line);border-radius:2px;
+  min-width:0;max-width:100%;padding:5px 8px;border:1px solid var(--line);border-radius:var(--r);
   background:var(--bg);color:var(--text);
   font-family:var(--mono);font-size:calc(12.5px * var(--fs));
 }
@@ -1351,7 +1360,7 @@ body.row-resizing{cursor:row-resize;user-select:none}
    The widths differ because the contents do — a family name is long and a hex is
    seven characters — so only that is said separately. */
 .thname,.thhex{
-  padding:5px 8px;border:1px solid var(--line);border-radius:2px;
+  padding:5px 8px;border:1px solid var(--line);border-radius:var(--r);
   background:var(--bg);color:var(--text);
   font-family:var(--mono);font-size:calc(12.5px * var(--fs));
 }
@@ -1392,7 +1401,7 @@ body.row-resizing{cursor:row-resize;user-select:none}
    18px against 4px says which help belongs to which field without a rule or a box. */
 .settings-in{
   justify-self:end;width:100%;max-width:440px;min-width:0;padding:6px 9px;
-  background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:2px;
+  background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:var(--r);
   font-family:var(--mono);font-size:calc(12.5px * var(--fs));box-sizing:border-box;
 }
 .settings-in:focus{outline:none;border-color:var(--focus)}
@@ -1481,7 +1490,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 }
 .settings-foot .settings-save{margin-left:auto}
 .settings-save{
-  padding:4px 12px;border:1px solid var(--line);border-radius:2px;
+  padding:4px 12px;border:1px solid var(--line);border-radius:var(--r);
   background:var(--bg);color:var(--text);
   font-family:var(--mono);font-size:calc(11.5px * var(--fs));
 }
@@ -1508,14 +1517,14 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 /* The terminal sample: real xterm, on the scheme's own ground, which `settings.js`
    paints on this box so the padding around the cells is the terminal's colour. */
 .settings-termdemo{
-  margin:22px 0 0;padding:12px 14px;border:1px solid var(--line);border-radius:2px;
+  margin:22px 0 0;padding:12px 14px;border:1px solid var(--line);border-radius:var(--r);
   overflow:hidden;
 }
 /* The diff sample: the pane's own `.diff` rows, so `.diff`'s font and size apply,
    minus the pane's flex and scroll, which belong to a pane and not to a sample. */
 .settings-diffdemo{
   flex:none;overflow:hidden;margin:22px 0 0;padding:8px 0;
-  border:1px solid var(--line);border-radius:2px;background:var(--bg);
+  border:1px solid var(--line);border-radius:var(--r);background:var(--bg);
 }
 .settings-diffdemo .ln{white-space:pre;word-break:normal}
 /* The tabs, a bar of their own under the title, padded to the same measure as the
@@ -1570,7 +1579,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 /* Out of the nav and into the sheet's corner, where a close sits on any sheet. */
 #settings .settings-x{
   position:absolute;top:10px;right:10px;z-index:2;
-  display:inline-grid;place-items:center;width:28px;height:28px;border-radius:6.5px;
+  display:inline-grid;place-items:center;width:28px;height:28px;border-radius:var(--r);
 }
 #settings>.settings-tabs{
   grid-column:1;grid-row:2 / 4;flex-direction:column;gap:2px;padding:0 8px 14px;
@@ -1578,7 +1587,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 }
 #settings .settings-tab{
   display:flex;align-items:center;height:30px;padding:0 10px;margin:0;border:0;
-  border-radius:6.5px;text-align:left;
+  border-radius:var(--r);text-align:left;
   font-family:var(--sans);font-size:calc(12.5px * var(--fs));color:var(--dim);
 }
 #settings .settings-tab:hover{color:var(--text);background:var(--hover)}
@@ -1589,9 +1598,9 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 /* The sticky heading's offset is the card's top padding, and its band the ground
    it scrolls over; both moved with the sheet. */
 #settings .settings-sec>.settings-group{top:-22px;background:var(--surface)}
-#settings .settings-in,#settings .settings-select{border-radius:6.5px}
+#settings .settings-in,#settings .settings-select{border-radius:var(--r)}
 #settings>.settings-foot{grid-column:2;grid-row:3;padding:10px 26px}
-#settings .settings-save{border-radius:6.5px}
+#settings .settings-save{border-radius:var(--r)}
 
 /* ---------- context menu ---------- */
 /* Right-click on a session row. Above the toast, because it is the thing you
@@ -1607,7 +1616,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 .dlg[hidden]{display:none}
 .dlgcard{
   min-width:320px;max-width:min(560px,calc(100vw - 48px));
-  background:var(--surface);border:1px solid var(--line);border-radius:2px;
+  background:var(--surface);border:1px solid var(--line);border-radius:14px;
   box-shadow:0 14px 40px rgba(0,0,0,.6);
   padding:16px;display:flex;flex-direction:column;gap:14px;
 }
@@ -1619,13 +1628,13 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
   white-space:pre-wrap;
 }
 .dlginput{
-  width:100%;background:var(--raised);border:1px solid var(--line);border-radius:2px;
+  width:100%;background:var(--raised);border:1px solid var(--line);border-radius:var(--r);
   padding:7px 9px;font-family:var(--mono);font-size:calc(11.5px * var(--fs));color:var(--text);
 }
 .dlginput:focus{outline:none;border-color:var(--focus)}
 .dlgfoot{display:flex;align-items:center;justify-content:flex-end;gap:8px}
 .dlgbtn{
-  border:1px solid var(--line);border-radius:2px;padding:5px 12px;
+  border:1px solid var(--line);border-radius:var(--r);padding:5px 12px;
   font-family:var(--mono);font-size:calc(11px * var(--fs));color:var(--dim);
 }
 .dlgbtn:hover{color:var(--text);background:var(--raised)}
@@ -1641,11 +1650,11 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 .ctxmenu{
   position:fixed;z-index:100;min-width:132px;padding:4px;
   max-height:calc(100vh - 12px);overflow-y:auto;
-  background:var(--raised);border:1px solid var(--line);border-radius:2px;
+  background:var(--raised);border:1px solid var(--line);border-radius:var(--r-lg);
   box-shadow:0 6px 18px rgba(0,0,0,.45);
 }
 .ctxmenu-item{
-  display:block;width:100%;padding:4px 8px;text-align:left;border-radius:2px;
+  display:block;width:100%;padding:4px 8px;text-align:left;border-radius:var(--r);
   font-family:var(--mono);font-size:calc(11.5px * var(--fs));color:var(--text);
 }
 .ctxmenu-item:hover:not(:disabled){background:var(--bg)}
@@ -1664,7 +1673,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
    cannot steal the hover that keeps it open. */
 .pathtip{
   position:fixed;z-index:101;max-width:min(640px,calc(100vw - 8px));padding:4px 8px;
-  background:var(--raised);border:1px solid var(--line);border-radius:2px;
+  background:var(--raised);border:1px solid var(--line);border-radius:var(--r-lg);
   box-shadow:0 6px 18px rgba(0,0,0,.45);pointer-events:none;white-space:pre-wrap;
   overflow-wrap:anywhere;font-family:var(--mono);font-size:calc(11.5px * var(--fs));color:var(--text);
 }
@@ -1680,7 +1689,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 }
 .toast{
   display:flex;align-items:center;gap:12px;max-width:100%;
-  padding:8px 16px;border-radius:2px;
+  padding:8px 16px;border-radius:var(--r-lg);
   background:var(--raised);border:1px solid var(--line);
   font-family:var(--mono);font-size:calc(11.5px * var(--fs));color:var(--text);
   white-space:pre-wrap;
@@ -1698,7 +1707,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 .toast:focus{outline:none}
 .toast-x{
   margin-left:auto;flex:0 0 auto;color:var(--faint-solid);cursor:pointer;
-  padding:0 2px;user-select:none;border-radius:2px;transition:color .12s;
+  padding:0 2px;user-select:none;border-radius:var(--r);transition:color .12s;
 }
 .toast-x:hover{color:var(--bad)}
 /* A toast with a button takes clicks, which the stack otherwise refuses. */
@@ -1772,7 +1781,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 .ov-count{font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid)}
 .head-btn{
   font-family:var(--label);font-size:calc(9px * var(--fs));font-weight:700;letter-spacing:.1em;
-  text-transform:uppercase;color:var(--dim);padding:4px 8px;border:1px solid var(--line);border-radius:2px;
+  text-transform:uppercase;color:var(--dim);padding:4px 8px;border:1px solid var(--line);border-radius:var(--r);
 }
 .head-btn:hover{color:var(--text);border-color:var(--faint-solid)}
 
@@ -1841,7 +1850,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 .fold:hover{color:var(--dim)}
 .fold{display:flex;align-items:center;gap:8px}
 .fold-step{
-  font:inherit;color:inherit;background:none;border:1px solid var(--line);border-radius:2px;
+  font:inherit;color:inherit;background:none;border:1px solid var(--line);border-radius:var(--r);
   padding:0 6px;cursor:pointer;
 }
 .fold-step:hover{color:var(--text);border-color:var(--faint-solid)}
@@ -1987,7 +1996,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
    than amber: amber is "this needs you", and going to a session is only an offer. */
 .prrow .jump{
   font-family:var(--mono);font-size:calc(9px * var(--fs));color:var(--ghost);
-  padding:2px 8px;border:1px solid var(--line);border-radius:2px;
+  padding:2px 8px;border:1px solid var(--line);border-radius:var(--r);
   flex:0 0 auto;white-space:nowrap;
 }
 .prrow:hover .jump{color:var(--faint-solid)}
@@ -2014,7 +2023,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
    rows' chips, so a word in a header still reads as something to press. */
 .rvfilter{
   font-family:var(--mono);font-size:calc(9px * var(--fs));color:var(--faint-solid);
-  padding:1px 6px;border:1px solid var(--line);border-radius:2px;flex:0 0 auto;
+  padding:1px 6px;border:1px solid var(--line);border-radius:var(--r);flex:0 0 auto;
   white-space:nowrap;cursor:pointer;
 }
 .rvfilter:hover{color:var(--text);border-color:var(--dim)}
@@ -2025,7 +2034,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
    and the review queue's open-all beside it. 12px with 3px of padding was a 16px
    target for a thing you press by hand, so it is 15px in a 24px box now. */
 .rvrefresh,.refresh,.openall{font-size:calc(15px * var(--fs));line-height:1;color:var(--faint-solid);cursor:pointer;
-  padding:4px 8px;border-radius:2px;transition:color .12s,background .12s}
+  padding:4px 8px;border-radius:var(--r);transition:color .12s,background .12s}
 .rvrefresh:hover,.refresh:hover,.openall:hover{color:var(--text);background:var(--raised)}
 /* An empty queue leaves it dead rather than removing it, so the refresh does not
    jump sideways every time the last row clears. */
@@ -2076,7 +2085,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 
 .pract{
   font-family:var(--mono);font-size:calc(9px * var(--fs));color:var(--attn);
-  padding:2px 8px;border:1px solid var(--line);border-radius:2px;
+  padding:2px 8px;border:1px solid var(--line);border-radius:var(--r);
   flex:0 0 auto;white-space:nowrap;
 }
 .pract:hover:not(:disabled){background:var(--raised);border-color:var(--attn)}
@@ -2149,7 +2158,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 .dvtext{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dvbtn{
   margin-left:auto;font-family:var(--mono);font-size:calc(9px * var(--fs));color:inherit;
-  padding:2px 8px;border:1px solid var(--line);border-radius:2px;flex:0 0 auto;
+  padding:2px 8px;border:1px solid var(--line);border-radius:var(--r);flex:0 0 auto;
 }
 .dvbtn:hover:not(:disabled){background:var(--surface);border-color:currentColor}
 .dvbtn:disabled{color:var(--ghost);cursor:default}
@@ -2301,7 +2310,7 @@ select.opfield,input.opfield{appearance:none}
 .overlay.find>.ov-head{height:52px;gap:10px;padding:0 12px 0 14px;background:none}
 .fnq,.fnglob{
   font-family:var(--code);font-size:calc(12px * var(--fs));color:var(--text);
-  background:var(--bg);border:1px solid var(--line);border-radius:6.5px;
+  background:var(--bg);border:1px solid var(--line);border-radius:var(--r);
   padding:5px 9px;min-width:0;
 }
 .fnq{flex:1}
@@ -2313,13 +2322,13 @@ select.opfield,input.opfield{appearance:none}
 .overlay.find .fnq:focus{border-color:transparent}
 .fnmode{
   font-family:var(--sans);font-size:calc(12px * var(--fs));color:var(--dim);flex:0 0 auto;
-  background:var(--bg);border:1px solid var(--line);border-radius:6.5px;padding:4px 9px;white-space:nowrap;
+  background:var(--bg);border:1px solid var(--line);border-radius:var(--r);padding:4px 9px;white-space:nowrap;
 }
 /* Quieter than the toggles' on state: it is a label first and a switch second. */
 .fnmode:hover{color:var(--text);border-color:var(--faint-solid)}
 .fntg{
   font-family:var(--code);font-size:calc(10.5px * var(--fs));color:var(--faint-solid);
-  border:1px solid var(--line);border-radius:6.5px;padding:3px 7px;
+  border:1px solid var(--line);border-radius:var(--r);padding:3px 7px;
 }
 .fntg:hover{color:var(--text)}
 /* On is amber because it changes what the answer *is*, which is the one thing in
@@ -2334,7 +2343,7 @@ select.opfield,input.opfield{appearance:none}
   border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:6px;
   font-family:var(--code);font-size:calc(11.5px * var(--fs));line-height:1.75;
 }
-.fnhit{display:flex;gap:18px;padding:2px 10px;border-radius:6.5px;white-space:nowrap;cursor:pointer}
+.fnhit{display:flex;gap:18px;padding:2px 10px;border-radius:var(--r);white-space:nowrap;cursor:pointer}
 .fnhit:hover{background:var(--hover)}
 /* Selected by its fill, the way a rail row is: the amber bar it had is the
    editor's current-line mark, and two of them on one card was one too many. */

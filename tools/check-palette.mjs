@@ -79,15 +79,17 @@ for (const [name, hue] of Object.entries({
 /* The terminal is the other half of the same promise, and it has no `:root` to be
    checked against — so the shipped values are written here. They came out of the
    literal table `termColours` replaced, which is what "Reset restores what shipped"
-   has to mean for the pane as well as for the board. */
+   has to mean for the pane as well as for the board. The skin moved the board's
+   three inputs, and the ground, text and greys here moved with them; the twelve
+   hues are the terminal's own and did not. */
 const SHIPPED_TERM = {
-  background: '#101010', foreground: '#d2d2d2', cursor: '#d2d2d2',
-  black: '#101010', red: '#c9615a', green: '#5fa97c', yellow: '#e0a244',
-  blue: '#4c9aaf', magenta: '#9a7aa0', cyan: '#3e9aaf', white: '#d2d2d2',
-  brightBlack: '#5b5b5b', brightRed: '#d6756e', brightGreen: '#74bb90',
+  background: '#0a0a0b', foreground: '#e8e8ea', cursor: '#e8e8ea',
+  black: '#0a0a0b', red: '#c9615a', green: '#5fa97c', yellow: '#e0a244',
+  blue: '#4c9aaf', magenta: '#9a7aa0', cyan: '#3e9aaf', white: '#e8e8ea',
+  brightBlack: '#606061', brightRed: '#d6756e', brightGreen: '#74bb90',
   brightYellow: '#edb55c', brightBlue: '#63aec2', brightMagenta: '#b08fb6',
-  brightCyan: '#57aec2', brightWhite: '#f0f0f0',
-  selectionBackground: '#2c2c2c',
+  brightCyan: '#57aec2', brightWhite: '#ffffff',
+  selectionBackground: '#2a2a2b',
 };
 const term = termColours(DEFAULT);
 for (const [name, want] of Object.entries(SHIPPED_TERM)) {

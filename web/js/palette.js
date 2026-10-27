@@ -87,13 +87,17 @@ export const MIN_CONTRAST = 4.5;
  *  values `app.css` declares. `tools/check-palette.mjs` asserts that, so the two
  *  cannot drift.
  */
-export const DEFAULT = { bg: '#101010', panel: '#171717', text: '#D2D2D2' };
+export const DEFAULT = { bg: '#0A0A0B', panel: '#101012', text: '#E8E8EA' };
 
 /* Where each token sits between two of the three inputs.
  *
- * Solved from the shipped palette rather than chosen: with `bg #101010`,
- * `panel #171717` and `text #D2D2D2`, these ratios land on exactly the values
- * `:root` declares. That is the whole reason they have five decimal places.
+ * Solved from the palette that shipped before the skin, `bg #101010`,
+ * `panel #171717` and `text #D2D2D2`, where they landed on exactly the values
+ * `:root` declared. That is the whole reason they have five decimal places. The
+ * skin moved the three inputs (a bluer near-black, brighter text) and kept the
+ * ratios: the steps between surfaces were the part worth keeping, and from the
+ * new inputs they land within a shade of the design's own hover, raised and
+ * lines.
  *
  * The *directions* are the design, and they are what carries to another theme:
  * the fills and rules step from the **panel** toward the text (a raised row is

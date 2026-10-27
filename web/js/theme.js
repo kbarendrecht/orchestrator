@@ -376,9 +376,9 @@ function applyTheme() {
  * for the light-ground failure that forced it. */
 const SIGNALS = {
   '--attn': '#E0A244',
-  '--work': '#4C9AAF',
-  '--ok': '#5FA97C',
-  '--bad': '#D4726B',
+  '--work': '#5AA9BE',
+  '--ok': '#62B282',
+  '--bad': '#DB7A72',
   '--auto': '#5B8FC9',
   '--focus': '#C9C9C9',
 };
