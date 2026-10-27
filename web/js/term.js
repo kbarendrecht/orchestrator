@@ -1132,8 +1132,17 @@ function closeTerm(/** @type {import('../serve').Checkout} */ checkout, /** @typ
   /* **Two frames late, because xterm 6 throws otherwise.** A focused terminal
      always has a refresh queued (the cursor blinks), and disposing under it makes
      the viewport's sync read a renderer that is gone. Closing from the keyboard
-     (⌘W) is exactly a close with the terminal focused. */
-  requestAnimationFrame(() => requestAnimationFrame(() => entry.term.dispose()));
+     (⌘W) is exactly a close with the terminal focused.
+
+     **And every terminal left is repainted after it.** WebGL terminals share one
+     glyph atlas, and disposing one left the others drawing from a dropped one:
+     closing a drawer tab (the restart button does) garbled the agent pane until
+     something resized it. That is every terminal in a browser tab, and the
+     macOS agent pane in the app. */
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    entry.term.dispose();
+    for (const e of terms.values()) repaint(e);
+  }));
 }
 
 /** Tab switch replays the daemon buffer; it never respawns (§9).
