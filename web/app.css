@@ -2442,12 +2442,19 @@ select.opfield,input.opfield{appearance:none}
 .fnglob{flex:0 0 150px}
 .fnq:focus,.fnglob:focus{outline:none;border-color:var(--focus)}
 .overlay.find .fnq:focus{border-color:transparent}
+/* Files and Contents as one control: a sunk track, the open half raised in it, the
+   same shape as the diff's Split and Unified. */
 .fnmode{
-  font-family:var(--sans);font-size:calc(12px * var(--fs));color:var(--dim);flex:0 0 auto;
-  background:var(--bg);border:1px solid var(--line);border-radius:var(--r);padding:4px 9px;white-space:nowrap;
+  display:inline-flex;flex:0 0 auto;padding:2px;gap:2px;
+  background:var(--bg);border:1px solid var(--line);border-radius:var(--r);
 }
-/* Quieter than the toggles' on state: it is a label first and a switch second. */
-.fnmode:hover{color:var(--text);border-color:var(--faint-solid)}
+.fnmode>button{
+  height:22px;padding:0 9px;border-radius:calc(var(--r) - 2px);white-space:nowrap;
+  font-family:var(--sans);font-size:calc(12px * var(--fs));color:var(--faint-solid);
+}
+.fnmode>button:hover{color:var(--text)}
+.fnmode[data-mode="names"]>[data-v="names"],
+.fnmode[data-mode="text"]>[data-v="text"]{background:var(--raised);color:var(--text);box-shadow:0 1px 2px rgba(0,0,0,.4)}
 .fntg{
   font-family:var(--code);font-size:calc(10.5px * var(--fs));color:var(--faint-solid);
   border:1px solid var(--line);border-radius:var(--r);padding:3px 7px;

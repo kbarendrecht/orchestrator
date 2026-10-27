@@ -181,10 +181,13 @@ function renderHead() {
      they name the *object* of the search, so neither says that the thing in front
      of you is a search at all. */
   const text = state.mode === 'text';
-  $('fnmode').textContent = text ? 'find contents' : 'find files';
+  $('fnmode').dataset.mode = state.mode;
+  for (const b of /** @type {HTMLElement[]} */ ([...$('fnmode').querySelectorAll('[data-v]')])) {
+    b.setAttribute('aria-pressed', String(b.dataset.v === state.mode));
+  }
   $('fnmode').title = text
-    ? 'Searching file contents. Click to search file names instead (Shift Shift)'
-    : `Searching file names. Click to search contents instead (${MOD_LABEL}+Shift+F)`;
+    ? 'Searching file contents. File names: Shift Shift'
+    : `Searching file names. Contents: ${MOD_LABEL}+Shift+F`;
   for (const id of ['fncase', 'fnre', 'fnword', 'fnglob']) {
     /* These ask about text. In `names` mode the ranking is the page's own, so they
        would be controls that do nothing — and the path filter was exactly that:
@@ -682,7 +685,14 @@ export function init() {
   for (const id of ['fncase', 'fnre', 'fnword']) {
     $(id).onclick = () => { $(id).classList.toggle('on'); run(); };
   }
-  $('fnmode').onclick = () => void open(state.mode === 'text' ? 'names' : 'text');
+  /* A half picks its mode, and the frame around them flips it: the second is what
+     a click that lands between the two halves, or a script, means by "the
+     switch". The open half asks for nothing. */
+  $('fnmode').onclick = (ev) => {
+    const want = /** @type {HTMLElement} */ (ev.target).closest('[data-v]')?.getAttribute('data-v');
+    const next = want ?? (state.mode === 'text' ? 'names' : 'text');
+    if (next !== state.mode) void open(next === 'text' ? 'text' : 'names');
+  };
   $('fnopen').onclick = () => openCurrent();
   $('fnedit').onclick = () => (Editor.isOpen() ? Editor.close() : edit());
   $('fnsave').onclick = () => Editor.save();

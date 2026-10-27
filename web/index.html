@@ -165,10 +165,11 @@
          than the review's six screens; the two lists are rendered by find.js. -->
     <div class="overlay find" id="fnoverlay">
       <div class="ov-head">
-        <!-- The mode is a button, not a caption: the two modes are one habit, and
-             the chords for them are a tap and a three-key chord that nothing on
-             screen used to name. -->
-        <button class="fnmode" id="fnmode"></button>
+        <!-- The mode is a two-way toggle, not a caption: the two modes are one
+             habit, and the chords for them are a tap and a three-key chord that
+             nothing on screen used to name. Both words show, the open one
+             marked, so it says what is being searched and what the other one is. -->
+        <span class="fnmode" id="fnmode" role="group" aria-label="Search for"><button type="button" data-v="names">Files</button><button type="button" data-v="text">Contents</button></span>
         <input class="fnq" id="fnq" spellcheck="false" autocomplete="off" aria-label="search">
         <input class="fnglob" id="fnglob" spellcheck="false" autocomplete="off"
                placeholder="path filter" aria-label="path filter">

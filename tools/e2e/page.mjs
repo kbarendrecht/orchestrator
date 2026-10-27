@@ -1541,14 +1541,14 @@ try {
      chord are not things a person finds by looking. The label names the question
      being asked now, and clicking it asks the other one. */
   check(
-    await page.$eval('#fnmode', (m) => m.textContent) === 'find contents',
+    await page.$eval('#fnmode', (m) => m.dataset.mode) === 'text',
     'the mode label names the search, not its object',
   )
   // Clicked through the element, like every other button in this overlay: the
   // update pill floats over the middle of any overlay header.
   await page.$eval('#fnmode', (b) => b.click())
   await page.waitForFunction(
-    () => document.getElementById('fnmode')?.textContent === 'find files',
+    () => document.getElementById('fnmode')?.dataset.mode === 'names',
     null, { timeout: 5000 })
   /* `README.md` rather than the file written above, and the reason is worth
      knowing: the path list is fetched once per workspace and kept, so a file
@@ -1566,7 +1566,7 @@ try {
   )
   await page.$eval('#fnmode', (b) => b.click())
   await page.waitForFunction(
-    () => document.getElementById('fnmode')?.textContent === 'find contents',
+    () => document.getElementById('fnmode')?.dataset.mode === 'text',
     null, { timeout: 5000 })
   await page.fill('#fnq', 'frobnicate')
   await page.waitForFunction(
@@ -2092,7 +2092,7 @@ try {
   await page.waitForTimeout(150)
   check(await findUp() === true, 'Ctrl Shift F opens the search in contents mode')
   check(
-    await page.$eval('#fnmode', (m) => m.textContent) === 'find contents',
+    await page.$eval('#fnmode', (m) => m.dataset.mode) === 'text',
     'and it says which mode it is in',
   )
   await page.keyboard.press('Escape')
