@@ -1149,7 +1149,11 @@ function prRow(/** @type {any} */ p) {
          than one that answers by doing nothing. `setSelected` is instant and
          local — no request, no snapshot — so there was nothing to see at all. */
       const here = p.session === selected;
-      const j = el('button', 'jump' + (here ? ' here' : ''), 'session');
+      /* The Fix button's shape with a terminal icon in the neutral colour (option A
+         of the session/fix review): one family of verbs on the row, and the amber
+         stays on the one that needs you. */
+      const j = el('button', 'jump' + (here ? ' here' : ''));
+      j.append(icon('practic', 1.5, 'M3 4.5l3.5 3.5L3 11.5', 'M8 12h5'), 'Session');
       j.title = here ? 'You are in this session' : 'Go to the session on this branch';
       j.onclick = (ev) => {
         ev.preventDefault();

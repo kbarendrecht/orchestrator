@@ -2089,19 +2089,23 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
    a quiet word with no edge reads as a label, which is how "Reset to 100%" in the
    settings pane came to look like the name of the row under it. Neutral rather
    than amber: amber is "this needs you", and going to a session is only an offer. */
+/* The Fix button's twin (`.pract`): raised, the interface font, and an icon, here
+   in the neutral colour so the amber stays on the verb that needs you. */
 .prrow .jump{
-  font-family:var(--mono);font-size:calc(9px * var(--fs));color:var(--ghost);
-  padding:2px 8px;border:1px solid var(--line);border-radius:var(--r);
-  flex:0 0 auto;white-space:nowrap;
+  display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 8px 0 6px;
+  font-family:var(--sans);font-size:calc(11.5px * var(--fs));font-weight:500;color:var(--text);
+  background:var(--raised);border:1px solid var(--line);border-radius:var(--r);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.04);
+  flex:0 0 auto;white-space:nowrap;transition:background .15s;
 }
-.prrow:hover .jump{color:var(--faint-solid)}
-.prrow .jump:hover{color:var(--text);background:var(--raised);border-color:var(--dim)}
-/* The chip pointing at the session you are already in. Filled rather than
-   brighter, because "you are here" is a state and every other treatment on this
-   chip is an offer — and it has to read without a hover, since the question it
-   answers is asked *before* you press it. */
+.prrow .jump .practic{color:var(--dim)}
+.prrow .jump:hover{background:var(--line-soft)}
+/* The session you are already in: pressed in rather than raised, with its icon in
+   the working blue. A state, not an offer, and it has to read without a hover,
+   since the question it answers is asked *before* you press it. */
 .prrow .jump.here,
-.prrow:hover .jump.here{color:var(--text);background:var(--raised);border-color:var(--dim)}
+.prrow .jump.here:hover{background:var(--bg);color:var(--dim);box-shadow:inset 0 1px 2px rgba(0,0,0,.5)}
+.prrow .jump.here .practic{color:var(--work)}
 .dot.ok{background:var(--ok)}
 
 /* ---------- review queue (§6b) ---------- */
