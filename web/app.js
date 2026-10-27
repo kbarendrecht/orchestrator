@@ -980,7 +980,7 @@ async function teardown(/** @type {string} */ wsId) {
 $('ovclose').onclick = Diff.close;
 $('ovprev').onclick = () => Diff.step(-1);
 $('ovnext').onclick = () => Diff.step(1);
-$('fileshead').onclick = () => void Diff.toggleBase();
+$('fileshead').onclick = (ev) => Diff.baseMenu(ev);
 $('ovmode').onclick = async () => {
   // `closeEditor` is async — it may draw a confirm box — so the guard has to
   // await it. Un-awaited, `!promise` is always false and the mode flipped while

@@ -2232,6 +2232,22 @@ pub async fn diff_summary(
     ))
 }
 
+/// The commits the changes pane counts, for its header: the same base as
+/// [`diff_summary`], so the list and the files under it cannot disagree.
+pub async fn diff_commits(
+    State(app): State<Arc<AppState>>,
+    Query(q): Query<DiffQuery>,
+) -> ApiResult<Vec<crate::diff::Commit>> {
+    let (path, base) = base_for(&app, &q).await?;
+    // Off the runtime: a `git log`, once per mode switch and per new commit.
+    Ok(Json(
+        crate::proc::run_blocking("the diff's commits", move || {
+            crate::diff::commits(&path, &base)
+        })
+        .await??,
+    ))
+}
+
 /// What the search overlay asks for: a workspace, and the query itself.
 #[derive(Deserialize)]
 pub struct SearchQuery {

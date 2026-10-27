@@ -330,17 +330,17 @@ function renderFiles() {
      moves every time the agent does. The id is there so switching sessions still
      redraws — `wsId` alone would not, for two sessions in one workspace. */
   const cur = currentSession();
-  const listSum = w && pushedMode && !diffState.open ? pushedSummary(w) : null;
+  const mode = diffState.base;
+  const fetched = mode !== 'upstream';
+  const listSum = w && fetched && !diffState.open ? listedSummary(w) : null;
   const known = w ? changedOf(w) : [];
-  if (unchanged(drawn, [wsId, w, cur?.id ?? null, !!(cur && pending(cur)),
-    diffState.open, diffState.path, diffState.summary, pushedMode, listSum, known], NOT_SHOWN)) return;
+  const commits = w ? commitsOf(w) : null;
+  if (unchanged(drawn, [wsId, w, cur?.id ?? null, !!(cur && pending(cur)), snap.upstream_ref,
+    diffState.open, diffState.path, diffState.summary, mode, listSum, known, commits], NOT_SHOWN)) return;
   if (w) renderDivergence(w);
   const panes = $('filepanes');
 
-  $('filestitle').textContent = diffState.open ? 'Changeset' : pushedMode ? 'Unpushed' : 'Changes';
-  $('fileshead').title = pushedMode
-    ? 'What the next push would send · click for everything since this workspace branched'
-    : 'Everything changed since this workspace branched · click for what is not pushed yet';
+  $('filestitle').textContent = diffState.open ? 'Changeset' : MODES[mode].title;
 
   if (!w) {
     const s = currentSession();
@@ -353,6 +353,7 @@ function renderFiles() {
     }]);
     $('filesfoot').textContent = '';
     $('filesbase').textContent = '';
+    $('fileshead').title = 'Click to pick what this pane lists';
     return;
   }
 
@@ -371,9 +372,9 @@ function renderFiles() {
   const files = sum ? sum.files
     : listSum ? [...listSum.files, ...(known || []).filter((f) => f.status === '?')]
       .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
-    : pushedMode ? []
+    : fetched ? []
     : (known || []);
-  const since = sum ? sum.base : listSum ? listSum.base : pushedMode ? null : w.changed_since;
+  const since = sum ? sum.base : listSum ? listSum.base : fetched ? null : w.changed_since;
   const counted = !!(sum || listSum);
 
   /* **Keyed on the path, and the container is kept**, because this pane draws up
@@ -390,9 +391,9 @@ function renderFiles() {
   if (!files.length) {
     items.push({
       key: 'empty',
-      sig: paintSig([!!sum, w.measured, w.is_main, pushedMode, !!listSum, known === null]),
-      build: () => (pushedMode && !sum
-        ? (listSum ? el('div', 'fempty', 'Nothing to push.') : counting())
+      sig: paintSig([!!sum, w.measured, w.is_main, mode, !!listSum, known === null]),
+      build: () => (fetched && !sum
+        ? (listSum ? el('div', 'fempty', mode === 'head' ? 'Nothing uncommitted.' : 'Nothing to push.') : counting())
         // An omitted list still on its way is not counted yet, not empty.
         : sum || (w.measured && known !== null)
           ? el('div', 'fempty',
@@ -426,12 +427,86 @@ function renderFiles() {
   const lines = sum ?? listSum;
   if (lines) bits.push(`+${lines.added} \u2212${lines.deleted}`);
   if (w.is_main) bits.push('worktrees excluded');
-  $('filesfoot').textContent = counted || (!pushedMode && w.measured) ? bits.join(' \u00b7 ') : 'counting\u2026';
-  // The base belongs in the header, where the toggle used to be: it is the one
-  // thing you need to know to read the list, and it is not a choice.
-  $('filesbase').textContent = !since ? ''
-    : !pushedMode ? `since ${since.slice(0, 7)}`
-    : `unpushed since ${since.slice(0, 7)}`;
+  $('filesfoot').textContent = counted || (!fetched && w.measured) ? bits.join(' \u00b7 ') : 'counting\u2026';
+  /* **What the list is measured from, in words** (#47). It said `since 77c0dbf`,
+     which tells nobody anything: the base is a ref you know and a number of
+     commits, and the sha moves to the tooltip with the commits themselves.
+     **Short, because the line has 136px**: it shares 296px with the window
+     buttons, and `page-check` measured `since develop · 12 commits` at 189. So
+     the ref is its leaf and the word "commits" is the menu's to say. */
+  $('filesbase').textContent = !since ? '' : MODES[mode].line(w);
+  $('fileshead').title = [
+    mode === 'head' ? `uncommitted work on top of ${since ? since.slice(0, 7) : 'HEAD'}`
+      : mode === 'pushed' ? `what the next push would send, from ${since ? since.slice(0, 7) : '…'}`
+      : `everything since this workspace branched from ${snap.upstream_ref} at ${since ? since.slice(0, 7) : '…'}`,
+    ...(commits || []).map((c) => `${c.sha} ${c.subject}`),
+    ...(commits && commits.length >= COMMITS_CAP ? ['…'] : []),
+    'click to pick what this pane lists',
+  ].join('\n');
+}
+
+/** `n commits`, `1 commit`. */
+const commitCount = (/** @type {number} */ n) => `${n} commit${n === 1 ? '' : 's'}`;
+
+/** The leaf of the base ref, which is the name people say: `develop` of
+ *  `upstream/develop`. The remote is in the tooltip. */
+const baseLeaf = () => (snap.upstream_ref || 'the base').replace(/^[^/]+\//, '');
+
+/** The pane's three questions, each a base `/api/diff` already answers. Every one
+ *  ends at the working tree, which is what lets the diff they open keep its
+ *  editing and its folds: a single commit's diff would not (#47).
+ *
+ *  `size` is what the menu says beside each, from the snapshot alone. The
+ *  uncommitted count is not in a workspace's snapshot, so that one says nothing
+ *  until it is picked, and then the footer counts it.
+ *
+ *  @type {Record<string, { title: string, menu: string, line: (w: import('../snapshot').WorkspaceView) => string,
+ *                          size: (w: import('../snapshot').WorkspaceView) => string | null }>} */
+const MODES = {
+  upstream: {
+    title: 'Changes', menu: 'Since branched',
+    line: (w) => `${w.ahead} since ${baseLeaf()}`,
+    size: (w) => commitCount(w.ahead),
+  },
+  pushed: {
+    title: 'Unpushed', menu: 'Unpushed',
+    line: (w) => `${w.unpushed} not pushed`,
+    size: (w) => commitCount(w.unpushed),
+  },
+  head: {
+    title: 'Uncommitted', menu: 'Uncommitted',
+    line: () => 'against HEAD',
+    size: () => null,
+  },
+};
+
+/** Same cap as the daemon's `COMMITS_CAP`: a full list says so with `…`. */
+const COMMITS_CAP = 50;
+
+/** The commits the header lists, fetched again when a count it depends on moves.
+ *  `null` while the first answer is in the air, and always for `head`, which has
+ *  none.
+ *
+ *  @type {{ key: string | null, ws: string | null, list: import('../repo').Commit[] | null }} */
+const commitList = { key: null, ws: null, list: null };
+function commitsOf(/** @type {import('../snapshot').WorkspaceView} */ w) {
+  if (diffState.base === 'head') return null;
+  const key = paintSig([w.id, diffState.base, w.ahead, w.unpushed, w.changed_since]);
+  if (commitList.key !== key) {
+    commitList.key = key;
+    if (commitList.ws !== w.id) commitList.list = null;
+    const q = new URLSearchParams({ workspace: w.id, base: diffState.base });
+    get(`/api/diff/commits?${q}`).then((list) => {
+      if (commitList.key !== key) return;
+      commitList.ws = w.id;
+      commitList.list = list;
+      renderFiles();
+    }, () => {
+      // Only the tooltip goes without: the list and the counts are the snapshot's.
+      if (commitList.key === key) commitList.list = [];
+    });
+  }
+  return commitList.ws === w.id ? commitList.list : null;
 }
 
 // Kept short: the right header also carries the title and the refresh control,
@@ -478,35 +553,36 @@ const diffState = {
   reveal: new Map(),
 };
 
-/* **Two questions, and the header is the switch between them.** `Changes` is
+/* **Three questions, and the header is a menu between them** (#47). `Changes` is
    everything since the workspace branched, which is what the pane has always
    listed. `Unpushed` is what the next push would send: a diff against
-   `origin/<branch>`, uncommitted work and untracked files included. The overlay
-   follows the same mode, so a row opens the diff the list counted. Remembered per
-   browser, like the pane sizes. */
+   `origin/<branch>`, uncommitted work and untracked files included.
+   `Uncommitted` is the working tree against `HEAD`. It was a blind toggle
+   between the first two, which nothing on screen said. The overlay follows the
+   same mode, so a row opens the diff the list counted. Remembered per browser,
+   like the pane sizes. */
 const BASE_KEY = 'orch.changesBase';
-let pushedMode = false;
 try {
-  pushedMode = localStorage.getItem(BASE_KEY) === 'pushed';
+  const kept = localStorage.getItem(BASE_KEY);
+  diffState.base = kept === 'pushed' || kept === 'head' ? kept : 'upstream';
 } catch (err) { /* no storage: the pane opens on `Changes` */ }
-diffState.base = pushedMode ? 'pushed' : 'upstream';
 
-/** The pushed list, which the snapshot does not carry: fetched, and fetched again
- *  whenever this workspace's own measurements move. `unpushed` is in the key
- *  because a push changes nothing else the snapshot says about the tree.
+/** The list for the two modes the snapshot does not carry: fetched, and fetched
+ *  again whenever this workspace's own measurements move. `unpushed` is in the
+ *  key because a push changes nothing else the snapshot says about the tree.
  *
  *  @type {{ key: string | null, ws: string | null, summary: import('../repo').DiffSummary | null }} */
 const pushed = { key: null, ws: null, summary: null };
 
-/** The pushed summary for `w`, or `null` while the first one is in the air. The
- *  previous answer stays up while a newer one loads, so an edit does not blank
- *  the list. */
-function pushedSummary(/** @type {import('../snapshot').WorkspaceView} */ w) {
-  const key = paintSig([w.id, w.changed, w.changed_since, w.unpushed, w.branch]);
+/** The fetched summary for `w` in the current mode, or `null` while the first one
+ *  is in the air. The previous answer stays up while a newer one loads, so an edit
+ *  does not blank the list. */
+function listedSummary(/** @type {import('../snapshot').WorkspaceView} */ w) {
+  const key = paintSig([w.id, diffState.base, w.changed, w.changed_since, w.unpushed, w.branch]);
   if (pushed.key !== key) {
     pushed.key = key;
     if (pushed.ws !== w.id) pushed.summary = null;
-    const q = new URLSearchParams({ workspace: w.id, base: 'pushed' });
+    const q = new URLSearchParams({ workspace: w.id, base: diffState.base });
     get(`/api/diff?${q}`).then((sum) => {
       if (pushed.key !== key) return;
       pushed.ws = w.id;
@@ -544,10 +620,21 @@ function changedOf(/** @type {import('../snapshot').WorkspaceView} */ w) {
   return omitted.ws === w.id ? omitted.files : null;
 }
 
-/** Switch the pane between `Changes` and `Unpushed`. */
-async function toggleBase() {
-  pushedMode = !pushedMode;
-  diffState.base = pushedMode ? 'pushed' : 'upstream';
+/** The header's menu: the three questions, each with its size, the one on screen
+ *  ticked. */
+function baseMenu(/** @type {MouseEvent} */ ev) {
+  const w = workspaceById(diffState.ws || activeWorkspaceId());
+  openMenu(ev, Object.entries(MODES).map(([key, m]) => /** @type {import('./core.js').MenuItem} */ ([
+    (w && m.size(w)) ? `${m.menu} \u00b7 ${m.size(w)}` : m.menu,
+    `pick${key === diffState.base ? ' on' : ''}`,
+    () => void setBase(key),
+  ])));
+}
+
+/** Point the pane at one of [`MODES`]. */
+async function setBase(/** @type {string} */ mode) {
+  if (mode === diffState.base) return;
+  diffState.base = mode;
   try {
     localStorage.setItem(BASE_KEY, diffState.base);
   } catch (err) { /* private mode: it still switched for this session */ }
@@ -1119,4 +1206,4 @@ function openEditor() {
   });
 }
 
-export { goTo, toggleBase, diffState as state, openDiff as open, closeDiff as close, renderDiff as render, stepChange as step, loadFile, renderFiles, openEditor };
+export { goTo, baseMenu, diffState as state, openDiff as open, closeDiff as close, renderDiff as render, stepChange as step, loadFile, renderFiles, openEditor };

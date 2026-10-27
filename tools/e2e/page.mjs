@@ -220,12 +220,13 @@ try {
     /* The strings the pane really draws, put there rather than waited for: the
        sandbox workspace has no merge base, so `#filesbase` is empty and the title
        it competes with has nothing to lose to. `diff.js` writes exactly these two
-       — `Changeset` is the longer title, and a base is a 7-character short sha. */
+       — `Changeset` is the longer title, and the longest base line is the ref's
+       leaf with a two-digit commit count (#47). */
     const title = document.getElementById('filestitle')
     const base = document.getElementById('filesbase')
     const was = [title.textContent, base.textContent]
     title.textContent = 'Changeset'
-    base.textContent = 'since 1a2b3c4'
+    base.textContent = '12 since develop'
     /* **Under the app's own chrome, which is the case that clipped.** A browser tab
        draws no window buttons, so `.top-r` has ~100px this checks nothing about;
        `custom` is what the Linux app runs and what reveals `.wctl`. Set here rather
@@ -238,7 +239,7 @@ try {
     for (const el of document.querySelectorAll('.top-r .eyebrow, .top-r .ctx-btn, .rvhead .eyebrow')) {
       const t = (el.textContent || '').trim()
       // Overflow by a subpixel is the browser rounding, not an ellipsis.
-      if (t && el.scrollWidth > el.clientWidth + 1) out.push(`${el.id || el.className}: ${t}`)
+      if (t && el.scrollWidth > el.clientWidth + 1) out.push(`${el.id || el.className}: ${t} (${el.scrollWidth} in ${el.clientWidth})`)
     }
     ;[title.textContent, base.textContent] = was
     if (chrome === undefined) delete document.body.dataset.chrome

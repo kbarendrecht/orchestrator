@@ -390,6 +390,50 @@ fn parse_blame(raw: &str) -> Vec<BlameLine> {
     out
 }
 
+/// One commit the changes pane is counting, for the list its header shows.
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(
+    any(test, feature = "test-util"),
+    derive(ts_rs::TS),
+    ts(export, export_to = "repo.d.ts")
+)]
+pub struct Commit {
+    pub sha: String,
+    pub subject: String,
+}
+
+/// How many commits [`commits`] lists. A header tooltip, not a log: past this it
+/// says how many more there are, and `ahead` in the snapshot has the real count.
+pub const COMMITS_CAP: usize = 50;
+
+/// The commits between `base` and `HEAD`, newest first. `base` is what
+/// [`resolve_base`] answered, so the list is the one the diff beside it counts:
+/// since the branch point, or only the unpushed ones. Merges are left out because
+/// a rebase-only branch has none, and on one that does, a merge subject says
+/// nothing the pane needs.
+pub fn commits(cwd: &Path, base: &str) -> Result<Vec<Commit>> {
+    let cap = format!("-n{COMMITS_CAP}");
+    let out = git(
+        cwd,
+        &[
+            "log",
+            "--no-merges",
+            &cap,
+            "--format=%h%x00%s",
+            &format!("{base}..HEAD"),
+            "--",
+        ],
+    )?;
+    Ok(out
+        .lines()
+        .filter_map(|l| l.split_once('\0'))
+        .map(|(sha, subject)| Commit {
+            sha: sha.to_string(),
+            subject: subject.to_string(),
+        })
+        .collect())
+}
+
 /// A file as it exists at `base`, for the read-only left pane in edit mode.
 pub fn show_at(cwd: &Path, base: &str, path: &str) -> Result<String> {
     // `--` so a path that looks like a rev is still treated as a path.
@@ -815,6 +859,37 @@ mod tests {
             summary(&dir, &base(())).unwrap().files.is_empty(),
             "no reverts of the ref ahead"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The header's list is the commits the diff beside it counts: since the
+    /// branch point, or only the ones no remote has, and nothing for `HEAD`.
+    #[test]
+    fn the_commit_list_follows_the_base() {
+        let dir = crate::testutil::scratch_repo("diff-commits");
+        let g = |args: &[&str]| crate::testutil::git(&dir, args);
+        let commit = |file: &str| {
+            std::fs::write(dir.join(file), "x\n").unwrap();
+            g(&["add", "-A"]);
+            g(&["commit", "-q", "-m", &format!("add {file}")]);
+        };
+        g(&["update-ref", "refs/remotes/upstream/main", "HEAD"]);
+        g(&["checkout", "-q", "-b", "feature"]);
+        commit("one.txt");
+        g(&["update-ref", "refs/remotes/origin/feature", "HEAD"]);
+        commit("two.txt");
+
+        let subjects = |base: Base| -> Vec<String> {
+            let at = resolve_base(&dir, base, "upstream/main", None).unwrap();
+            commits(&dir, &at)
+                .unwrap()
+                .into_iter()
+                .map(|c| c.subject)
+                .collect()
+        };
+        assert_eq!(subjects(Base::Upstream), ["add two.txt", "add one.txt"]);
+        assert_eq!(subjects(Base::Pushed), ["add two.txt"]);
+        assert!(subjects(Base::Head).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

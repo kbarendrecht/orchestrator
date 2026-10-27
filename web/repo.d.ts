@@ -18,6 +18,11 @@ time: number, summary: string, };
 
 export type Checks = "passing" | "failing" | "pending" | "unknown";
 
+/**
+ * One commit the changes pane is counting, for the list its header shows.
+ */
+export type Commit = { sha: string, subject: string, };
+
 export type DiffSummary = { base: string, files: Array<DiffFile>, added: number, deleted: number, };
 
 /**
