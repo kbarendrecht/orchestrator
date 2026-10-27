@@ -611,6 +611,16 @@ pub struct Session {
     /// Maintained by [`Session::set_state`], because a turn starting and a turn
     /// ending are the only two things that change the answer.
     pub interrupted: bool,
+    /// Whether the last `Stop` left work out that would have woken the session
+    /// later — a monitor, an agent, a scheduled wake-up, not a plain shell — as
+    /// the hook said (`hooks::leaves_work`). A restart kills all of it, so a
+    /// session with work out is as owed a "continue" as one cut off mid-turn.
+    ///
+    /// `None` until a `Stop` has said, which includes every record from before
+    /// this existed: then the restart falls back to reading the transcript
+    /// (`store::left_background_work`). A new turn sets it to `Some(false)`, since
+    /// that turn's own `Stop` is the next answer.
+    pub left_work: Option<bool>,
     /// The idle state a respawn under the same id comes back in, instead of `Ready`.
     ///
     /// `SessionStart` turns a `Starting` record into `Ready`, which is right for a
@@ -755,6 +765,7 @@ impl Session {
             boundary_violations: Vec::new(),
             last_reconcile: None,
             interrupted: false,
+            left_work: None,
             comes_back_as: None,
             had_a_turn: false,
             forked_from: None,
@@ -844,6 +855,7 @@ impl Session {
         match &state {
             State::Working => {
                 self.interrupted = true;
+                self.left_work = Some(false);
                 // `Working` is only ever entered off a prompt (`UserPromptSubmit`,
                 // or the nudge that resumes a polling agent), so it is the moment a
                 // conversation stops being an empty pane. Latched, never cleared.

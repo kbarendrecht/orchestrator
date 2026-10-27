@@ -1532,11 +1532,19 @@ impl AppState {
             // A turn that ended with a watcher still out owes you the rest as much
             // as one cut off mid-way, and the restart just killed the watcher. Only
             // for a session that was live, since nothing else had one running.
-            if was_live
-                && s.had_a_turn
-                && !s.interrupted
-                && crate::store::left_background_work(s.id, &s.cwd, s.transcript_path.as_deref())
-            {
+            //
+            // **The `Stop` hook's answer first, the transcript only without one.**
+            // The hook names monitors and scheduled wake-ups, which the transcript
+            // patterns miss, and leaves out a plain shell, which they count — so a
+            // dev server alone no longer reads as work cut off. A record from before
+            // the field has `None`, and the transcript still answers for it.
+            let left = match s.left_work {
+                Some(left) => left,
+                None => {
+                    crate::store::left_background_work(s.id, &s.cwd, s.transcript_path.as_deref())
+                }
+            };
+            if was_live && s.had_a_turn && !s.interrupted && left {
                 s.interrupted = true;
             }
             inner.sessions.entry(s.id).or_insert(s);

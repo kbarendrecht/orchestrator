@@ -58,6 +58,11 @@ pub struct HookPayload {
     /// What is still in flight when a `Stop` fires ([`waits_on_agents`]).
     #[serde(default)]
     pub background_tasks: Vec<BackgroundTask>,
+    /// The session's own scheduled wake-ups when a `Stop` fires: `CronCreate`,
+    /// `ScheduleWakeup`, `/loop`. Counted, never read: a restart drops every one of
+    /// them, and that is all [`leaves_work`] needs to know. Codex sends none.
+    #[serde(default)]
+    pub session_crons: Vec<serde_json::Value>,
     /// The turn a Codex hook belongs to, which is how [`watch_turn_end`] finds
     /// that turn's end in the rollout. Claude Code sends none.
     #[serde(default)]
@@ -88,6 +93,23 @@ fn waits_on_agents(payload: &HookPayload) -> bool {
         .background_tasks
         .iter()
         .any(|t| matches!(t.kind.as_str(), "subagent" | "workflow"))
+}
+
+/// Whether this `Stop` leaves work out that would wake the session later, and
+/// that a restart kills without a word: a monitor, an agent, a workflow, or a
+/// scheduled wake-up. Recorded on the session so the next restart can offer to
+/// continue it (`Session::left_work`).
+///
+/// **Not a plain shell.** A dev server started with `run_in_background` is in
+/// `background_tasks` for as long as it runs, so counting shells would nudge that
+/// session after every restart. An unknown kind counts: it is something Claude
+/// Code tracks as in flight, and it is not the dev server case.
+///
+/// From the `Stop` payload, which describes these fields as the difference
+/// between "the session is done" and "it is waiting for background work to wake
+/// it" — read off the 2.1.311 binary's hook schema rather than its docs.
+fn leaves_work(payload: &HookPayload) -> bool {
+    !payload.session_crons.is_empty() || payload.background_tasks.iter().any(|t| t.kind != "shell")
 }
 
 /// Does this `SessionEnd` reason mean the process is going away?
@@ -675,6 +697,10 @@ pub async fn stop(
         orchd::health::build_failure_in(&inner, &workspace)
     };
 
+    // Recorded before the state moves, and whatever the state does: a `Stop` that
+    // stays `Working` for its agents has left those agents out too.
+    let left = leaves_work(&payload);
+    app.with_session(id, |s| s.left_work = Some(left)).await;
     // Still `Working`: its own agents will wake it, and the turn is not yours yet.
     if !waits_on_agents(&payload) {
         app.with_session(id, |s| {
@@ -1378,6 +1404,34 @@ mod tests {
             ),
             "a dev server left running does not hold the turn open"
         );
+        let left = || async { app.inner.read().await.sessions[&id].left_work };
+        assert_eq!(
+            left().await,
+            Some(false),
+            "and a shell alone is no work left out"
+        );
+
+        let _ = stop(
+            AxState(app.clone()),
+            headers.clone(),
+            Json(stop_with(&["monitor", "shell"])),
+        )
+        .await;
+        assert_eq!(
+            left().await,
+            Some(true),
+            "a monitor is work a restart would kill"
+        );
+        let _ = stop(
+            AxState(app.clone()),
+            headers.clone(),
+            Json(HookPayload {
+                session_crons: vec![serde_json::json!({"id": "c1", "recurring": true})],
+                ..HookPayload::default()
+            }),
+        )
+        .await;
+        assert_eq!(left().await, Some(true), "and so is a scheduled wake-up");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
