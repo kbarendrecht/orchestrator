@@ -748,7 +748,7 @@ button.ctx-btn:hover{color:var(--text)}
    the rail, for something that waits patiently until you get to it. */
 .railnudge{
   flex:0 0 auto;display:grid;grid-template-columns:auto minmax(0,1fr);gap:2px 10px;align-items:start;
-  margin:8px;padding:10px 10px 10px 12px;background:var(--surface);border:1px solid var(--line-soft);
+  margin:8px;padding:10px 10px 10px 12px;background:var(--surface);
   border-radius:var(--r-lg);font-size:calc(12px * var(--fs));
 }
 .railnudge[hidden]{display:none}
@@ -1293,13 +1293,6 @@ body.row-resizing{cursor:row-resize;user-select:none}
 /* A dot in the legend sits in a text cell rather than a flex row, so it needs a
    box of its own to have a size. */
 .keys dt .dot{display:inline-block;vertical-align:middle}
-/* The two halves of the help pane. Bigger and in the text colour, so they read
-   as a level above the uppercase group labels under them. */
-.help-section{
-  font-family:var(--label);font-size:calc(16px * var(--fs));font-weight:600;
-  color:var(--text);margin:44px 0 0;padding-bottom:10px;border-bottom:1px solid var(--line);
-}
-.help-section:first-child{margin-top:8px}
 /* The licence notice, a fixed foot to the legend rather than its last row.
    `flex:0 0 auto` beside the card's `flex:1` is what keeps it on screen while the
    shortcuts scroll under it — it is a legal notice, so being reachable only by
@@ -1660,9 +1653,9 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
   letter-spacing:.06em;text-transform:uppercase;color:var(--ghost);
 }
 #settings .settings-tgroup:first-child{padding-top:2px}
-#settings button.settings-co{width:100%;text-align:left;border-radius:var(--r);text-transform:none;letter-spacing:0;font-size:calc(12px * var(--fs))}
+#settings .settings-co{width:100%;text-align:left;border-radius:var(--r);text-transform:none;letter-spacing:0;font-size:calc(12px * var(--fs))}
+#settings div.settings-co{color:var(--dim)}
 #settings button.settings-co:hover{color:var(--text);background:var(--hover)}
-#settings button.settings-co[aria-expanded="true"]{color:var(--dim)}
 #settings .settings-band{width:6px;height:6px;border-radius:2px;flex:0 0 auto}
 #settings .settings-projects{display:flex;flex-direction:column;gap:2px}
 #settings .settings-projects>.settings-tab{padding-left:18px}
@@ -2174,7 +2167,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
    own column, so the titles still start on one line; a dot would read as `prio`,
    which is red too. Broken, and not yours to fix — the row's own dimming says the
    second half. */
-.rvx{display:inline-grid;place-items:center;flex:0 0 6px;width:6px;color:var(--bad);font-size:calc(10px * var(--fs))}
+.rvx{display:inline-grid;place-items:center;flex:0 0 auto;width:10px;margin:0 -1px 0 -3px;color:var(--bad);font-size:calc(10px * var(--fs))}
 /* `prio` / `prio stopper` from the source's labels. Last, so it wins over both. */
 .rvrow .dot.prio{background-color:var(--bad)}
 /* Fixed-width number column so titles start at the same offset as the PR list. */
@@ -2263,14 +2256,15 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 
 /* ---------- divergence strip ---------- */
 .diverge{display:none}
-/* The first row of the list (see `renderDivergence`): the list's own inset and
-   corners, a faint tint in the state's colour, and the colour itself on the icon. */
+/* The first row of the list (see `renderDivergence`): the list's own inset, and
+   the state's colour on the icon alone, as the restart card carries it. It had a
+   tint in that colour too, which made a branch that is merely behind read as an
+   alert. */
 .diverge.on{
   display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;margin:6px 6px 0;padding:6px 8px;
-  border-radius:var(--r);background:rgba(224,162,68,.05);
+  border-radius:var(--r);
   font-family:var(--sans);font-size:calc(12px * var(--fs));color:var(--dim);flex:0 0 auto;
 }
-.diverge.on.bad{background:rgba(219,122,114,.06)}
 .dvic{display:inline-flex;color:var(--attn);font-size:calc(13px * var(--fs))}
 .diverge.bad .dvic{color:var(--bad)}
 /* Wraps rather than pushing the button under it: the pane is 300px wide and the

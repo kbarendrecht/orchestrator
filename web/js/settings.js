@@ -36,10 +36,12 @@ function renderProjects() {
   /** @type {HTMLElement[]} */
   const nodes = [];
   for (const c of CHECKOUTS) {
-    const head = el('button', 'settings-tgroup settings-co');
-    head.setAttribute('type', 'button');
     const open = c.path === at.path;
-    head.setAttribute('aria-expanded', String(open));
+    /* A heading for the open project, a button only for the others: the open one
+       has nothing to do on a click, and with one project open it is the only one,
+       so a button there was a control that looked pressable and did nothing. */
+    const head = el(open ? 'div' : 'button', 'settings-tgroup settings-co');
+    if (!open) head.setAttribute('type', 'button');
     const band = several ? bandOf(c.path) : null;
     if (band) {
       const mark = el('span', 'settings-band');
@@ -48,7 +50,7 @@ function renderProjects() {
     }
     head.append(c.name);
     head.title = open ? `${c.name}'s config.json` : `Show ${c.name}'s settings`;
-    head.onclick = () => pickProject(c.path);
+    if (!open) head.onclick = () => pickProject(c.path);
     nodes.push(head);
     if (open) nodes.push(...projectTabs);
   }
