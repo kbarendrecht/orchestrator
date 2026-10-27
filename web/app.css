@@ -2138,16 +2138,21 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 .rvrow .why{font-family:var(--mono);font-size:calc(9px * var(--fs));color:var(--faint-solid);
   flex:0 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
-/* A chip in the action's own colour, the skin's shape for a verb on a row: tinted
-   ground, a ring of the same hue, and a stronger ring on hover. */
+/* Raised like the overlay buttons, with the colour on the icon alone (see
+   `prAction`). Hover lifts the fill, never the border: a light ring read as a
+   second, louder button. */
 .pract{
-  font-family:var(--sans);font-size:calc(11px * var(--fs));font-weight:500;color:var(--attn);
-  padding:2px 9px;border:1px solid rgba(224,162,68,.32);border-radius:6px;background:rgba(224,162,68,.1);
-  flex:0 0 auto;white-space:nowrap;transition:background .15s,border-color .15s;
+  display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 8px 0 6px;
+  font-family:var(--sans);font-size:calc(11.5px * var(--fs));font-weight:500;color:var(--text);
+  background:var(--raised);border:1px solid var(--line);border-radius:var(--r);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.04);
+  flex:0 0 auto;white-space:nowrap;transition:background .15s;
 }
-.pract:hover:not(:disabled){background:rgba(224,162,68,.18);border-color:var(--attn)}
+.practic{display:inline-flex;color:var(--attn);font-size:calc(12px * var(--fs))}
+.pract:hover:not(:disabled){background:var(--hover)}
 .pract:disabled{color:var(--ghost);cursor:default}
-.pract.running{color:var(--auto);border-color:rgba(91,143,201,.32);background:rgba(91,143,201,.1);cursor:pointer}
+.pract.running{cursor:pointer}
+.pract.running .practic{color:var(--auto)}
 
 /* The default /resolve action and its quieter `cards` alternative, kept together
    so the pair reads as one control with a primary and a secondary. */

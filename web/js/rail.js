@@ -787,7 +787,7 @@ function reviewButtons(/** @type {import('../snapshot').PrView} */ p) {
      reviewer's — so a row button saying `resolve`, beside a PR, promised the one
      thing the pass refuses to do. It also now says the same word as the skill it
      starts. */
-  const btn = el('button', 'pract', 'handle');
+  const btn = prAction('button', 'handle', 'Handle');
   btn.title = `Work #${p.number}'s review threads in a pane you can take over`;
   btn.onclick = (ev) => {
     // The row is an anchor to the PR on GitHub; this is not that.
@@ -848,12 +848,35 @@ async function startHandleReview(/** @type {number} */ number, /** @type {HTMLBu
   }
 }
 
+/** A PR row's verb: a raised button with the verb's own icon and its word.
+ *
+ *  **The icon carries the colour, the word stays the text colour**: amber while
+ *  it is yours to press, blue while the run it started is going. The same icon
+ *  either way rather than a spinner, so a row reads the same verb before and
+ *  during, and nothing on the rail moves while an agent works (a rebuilt row
+ *  would restart an animation every snapshot anyway).
+ *
+ *  @template {'button' | 'span'} T
+ *  @param {T} tag a span for the running one, which is a link to the run rather
+ *         than a press
+ *  @param {'fix' | 'handle'} verb
+ *  @param {string} label
+ *  @param {boolean} [running]
+ *  @returns {HTMLElementTagNameMap[T]} */
+function prAction(tag, verb, label, running = false) {
+  const b = el(tag, 'pract' + (running ? ' running' : ''));
+  b.append(verb === 'fix'
+    ? icon('practic', 1.4, 'M10.5 2.5a3 3 0 0 0-3.2 4.2L2.8 11.2a1.2 1.2 0 0 0 1.7 1.7l4.5-4.5a3 3 0 0 0 4.2-3.2l-1.8 1.8-1.6-.4-.4-1.6z')
+    : icon('practic', 1.4, 'M3 3.5h10v7H7l-3 2.5v-2.5H3z'), label);
+  return b;
+}
+
 /** A hand-triggered run against a PR. `action` is the endpoint; `label` is what
  *  the button says, because the endpoint's name is not the useful word on a row.
  *  A refusal from the guard table is shown verbatim: it is the whole point of
  *  triggering by hand. */
 function actionButton(/** @type {import('../snapshot').PrView} */ p, /** @type {string} */ action, /** @type {string} */ label) {
-  const b = el('button', 'pract', label);
+  const b = prAction('button', 'fix', label);
   /* **The PR's own base, not the checkout's default.** This said "Rebase on
      develop" on every repo, and `snap.upstream_ref` was only half a fix: the run
      this describes resolves `rebase_target`, which takes the PR's `base_ref` and
@@ -1076,7 +1099,7 @@ function prRow(/** @type {any} */ p) {
     // The review pass on this PR, if one is running: drawn as `handling`.
     const handler = needsResolve ? handling(p) : null;
     if (auto && auto.state === 'running') {
-      const b = el('span', 'pract running', 'fixing');
+      const b = prAction('span', 'fix', 'Fixing\u2026', true);
       b.title = 'Go to the run';
       b.onclick = (ev) => { ev.preventDefault(); ev.stopPropagation(); setSelected(auto.session); };
       row.appendChild(b);
@@ -1098,14 +1121,14 @@ function prRow(/** @type {any} */ p) {
       const canPress = !p.session
         || (!!holder && !holder.pass && holder.workspace !== mainWorkspace(snap)?.id);
       if (handler) {
-        const b = el('span', 'pract running', 'handling');
+        const b = prAction('span', 'handle', 'Handling\u2026', true);
         b.title = 'Go to the session handling the review';
         b.onclick = (ev) => { ev.preventDefault(); ev.stopPropagation(); setSelected(handler); };
         row.appendChild(b);
       } else if (needsResolve && canPress) {
         row.appendChild(reviewButtons(p));
       }
-      if (needsFix && canPress) row.appendChild(actionButton(p, 'fix-pr', 'fix'));
+      if (needsFix && canPress) row.appendChild(actionButton(p, 'fix-pr', 'Fix'));
     }
 
     /* The row opens the PR; going to its session is the explicit chip, so one does
