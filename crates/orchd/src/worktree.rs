@@ -530,7 +530,7 @@ pub async fn teardown(app: &Arc<AppState>, workspace: &str) -> Result<Preflight>
         .with_context(|| format!("unknown workspace {workspace}"))?;
     // The repo's own teardown first, then ours. Ours runs either way and no-ops
     // when the hook already did the job.
-    let payload = remove_payload(&app.cfg.main_checkout, workspace, &path);
+    let payload = remove_payload(&app.cfg.main_checkout, &path);
     // Quiet, because a removal is not a create and `CreateRun` is one slot. This
     // used to report, which was harmless only while nothing removed a tree in the
     // background — `reap_old` and the spare pool's discard both do, and either
@@ -862,22 +862,20 @@ pub(crate) async fn run_repo_hooks(
     out
 }
 
-/// The payload for a `WorktreeRemove`.
+/// The payload for a `WorktreeRemove`, in the shape Claude Code sends it.
 ///
-/// `worktreePath` and `worktreeName` are the spellings Claude Code's own binary
-/// carries. That is the strongest evidence available: the monorepo declares no
-/// `WorktreeRemove`, so this has never made a real round trip, and a repo whose hook
-/// reads some other key gets a no-op rather than a wrong action.
-fn remove_payload(
-    main: &std::path::Path,
-    workspace: &str,
-    path: &std::path::Path,
-) -> serde_json::Value {
+/// **`worktree_path`, snake case, and no name.** That is the hook input schema in
+/// Claude Code's binary (`hook_event_name:"WorktreeRemove",worktree_path:…`, read
+/// from 2.1.311). This used to send `worktreePath` and `worktreeName`, which are
+/// the spellings of the *transcript's* worktree state (`store.rs` reads those), so
+/// a repo hook written against Claude Code's schema read an empty path and did
+/// nothing on every teardown the daemon ran. The monorepo's hook releases a slot,
+/// so its slots were never released by a daemon teardown.
+fn remove_payload(main: &std::path::Path, path: &std::path::Path) -> serde_json::Value {
     serde_json::json!({
         "hook_event_name": "WorktreeRemove",
         "cwd": main.to_string_lossy(),
-        "worktreePath": path.to_string_lossy(),
-        "worktreeName": workspace,
+        "worktree_path": path.to_string_lossy(),
     })
 }
 
@@ -1804,6 +1802,22 @@ mod tests {
         assert!(wt.exists());
 
         let _ = std::fs::remove_dir_all(main.parent().unwrap());
+    }
+
+    /// The remove hook gets Claude Code's key, so a hook written against Claude
+    /// Code's schema finds the path the daemon is removing.
+    #[test]
+    fn the_remove_payload_uses_claude_codes_keys() {
+        let p = remove_payload(
+            std::path::Path::new("/repo"),
+            std::path::Path::new("/repo/.claude/worktrees/wt"),
+        );
+        assert_eq!(p["worktree_path"], "/repo/.claude/worktrees/wt");
+        assert_eq!(p["hook_event_name"], "WorktreeRemove");
+        assert!(
+            p.get("worktreePath").is_none(),
+            "the transcript's spelling, not the hook's"
+        );
     }
 
     /// Only `command` hooks, from both repo settings files, in Claude Code's order.

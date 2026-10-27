@@ -176,7 +176,9 @@ merely un-based is still worth linking. A relative script path resolves against 
 main checkout, not the worktree, since the worktree may not carry it yet.
 
 **Removing.** Teardown runs your repo's `WorktreeRemove` hooks, then `git worktree
-remove` and `git worktree prune`, which no-op when the hook already did the job. A
+remove` and `git worktree prune`, which no-op when the hook already did the job.
+The hook gets the input Claude Code gives it, the path under `worktree_path`, so
+one hook serves both. A
 refusal is reported as it stands: never `--force`, never a recursive delete, since
 a worktree can hold symlinks back into main and following them destroys the main
 checkout.
