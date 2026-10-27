@@ -416,13 +416,22 @@
        holds two kinds of setting that apply differently — this browser's look,
        which applies as you touch it, and the checkout's config, which waits for
        Save. The line under the tabs says which the open tab is. -->
+  <!-- Two groups, because the tabs are two scopes: **App** is this browser and
+       the install (`host.json`), and each open **project** is its own
+       `config.json`. One heading per project, the chosen one unfolded; the project
+       tabs are moved under it by `settings.js` (`renderProjects`), so they are
+       written here once and keep their handlers. -->
   <div class="settings-tabs" role="tablist" aria-label="Settings sections">
+    <span class="settings-tgroup">App</span>
     <button class="settings-tab" type="button" role="tab" data-tab="theme">Theme</button>
-    <button class="settings-tab" type="button" role="tab" data-tab="git">Git</button>
-    <button class="settings-tab" type="button" role="tab" data-tab="tracker">Tracker</button>
-    <button class="settings-tab" type="button" role="tab" data-tab="reviews">Reviews</button>
-    <button class="settings-tab" type="button" role="tab" data-tab="agent">Agent</button>
     <button class="settings-tab" type="button" role="tab" data-tab="other">Other</button>
+    <div class="settings-projects" id="setprojects">
+      <button class="settings-tab" type="button" role="tab" data-tab="git" data-project>Git</button>
+      <button class="settings-tab" type="button" role="tab" data-tab="tracker" data-project>Tracker</button>
+      <button class="settings-tab" type="button" role="tab" data-tab="reviews" data-project>Reviews</button>
+      <button class="settings-tab" type="button" role="tab" data-tab="agent" data-project>Agent</button>
+      <button class="settings-tab" type="button" role="tab" data-tab="processes" data-project>Processes</button>
+    </div>
   </div>
   <div class="settings-card">
     <p class="settings-tabnote" id="settabnote"></p>
@@ -950,7 +959,7 @@
          than to the pane: the appearance half above applies the moment you touch it
          and is this browser's, so a theme change marking the config unsaved would
          both cry wolf and stop the pane ever re-reading the config. -->
-    <section class="settings-sec" data-config data-tab="other">
+    <section class="settings-sec" data-config data-tab="processes">
       <div class="settings-group">Processes</div>
 
       <div class="settings-field settings-procs-head">

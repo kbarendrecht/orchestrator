@@ -1562,9 +1562,10 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
   margin:20px 0 4px;max-width:62ch;
   font-size:calc(12px * var(--fs));line-height:1.55;color:var(--dim);
 }
-/* Save belongs to the checkout's config, which the Theme tab has none of: it goes
-   while that tab is open, unless there is a draft from another tab waiting. */
-.settings[data-tab="theme"] .settings-foot:not(:has(.settings-note.dirty)) .settings-save{visibility:hidden}
+/* Save belongs to a project's config, which the two App tabs have none of: it
+   goes while one of those is open, unless there is a draft from another tab
+   waiting. */
+.settings:is([data-tab="theme"],[data-tab="other"]) .settings-foot:not(:has(.settings-note.dirty)) .settings-save{visibility:hidden}
 
 /* **Settings is a sheet over the window now, not the centre column.** It took the
    column so its close button would not sit beside the session's own, and that
@@ -1622,6 +1623,20 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
   font-family:var(--sans);font-size:calc(12.5px * var(--fs));color:var(--dim);
 }
 #settings .settings-tab:hover{color:var(--text);background:var(--hover)}
+/* The group headings: App, then one per open project. A project heading is a
+   button, and the chosen one reads as the heading its tabs hang under. */
+#settings .settings-tgroup{
+  display:flex;align-items:center;gap:7px;padding:12px 10px 4px;
+  font-family:var(--sans);font-size:calc(10.5px * var(--fs));font-weight:600;
+  letter-spacing:.06em;text-transform:uppercase;color:var(--ghost);
+}
+#settings .settings-tgroup:first-child{padding-top:2px}
+#settings button.settings-co{width:100%;text-align:left;border-radius:var(--r);text-transform:none;letter-spacing:0;font-size:calc(12px * var(--fs))}
+#settings button.settings-co:hover{color:var(--text);background:var(--hover)}
+#settings button.settings-co[aria-expanded="true"]{color:var(--dim)}
+#settings .settings-band{width:6px;height:6px;border-radius:2px;flex:0 0 auto}
+#settings .settings-projects{display:flex;flex-direction:column;gap:2px}
+#settings .settings-projects>.settings-tab{padding-left:18px}
 #settings .settings-tab[aria-selected="true"]{
   color:var(--text);background:var(--raised);box-shadow:inset 0 0 0 1px var(--line);
 }

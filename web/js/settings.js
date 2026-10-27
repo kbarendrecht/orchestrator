@@ -1,7 +1,7 @@
 // The settings panel. The zoom control it offers lives in core, because the
 // terminals read the scale too.
 
-import { AGENT_LABEL, ctl, $, WHEEL, ZOOM, borrowFocus, call, callHost, getHost, caret, setUiPx, uiPx, UI_PX_MAX, UI_PX_MIN, closeLegend, el, get, MOD_LABEL, onSelection, reason, returnFocus, loadWheel, saveWheel, saveZoom, setWheel, setZoom, snap, uiScale, wheelSpeed } from './core.js';
+import { AGENT_LABEL, CHECKOUTS, activeCheckout, bandOf, callOn, getOn, snapshotOf, ctl, $, WHEEL, ZOOM, borrowFocus, callHost, getHost, caret, setUiPx, uiPx, UI_PX_MAX, UI_PX_MIN, closeLegend, el, MOD_LABEL, onSelection, reason, returnFocus, loadWheel, saveWheel, saveZoom, setWheel, setZoom, snap, uiScale, wheelSpeed } from './core.js';
 import { currentPreset, detectedFonts, FONTS, fontStack, onThemeChange, PRESETS, resetTheme, SEE_THROUGH, setTheme, SIZE_MAX, SIZE_MIN, theme, validFontName } from './theme.js';
 /* The arithmetic, for reading a typed hex back. A leaf with no imports of its own,
    so the module graph stays the DAG `dependency-cruiser` insists on — and the same
@@ -10,6 +10,67 @@ import { currentPreset, detectedFonts, FONTS, fontStack, onThemeChange, PRESETS,
 import * as Palette from './palette.js';
 
 const settingsOpen = () => !$('settings').hidden;
+
+/** The project the project tabs read and write, by path. Set to the active one
+ *  when the pane opens, and moved by a project heading. `null` before the first
+ *  open, and whenever it names a checkout that has since been closed — then the
+ *  active one stands in. */
+let settingsAt = /** @type {string | null} */ (null);
+/** @returns {import('./core.js').Target} */
+const target = () => CHECKOUTS.find((c) => c.path === settingsAt) ?? activeCheckout();
+
+/** The tabs that belong to a project rather than to the app. */
+const PROJECT_TABS = new Set(['git', 'tracker', 'reviews', 'agent', 'processes']);
+/** The project tab buttons, as `index.html` wrote them, held so `renderProjects`
+ *  can move them under whichever heading is unfolded. */
+let projectTabs = /** @type {HTMLElement[]} */ ([]);
+
+/** One heading per open project, the chosen one with its tabs under it.
+ *
+ *  **Option 3 of the settings groups review**: every project is a click away, and
+ *  the band says which one you are editing, the same band its rail block has. The
+ *  band only shows with more than one project, as in the rail. */
+function renderProjects() {
+  const at = target();
+  const several = CHECKOUTS.length > 1;
+  /** @type {HTMLElement[]} */
+  const nodes = [];
+  for (const c of CHECKOUTS) {
+    const head = el('button', 'settings-tgroup settings-co');
+    head.setAttribute('type', 'button');
+    const open = c.path === at.path;
+    head.setAttribute('aria-expanded', String(open));
+    const band = several ? bandOf(c.path) : null;
+    if (band) {
+      const mark = el('span', 'settings-band');
+      mark.style.background = `var(--co-${band})`;
+      head.appendChild(mark);
+    }
+    head.append(c.name);
+    head.title = open ? `${c.name}'s config.json` : `Show ${c.name}'s settings`;
+    head.onclick = () => pickProject(c.path);
+    nodes.push(head);
+    if (open) nodes.push(...projectTabs);
+  }
+  $('setprojects').replaceChildren(...nodes);
+}
+
+/** Point the project tabs at another open project.
+ *
+ *  **Refused while a draft is unsaved**, rather than asking or throwing it away:
+ *  the pane keeps a draft across a close on purpose, and a switch that dropped it
+ *  would be the silent loss that rule is there to stop. The foot says which. */
+function pickProject(/** @type {string} */ path) {
+  if (path === target().path) return;
+  if (dirty) {
+    $('setnote').textContent = `save or discard the changes to ${target().name} first`;
+    return;
+  }
+  settingsAt = path;
+  renderProjects();
+  showTab(PROJECT_TABS.has(currentTab()) ? currentTab() : 'git');
+  void loadConfigInto(true);
+}
 
 /** The three text boxes that stand for an argv, and the config key each carries. */
 const ARGV_FIELDS = /** @type {const} */ ([
@@ -101,6 +162,10 @@ function openSettings() {
   closeLegend();
   $('settingsver').textContent = snap.version ? `orchd ${snap.version}` : '';
   if (!dirty) $('setnote').textContent = '';
+  // The active project, unless a draft is open for another: the draft is the one
+  // you came back for.
+  if (!dirty || !settingsAt) settingsAt = activeCheckout().path;
+  renderProjects();
   $('settings').hidden = false;
   showTab(currentTab());
   $('gearbtn').setAttribute('aria-expanded', 'true');
@@ -165,7 +230,7 @@ async function loadConfigInto(force = false) {
   if (dirty && !force) return;
   let cfg;
   try {
-    cfg = await get('/api/config');
+    cfg = await getOn(target(), '/api/config');
   } catch (e) {
     $('setnote').textContent = reason(e);
     return;
@@ -183,9 +248,8 @@ async function loadConfigInto(force = false) {
      control that writes part of it is how a hand-edited tracker would get
      replaced by whatever the control happened to show. `/api/config` no longer
      carries it either, so this reads the snapshot's own answer. */
-  $('settracker').textContent = snap.tracker_server
-    ? `${snap.tracker_server} (config.json)`
-    : 'none';
+  const tracker = snapshotOf(target().path)?.tracker_server;
+  $('settracker').textContent = tracker ? `${tracker} (config.json)` : 'none';
   ctl('setupref').value = cfg.upstream_ref || '';
   ctl('setupremote').value = cfg.upstream_remote || '';
   /* **Remembered as they were read, because joining an argv is lossy.** A config
@@ -456,7 +520,7 @@ function draftBody() {
 async function saveSettings() {
   let answer;
   try {
-    answer = await call('/api/config', draftBody());
+    answer = await callOn(target(), '/api/config', draftBody());
   } catch (e) {
     $('setnote').textContent = reason(e);
     return;
@@ -608,7 +672,8 @@ const TABS = {
   tracker: 'This checkout\'s config. A draft until Save.',
   reviews: 'This checkout\'s config. A draft until Save.',
   agent: 'This checkout\'s config. A draft until Save.',
-  other: 'Wheel speed applies at once and is kept in this browser. Processes are this checkout\'s config, a draft until Save, and restart the daemon. The usage ping applies at once.',
+  processes: 'This checkout\'s config. A draft until Save, and a save restarts the daemon.',
+  other: 'For the whole app. Wheel speed applies at once and is kept in this browser; the usage ping applies at once.',
 };
 const TAB_KEY = 'orch.settings.tab';
 
@@ -636,7 +701,9 @@ function showTab(/** @type {string} */ tab) {
     el.classList.toggle('lead', !el.hidden && lead);
     if (!el.hidden) lead = false;
   }
-  $('settabnote').textContent = TABS[/** @type {keyof typeof TABS} */ (tab)] ?? '';
+  // A project tab names its project, now that there can be several to choose.
+  $('settabnote').textContent = (TABS[/** @type {keyof typeof TABS} */ (tab)] ?? '')
+    .replace('This checkout\'s', `${target().name}'s`);
   $('settings').dataset.tab = tab;
   /** @type {HTMLElement} */ ($('settings').querySelector('.settings-card')).scrollTop = 0;
   try { localStorage.setItem(TAB_KEY, tab); } catch (e) { /* kept for this page only */ }
@@ -974,14 +1041,19 @@ function setupSettings() {
   onThemeChange(() => showPreviews());
   /* Arrow keys move along the tabs, the way a tab list is driven everywhere else;
      only the selected tab is in the Tab order, so Tab goes on into the pane. */
-  const tabs = /** @type {HTMLElement[]} */ ([...document.querySelectorAll('.settings-tab')]);
-  for (const [i, b] of tabs.entries()) {
+  projectTabs = /** @type {HTMLElement[]} */ ([...document.querySelectorAll('.settings-tab[data-project]')]);
+  /* Up and down as well as left and right, now the tabs are a column. The list is
+     read at the key press, because `renderProjects` moves the project tabs. */
+  for (const b of /** @type {HTMLElement[]} */ ([...document.querySelectorAll('.settings-tab')])) {
     b.onclick = () => showTab(b.dataset.tab || 'theme');
     b.onkeydown = (e) => {
-      const step = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+      const step = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1
+        : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 0;
       if (!step) return;
       e.preventDefault();
-      const next = tabs[(i + step + tabs.length) % tabs.length];
+      const tabs = /** @type {HTMLElement[]} */ ([...document.querySelectorAll('#settings .settings-tab')]);
+      const next = tabs[(tabs.indexOf(b) + step + tabs.length) % tabs.length];
+      if (!next) return;
       next.focus();
       showTab(next.dataset.tab || 'theme');
     };
