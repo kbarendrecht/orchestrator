@@ -650,19 +650,21 @@ button.ctx-btn:hover{color:var(--text)}
    alike — what you can add, and what the list is holding back. `margin-left:auto`
    is what claims the gap, the way `.rvcount` does in the review queue's head. */
 .arctoggle{
-  display:flex;align-items:center;gap:5px;margin-left:auto;flex:0 0 auto;
-  padding:0;font-family:var(--mono);font-size:calc(9px * var(--fs));color:var(--ghost);
-  background:none;border:0;cursor:pointer;transition:color .12s;
+  display:inline-flex;align-items:center;gap:6px;margin-left:auto;flex:0 0 auto;height:26px;padding:0 8px;
+  font-family:var(--sans);font-size:calc(12px * var(--fs));color:var(--faint-solid);
+  background:none;border:0;border-radius:var(--r);cursor:pointer;transition:color .15s,background .15s;
 }
-.arctoggle:hover{color:var(--dim)}
+.arctoggle:hover{color:var(--text);background:var(--hover)}
+/* Open is a fill, the way a pressed button reads; see `archivedToggle`. */
+.ws-add .arctoggle[aria-expanded="true"]{color:var(--text);background:var(--raised)}
 /* The review queue's `not reviewable` fold borrows the class but is still a row of
    its own at the foot of a list, so it keeps the shape the class had before it
    moved onto the add row: full width, left, padded like the rows above it. */
 .rvlist>.arctoggle{
-  width:100%;margin-left:0;gap:8px;padding:8px 16px 12px;
-  font-size:calc(10.5px * var(--fs));color:var(--faint-solid);
+  width:100%;height:auto;margin-left:0;gap:8px;padding:8px 16px 12px;border-radius:0;
+  font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid);
 }
-.rvlist>.arctoggle:hover{color:var(--dim)}
+.rvlist>.arctoggle:hover{color:var(--dim);background:none}
 .arctoggle .caretr{display:inline-block;transition:transform .13s;font-size:calc(13px * var(--fs));line-height:1}
 /* The caret is a drawn SVG now (core.caret); block removes the inline-svg gap so
    it sits centred in every header that carries one. */
@@ -683,8 +685,6 @@ button.ctx-btn:hover{color:var(--text)}
    moved onto the add row. */
 .arcbox{
   max-height:calc(41px * 10);overflow-y:auto;
-  border-top:1px solid var(--line-soft);
-  background:var(--bg);
 }
 
 /* **The filter is inside the box, and it stays while the rows scroll.** Inside,
@@ -693,16 +693,22 @@ button.ctx-btn:hover{color:var(--text)}
    about ten rows and a filter that scrolls away is one you cannot correct.
    No bottom rule under the box any more: it sat directly above the next project's
    header and read as a line between two projects, which is not what it was for. */
+/* The strip is the rail's own ground, so rows scrolling under it are covered; the
+   field inside it is the rounded box. */
 .arcfilter{
-  position:sticky;top:0;z-index:1;display:flex;align-items:center;gap:8px;
-  padding:10px 14px;background:var(--bg);border-bottom:1px solid var(--line-soft);
+  position:sticky;top:0;z-index:1;padding:4px 10px 6px;background:var(--panel-ground,var(--surface));
 }
+.arcfield{
+  display:flex;align-items:center;gap:7px;height:28px;padding:0 9px;cursor:text;
+  background:var(--bg);border:1px solid var(--line);border-radius:var(--r);
+}
+.arcglass{display:inline-flex;color:var(--ghost);font-size:calc(12px * var(--fs))}
 /* A field, not a row of text: it is the one thing in this rail you type into, so
    it gets the height a text input needs rather than the height of the rows around
    it. */
 .arcq{
   flex:1 1 auto;min-width:0;background:none;border:0;padding:0;color:var(--text);
-  font-family:var(--mono);font-size:calc(10.5px * var(--fs));line-height:1.8;
+  font-family:var(--sans);font-size:calc(12px * var(--fs));line-height:1.8;
 }
 /* **No focus ring, because the field is focused for you.** Opening the archive
    puts the caret here, so the app's 2px ring drew a bright box every time the box
@@ -777,10 +783,12 @@ button.ctx-btn:hover{color:var(--text)}
 .sess.arc{padding:6px 15px 7px}
 /* A week heading in the archive: the faint label voice the add row uses, so it
    reads as a divider between rows rather than as a row. */
+/* Sentence case, as the pane titles are now: "This week", not spaced capitals. */
 .arcweek{
-  padding:9px 15px 3px;font-family:var(--mono);font-size:calc(9px * var(--fs));
-  letter-spacing:.06em;text-transform:uppercase;color:var(--ghost);
+  padding:10px 16px 3px;font-family:var(--sans);font-size:calc(11px * var(--fs));font-weight:600;
+  color:var(--ghost);
 }
+.arcweek::first-letter{text-transform:uppercase}
 /* The PR number on an archived row, in the clock's voice beside it. */
 .sess-pr{font-family:var(--mono);font-size:calc(9px * var(--fs));color:var(--faint-solid);flex:0 0 auto}
 .sess.arc .sess-name{color:var(--dim)}

@@ -1501,6 +1501,9 @@ let focusFilterOf = null;
  */
 function archiveFilter(c) {
   const wrap = el('div', 'arcfilter');
+  /* A field with a glass in it, so the one thing in the rail you type into looks
+     like one. A label, so a click anywhere in it reaches the input. */
+  const field = el('label', 'arcfield');
   const input = /** @type {HTMLInputElement} */ (el('input', 'arcq'));
   if (focusFilterOf === c.path) {
     focusFilterOf = null;
@@ -1515,9 +1518,10 @@ function archiveFilter(c) {
     askTranscripts(c);
     renderRail();
   };
-  wrap.appendChild(input);
+  field.append(icon('arcglass', 1.5, 'M7 2.8a4.2 4.2 0 1 0 0 8.4a4.2 4.2 0 1 0 0-8.4', 'M10.2 10.2 13.5 13.5'), input);
   // Written by `fillArchive`, because it counts what that pass drew.
-  wrap.appendChild(el('span', 'arcn'));
+  field.appendChild(el('span', 'arcn'));
+  wrap.appendChild(field);
   return wrap;
 }
 
@@ -1789,14 +1793,15 @@ function archivedToggle(/** @type {import('./core.js').Target} */ c, /** @type {
   btn.type = 'button';
   btn.setAttribute('aria-expanded', String(open));
   btn.title = `${total} past conversation${total === 1 ? '' : 's'} in this checkout`;
-  btn.appendChild(caret());
-  /* The word stays `archived`: `stateLabel` in `core.js` prints it on the rows
+  /* **An archive box, and the fold's open state is its fill** (option 1 of the
+     archive review). It had a caret, kept because the caret said the rows were
+     *behind* it; beside Worktree and Main as icon buttons, the fill says "open"
+     the way a pressed button does, and the box says what is in it.
+     The word stays `archived`: `stateLabel` in `core.js` prints it on the rows
      inside the box, so a control called anything else would be the one place in the
-     app using a second word for one state. **A glass was tried here and taken
-     back** — it fits anywhere and says "search", which is what the box does, but
-     the caret is the thing that says the rows are *behind* it, and this control is
-     a fold before it is a search. It has the room for the word where it sits. */
-  btn.appendChild(el('span', null, 'archived'));
+     app using a second word for one state. A glass was tried here and taken back:
+     it says "search", and this control is a fold before it is a search. */
+  btn.append(icon('addic', 1.5, 'M2.5 4.5h11v2h-11z', 'M3.5 6.5v6h9v-6', 'M6.5 9h3'), 'Archived');
   btn.onclick = (/** @type {MouseEvent} */ ev) => {
     // The header it rides is the drag handle and folds on a double-click.
     ev.stopPropagation();
