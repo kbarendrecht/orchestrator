@@ -2339,6 +2339,12 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 .opbtn.ghost{border-color:var(--line);color:var(--dim)}
 .opbtn.ghost:hover{border-color:var(--faint-solid);color:var(--text)}
 .opbrand{display:flex;align-items:center;gap:10px}
+.opclose{
+  margin-left:auto;display:inline-grid;place-items:center;width:28px;height:28px;border-radius:var(--r);
+  color:var(--faint-solid);font-size:calc(13px * var(--fs));transition:color .15s,background .15s;
+}
+.opclose:hover{color:var(--text);background:var(--hover)}
+.opclose[hidden]{display:none}
 .opdot{width:8px;height:8px;border-radius:50%;background:var(--attn)}
 .opname{font-family:var(--mono);font-size:calc(13px * var(--fs));font-weight:600;letter-spacing:.02em}
 .ophead{font-size:calc(21px * var(--fs));font-weight:600;letter-spacing:-.015em;line-height:1.15}

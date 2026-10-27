@@ -16,7 +16,7 @@
 // checkout you have opened before, whose config is already written and is the
 // daemon's to read, not this screen's to re-answer.
 
-import { $, CHECKOUTS, callHost, chooseBox, el, ctl, getHost, reason, toast } from './core.js';
+import { $, CHECKOUTS, callHost, chooseBox, el, ctl, getHost, icon, reason, toast } from './core.js';
 
 /** The overlay, built once on first use.
  *
@@ -66,7 +66,6 @@ const anyCheckoutOpen = () => CHECKOUTS.length > 0;
  *  `Host::close_checkout` means by staying symmetric down to the last one.
  */
 export function showWelcome() {
-  build();
   toPanel('welcome');
   void loadRecent();
 }
@@ -112,13 +111,24 @@ function toPanel(which) {
   build();
   $('opwelcome').hidden = which !== 'welcome';
   $('opreview').hidden = which !== 'review';
+  // Only with somewhere to go back to, which is the rule `close` keeps.
+  $('opclose').hidden = !anyCheckoutOpen();
 }
 
 function welcomePanel() {
   const panel = el('div', 'oppanel');
   panel.id = 'opwelcome';
   const brand = el('div', 'opbrand');
-  brand.append(el('span', 'opdot'), el('span', 'opname', 'orchd'));
+  /* A way out, now that the screen is a card over the board rather than the
+     whole window: Esc already closed it, and nothing on screen said so. */
+  const x = el('button', 'opclose');
+  x.id = 'opclose';
+  x.setAttribute('type', 'button');
+  x.setAttribute('aria-label', 'Close');
+  x.title = 'Close · Esc';
+  x.appendChild(icon('', 1.5, 'M4 4l8 8M12 4l-8 8'));
+  x.onclick = () => void close();
+  brand.append(el('span', 'opdot'), el('span', 'opname', 'orchd'), x);
   panel.append(brand, el('h1', 'ophead', 'Open a project to orchestrate'));
   panel.append(el('p', 'opsub',
     'A project is a git checkout. orchd runs one daemon per checkout, cuts worktrees '
