@@ -871,53 +871,57 @@ button.ctx-btn:hover{color:var(--text)}
    — the weight the severity direction settled on. Amber throughout: this is the
    legend's "needs you", and a blocked agent is the clearest case of it there is. */
 .oq{
-  position:absolute;left:12px;right:6px;bottom:var(--oq-clear);z-index:5;
-  background:var(--surface);border:1px solid var(--line);border-top:2px solid var(--attn);
-  border-radius:2px;padding:12px 16px;display:flex;flex-direction:column;gap:12px;
-  box-shadow:0 10px 34px rgba(0,0,0,.55);
+  position:absolute;left:50%;width:min(620px, calc(100% - 24px));bottom:var(--oq-clear);z-index:5;
+  transform:translateX(-50%);
+  background:var(--raised);border:1px solid var(--line);border-radius:12px;
+  padding:14px 14px 12px;display:flex;flex-direction:column;gap:10px;
+  /* The amber is a faint ring now, not a top rule: the heading already says it in
+     amber, and a ring keeps the card one shape. */
+  box-shadow:0 24px 60px -12px rgba(0,0,0,.75),0 0 0 1px rgba(224,162,68,.18);
   max-height:calc(100% - var(--oq-clear) - 12px);overflow:auto;
+  animation:oqrise .32s cubic-bezier(.2,.8,.2,1) both;
 }
+/* Played when the box appears, which is a `hidden` going away: `renderInteraction`
+   rebuilds the children and keeps the host, so a snapshot does not replay it. */
+@keyframes oqrise{from{opacity:0;transform:translate(-50%,10px) scale(.985)}to{opacity:1;transform:translate(-50%,0)}}
 .oq[hidden]{display:none}
 /* Folded: the header alone, a one-line strip that keeps saying the session is
-   blocked while giving the terminal back. Answering nothing, so the border and
-   the amber stay — it is the same open question, taking less room. */
-.oq.min{padding:6px 10px;gap:0;box-shadow:none;overflow:visible;cursor:pointer}
+   blocked while giving the terminal back. Answering nothing, so the ring and the
+   amber stay — it is the same open question, taking less room. */
+.oq.min{padding:7px 10px 7px 12px;gap:0;border-radius:10px;overflow:visible;cursor:pointer;animation:none}
 .oq.min .oqh{cursor:pointer}
 .oqh{
   display:flex;align-items:center;gap:8px;
-  font-family:var(--label);font-size:calc(9px * var(--fs));font-weight:700;
-  letter-spacing:.16em;text-transform:uppercase;color:var(--attn);
+  font-family:var(--sans);font-size:calc(12px * var(--fs));font-weight:600;color:var(--attn);
 }
-.oqh .dia{font-size:calc(9px * var(--fs))}
+.oqh .dia{display:inline-flex;font-size:calc(13px * var(--fs))}
 /* The label pushes, rather than each trailing item pulling. Two `margin-left:auto`
    siblings split the free space between them, which drifts the thread id into the
    middle of the strip; one push keeps whatever follows grouped at the right edge
    whether or not the thread id is there. */
 .oqh>span:nth-child(2){margin-right:auto}
-.oqh .oqt{font-family:var(--mono);letter-spacing:0;text-transform:none;
-  font-weight:400;font-size:calc(9px * var(--fs));color:var(--faint-solid)}
+.oqh .oqt{font-family:var(--mono);font-weight:400;font-size:calc(10.5px * var(--fs));color:var(--faint-solid)}
 .oqfold{
-  color:var(--attn);font-family:var(--mono);letter-spacing:0;
-  font-size:calc(12px * var(--fs));line-height:1;padding:0 2px;
+  display:inline-grid;place-items:center;width:24px;height:24px;border-radius:6px;
+  color:var(--dim);font-size:calc(13px * var(--fs));
 }
-.oqfold:hover{color:var(--text)}
-.oqq{font-size:calc(13px * var(--fs));color:var(--text);line-height:1.5}
+.oqfold:hover{color:var(--text);background:var(--hover)}
+.oqfold span{display:inline-flex}
+.oqq{font-size:calc(14px * var(--fs));color:var(--text);line-height:1.5}
 .oqd{
   font-family:var(--code);font-size:calc(var(--code-px,11.5px) * var(--fs));line-height:1.55;
-  color:var(--dim);background:var(--bg);border:1px solid var(--line);border-radius:2px;
+  color:var(--dim);background:var(--bg);border:1px solid var(--line);border-radius:6px;
   padding:8px 12px;margin:0;white-space:pre;overflow-x:auto;max-height:220px;
 }
-/* Set apart from the detail above it: the block is something to read and these
-   are something to press, and at the same width they read as one list. */
-.oqopts{display:flex;flex-direction:column;gap:4px;margin-top:5px;
-  padding-top:12px;border-top:1px solid var(--line)}
+.oqopts{display:flex;flex-direction:column;gap:4px;margin-top:2px}
 .oqopt{
-  text-align:left;width:100%;padding:8px 12px;border:1px solid var(--line);
-  border-radius:2px;background:var(--bg);
+  text-align:left;width:100%;min-height:34px;padding:7px 10px;border:1px solid var(--line);
+  border-radius:6.5px;background:none;transition:background .15s,border-color .15s;
 }
-.oqopt:hover:not(:disabled){border-color:var(--attn);background:var(--raised)}
+.oqopt:hover:not(:disabled){border-color:var(--faint-solid);background:var(--hover)}
+.oqopt:focus-visible{outline:1px solid var(--focus);outline-offset:-1px}
 .oqopt:disabled{color:var(--ghost);cursor:default}
-.oqopt .ol{font-size:calc(11.5px * var(--fs));color:var(--text)}
+.oqopt .ol{font-size:calc(12.5px * var(--fs));color:var(--text)}
 .oqopt:disabled .ol{color:var(--ghost)}
 .oqopt .od{font-size:calc(11.5px * var(--fs));color:var(--faint-solid);margin-top:2px}
 /* The way out when none of the others fit, so it reads as the quieter one. */
@@ -925,19 +929,18 @@ button.ctx-btn:hover{color:var(--text)}
 .oqfree{display:flex;flex-direction:column;gap:8px}
 .oqfree .box{
   resize:vertical;display:block;width:100%;min-height:74px;
-  font-family:var(--sans);font-size:calc(11.5px * var(--fs));line-height:1.5;
+  font-family:var(--sans);font-size:calc(12.5px * var(--fs));line-height:1.5;
   color:var(--text);background:var(--bg);border:1px solid var(--line);
-  border-radius:2px;padding:8px 12px;
+  border-radius:6.5px;padding:8px 12px;
 }
 .oqfree .box:focus{outline:none;border-color:var(--focus)}
 .oqfoot{display:flex;align-items:center;gap:8px}
 .oqsend{
-  font-family:var(--label);font-size:calc(9px * var(--fs));font-weight:700;
-  letter-spacing:.1em;text-transform:uppercase;padding:4px 12px;border-radius:2px;
-  color:#1A1206;background:var(--attn);
+  font-family:var(--sans);font-size:calc(12px * var(--fs));font-weight:600;
+  padding:5px 12px;border-radius:6.5px;color:#1A1206;background:var(--attn);
 }
 .oqsend:disabled{color:var(--ghost);background:none;border:1px solid var(--line);cursor:default}
-.oqback{font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid)}
+.oqback{font-family:var(--sans);font-size:calc(12px * var(--fs));color:var(--faint-solid)}
 .oqback:hover{color:var(--text)}
 
 /* ---------- process drawer ---------- */
@@ -1089,10 +1092,11 @@ body:not(.ready) #termempty .empty-k{display:none}
 @keyframes connbr{0%,100%{opacity:.3}50%{opacity:1}}
 /* One block for every infinite animation, so a viewer who asked their OS to
    reduce motion gets none of them — the connecting and reconnecting pulses and
-   the refresh spinner alike. */
+   the refresh spinner alike — and for the three modals' entrances with them. */
 @media(prefers-reduced-motion:reduce){
   .conn-dot,.connbar .d{animation:none;opacity:.7}
   .rvrefresh.spin svg,.arcspin{animation:none}
+  .oq,#settings,.overlay.find{animation:none}
 }
 /* Visually hidden, still read aloud — the live region that announces "needs you". */
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
@@ -1537,6 +1541,56 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 /* Save belongs to the checkout's config, which the Theme tab has none of: it goes
    while that tab is open, unless there is a draft from another tab waiting. */
 .settings[data-tab="theme"] .settings-foot:not(:has(.settings-note.dirty)) .settings-save{visibility:hidden}
+
+/* **Settings is a sheet over the window now, not the centre column.** It took the
+   column so its close button would not sit beside the session's own, and that
+   still holds: the sheet covers the context bar too. What the column cost was the
+   tabs, a row of six across a pane that is narrower than the form, and a pane
+   that looked like a session's. The tabs are a column of their own on the left,
+   the form keeps the label column it was measured for, and the backdrop is a
+   shadow spread past the window's edge rather than an element, so nothing in
+   `settings.js` has to open or close a second thing. The legend keeps `.settings`
+   as it was: it is a reference you read beside the board, not a form. */
+#settings{
+  top:56px;bottom:56px;left:0;right:0;margin:0 auto;width:min(980px, calc(100vw - 64px));
+  display:grid;grid-template-columns:190px minmax(0,1fr);grid-template-rows:auto 1fr auto;
+  background:var(--surface);border:1px solid var(--line);border-radius:14px;overflow:hidden;
+  box-shadow:0 30px 80px -10px rgba(0,0,0,.8),0 0 0 100vmax rgba(5,5,6,.55);
+  animation:sheetpop .22s cubic-bezier(.2,.8,.2,1) both;
+}
+#settings[hidden]{display:none}
+@keyframes sheetpop{from{opacity:0;transform:translateY(-6px) scale(.98)}to{opacity:1;transform:none}}
+#settings>.settings-title{
+  grid-column:1;grid-row:1;height:auto;padding:16px 18px 12px;
+  border-bottom:0;border-right:1px solid var(--line);background:var(--bg);
+  font-family:var(--sans);font-size:calc(14px * var(--fs));font-weight:600;
+  letter-spacing:0;text-transform:none;color:var(--text);
+}
+/* Out of the nav and into the sheet's corner, where a close sits on any sheet. */
+#settings .settings-x{
+  position:absolute;top:10px;right:10px;z-index:2;
+  display:inline-grid;place-items:center;width:28px;height:28px;border-radius:6.5px;
+}
+#settings>.settings-tabs{
+  grid-column:1;grid-row:2 / 4;flex-direction:column;gap:2px;padding:0 8px 14px;
+  border-bottom:0;border-right:1px solid var(--line);background:var(--bg);
+}
+#settings .settings-tab{
+  display:flex;align-items:center;height:30px;padding:0 10px;margin:0;border:0;
+  border-radius:6.5px;text-align:left;
+  font-family:var(--sans);font-size:calc(12.5px * var(--fs));color:var(--dim);
+}
+#settings .settings-tab:hover{color:var(--text);background:var(--hover)}
+#settings .settings-tab[aria-selected="true"]{
+  color:var(--text);background:var(--raised);box-shadow:inset 0 0 0 1px var(--line);
+}
+#settings>.settings-card{grid-column:2;grid-row:1 / 3;padding:22px 26px 40px}
+/* The sticky heading's offset is the card's top padding, and its band the ground
+   it scrolls over; both moved with the sheet. */
+#settings .settings-sec>.settings-group{top:-22px;background:var(--surface)}
+#settings .settings-in,#settings .settings-select{border-radius:6.5px}
+#settings>.settings-foot{grid-column:2;grid-row:3;padding:10px 26px}
+#settings .settings-save{border-radius:6.5px}
 
 /* ---------- context menu ---------- */
 /* Right-click on a session row. Above the toast, because it is the thing you
@@ -2230,26 +2284,41 @@ select.opfield,input.opfield{appearance:none}
    Stacked rather than columned, the way JetBrains stacks them: a hit is one line
    of code and wants width, and source wants width more than it wants height.
    --------------------------------------------------------------------------- */
-.overlay.find{gap:0}
+/* **A card over the window, not the diff overlay's slot.** The slot made a search
+   look like a pane, edge to edge between the rail and the changes, with the
+   session it was searching gone from view. Centred over a dimmed board it reads
+   as what it is, a question you put away with Esc. The backdrop is a shadow
+   spread past the window's edge, as on settings, so `find.js` opens and closes
+   one element as it always did. The index and the file under it keep their
+   split: only the frame moved. */
+.overlay.find{
+  gap:0;top:64px;bottom:64px;left:0;right:0;margin:0 auto;width:min(960px, calc(100vw - 64px));
+  background:var(--surface);border:1px solid var(--line);border-radius:14px;overflow:hidden;
+  box-shadow:0 30px 80px -10px rgba(0,0,0,.8),0 0 0 100vmax rgba(5,5,6,.55);
+  animation:sheetpop .22s cubic-bezier(.2,.8,.2,1) both;
+}
+.overlay.find>.ov-head{height:52px;gap:10px;padding:0 12px 0 14px;background:none}
 .fnq,.fnglob{
   font-family:var(--code);font-size:calc(12px * var(--fs));color:var(--text);
-  background:var(--bg);border:1px solid var(--line);border-radius:2px;
+  background:var(--bg);border:1px solid var(--line);border-radius:6.5px;
   padding:5px 9px;min-width:0;
 }
 .fnq{flex:1}
+/* The query is the card's headline, so it loses the box: the bar it sits in is
+   the field. The caret and the text say where you are typing. */
+.overlay.find .fnq{font-size:calc(15px * var(--fs));background:none;border-color:transparent;padding:6px 4px}
 .fnglob{flex:0 0 150px}
 .fnq:focus,.fnglob:focus{outline:none;border-color:var(--focus)}
+.overlay.find .fnq:focus{border-color:transparent}
 .fnmode{
-  font-family:var(--label);font-size:calc(9px * var(--fs));font-weight:700;
-  letter-spacing:.1em;text-transform:uppercase;color:var(--faint-solid);flex:0 0 auto;
-  border:1px solid transparent;border-radius:2px;padding:4px 6px;white-space:nowrap;
+  font-family:var(--sans);font-size:calc(12px * var(--fs));color:var(--dim);flex:0 0 auto;
+  background:var(--bg);border:1px solid var(--line);border-radius:6.5px;padding:4px 9px;white-space:nowrap;
 }
-/* A border on hover only: it is a label first and a switch second, and a button
-   that looks like one here would compete with the three toggles beside it. */
-.fnmode:hover{color:var(--text);border-color:var(--line)}
+/* Quieter than the toggles' on state: it is a label first and a switch second. */
+.fnmode:hover{color:var(--text);border-color:var(--faint-solid)}
 .fntg{
   font-family:var(--code);font-size:calc(10.5px * var(--fs));color:var(--faint-solid);
-  border:1px solid var(--line);border-radius:2px;padding:3px 7px;
+  border:1px solid var(--line);border-radius:6.5px;padding:3px 7px;
 }
 .fntg:hover{color:var(--text)}
 /* On is amber because it changes what the answer *is*, which is the one thing in
@@ -2260,13 +2329,15 @@ select.opfield,input.opfield{appearance:none}
    half, and draggable from there — a search that answers with forty rows and one
    that answers with two want different splits. */
 .fnhits{
-  flex:0 0 var(--fnhits);overflow:auto;background:var(--bg);
-  border-bottom:1px solid var(--line);
+  flex:0 0 var(--fnhits);overflow:auto;background:var(--surface);
+  border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:6px;
   font-family:var(--code);font-size:calc(11.5px * var(--fs));line-height:1.75;
 }
-.fnhit{display:flex;gap:18px;padding:0 14px;white-space:nowrap;cursor:pointer}
+.fnhit{display:flex;gap:18px;padding:2px 10px;border-radius:6.5px;white-space:nowrap;cursor:pointer}
 .fnhit:hover{background:var(--hover)}
-.fnhit.sel{background:var(--raised);box-shadow:inset 2px 0 0 var(--attn)}
+/* Selected by its fill, the way a rail row is: the amber bar it had is the
+   editor's current-line mark, and two of them on one card was one too many. */
+.fnhit.sel{background:var(--raised);box-shadow:inset 0 0 0 1px var(--line)}
 /* The line that matched. It takes the space, so the path is pushed to the right
    edge without a margin and sits flush left in `names` mode, where the path is
    the answer rather than the address of one. */

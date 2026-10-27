@@ -3,7 +3,7 @@
 // The SPA is a module now, so what it reaches for is written down. `core.js` holds
 // the primitives every part needs; `queue.js` is the first seam extracted whole.
 import {
-$, AGENT_LABEL, el, toast, reason, safeHref, copyText, call, callHost, get, activeCheckout, CHECKOUTS, setCheckouts, HOST, snapshotOf, repoSummary, everySession, enterCheckout, snap, receive, keyActivate, setZoom, setUiPx, uiPx, saveZoom, onScaleChange, ZOOM, selected, setSelected, onSelection, prForWorkspace, terms, CHROME, stateLabel, sessionDot, isWaiting, isArchived, byNewest, currentSession, activeWorkspaceId, currentWorkspaceId, closeMenu, menuOpen, openMenu, callOn, newSession, newWorktree, newShell, mainWorkspace, workspaceById, prState, prSeverity, prsOf, handedToPr, drawerCollapsed, setDrawerCollapsed, pendingSelect, setPendingSelect, onDrawerChange, onCreatingChange, creating, creatingIn, startingShown, appMod, IS_MAC, MOD_LABEL, closeLegend, toggleLegend, typingElsewhere, mark, reportBoot, dialogOpen, dismissDialog, promptBox, bytesOn, unchanged, tick,
+$, AGENT_LABEL, el, icon, toast, reason, safeHref, copyText, call, callHost, get, activeCheckout, CHECKOUTS, setCheckouts, HOST, snapshotOf, repoSummary, everySession, enterCheckout, snap, receive, keyActivate, setZoom, setUiPx, uiPx, saveZoom, onScaleChange, ZOOM, selected, setSelected, onSelection, prForWorkspace, terms, CHROME, stateLabel, sessionDot, isWaiting, isArchived, byNewest, currentSession, activeWorkspaceId, currentWorkspaceId, closeMenu, menuOpen, openMenu, callOn, newSession, newWorktree, newShell, mainWorkspace, workspaceById, prState, prSeverity, prsOf, handedToPr, drawerCollapsed, setDrawerCollapsed, pendingSelect, setPendingSelect, onDrawerChange, onCreatingChange, creating, creatingIn, startingShown, appMod, IS_MAC, MOD_LABEL, closeLegend, toggleLegend, typingElsewhere, mark, reportBoot, dialogOpen, dismissDialog, promptBox, bytesOn, unchanged, tick,
 } from './js/core.js';
 import { onThemeChange } from './js/theme.js';
 import { detailEl, symbolAt } from './js/source.js';
@@ -244,13 +244,18 @@ function renderInteraction() {
   host.replaceChildren();
   host.className = folded ? 'oq min' : 'oq';
   const head = el('div', 'oqh');
-  head.appendChild(el('span', 'dia', '\u25C6'));
-  head.appendChild(el('span', null, 'needs your call'));
+  head.appendChild(icon('dia', 1.5, 'M8 1.5a6.5 6.5 0 1 0 0 13a6.5 6.5 0 1 0 0-13', 'M8 5v3.5', 'M8 11h.01'));
+  head.appendChild(el('span', null, 'Needs your call'));
   if (q.thread_id) head.appendChild(el('span', 'oqt', q.thread_id));
   /* The way out of a box that covers the terminal. It answers nothing — the
      question stays open and the rail goes on saying so — it only gets the detail
      off the pane you were trying to read. `Esc` does the same. */
-  const fold = el('button', 'oqfold', folded ? '\u25BE' : '\u00D7');
+  /* Drawn, not typed: `\u00D7` read as "dismiss", which is the one thing this
+     button must not promise, and the glyphs fell back to another font. */
+  const fold = el('button', 'oqfold');
+  fold.appendChild(folded
+    ? icon('', 1.5, 'M4 6l4 4 4-4')
+    : icon('', 1.5, 'M5 13l3-3 3 3', 'M5 3l3 3 3-3'));
   fold.title = folded ? 'Show the question · Esc' : 'Fold it away, still unanswered · Esc';
   fold.setAttribute('aria-expanded', folded ? 'false' : 'true');
   fold.setAttribute('aria-label', folded ? 'Show the question' : 'Fold the question away');
