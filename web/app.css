@@ -346,23 +346,13 @@ button.ctx-btn:hover{color:var(--text)}
   transition:color .12s,background .12s;
 }
 .gear:hover,.gear[aria-expanded="true"]{color:var(--text);background:var(--raised)}
-/* Two-thirds of the gear's box and a dimmer glyph: present enough to find once,
-   quiet enough not to compete with the controls that get used daily. */
+/* The gear's twin: the same box and the same icon size. It was two-thirds of the
+   gear and dimmer, and next to it that read as a smaller, lesser control rather
+   than a quieter one. At 26px it is past WCAG 2.5.8's 24px target on its own. */
 .helpbtn{
   flex:0 0 auto;display:flex;align-items:center;justify-content:center;
-  position:relative;
-  width:17px;height:17px;margin-left:1px;border-radius:var(--r);
-  font-family:var(--label);font-size:calc(10.5px * var(--fs));font-weight:700;
-  color:var(--faint-solid);opacity:.75;
-  transition:color .12s,background .12s,opacity .12s;
-}
-/* WCAG 2.5.8 wants a 24px pointer target, but the painted box stays two-thirds
-   of the gear on purpose. So a transparent ::after grows only the hit area, not
-   the look. The 11px flex gap to the gear is wider than the 3.5px it reaches
-   past the box, so it steals no neighbouring click. */
-.helpbtn::after{
-  content:'';position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
-  width:24px;height:24px;
+  width:26px;height:26px;border-radius:var(--r);color:var(--faint-solid);
+  transition:color .12s,background .12s;
 }
 .helpbtn:hover,.helpbtn[aria-expanded="true"]{color:var(--text);background:var(--raised);opacity:1}
 
@@ -1115,7 +1105,7 @@ body:not(.ready) #termempty .empty-k{display:none}
 @media(prefers-reduced-motion:reduce){
   .conn-dot,.connbar .d{animation:none;opacity:.7}
   .rvrefresh.spin svg,.arcspin{animation:none}
-  .oq,#settings,.overlay.find{animation:none}
+  .oq,#settings,#keyhelp,.overlay.find{animation:none}
 }
 /* Visually hidden, still read aloud — the live region that announces "needs you". */
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
@@ -1570,13 +1560,29 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
    as it was: it is a reference you read beside the board, not a form. */
 #settings{
   top:0;bottom:0;left:0;right:0;margin:auto;
-  width:min(1120px, calc(100vw - 64px));height:min(720px, calc(100vh - 112px));
+  width:min(1288px, calc(100vw - 64px));height:min(828px, calc(100vh - 112px));
   display:grid;grid-template-columns:190px minmax(0,1fr);grid-template-rows:auto 1fr auto;
   background:var(--surface);border:1px solid var(--line);border-radius:14px;overflow:hidden;
   box-shadow:0 30px 80px -10px rgba(0,0,0,.8),0 0 0 100vmax rgba(5,5,6,.55);
   animation:sheetpop .22s cubic-bezier(.2,.8,.2,1) both;
 }
 #settings[hidden]{display:none}
+/* Help is the same sheet, one column: a reference you open over the board and put
+   away with Esc, the way settings is. */
+#keyhelp{
+  top:0;bottom:0;left:0;right:0;margin:auto;
+  width:min(1288px, calc(100vw - 64px));height:min(828px, calc(100vh - 112px));
+  background:var(--surface);border:1px solid var(--line);border-radius:14px;overflow:hidden;
+  box-shadow:0 30px 80px -10px rgba(0,0,0,.8),0 0 0 100vmax rgba(5,5,6,.55);
+  animation:sheetpop .22s cubic-bezier(.2,.8,.2,1) both;
+}
+#keyhelp[hidden]{display:none}
+#keyhelp>.settings-title{
+  height:52px;padding:0 12px 0 20px;background:none;
+  font-family:var(--sans);font-size:calc(14px * var(--fs));font-weight:600;
+  letter-spacing:0;text-transform:none;color:var(--text);
+}
+#keyhelp .settings-x{display:inline-grid;place-items:center;width:28px;height:28px}
 @keyframes sheetpop{from{opacity:0;transform:translateY(-6px) scale(.98)}to{opacity:1;transform:none}}
 #settings>.settings-title{
   grid-column:1;grid-row:1;height:auto;padding:16px 18px 12px;
@@ -2338,7 +2344,7 @@ select.opfield,input.opfield{appearance:none}
    one element as it always did. The index and the file under it keep their
    split: only the frame moved. */
 .overlay.find{
-  gap:0;top:64px;bottom:64px;left:0;right:0;margin:0 auto;width:min(1120px, calc(100vw - 64px));
+  gap:0;top:64px;bottom:64px;left:0;right:0;margin:0 auto;width:min(1288px, calc(100vw - 64px));
   background:var(--surface);border:1px solid var(--line);border-radius:14px;overflow:hidden;
   box-shadow:0 30px 80px -10px rgba(0,0,0,.8),0 0 0 100vmax rgba(5,5,6,.55);
   animation:sheetpop .22s cubic-bezier(.2,.8,.2,1) both;
