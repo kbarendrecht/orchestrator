@@ -1,7 +1,7 @@
 // The rail: what is running, what is waiting on you, and the PRs beside it.
 // Twenty-four names, three out; the rest is how a row decides what it says.
 
-import { $, activeCheckout, AGENT_LABEL, ageLabel, bandOf, byNewest, call, callFor, callHost, callOn, caret, checkoutOf, CHECKOUTS, chooseBox, clock, confirmBox, copyText, creating, creatingIn, creatingIntoMain, dotClass, el, enterCheckout, getHost, getOn, handedToPr, hasPr, inTrouble, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, QUEUE_MAX, reason, refreshButton, repoSummary, safeHref, selected, sessionDot, sessionsOf, sessionOrder, setPendingSelect, setSelected, setSessionOrder, snap, snapshotFor, snapshotOf, startingShown, stateClass, stateLabel, terms, toast, paintSig, reconcile, unchanged, watchStarting } from './core.js';
+import { $, activeCheckout, AGENT_LABEL, ageLabel, bandOf, byNewest, call, callFor, callHost, callOn, caret, checkoutOf, CHECKOUTS, chooseBox, clock, confirmBox, copyText, creating, creatingIn, creatingIntoMain, dotClass, el, enterCheckout, icon, getHost, getOn, handedToPr, hasPr, inTrouble, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, QUEUE_MAX, reason, refreshButton, repoSummary, safeHref, selected, sessionDot, sessionsOf, sessionOrder, setPendingSelect, setSelected, setSessionOrder, snap, snapshotFor, snapshotOf, startingShown, stateClass, stateLabel, terms, toast, paintSig, reconcile, unchanged, watchStarting } from './core.js';
 import * as Open from './open.js';
 import * as Term from './term.js';
 
@@ -273,7 +273,9 @@ function checkoutItems(/** @type {import('./core.js').Target} */ c, /** @type {i
  *  checkout and reads as nonsense about a project.
  */
 function addCheckoutButton() {
-  const btn = el('button', 'railbtn addco', '+ open project');
+  const btn = el('button', 'railbtn addco');
+  // A folder, drawn: the verb is opening one, and the `+` it had said "add a row".
+  btn.append(icon('addic', 1.5, 'M2.5 4.5a1 1 0 0 1 1-1h3l1.5 1.5h4.5a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1z'), 'Open project');
   btn.title = 'Open another project beside this one';
   btn.onclick = async (ev) => {
     let recent = [];
@@ -1612,7 +1614,7 @@ function addRow(c, state) {
      dead until a restart. */
   const cutting = creating()
     || (state.sessions.some((/** @type {import('../snapshot').SessionView} */ s) => pending(s) && !isArchived(s)) ? 'creating a worktree' : null);
-  const tree = el('button', 'addbtn', '+ worktree');
+  const tree = addButton('Worktree');
   tree.disabled = !!cutting;
   /* Naming a worktree is not a control: it is shift-click and `Shift N`, and it
      stays in this tooltip because that is the only place it is ever discovered. */
@@ -1625,8 +1627,6 @@ function addRow(c, state) {
      so the next plain press and the keyboard chords follow it. */
   agentMenu(tree, state, cutting ? null : (a) => void newWorktree(false, liveTarget(c), a));
   row.appendChild(tree);
-
-  row.appendChild(el('span', 'addsep', '\u00b7'));
 
   /* Main is exclusive: one active session at a time, and no queue. While it is
      occupied the button is disabled and says who holds it — unless
@@ -1643,7 +1643,7 @@ function addRow(c, state) {
     ? state.sessions.find((/** @type {import('../snapshot').SessionView} */ s) => s.id === heldBy) ?? { title: null, id: heldBy }
     : null;
   const several = !!state.several_in_main;
-  const inMain = el('button', 'addbtn', '+ main');
+  const inMain = addButton('Main');
   // Occupied, or already making something: the second reason is the one that used
   // to be invisible, and pressing through it is how you get two of them.
   inMain.disabled = !main || (!!occupant && !several) || !!creating();
@@ -1668,6 +1668,14 @@ function addRow(c, state) {
   if (fold) row.appendChild(fold);
 
   return row;
+}
+
+/** One of the add row's two buttons: a drawn plus and the noun. The chord is in
+ *  the tooltip, not on the button, so the button is as wide as its label. */
+function addButton(/** @type {string} */ label) {
+  const b = el('button', 'addbtn');
+  b.append(icon('addic', 1.6, 'M8 3.5v9M3.5 8h9'), label);
+  return b;
 }
 
 /** A menu row for starting on `a`, marking the one a plain press starts. */

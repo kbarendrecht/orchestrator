@@ -416,16 +416,20 @@ button.ctx-btn:hover{color:var(--text)}
    reading `archiv` is one nobody can finish reading. `mise run page-check`
    measures both ends. */
 .ws-add{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;padding:7px 15px 11px}
+/* Small buttons rather than two words and a dot: a drawn plus, the noun in the
+   interface font, and a hover fill that says where the press lands. */
 .addbtn{
-  font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid);
-  background:none;border:0;padding:0;cursor:pointer;transition:color .12s;
-  flex:0 0 auto;white-space:nowrap;
+  display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 8px;margin-left:-8px;
+  font-family:var(--sans);font-size:calc(12px * var(--fs));color:var(--faint-solid);
+  background:none;border:0;border-radius:var(--r);cursor:pointer;
+  transition:color .15s,background .15s;flex:0 0 auto;white-space:nowrap;
 }
-.addbtn:hover:not([disabled]){color:var(--text)}
+.addbtn + .addbtn{margin-left:0}
+.addbtn:hover:not([disabled]){color:var(--text);background:var(--hover)}
+.addic{display:inline-flex;font-size:calc(12px * var(--fs))}
 /* Dimmed rather than hidden: main being occupied is the answer to "why can I not
    start one", and a button that vanished would take the question with it. */
 .addbtn[disabled]{color:var(--ghost);cursor:default}
-.addsep{color:var(--ghost);font-size:calc(10.5px * var(--fs))}
 /* The one row that is not in a worktree says so. Outlined rather than coloured:
    every colour in this rail already means a state, and where a session lives is
    not one. */
@@ -511,8 +515,12 @@ button.ctx-btn:hover{color:var(--text)}
    each other across the middle of it. Same width and colour; only the edge
    differs, which is why it is a second rule rather than a variable. */
 .rv-of-checkout{border-right:3px solid var(--band)}
-.addco{width:100%;text-align:left;color:var(--faint-solid);cursor:pointer;background:none;border:0;transition:color .12s}
-.addco:hover{color:var(--text)}
+.railbtn.addco{
+  display:flex;align-items:center;gap:8px;width:auto;margin:4px 8px 6px;padding:6px 8px;
+  font-family:var(--sans);font-size:calc(12px * var(--fs));border-radius:var(--r);
+  color:var(--faint-solid);cursor:pointer;background:none;border:0;transition:color .15s,background .15s;
+}
+.railbtn.addco:hover{color:var(--text);background:var(--hover)}
 
 .plus{
   font-family:var(--mono);font-size:calc(15px * var(--fs));line-height:1;color:var(--ghost);
@@ -1013,9 +1021,12 @@ button.ctx-btn:hover{color:var(--text)}
   mask-image:linear-gradient(90deg,transparent,#000 26px)}
 .dtabs.of-both{-webkit-mask-image:linear-gradient(90deg,transparent,#000 26px,#000 calc(100% - 26px),transparent);
   mask-image:linear-gradient(90deg,transparent,#000 26px,#000 calc(100% - 26px),transparent)}
+/* A tab is underlined when open, not filled: the strip reads as one row of names
+   with one marked, the way the design draws it, and a fill made the open tab look
+   like a button that had been pressed. */
 .dtab{
   font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid);
-  padding:4px 8px;border-radius:var(--r);display:flex;align-items:center;gap:8px;
+  padding:4px 8px;display:flex;align-items:center;gap:8px;transition:color .15s,box-shadow .15s;
   /* Keep their size and let the strip scroll, rather than squeezing every tab
      narrower as tabs are added. */
   flex:0 0 auto;white-space:nowrap;
@@ -1023,7 +1034,7 @@ button.ctx-btn:hover{color:var(--text)}
 /* The one being dragged. Dimmed rather than lifted: the tabs are 20px tall and a
    shadow at that size reads as a rendering fault. */
 .dtab.dragging{opacity:.55}
-.dtab[aria-selected="true"]{color:var(--text);background:var(--raised)}
+.dtab[aria-selected="true"]{color:var(--text);box-shadow:inset 0 -1.5px 0 var(--text)}
 /* A finished shell keeps its buffer until dismissed, but must not read as live. */
 .dtab.dead{color:var(--ghost)}
 /* Declared in config and not running: same dimming, and it lights up on hover
@@ -1036,10 +1047,11 @@ button.ctx-btn:hover{color:var(--text)}
 .dtab .dot{width:6px;height:6px}
 .dtab .x{margin-left:1px;padding:0 3px}
 .addsh{
-  font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid);
-  padding:4px 8px;display:flex;align-items:center;gap:8px;
+  font-family:var(--sans);font-size:calc(12px * var(--fs));color:var(--faint-solid);
+  height:26px;padding:0 8px;display:flex;align-items:center;gap:6px;border-radius:var(--r);
+  transition:color .15s,background .15s;
 }
-.addsh:hover{color:var(--text)}
+.addsh:hover{color:var(--text);background:var(--hover)}
 /* A key, drawn the same everywhere it is drawn: a cap with its lower edge a step
    heavier, which is what tells a chord from two stray punctuation marks (#2,
    "a dakje and a backtick next to the Shell name"). One rule, where there were
@@ -2077,14 +2089,16 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 .rvrow .why{font-family:var(--mono);font-size:calc(9px * var(--fs));color:var(--faint-solid);
   flex:0 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
+/* A chip in the action's own colour, the skin's shape for a verb on a row: tinted
+   ground, a ring of the same hue, and a stronger ring on hover. */
 .pract{
-  font-family:var(--mono);font-size:calc(9px * var(--fs));color:var(--attn);
-  padding:2px 8px;border:1px solid var(--line);border-radius:var(--r);
-  flex:0 0 auto;white-space:nowrap;
+  font-family:var(--sans);font-size:calc(11px * var(--fs));font-weight:500;color:var(--attn);
+  padding:2px 9px;border:1px solid rgba(224,162,68,.32);border-radius:6px;background:rgba(224,162,68,.1);
+  flex:0 0 auto;white-space:nowrap;transition:background .15s,border-color .15s;
 }
-.pract:hover:not(:disabled){background:var(--raised);border-color:var(--attn)}
+.pract:hover:not(:disabled){background:rgba(224,162,68,.18);border-color:var(--attn)}
 .pract:disabled{color:var(--ghost);cursor:default}
-.pract.running{color:var(--auto);border-color:var(--line);cursor:pointer}
+.pract.running{color:var(--auto);border-color:rgba(91,143,201,.32);background:rgba(91,143,201,.1);cursor:pointer}
 
 /* The default /resolve action and its quieter `cards` alternative, kept together
    so the pair reads as one control with a primary and a secondary. */

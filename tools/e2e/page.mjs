@@ -688,7 +688,7 @@ try {
     null, { timeout: 15_000 })
 
   const addText = await page.$$eval('#rail .ws-add .addbtn', (b) => b.map((x) => x.textContent))
-  check(addText.join('|') === '+ worktree|+ main',
+  check(addText.join('|') === 'Worktree|Main',
     `the add row carries both verbs, got ${JSON.stringify(addText)}`)
   check(await page.locator('#rail .ws-title .addbtn').count() === 0,
     'and the project header carries none of them')
@@ -945,11 +945,11 @@ try {
     const Rail = await import('/js/rail.js')
     const c = core.activeCheckout()
     const real = core.snapshotOf(c.path)
-    const before = [...document.querySelectorAll('#rail .addbtn')].find((b) => b.textContent === '+ worktree')
+    const before = [...document.querySelectorAll('#rail .addbtn')].find((b) => b.textContent === 'Worktree')
     if (!real || !before) return 'no add row'
     core.receive(c, { ...real, sessions: real.sessions.map((s, i) => (i === 0 ? { ...s, title: `${s.title ?? ''} renamed` } : s)) })
     Rail.render()
-    const after = [...document.querySelectorAll('#rail .addbtn')].find((b) => b.textContent === '+ worktree')
+    const after = [...document.querySelectorAll('#rail .addbtn')].find((b) => b.textContent === 'Worktree')
     core.receive(c, real)
     Rail.render()
     return before === after && before.isConnected
