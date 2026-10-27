@@ -1552,7 +1552,8 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
    `settings.js` has to open or close a second thing. The legend keeps `.settings`
    as it was: it is a reference you read beside the board, not a form. */
 #settings{
-  top:56px;bottom:56px;left:0;right:0;margin:0 auto;width:min(980px, calc(100vw - 64px));
+  top:0;bottom:0;left:0;right:0;margin:auto;
+  width:min(1120px, calc(100vw - 64px));height:min(720px, calc(100vh - 112px));
   display:grid;grid-template-columns:190px minmax(0,1fr);grid-template-rows:auto 1fr auto;
   background:var(--surface);border:1px solid var(--line);border-radius:14px;overflow:hidden;
   box-shadow:0 30px 80px -10px rgba(0,0,0,.8),0 0 0 100vmax rgba(5,5,6,.55);
@@ -2292,7 +2293,7 @@ select.opfield,input.opfield{appearance:none}
    one element as it always did. The index and the file under it keep their
    split: only the frame moved. */
 .overlay.find{
-  gap:0;top:64px;bottom:64px;left:0;right:0;margin:0 auto;width:min(960px, calc(100vw - 64px));
+  gap:0;top:64px;bottom:64px;left:0;right:0;margin:0 auto;width:min(1120px, calc(100vw - 64px));
   background:var(--surface);border:1px solid var(--line);border-radius:14px;overflow:hidden;
   box-shadow:0 30px 80px -10px rgba(0,0,0,.8),0 0 0 100vmax rgba(5,5,6,.55);
   animation:sheetpop .22s cubic-bezier(.2,.8,.2,1) both;
