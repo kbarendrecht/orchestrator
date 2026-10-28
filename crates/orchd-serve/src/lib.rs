@@ -744,6 +744,10 @@ fn daemon_router(app: Arc<AppState>) -> Router {
         .route("/api/workspace/:id/reconcile", post(api::reconcile))
         .route("/api/workspace/:id/rebase", post(bank::rebase))
         .route("/api/workspace/:id/rebase/abort", post(bank::rebase_abort))
+        .route(
+            "/api/workspace/:id/rebase/resolve",
+            post(bank::rebase_resolve),
+        )
         .route("/api/workspace/:id/wip/restore", post(bank::wip_restore))
         .route("/api/workspace/:id/wip/discard", post(bank::wip_discard))
         .route("/api/workspace/:id/wip/resolve", post(bank::wip_resolve))

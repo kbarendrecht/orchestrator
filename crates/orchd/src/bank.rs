@@ -422,3 +422,43 @@ pub async fn wip_resolve(
     type_user_turn(&app, id, &text).await?;
     Ok(Json(json!({ "told": id })))
 }
+
+/// Hand a rebase that stopped on conflicts to the session in this workspace, to
+/// resolve and finish rather than to abort.
+///
+/// The same shape as [`wip_resolve`]: a turn typed into the session already
+/// here, never an agent started for the press. Banked work is named so the agent
+/// leaves it alone; the pane offers it back once the rebase is done.
+pub async fn rebase_resolve(
+    State(app): State<Arc<AppState>>,
+    Path(workspace): Path<String>,
+) -> ApiResult<serde_json::Value> {
+    let path = app
+        .workspace_path(&workspace)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("unknown workspace {workspace}"))?;
+    let stopped = crate::proc::run_blocking("looking for a stopped rebase", move || {
+        crate::git::rebase_in_progress(&path)
+    })
+    .await?;
+    if !stopped {
+        refuse!("{workspace} is not in the middle of a rebase");
+    }
+    let Some(id) = app.live_sessions_in(&workspace).await.first().copied() else {
+        refuse!("no live session in {workspace} — open one here and press again");
+    };
+    let mut text = format!(
+        "The rebase onto {} stopped on conflicts. Please resolve them, keeping both intents \
+         where they can both stand, `git add` each file, and run `GIT_EDITOR=true git rebase \
+         --continue` until the rebase is done. Then tell me what you kept.",
+        app.cfg.upstream_ref
+    );
+    if app.workspace_banked(&workspace).await.is_some() {
+        text.push_str(&format!(
+            " My uncommitted work is banked at {} and is not in the tree; leave it there.",
+            crate::git::wip_ref(&workspace)
+        ));
+    }
+    type_user_turn(&app, id, &text).await?;
+    Ok(Json(json!({ "told": id })))
+}

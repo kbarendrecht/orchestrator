@@ -189,6 +189,14 @@ export async function run(t) {
     /already stopped part-way/,
   )
 
+  /* The stopped rebase's own button: the session is asked to resolve and finish
+     it, and is told the bank is not its to touch. */
+  const finish = await act('rebase/resolve')
+  assert.equal(finish.told, session)
+  await until('the session to be asked to finish the rebase', async () =>
+    t.agentLog().includes('git rebase --continue') && t.agentLog().includes('leave it there'))
+  await t.settled(session)
+
   // --- and the abort puts it back ------------------------------------------------
 
   const undone = await act('rebase/abort')

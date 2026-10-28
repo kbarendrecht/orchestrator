@@ -52,11 +52,14 @@ function renderDivergence(/** @type {import('../snapshot').WorkspaceView} */ w) 
     box.appendChild(el('span', 'dvtext', bank
       ? `rebase stopped on conflicts · ${files(bank)} banked`
       : 'rebase stopped on conflicts'));
-    const a = dvButton('Abort', 'M4 4l8 8M12 4l-8 8');
-    // Which also puts the banked work back, because an abort is the undo of the
-    // press that took it.
-    a.onclick = () => act(`/api/workspace/${encodeURIComponent(w.id)}/rebase/abort`, 'aborted');
-    box.appendChild(a);
+    /* **Finish it, not undo it.** Abort threw away the rebase you asked for at
+       the first conflict; the session in this workspace can resolve the
+       conflicts and continue, which is what you pressed Rebase to get. Abort is
+       `git rebase --abort` in a shell for the case that should not finish. */
+    const r = dvButton('Resolve in session');
+    r.title = 'Ask the session in this workspace to fix the conflicts and finish the rebase';
+    r.onclick = () => press(r, `/api/workspace/${encodeURIComponent(w.id)}/rebase/resolve`, 'handed it over');
+    box.appendChild(r);
     return;
   }
   if (bank) {
