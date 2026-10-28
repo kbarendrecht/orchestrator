@@ -374,12 +374,11 @@ function renderFiles() {
   const panes = $('filepanes');
 
   const tree = diffState.view === 'files' && !diffState.open;
-  $('filestitle').textContent = diffState.open ? 'Changeset' : MODES[mode].title;
+  $('filesname').textContent = diffState.open ? 'Changeset' : MODES[mode].title;
   $('filestitle').setAttribute('aria-pressed', String(!tree));
   $('filestree').setAttribute('aria-pressed', String(tree));
   // The changeset is what the open diff steps through, so it has no other view.
   $('filestree').hidden = diffState.open;
-  $('filesbase').hidden = tree;
 
   if (!w) {
     const s = currentSession();
@@ -391,14 +390,18 @@ function renderFiles() {
         : 'No session open.'),
     }]);
     $('filesfoot').textContent = '';
-    $('filesbase').textContent = '';
-    $('fileshead').title = 'Click to pick what this pane lists';
+    $('filescount').textContent = '';
+    $('filestitle').title = 'Click to pick what this pane lists';
     return;
   }
 
   if (tree) {
     $('filesfoot').textContent = Tree.render(panes, w.id, known || [], renderFiles);
-    $('fileshead').title = '';
+    // The count of the list the other half shows, when the snapshot has it.
+    const n = mode === 'upstream' ? (w.changed_total ?? (known || []).length) : 0;
+    // Nothing for none, here and in the changes view alike, so the toggle is one width in both.
+    $('filescount').textContent = n ? String(n) : '';
+    $('filestitle').title = 'Show the changes';
     return;
   }
 
@@ -478,14 +481,13 @@ function renderFiles() {
     if (lines) foot.append(' \u00b7 ', el('span', 'p', `+${lines.added}`), ' ', el('span', 'm', `\u2212${lines.deleted}`));
     for (const b of bits.slice(1)) foot.append(` \u00b7 ${b}`);
   } else foot.textContent = 'counting\u2026';
-  /* **What the list is measured from, in words** (#47). It said `since 77c0dbf`,
-     which tells nobody anything: the base is a ref you know and a number of
-     commits, and the sha moves to the tooltip with the commits themselves.
-     **Short, because the line has 136px**: it shares 296px with the window
-     buttons, and `page-check` measured `since develop · 12 commits` at 189. So
-     the ref is its leaf and the word "commits" is the menu's to say. */
-  $('filesbase').textContent = !since ? '' : MODES[mode].line(w);
-  $('fileshead').title = [
+  /* **What the list is measured from, in words** (#47), now the tooltip's first
+     line: `4 since develop`, never a bare sha. It was a second header line, and
+     the Files view had nothing to put there, so switching moved the header. The
+     count on the toggle is the files the list holds. */
+  $('filescount').textContent = total ? String(total) : '';
+  $('filestitle').title = [
+    ...(since ? [MODES[mode].line(w)] : []),
     mode === 'head' ? `uncommitted work on top of ${since ? since.slice(0, 7) : 'HEAD'}`
       : mode === 'pushed' ? `what the next push would send, from ${since ? since.slice(0, 7) : '…'}`
       : `everything since this workspace branched from ${snap.upstream_ref} at ${since ? since.slice(0, 7) : '…'}`,
@@ -659,12 +661,6 @@ function setView(/** @type {'changes' | 'files'} */ view, /** @type {MouseEvent}
   try {
     localStorage.setItem(VIEW_KEY, view);
   } catch (err) { /* private mode: it still switched for this session */ }
-  renderFiles();
-}
-
-/** The pane's refresh: the tree asks for its list again too. */
-function refreshTree() {
-  Tree.forget();
   renderFiles();
 }
 
@@ -1290,4 +1286,4 @@ function openEditor() {
   });
 }
 
-export { goTo, baseMenu, setView, refreshTree, diffState as state, openDiff as open, closeDiff as close, renderDiff as render, stepChange as step, loadFile, renderFiles, openEditor };
+export { goTo, baseMenu, setView, diffState as state, openDiff as open, closeDiff as close, renderDiff as render, stepChange as step, loadFile, renderFiles, openEditor };

@@ -89,25 +89,18 @@
          space the title needed and `Changes` came back as `Chang…`, because both
          can shrink and the base is the longer string. Stacked, each gets the whole
          column and neither has to give way. -->
-    <!-- The first line is the pane's two views, the second what the changes are
-         counted from. Pressing the view already showing, or the second line, is
-         the menu of since branched, unpushed and uncommitted. -->
+    <!-- The finder's own toggle, for the pane's two views. One line in both, so
+         switching moves nothing. The Changes half carries the count, and
+         pressing it while it shows is the menu of since branched, unpushed and
+         uncommitted; what the list is counted from is in its tooltip. No caret:
+         with the window buttons the toggle has 181px, and `Uncommitted 500`
+         beside `Files` needed all of it. -->
     <div class="fhead-txt" id="fileshead">
-      <span class="fviews" role="group" aria-label="Show">
-        <button class="eyebrow fview" id="filestitle" aria-pressed="true">Changes</button>
-        <button class="eyebrow fview" id="filestree" aria-pressed="false">Files</button>
+      <span class="fnmode" role="group" aria-label="Show">
+        <button type="button" id="filestitle" aria-pressed="true"><span id="filesname">Changes</span><span class="fcount" id="filescount"></span></button>
+        <button type="button" id="filestree" aria-pressed="false">Files</button>
       </span>
-      <button class="ctx-btn" id="filesbase"></button>
     </div>
-    <!-- Drawn, not typed: the reload glyph (U+21BB) is exactly the kind the font
-         stack cannot be trusted for at this size — the same reason the gear and
-         window controls are drawn. 1em so it still tracks the font-size setting. -->
-    <button class="refresh" id="refreshbtn" title="Re-read git status" aria-label="Refresh">
-      <svg viewBox="0 0 16 16" width="1em" height="1em" fill="none" stroke="currentColor"
-           stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <path d="M13.4 8A5.4 5.4 0 1 1 11.7 4"/><path d="M12 1.6V4.3H9.3"/>
-      </svg>
-    </button>
 
     <!-- Frameless-window controls. Present in the markup always, revealed by
          `data-chrome="custom"` on the body; macOS keeps its real traffic

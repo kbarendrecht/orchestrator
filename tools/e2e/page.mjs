@@ -214,15 +214,15 @@ try {
      header, so a third one added later is covered without another line here. */
   const clipped = await page.evaluate(() => {
     /* The strings the pane really draws, put there rather than waited for: the
-       sandbox workspace has no merge base, so `#filesbase` is empty and the title
-       it competes with has nothing to lose to. `diff.js` writes exactly these two:
-       `Changeset` is the longer title, and the longest base line is the ref's
-       leaf with a two-digit commit count (#47). */
-    const title = document.getElementById('filestitle')
-    const base = document.getElementById('filesbase')
+       sandbox's list is short, so its own count would leave the toggle room it
+       does not have on a real branch. */
+    const title = document.getElementById('filesname')
+    const base = document.getElementById('filescount')
     const was = [title.textContent, base.textContent]
-    title.textContent = 'Changeset'
-    base.textContent = '12 since develop'
+    // The widest pair the toggle can show: the longest mode, a three-digit count,
+    // and the Files half beside it.
+    title.textContent = 'Uncommitted'
+    base.textContent = '500'
     /* **Under the app's own chrome, which is the case that clipped.** A browser tab
        draws no window buttons, so `.top-r` has ~100px this checks nothing about;
        `custom` is what the Linux app runs and what reveals `.wctl`. Set here rather
@@ -232,7 +232,12 @@ try {
     const chrome = document.body.dataset.chrome
     document.body.dataset.chrome = 'custom'
     const out = []
-    for (const el of document.querySelectorAll('.top-r .eyebrow, .top-r .ctx-btn, .rvhead .eyebrow')) {
+    const toggle = document.querySelector('.top-r .fnmode')
+    const room = document.getElementById('fileshead')
+    if (toggle && room && toggle.getBoundingClientRect().right > room.getBoundingClientRect().right + 1) {
+      out.push(`the view toggle runs past its header (${toggle.getBoundingClientRect().width}px in ${room.getBoundingClientRect().width}px)`)
+    }
+    for (const el of document.querySelectorAll('.top-r .fnmode>button, .rvhead .eyebrow')) {
       const t = (el.textContent || '').trim()
       // Overflow by a subpixel is the browser rounding, not an ellipsis.
       if (t && el.scrollWidth > el.clientWidth + 1) out.push(`${el.id || el.className}: ${t} (${el.scrollWidth} in ${el.clientWidth})`)

@@ -225,14 +225,11 @@ body[data-chrome="custom"] .top-r{padding-right:0}
 }
 /* A button since it switches the list, so it gives up the button's own padding
    and centring, and says it can be pressed by lighting the title on hover. */
-/* The two views, as words: the one showing in the text colour, the other dim
-   until hovered. Neither shrinks, so the pair is never `Chang… Fi…`. */
-.fviews{display:flex;gap:10px;max-width:100%}
-.fview{flex:none;padding:0;line-height:1.25;white-space:nowrap}
-.fview[aria-pressed="false"]{color:var(--faint-solid)}
-.fview:hover{color:var(--text)}
-.top-r>.fhead-txt>button.ctx-btn{padding:0;text-align:left}
-.top-r>.refresh{flex:0 0 auto}
+/* The view toggle is the finder's (`.fnmode`), a little tighter, with the count
+   on the Changes half. */
+.top-r .fnmode>button{display:inline-flex;align-items:center;gap:5px;padding:0 7px}
+.top-r .fcount{font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid)}
+.top-r .fcount:empty{display:none}
 
 .wctl-btn{
   width:34px;height:45px;position:relative;background:none;border:0;cursor:default;
@@ -1104,21 +1101,25 @@ kbd{
 .fname{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;direction:rtl;text-align:left}
 .fname i{font-style:normal;color:var(--faint-solid)}
 #filepanes{flex:1;min-height:0;overflow-y:auto}
-/* The file tree (`tree.js`): the changed-file rows' type and height, indented
-   by depth, with the same status letters. */
-.trow{width:100%;display:flex;align-items:center;gap:6px;padding:3px 12px 3px calc(8px + var(--d, 0) * 12px);text-align:left;font-family:var(--mono);font-size:calc(11.5px * var(--fs))}
+/* The file tree (`tree.js`): flat rows inset from the edge, an outline glyph
+   for folder and file, names in the interface font and a dot for a change. */
+.trow{
+  width:calc(100% - 12px);margin:0 6px;display:flex;align-items:center;gap:8px;border-radius:var(--r);
+  padding:3px 10px 3px calc(8px + var(--d, 0) * 14px);text-align:left;
+  font-family:var(--sans);font-size:calc(12px * var(--fs));color:var(--text);
+}
 .trow:hover{background:var(--hover)}
 .trow.on{background:var(--raised)}
-.trow .tchev{width:11px;height:11px;flex:none;color:var(--faint-solid);transition:transform .12s}
-.trow.open .tchev{transform:rotate(90deg)}
-.trow .tgap{width:11px;flex:none}
+.trow .tic{flex:none;display:inline-flex;font-size:calc(13px * var(--fs));color:var(--ghost)}
+.trow.dir .tic{color:var(--faint-solid)}
 .trow .tname{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .trow.dir .tname{color:var(--dim)}
-.trow.gone .tname{color:var(--faint-solid);text-decoration:line-through}
+.trow.gone .tname{color:var(--ghost);text-decoration:line-through}
 .trow.gone{cursor:default}
-.trow .fst{flex:none;width:11px}
-.trow .tdot{width:5px;height:5px;border-radius:50%;background:var(--attn);flex:none}
-.trow .ttag{flex:none;font-family:var(--sans);font-size:calc(10px * var(--fs));color:var(--faint-solid)}
+.trow .tdot,.trow .tcd{width:6px;height:6px;border-radius:50%;flex:none}
+.trow .tdot{background:var(--attn);opacity:.7}
+.tcd.M{background:var(--attn)}.tcd.A{background:var(--ok)}.tcd.D{background:var(--bad)}.tcd.R{background:var(--work)}.tcd.U{background:var(--faint-solid)}
+.trow .ttag{flex:none;font-size:calc(10px * var(--fs));color:var(--faint-solid)}
 .fempty{padding:24px 16px;font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid);line-height:1.75}
 /* The one `.fempty` that is a row rather than a sentence: it carries the same
    pulsing dot as the empty terminal's "connecting…", so it needs the dot beside
@@ -2069,9 +2070,9 @@ button.settings-co:hover{color:var(--text);background:var(--hover)}
 /* One look for every glyph button in a pane header: the refresh in three of them,
    and the review queue's open-all beside it. 12px with 3px of padding was a 16px
    target for a thing you press by hand, so it is 15px in a 24px box now. */
-.rvrefresh,.refresh,.openall{font-size:calc(15px * var(--fs));line-height:1;color:var(--faint-solid);cursor:pointer;
+.rvrefresh,.openall{font-size:calc(15px * var(--fs));line-height:1;color:var(--faint-solid);cursor:pointer;
   padding:4px 8px;border-radius:var(--r);transition:color .12s,background .12s}
-.rvrefresh:hover,.refresh:hover,.openall:hover{color:var(--text);background:var(--raised)}
+.rvrefresh:hover,.openall:hover{color:var(--text);background:var(--raised)}
 /* An empty queue leaves it dead rather than removing it, so the refresh does not
    jump sideways every time the last row clears. */
 .openall[aria-disabled="true"]{color:var(--ghost);cursor:default}
@@ -2434,7 +2435,8 @@ select.opfield,input.opfield{appearance:none}
 }
 .fnmode>button:hover{color:var(--text)}
 .fnmode[data-mode="names"]>[data-v="names"],
-.fnmode[data-mode="text"]>[data-v="text"]{background:var(--raised);color:var(--text);box-shadow:0 1px 2px rgba(0,0,0,.4)}
+.fnmode[data-mode="text"]>[data-v="text"],
+.top-r .fnmode>[aria-pressed="true"]{background:var(--raised);color:var(--text);box-shadow:0 1px 2px rgba(0,0,0,.4)}
 .fntg{
   font-family:var(--code);font-size:calc(10.5px * var(--fs));color:var(--faint-solid);
   border:1px solid var(--line);border-radius:var(--r);padding:3px 7px;

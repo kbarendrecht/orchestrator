@@ -193,20 +193,19 @@ export function render(mount, ws, changed, redraw, how = {}) {
   return state.truncated ? `first ${n} files` : `${n} file${state.total === 1 ? '' : 's'}`;
 }
 
-/** Fold every folder in this workspace. */
-export function foldAll(/** @type {string} */ ws) {
-  state.open.get(ws)?.clear();
-  state.rev++;
-}
-
-/** Drop the list, so the next draw asks again. What the pane's refresh does. */
-export function forget() {
-  state.key = null;
-  state.rev++;
-}
-
 /** Moves whenever the tree would draw differently for the same snapshot. */
 export const rev = () => state.rev;
+
+/* Outline glyphs on the 16px grid `core.icon` draws: a folder shut and open,
+   and a page with its corner turned. They do the chevron's job for a folder and
+   give a file the same left edge. */
+const FOLDER = ['M2 4.6c0-.9.7-1.6 1.6-1.6h2.5l1.5 1.7h4.8c.9 0 1.6.7 1.6 1.6v5.1c0 .9-.7 1.6-1.6 1.6H3.6c-.9 0-1.6-.7-1.6-1.6z'];
+const FOLDER_OPEN = ['M2 11.4V4.6c0-.9.7-1.6 1.6-1.6h2.5l1.5 1.7h3.8c.9 0 1.6.7 1.6 1.6v.9',
+  'M2.3 12.4 3.8 8.3c.2-.6.8-1 1.4-1h8.1c.7 0 1.2.7 1 1.4l-1.1 3.3c-.2.6-.8 1-1.4 1H3.4'];
+const FILE = ['M9.3 2H4.6C3.7 2 3 2.7 3 3.6v8.8c0 .9.7 1.6 1.6 1.6h6.8c.9 0 1.6-.7 1.6-1.6V5.7z', 'M9.3 2v3.7H13'];
+
+/** What a change dot stands for, for its tooltip: the dot carries no letter. */
+const SAID = /** @type {Record<string, string>} */ ({ M: 'modified', A: 'added', D: 'deleted', R: 'renamed', '?': 'untracked' });
 
 function dirRow(
   /** @type {string} */ dir, /** @type {number} */ depth, /** @type {boolean} */ isOpen,
@@ -215,7 +214,7 @@ function dirRow(
   const row = el('button', 'trow dir' + (isOpen ? ' open' : ''));
   row.style.setProperty('--d', String(depth));
   row.setAttribute('aria-expanded', String(isOpen));
-  row.append(icon('tchev', 1.6, 'M6 4l4 4-4 4'), el('span', 'tname', leaf(dir)));
+  row.append(icon('tic', 1.3, ...(isOpen ? FOLDER_OPEN : FOLDER)), el('span', 'tname', leaf(dir)));
   if (note) row.appendChild(el('span', 'ttag', note));
   if (holds) row.appendChild(el('span', 'tdot'));
   row.title = `${dir}/`;
@@ -229,9 +228,11 @@ function fileRow(
 ) {
   const row = el('button', 'trow' + (st === 'D' ? ' gone' : '') + (on ? ' on' : ''));
   row.style.setProperty('--d', String(depth));
-  row.append(el('span', 'tgap'), el('span', 'tname', leaf(path)));
-  if (st) row.appendChild(el('span', 'fst ' + st, st));
-  row.title = path;
+  row.append(icon('tic', 1.3, ...FILE), el('span', 'tname', leaf(path)));
+  /* The letter is the class, as in the changes list: `.tcd.M`, `.tcd.A`,
+     `.tcd.D`, `.tcd.R`, and `?` for untracked, which CSS spells `.tcd.U`. */
+  if (st) row.appendChild(el('span', 'tcd ' + (st === '?' ? 'U' : st)));
+  row.title = st ? `${path} · ${SAID[st] ?? st}` : path;
   // A deleted file has nothing on disk to show; its row is there to say where it was.
   if (st !== 'D') row.onclick = (ev) => (pick ? pick(path, ev) : void FileView.open(ws, [path], 0, undefined, ev));
   return row;

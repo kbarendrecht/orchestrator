@@ -987,7 +987,6 @@ $('ovprev').onclick = () => Diff.step(-1);
 $('ovnext').onclick = () => Diff.step(1);
 $('filestitle').onclick = (ev) => Diff.setView('changes', ev);
 $('filestree').onclick = (ev) => Diff.setView('files', ev);
-$('filesbase').onclick = (ev) => Diff.baseMenu(ev);
 $('ovmode').onclick = async (ev) => {
   // A press on the half that is already open asks for nothing.
   const want = /** @type {HTMLElement} */ (ev.target).closest('[data-v]')?.getAttribute('data-v');
@@ -1415,11 +1414,6 @@ document.querySelector('.drawer-head')?.addEventListener('dblclick', (ev) => {
   if (t.closest('button, .dtab, input')) return;
   setDrawerCollapsed(!drawerCollapsed);
 });
-$('refreshbtn').onclick = () => {
-  const wsId = currentWorkspaceId();
-  if (wsId) call(`/api/workspace/${encodeURIComponent(wsId)}/reconcile`).catch((e) => toast(e.message, true));
-  Diff.refreshTree();
-};
 $('killbtn').onclick = () => {
   const s = currentSession();
   if (s) Rail.closeSession(s.id);
