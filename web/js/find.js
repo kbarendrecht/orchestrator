@@ -148,8 +148,8 @@ export async function open(mode) {
      focused and saved it as the place to go back to. */
   if (!$('fnoverlay').contains(document.activeElement)) borrowFocus('find');
   $('fnoverlay').classList.add('on');
-  clampSplit();
   renderHead();
+  clampSplit();
   const box = /** @type {HTMLInputElement} */ ($('fnq'));
   box.placeholder = mode === 'text' ? 'find in files' : 'find a file';
   box.focus();
@@ -553,8 +553,8 @@ export async function definitionOf(inFile, symbol) {
   state.ws = ws;
   state.mode = 'text';
   $('fnoverlay').classList.add('on');
-  clampSplit();
   renderHead();
+  clampSplit();
   // The query box carries the symbol, so the search is reproducible by hand. The
   // way back is the mouse's back button; see `trail`.
   /** @type {HTMLInputElement} */ ($('fnq')).value = symbol;
@@ -674,6 +674,10 @@ function setSplit(/** @type {number} */ px) {
  *  the stylesheet's own default is in force: a percentage cannot be out of range.
  */
 function clampSplit() {
+  /* Contents only, and after the layout is the mode's. A name search puts the
+     index beside the file at the full height, and measured then it clamped the
+     file under it to its minimum the next time contents opened. */
+  if (state.mode !== 'text') return;
   const now = $('fnhits').getBoundingClientRect().height;
   if (document.documentElement.style.getPropertyValue(SPLIT.prop)) setSplit(now);
 }
@@ -719,6 +723,48 @@ function dragSplit() {
   // Applied at boot rather than on open: the overlay has no size while it is
   // `display:none`, so a clamp measured then would read zero and pin it to `min`.
   if (saved) document.documentElement.style.setProperty(SPLIT.prop, `${Math.round(saved)}px`);
+}
+
+/** How wide the name search's column is, beside the file. */
+const SIDE = { prop: '--fnside', key: 'orch.findSideWidth', min: 180, viewerMin: 320 };
+
+/** Drag the edge between the name search's column and the file. The same two
+ *  gestures as the split above: drag it, double-click it back to the default. */
+function dragSide() {
+  const handle = $('fnsidesplit');
+  const root = document.documentElement.style;
+  handle.addEventListener('mousedown', (ev) => {
+    const e = /** @type {MouseEvent} */ (ev);
+    if (e.button !== 0) return;
+    e.preventDefault();
+    handle.classList.add('dragging');
+    document.body.classList.add('col-resizing');
+    const box = $('fnoverlay').getBoundingClientRect();
+    const move = (/** @type {MouseEvent} */ m) => {
+      const px = Math.max(SIDE.min, Math.min(m.clientX - box.left, box.width - SIDE.viewerMin));
+      root.setProperty(SIDE.prop, `${Math.round(px)}px`);
+    };
+    const done = () => {
+      window.removeEventListener('mousemove', move);
+      handle.classList.remove('dragging');
+      document.body.classList.remove('col-resizing');
+      try {
+        localStorage.setItem(SIDE.key, String($('fnhits').getBoundingClientRect().width));
+      } catch (err) { /* private mode: the drag still worked for this session */ }
+    };
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', done, { once: true });
+  });
+  handle.addEventListener('dblclick', () => {
+    root.removeProperty(SIDE.prop);
+    try {
+      localStorage.removeItem(SIDE.key);
+    } catch (err) { /* nothing to forget */ }
+  });
+  try {
+    const saved = Number(localStorage.getItem(SIDE.key));
+    if (saved) root.setProperty(SIDE.prop, `${Math.round(saved)}px`);
+  } catch (err) { /* no storage: the default width */ }
 }
 
 const SIZE = { key: 'orch.findSize', minW: 560, minH: 320 };
@@ -785,6 +831,7 @@ function dragSize() {
 /** Wire the chrome. Called once, at boot. */
 export function init() {
   dragSplit();
+  dragSide();
   dragSize();
   const box = /** @type {HTMLInputElement} */ ($('fnq'));
   box.oninput = () => run();

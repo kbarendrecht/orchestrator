@@ -1582,6 +1582,16 @@ try {
     const v = document.getElementById('fnsrc')?.getBoundingClientRect()
     return !!t && !!v && t.right <= v.left + 1 && o.dataset.mode === 'names'
   }), 'and the file is to the right of the tree, not under it')
+  /* The column is the person's to size: its right edge drags, like every split. */
+  const sideBefore = await page.$eval('#fnhits', (h) => h.getBoundingClientRect().width)
+  const edge = await page.$eval('#fnsidesplit', (h) => { const r = h.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + 40 } })
+  await page.mouse.move(edge.x, edge.y)
+  await page.mouse.down()
+  await page.mouse.move(edge.x + 80, edge.y, { steps: 4 })
+  await page.mouse.up()
+  const sideAfter = await page.$eval('#fnhits', (h) => h.getBoundingClientRect().width)
+  check(Math.abs(sideAfter - sideBefore - 80) <= 2, `the tree's edge drags its width, ${sideBefore} to ${sideAfter}`)
+  await page.dblclick('#fnsidesplit')
   if (process.env.FIND_SHOT) await page.screenshot({ path: process.env.FIND_SHOT })
   /* `README.md` rather than the file written above, and the reason is worth
      knowing: the path list is fetched once per workspace and kept, so a file
@@ -1618,6 +1628,14 @@ try {
   // The whole file is there to scroll, not only the matched line.
   const viewerRows = await page.$$eval('#fnsrc .fnrow', (rs) => rs.length)
   check(viewerRows === 5, `the viewer holds the file, not the hit, got ${viewerRows} rows`)
+  /* **Contents after names keeps its file half.** The open measured the index in
+     the names layout, where it is the full height, and clamped the file to its
+     minimum. */
+  const halves = await page.$eval('#fnoverlay', () => ({
+    hits: document.getElementById('fnhits')?.getBoundingClientRect().height ?? 0,
+    file: document.getElementById('fnsrc')?.getBoundingClientRect().height ?? 0,
+  }))
+  check(halves.file > halves.hits, `contents opens with the file the larger half, got ${JSON.stringify(halves)}`)
   /* **The ruler marks the hit and the changes.** The file is new, so every line
      is a change since the last commit, and the search hit is marked beside them;
      a click on the hit's mark is the same jump as the hit itself. */

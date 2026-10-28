@@ -161,7 +161,7 @@ export function render(mount, ws, changed, redraw, how = {}) {
       const big = state.big.has(d);
       const got = state.under.get(d);
       const marked = holds.has(d) || inFresh(`${d}/`);
-      const note = !big ? '' : got === 'loading' ? 'listing…' : typeof got === 'string' ? got : got ? '' : 'large, lists on open';
+      const note = !big ? '' : got === 'loading' ? 'listing…' : typeof got === 'string' ? got : '';
       items.push({
         key: `td:${d}`,
         sig: paintSig([isOpen, marked, note, depth]),

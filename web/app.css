@@ -2394,7 +2394,7 @@ select.opfield,input.opfield{appearance:none}
    ranked names after. Contents keep the index above the file, where a line of
    code has the width it needs. */
 .overlay.find.on[data-mode="names"]{
-  display:grid;grid-template-columns:min(340px, 34%) minmax(0,1fr);
+  display:grid;grid-template-columns:var(--fnside, min(340px, 34%)) minmax(0,1fr);
   grid-template-rows:auto auto minmax(0,1fr) auto;
 }
 .overlay.find[data-mode="names"]>.ov-head,.overlay.find[data-mode="names"]>.fnfoot{grid-column:1 / -1}
@@ -2402,6 +2402,14 @@ select.opfield,input.opfield{appearance:none}
 .overlay.find[data-mode="names"]>.fnview-head{grid-column:2;grid-row:2;border-top:1px solid var(--line)}
 .overlay.find[data-mode="names"]>.fnsrc{grid-column:2;grid-row:3;min-height:0}
 .overlay.find[data-mode="names"] #fnsplit{display:none}
+/* On the file's left edge, over it rather than between the two, so the handle
+   costs the layout no width. */
+.fnsidesplit{display:none}
+.overlay.find.on[data-mode="names"]>.fnsidesplit{
+  display:block;grid-column:2;grid-row:2 / 4;justify-self:start;width:6px;margin-left:-3px;
+  cursor:col-resize;z-index:2;
+}
+.fnsidesplit:hover,.fnsidesplit.dragging{background:var(--line)}
 .fnq,.fnglob{
   font-family:var(--code);font-size:calc(12px * var(--fs));color:var(--text);
   background:var(--bg);border:1px solid var(--line);border-radius:var(--r);
