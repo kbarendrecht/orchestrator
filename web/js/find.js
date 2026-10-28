@@ -18,12 +18,13 @@
 // keeps the right where a column of them still lines up.
 
 import {
-  $, activeWorkspaceId, borrowFocus, el, get, MOD_LABEL, reason, returnFocus, toast,
+  $, activeWorkspaceId, borrowFocus, el, get, MOD_LABEL, reason, returnFocus, toast, workspaceById,
 } from './core.js';
 import * as Editor from './editor.js';
 import { charRanges, paintRanges } from './source.js';
 import * as Viewer from './viewer.js';
 import * as FileView from './fileview.js';
+import * as Tree from './tree.js';
 
 /** How long the query rests before it is sent. Long enough that typing a symbol
  *  is one search rather than eight, short enough to feel like none. */
@@ -67,7 +68,7 @@ const LEADIN = 40;
  *    under: { ws: string | null, dir: string, paths: string[], at: number } | null,
  *    seq: number, timer: ReturnType<typeof setTimeout> | null,
  *    inflight: AbortController | null,
- *    error: string | null,
+ *    picked: string | null, error: string | null,
  *  }} */
 const state = {
   open: false,
@@ -87,6 +88,9 @@ const state = {
   seq: 0,
   timer: null,
   inflight: null,
+  /** The file picked in the tree, which is what a name search with nothing typed
+   *  shows: the workspace as folders, the picked file beside it. */
+  picked: null,
   /** What the last search failed with, so the foot can say it. `renderHits` owns
    *  that element, and a write from anywhere else is erased by the next render. */
   error: null,
@@ -122,6 +126,7 @@ export async function open(mode) {
      ask — so it is awaited, and a "keep editing" abandons the open rather than
      leaving the overlay pointed at one tree with a buffer from another. */
   if (state.open && state.ws !== ws && !await close()) return;
+  if (state.ws !== ws) state.picked = null;
   state.open = true;
   state.ws = ws;
   if (state.mode !== mode) {
@@ -138,7 +143,10 @@ export async function open(mode) {
     renderHits();
     void showCursor();
   }
-  borrowFocus('find');
+  /* Never its own query box. A selection that moves while this opens closes it
+     again (`syncToSession`), and a second open straight after found the box still
+     focused and saved it as the place to go back to. */
+  if (!$('fnoverlay').contains(document.activeElement)) borrowFocus('find');
   $('fnoverlay').classList.add('on');
   clampSplit();
   renderHead();
@@ -164,6 +172,11 @@ export async function close() {
   state.timer = null;
   $('fnoverlay').classList.remove('on');
   returnFocus('find', $('fnoverlay'));
+  // Nothing to go back to, and the keyboard would stay in a hidden box: the
+  // session's terminal is where typing after Escape is meant to land.
+  if ($('fnoverlay').contains(document.activeElement)) {
+    /** @type {HTMLElement | null} */ (document.querySelector('#termwrap .termhost:not([hidden]) .xterm-helper-textarea'))?.focus();
+  }
   return true;
 }
 
@@ -182,6 +195,8 @@ function renderHead() {
      of you is a search at all. */
   const text = state.mode === 'text';
   $('fnmode').dataset.mode = state.mode;
+  // The overlay's layout follows it: a name search is a column beside the file.
+  $('fnoverlay').dataset.mode = state.mode;
   for (const b of /** @type {HTMLElement[]} */ ([...$('fnmode').querySelectorAll('[data-v]')])) {
     b.setAttribute('aria-pressed', String(b.dataset.v === state.mode));
   }
@@ -227,7 +242,11 @@ async function search() {
   state.inflight = ctl;
 
   try {
-    if (state.mode === 'names') {
+    if (state.mode === 'names' && !q.trim()) {
+      // Nothing typed is the tree, and the one file picked in it.
+      state.hits = state.picked ? [{ path: state.picked, line: 1, col: 0, len: 0 }] : [];
+      state.truncated = false;
+    } else if (state.mode === 'names') {
       await loadPaths(ctl.signal);
       if (mine !== state.seq) return;
       /* **A left-out folder is searched once the query names it.** It was left
@@ -365,6 +384,10 @@ export function rank(paths, q) {
  *  there is nothing to its left. */
 function renderHits() {
   const box = $('fnhits');
+  if (browsing()) {
+    renderTree(box);
+    return;
+  }
   box.replaceChildren();
   for (const [i, hit] of state.hits.entries()) {
     const row = el('div', 'fnhit' + (i === state.cursor ? ' sel' : ''));
@@ -396,6 +419,28 @@ function renderHits() {
       : asked
         ? (state.mode === 'text' ? 'no matches' : ['no files', leftOutNote()].filter(Boolean).join(' · '))
         : leftOutNote();
+}
+
+/** A name search with nothing typed yet, which browses rather than ranks. */
+const browsing = () => state.mode === 'names' && !/** @type {HTMLInputElement} */ ($('fnq')).value.trim();
+
+/** The workspace as a tree (`tree.js`), in place of the first 200 paths A to Z
+ *  that an empty name search used to list. A click shows the file beside it, a
+ *  double-click opens it, the way Enter does. */
+function renderTree(/** @type {HTMLElement} */ box) {
+  const ws = state.ws ?? '';
+  const said = Tree.render(box, ws, workspaceById(ws)?.changed ?? [], renderHits, {
+    picked: state.picked,
+    pick: (path, ev) => {
+      state.picked = path;
+      state.hits = [{ path, line: 1, col: 0, len: 0 }];
+      state.cursor = 0;
+      if (ev.detail > 1) return openCurrent();
+      renderHits();
+      void showCursor();
+    },
+  });
+  $('fnfoot').textContent = state.error ?? [said, leftOutNote(), 'type to search by name'].filter(Boolean).join(' · ');
 }
 
 /** The matched line, with the match marked the way the viewer marks it.

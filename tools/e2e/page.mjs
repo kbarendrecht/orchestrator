@@ -308,6 +308,11 @@ try {
       leafPath, { timeout: 5000 }).then(() => true, () => false)
     check(opened, `a file row opens the file pane on ${leafPath}`)
     await page.keyboard.press('Escape')
+    // Waited for: a file pane left up takes the next Escape, which a later step
+    // means for the finder.
+    const shut = await page.waitForSelector('#fvoverlay.on', { state: 'detached', timeout: 5000 })
+      .then(() => true, () => false)
+    check(shut, 'and Escape closes it again')
   } else check(false, 'the tree has a file row at its top level')
   await page.click('#filestitle')
   check(await page.$eval('#filestitle', (b) => b.getAttribute('aria-pressed') === 'true'),
@@ -1562,6 +1567,22 @@ try {
   await page.waitForFunction(
     () => document.getElementById('fnmode')?.dataset.mode === 'names',
     null, { timeout: 5000 })
+  /* **Nothing typed is the tree, and a picked file shows beside it.** The name
+     search with an empty box used to list the first 200 paths A to Z, which is a
+     list nobody reads. */
+  await page.fill('#fnq', '')
+  const browsed = await page.waitForSelector('#fnhits .trow', { timeout: 5000 }).then(() => true, () => false)
+  check(browsed, 'a name search with nothing typed shows the workspace as a tree')
+  await page.locator('#fnhits .trow:not(.dir)', { hasText: /^README\.md$/ }).first().click()
+  const besideTree = await page.waitForFunction(() => document.getElementById('fnpath')?.textContent === 'README.md',
+    null, { timeout: 5000 }).then(() => true, () => false)
+  check(besideTree, 'a file picked in the tree shows in the viewer beside it')
+  check(await page.$eval('#fnoverlay', (o) => {
+    const t = document.getElementById('fnhits')?.getBoundingClientRect()
+    const v = document.getElementById('fnsrc')?.getBoundingClientRect()
+    return !!t && !!v && t.right <= v.left + 1 && o.dataset.mode === 'names'
+  }), 'and the file is to the right of the tree, not under it')
+  if (process.env.FIND_SHOT) await page.screenshot({ path: process.env.FIND_SHOT })
   /* `README.md` rather than the file written above, and the reason is worth
      knowing: the path list is fetched once per workspace and kept, so a file
      created after the overlay first opened is not in it until the page reloads.

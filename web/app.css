@@ -1108,6 +1108,7 @@ kbd{
    by depth, with the same status letters. */
 .trow{width:100%;display:flex;align-items:center;gap:6px;padding:3px 12px 3px calc(8px + var(--d, 0) * 12px);text-align:left;font-family:var(--mono);font-size:calc(11.5px * var(--fs))}
 .trow:hover{background:var(--hover)}
+.trow.on{background:var(--raised)}
 .trow .tchev{width:11px;height:11px;flex:none;color:var(--faint-solid);transition:transform .12s}
 .trow.open .tchev{transform:rotate(90deg)}
 .trow .tgap{width:11px;flex:none}
@@ -2390,6 +2391,18 @@ select.opfield,input.opfield{appearance:none}
 .fnedge[data-edge="nw"]{top:0;left:0;cursor:nwse-resize}
 .fnedge[data-edge="se"]{bottom:0;right:0;cursor:nwse-resize}
 .overlay.find>.ov-head{height:52px;gap:10px;padding:0 12px 0 14px;background:none}
+/* A name search is a column beside the file: the tree while nothing is typed, the
+   ranked names after. Contents keep the index above the file, where a line of
+   code has the width it needs. */
+.overlay.find.on[data-mode="names"]{
+  display:grid;grid-template-columns:min(340px, 34%) minmax(0,1fr);
+  grid-template-rows:auto auto minmax(0,1fr) auto;
+}
+.overlay.find[data-mode="names"]>.ov-head,.overlay.find[data-mode="names"]>.fnfoot{grid-column:1 / -1}
+.overlay.find[data-mode="names"]>.fnhits{grid-column:1;grid-row:2 / 4;border-bottom:0;border-right:1px solid var(--line);padding:4px 0}
+.overlay.find[data-mode="names"]>.fnview-head{grid-column:2;grid-row:2;border-top:1px solid var(--line)}
+.overlay.find[data-mode="names"]>.fnsrc{grid-column:2;grid-row:3;min-height:0}
+.overlay.find[data-mode="names"] #fnsplit{display:none}
 .fnq,.fnglob{
   font-family:var(--code);font-size:calc(12px * var(--fs));color:var(--text);
   background:var(--bg);border:1px solid var(--line);border-radius:var(--r);

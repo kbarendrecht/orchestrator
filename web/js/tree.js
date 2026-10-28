@@ -108,12 +108,17 @@ const byName = (/** @type {string} */ a, /** @type {string} */ b) => leaf(a).loc
  *  file is on that list and not on disk, so it is put back in, struck through,
  *  where it was.
  *
+ *  `pick` is what a file row does, opening the file pane when not given; the
+ *  finder passes its own, to show the file beside the tree. `picked` is the row
+ *  to mark as the one shown.
+ *
  *  @param {HTMLElement} mount
  *  @param {string} ws
  *  @param {{ path: string, status: string }[]} changed
  *  @param {() => void} redraw
+ *  @param {{ pick?: (path: string, ev: MouseEvent) => void, picked?: string | null }} [how]
  *  @returns {string} what the footer says */
-export function render(mount, ws, changed, redraw) {
+export function render(mount, ws, changed, redraw, how = {}) {
   load(ws, paintSig(changed.map((f) => f.path)), redraw);
   if (state.ws !== ws) {
     reconcile(mount, [{ key: 'twait', sig: '', build: () => el('div', 'fempty', 'Listing the files…') }]);
@@ -176,7 +181,8 @@ export function render(mount, ws, changed, redraw) {
       // `src/new/` is a folder git reported whole, already drawn as one.
       if (p.endsWith('/')) continue;
       const st = status.get(p) ?? (inFresh(p) ? '?' : '');
-      items.push({ key: `tf:${p}`, sig: paintSig([st, depth, ws]), build: () => fileRow(ws, p, depth, st) });
+      const on = p === how.picked;
+      items.push({ key: `tf:${p}`, sig: paintSig([st, depth, ws, on]), build: () => fileRow(ws, p, depth, st, on, how.pick) });
     }
   };
   walk('', 0);
@@ -219,13 +225,14 @@ function dirRow(
 
 function fileRow(
   /** @type {string} */ ws, /** @type {string} */ path, /** @type {number} */ depth, /** @type {string} */ st,
+  /** @type {boolean} */ on, /** @type {((path: string, ev: MouseEvent) => void) | undefined} */ pick,
 ) {
-  const row = el('button', 'trow' + (st === 'D' ? ' gone' : ''));
+  const row = el('button', 'trow' + (st === 'D' ? ' gone' : '') + (on ? ' on' : ''));
   row.style.setProperty('--d', String(depth));
   row.append(el('span', 'tgap'), el('span', 'tname', leaf(path)));
   if (st) row.appendChild(el('span', 'fst ' + st, st));
   row.title = path;
   // A deleted file has nothing on disk to show; its row is there to say where it was.
-  if (st !== 'D') row.onclick = (ev) => void FileView.open(ws, [path], 0, undefined, ev);
+  if (st !== 'D') row.onclick = (ev) => (pick ? pick(path, ev) : void FileView.open(ws, [path], 0, undefined, ev));
   return row;
 }
