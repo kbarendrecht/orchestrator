@@ -8049,7 +8049,7 @@ USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ## MIT License
 
-Used by [tokio 1.53.1](https://github.com/tokio-rs/tokio)
+Used by [tokio 1.54.1](https://github.com/tokio-rs/tokio)
 
 ```
 MIT License
