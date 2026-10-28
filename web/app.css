@@ -223,8 +223,6 @@ body[data-chrome="custom"] .top-r{padding-right:0}
   max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
   line-height:1.25;
 }
-/* A button since it switches the list, so it gives up the button's own padding
-   and centring, and says it can be pressed by lighting the title on hover. */
 /* The view toggle is the finder's (`.fnmode`), a little tighter, with the count
    on the Changes half. */
 .top-r .fnmode>button{display:inline-flex;align-items:center;gap:5px;padding:0 7px}
@@ -2395,7 +2393,7 @@ select.opfield,input.opfield{appearance:none}
    ranked names after. Contents keep the index above the file, where a line of
    code has the width it needs. */
 .overlay.find.on[data-mode="names"]{
-  display:grid;grid-template-columns:var(--fnside, min(340px, 34%)) minmax(0,1fr);
+  display:grid;grid-template-columns:min(var(--fnside, min(340px, 34%)), calc(100% - 320px)) minmax(0,1fr);
   grid-template-rows:auto auto minmax(0,1fr) auto;
 }
 .overlay.find[data-mode="names"]>.ov-head,.overlay.find[data-mode="names"]>.fnfoot{grid-column:1 / -1}

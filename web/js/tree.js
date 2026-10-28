@@ -6,7 +6,7 @@
 // the walk left out as too big is drawn anyway and listed when you open it, the
 // way the finder lists it when you type its name.
 
-import { el, get, icon, paintSig, reason, reconcile } from './core.js';
+import { el, get, icon, paintSig, reason, reconcile, workspaceById } from './core.js';
 import * as FileView from './fileview.js';
 
 /** How long a fetched list is trusted without a reason to ask again. A changed
@@ -21,7 +21,7 @@ const TTL = 60_000;
  *  `'loading'`, or why they could not be listed. `rev` moves whenever any of it
  *  does, for the pane's paint check.
  *
- *  @typedef {{ dirs: Set<string>, files: string[] }} Folder
+ *  @typedef {{ dirs: Set<string>, files: Set<string> }} Folder
  *  @type {{ rev: number, ws: string | null, key: string | null, at: number, loading: boolean, failed: string | null,
  *           tree: Map<string, Folder>, total: number, truncated: boolean, big: Set<string>,
  *           under: Map<string, string | string[]>, open: Map<string, Set<string>> }} */
@@ -30,12 +30,17 @@ const state = {
   tree: new Map(), total: 0, truncated: false, big: new Set(), under: new Map(), open: new Map(),
 };
 
+/** Every caller that asked while a fetch was in flight. The pane and the finder
+ *  both draw from this one cache, so the answer has to reach whichever asked, not
+ *  only the one whose ask started the fetch. */
+const waiting = new Set();
+
 /** Fold `paths` into `tree`, every ancestor folder included. */
 function fold(/** @type {Map<string, Folder>} */ tree, /** @type {string[]} */ paths) {
   const folder = (/** @type {string} */ dir) => {
     let f = tree.get(dir);
     if (!f) {
-      f = { dirs: new Set(), files: [] };
+      f = { dirs: new Set(), files: new Set() };
       tree.set(dir, f);
       if (dir) {
         const cut = dir.lastIndexOf('/');
@@ -48,7 +53,7 @@ function fold(/** @type {Map<string, Folder>} */ tree, /** @type {string[]} */ p
   for (const p of paths) {
     const cut = p.lastIndexOf('/');
     const f = folder(cut < 0 ? '' : p.slice(0, cut));
-    if (!f.files.includes(p)) f.files.push(p);
+    f.files.add(p);
   }
 }
 
@@ -56,7 +61,9 @@ function fold(/** @type {Map<string, Folder>} */ tree, /** @type {string[]} */ p
  *  last tree on screen until the new one lands. */
 function load(/** @type {string} */ ws, /** @type {string} */ key, /** @type {() => void} */ redraw) {
   const fresh = state.ws === ws && state.key === key && Date.now() - state.at < TTL;
-  if (fresh || state.loading) return;
+  if (fresh) return;
+  waiting.add(redraw);
+  if (state.loading) return;
   if (state.ws !== ws) {
     state.tree = new Map();
     state.under = new Map();
@@ -78,7 +85,9 @@ function load(/** @type {string} */ ws, /** @type {string} */ key, /** @type {()
   }).finally(() => {
     state.loading = false;
     state.rev++;
-    redraw();
+    const all = [...waiting];
+    waiting.clear();
+    for (const r of all) r();
   });
 }
 
@@ -119,7 +128,11 @@ const byName = (/** @type {string} */ a, /** @type {string} */ b) => leaf(a).loc
  *  @param {{ pick?: (path: string, ev: MouseEvent) => void, picked?: string | null }} [how]
  *  @returns {string} what the footer says */
 export function render(mount, ws, changed, redraw, how = {}) {
-  load(ws, paintSig(changed.map((f) => f.path)), redraw);
+  /* Keyed on the snapshot's own list, not on `changed`: the pane hands over its
+     fetched list when the snapshot's is capped, the finder the snapshot's, and
+     two keys for one cache refetched the whole walk every time the other drew. */
+  const w = workspaceById(ws);
+  load(ws, paintSig([w?.changed?.map((f) => f.path) ?? [], w?.changed_total, w?.changed_since]), redraw);
   if (state.ws !== ws) {
     reconcile(mount, [{ key: 'twait', sig: '', build: () => el('div', 'fempty', 'Listing the files…') }]);
     return '';

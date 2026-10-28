@@ -741,7 +741,7 @@ Three groups, main pinned first:
    that session; the rest are the working set, since PRs usually outlive their
    worktree.
 
-**Group header carries the summary** — `PRs · 1 needs you · 1 failing` — and
+**Group header carries the summary** — `PRs · 3 · 1 failing` — and
 collapses. That is the whole value of a summary line, placed where the detail
 already is instead of duplicated at the top.
 

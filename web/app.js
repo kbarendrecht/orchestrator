@@ -1406,7 +1406,7 @@ $('dcollapse').onclick = () => setDrawerCollapsed(!drawerCollapsed);
 /* The bar itself is the second way in, on a double-click: the same gesture the
    splitter above it already takes, and the header is mostly empty space that
    looked inert. Single-click is not offered here — the bar carries the tabs, the
-   `+ Shell` button and the stack badge, and a stray click while aiming at one of
+   `+ Shell` button and the path, and a stray click while aiming at one of
    them must not fold the pane. `closest` keeps it to the background: a
    double-click that lands on a control is that control's. */
 document.querySelector('.drawer-head')?.addEventListener('dblclick', (ev) => {

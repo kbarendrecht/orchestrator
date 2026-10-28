@@ -397,8 +397,11 @@ function renderFiles() {
 
   if (tree) {
     $('filesfoot').textContent = Tree.render(panes, w.id, known || [], renderFiles);
-    // The count of the list the other half shows, when the snapshot has it.
-    const n = mode === 'upstream' ? (w.changed_total ?? (known || []).length) : 0;
+    /* The count the other half shows: the snapshot's for since branched, the
+       fetched list plus its untracked rows for the other two, as the changes
+       view counts them. */
+    const n = mode === 'upstream' ? (w.changed_total ?? (known || []).length)
+      : listSum ? listSum.files.length + (known || []).filter((f) => f.status === '?').length : 0;
     // Nothing for none, here and in the changes view alike, so the toggle is one width in both.
     $('filescount').textContent = n ? String(n) : '';
     $('filestitle').title = 'Show the changes';

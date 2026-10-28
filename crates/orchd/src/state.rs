@@ -360,8 +360,6 @@ pub struct Inner {
     /// the other direction, which is the one that loses work silently.
     pub human_edits: HashMap<PathBuf, HumanEdit>,
     pub automation: Durable<crate::model::AutomationStore>,
-    /// Whether the main checkout's `docker compose` stack has running containers.
-    ///
     /// The worktree cut in flight, and what its scripts are saying. Cleared to
     /// `running: false` when they finish, and left there — the last create's output
     /// is what the pane shows while the session it belongs to boots.
