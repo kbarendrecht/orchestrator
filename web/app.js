@@ -2353,6 +2353,10 @@ function setupChrome() {
       // the header unusable.
       if (e.button !== 0) return;
       if (/** @type {HTMLElement} */ (e.target).closest(NOT_THE_BAR)) return;
+      // A press on a bar is a window gesture, never a text selection. Left to
+      // its default, WebKit anchors one beside the bar and the drag swept it
+      // across the panes, `user-select:none` on `.top` notwithstanding.
+      e.preventDefault();
       // A double-click is the OS gesture for maximise, so it must not also
       // start a drag; the compositor keeps the drag alive past mouseup, which
       // would eat the second click.
