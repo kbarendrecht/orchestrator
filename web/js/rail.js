@@ -988,10 +988,10 @@ function prHead(/** @type {any[]} */ prs) {
     count.appendChild(el('b', 'f', 'unavailable'));
     head.title = snap.pr_error;
   } else {
-    const needs = prs.filter((p) => p.needs_you).length;
+    // The total and what is failing. Which PR needs you is on its row's dot and
+    // button, so the head saying it again was a second copy of the same news.
     const failing = prs.filter(inTrouble).length;
     const bits = [`${prs.length}`];
-    if (needs) bits.push(`${needs} needs you`);
     if (failing) bits.push(`${failing} failing`);
     count.appendChild(el('b', null, bits.join(' · ')));
     /* The count ellipsizes at the narrowest rail (#37) — `3 · 2 faili…` — and a
@@ -999,8 +999,6 @@ function prHead(/** @type {any[]} */ prs) {
        here: below 265px it is gone rather than shortened, so promising it in a
        tooltip would name a number that is not on screen. */
     count.title = bits.join(' · ');
-    // The `<b>` was appended two lines above, so it is there.
-    if (needs) count.querySelector('b')?.classList.add('n');
     // How long since a poll actually landed. Live-ticked off the snapshot clock
     // like the rail's other ages, so a poller that is stuck without erroring
     // reads as stale rather than current. Hidden while a fetch is in flight.

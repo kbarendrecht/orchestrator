@@ -2007,7 +2007,6 @@ button.settings-co:hover{color:var(--text);background:var(--hover)}
    the improvement second. */
 .prblock,.rvblock{container-type:inline-size}
 @container (max-width:265px){ .prage{display:none} }
-.prcount .n{color:var(--attn)}
 .prcount .f{color:var(--bad)}
 .prage{color:var(--dim)}
 .prrow{
