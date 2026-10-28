@@ -1584,10 +1584,14 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 /* Settings: the title heads the nav column, the form fills the right. */
 #settings>.settings-title{grid-column:1;grid-row:1;padding:16px 18px 12px;border-right:1px solid var(--line);background:var(--bg)}
 /* Out of the nav and into the sheet's corner, where a close sits on any sheet. */
+/* Above the sticky group headings, which are `z-index:2` and later in the page,
+   so a heading scrolled up under the corner painted over the close. Its own
+   ground, so nothing scrolling past shows through it. */
 #settings .settings-x{
-  position:absolute;top:10px;right:10px;z-index:2;
+  position:absolute;top:10px;right:10px;z-index:3;background:var(--surface);
   display:inline-grid;place-items:center;width:28px;height:28px;border-radius:var(--r);
 }
+#settings .settings-x:hover{background:var(--raised)}
 #settings>.settings-card{grid-column:2;grid-row:1 / 3}
 #settings>.settings-foot{grid-column:2;grid-row:3}
 /* The sticky heading's offset is the card's top padding, and its band the ground
@@ -1850,22 +1854,23 @@ button.settings-co:hover{color:var(--text);background:var(--hover)}
 .ln.empty s{background:repeating-linear-gradient(135deg,transparent 0 6px,rgba(255,255,255,.025) 6px 12px)}
 .w-add{background:var(--add-hi);border-radius:2px}
 .w-del{background:var(--del-hi);border-radius:2px}
-/* Syntax colours — the "Muted" palette: orchd's own teal/amber/sage at low
+/* Syntax colours — the "Muted" palette, each the fallback of the `--syn-*` a
+   picked scheme sets (`Palette.SYNTAX_SCHEMES`): orchd's own teal/amber/sage at low
    saturation, so highlighting reads as part of the app and never fights the
    green/red diff backgrounds. Colour only; a segment that is also a word-diff
    slice carries `.w-add`/`.w-del` on the same span, so the two compose. Prism
    token types (and aliases) map to these classes; anything unmapped inherits
    the plain text colour, which is the right default. */
-.tok-keyword{color:#6ba6b8}
-.tok-string,.tok-char,.tok-template-string,.tok-attr-value,.tok-regex,.tok-url{color:#83a98c}
-.tok-comment,.tok-doc-comment,.tok-prolog,.tok-cdata{color:#6e6e6e;font-style:italic}
-.tok-number,.tok-boolean{color:#c98f6a}
-.tok-function,.tok-macro,.tok-function-variable{color:#93b9c4}
-.tok-class-name,.tok-builtin,.tok-type-definition,.tok-symbol,.tok-constant,.tok-atrule{color:#d0a85f}
-.tok-operator,.tok-entity{color:#9a9a9a}
-.tok-punctuation{color:#8e8e8e}
-.tok-property,.tok-attr-name,.tok-tag,.tok-property-access,.tok-selector,.tok-important{color:#b3b0a6}
-.tok-namespace,.tok-lifetime-annotation{color:#7fb3b0}
+.tok-keyword{color:var(--syn-keyword,#6ba6b8)}
+.tok-string,.tok-char,.tok-template-string,.tok-attr-value,.tok-regex,.tok-url{color:var(--syn-string,#83a98c)}
+.tok-comment,.tok-doc-comment,.tok-prolog,.tok-cdata{color:var(--syn-comment,#6e6e6e);font-style:italic}
+.tok-number,.tok-boolean{color:var(--syn-number,#c98f6a)}
+.tok-function,.tok-macro,.tok-function-variable{color:var(--syn-function,#93b9c4)}
+.tok-class-name,.tok-builtin,.tok-type-definition,.tok-symbol,.tok-constant,.tok-atrule{color:var(--syn-type,#d0a85f)}
+.tok-operator,.tok-entity{color:var(--syn-operator,#9a9a9a)}
+.tok-punctuation{color:var(--syn-punctuation,#8e8e8e)}
+.tok-property,.tok-attr-name,.tok-tag,.tok-property-access,.tok-selector,.tok-important{color:var(--syn-property,#b3b0a6)}
+.tok-namespace,.tok-lifetime-annotation{color:var(--syn-namespace,#7fb3b0)}
 /* Diff-grammar lines — for the open-question detail block, and any .diff/.patch
    opened in the viewer. Green/red on the text (no background: it is a `pre`, not
    a diff row), headers in the keyword teal. */

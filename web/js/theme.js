@@ -74,6 +74,8 @@ const THEME_DEF = {
    *  three colours above; every other value is a scheme taken whole, ground and
    *  all — see [`Palette.TERM_SCHEMES`] for why that is not mixed like the rest. */
   term: Palette.TERM_BOARD,
+  /** Which syntax colours code is drawn in. `muted` is the stylesheet's own. */
+  syntax: Palette.SYNTAX_MUTED,
   /** Whether the colours are hand-tuned rather than a preset's.
    *
    *  **Stored, where the preset itself is derived.** [`currentPreset`] reads the
@@ -240,7 +242,7 @@ export function onThemeChange(/** @type {(theme: Theme) => void} */ fn) { themeL
  *  @typedef {{ bg: string, panel: string, text: string,
  *              ui: string, mono: string, code: string,
  *              termSize: number, diffSize: number, opacity: number,
- *              term: string, custom: boolean }} Theme
+ *              term: string, syntax: string, custom: boolean }} Theme
  */
 
 /** @returns {Theme} */
@@ -269,6 +271,7 @@ function loadTheme() {
     diffSize: clampSize(got.diffSize, THEME_DEF.diffSize),
     opacity: clampOpacity(got.opacity),
     term: Palette.validScheme(got.term) ? String(got.term) : THEME_DEF.term,
+    syntax: Palette.validSyntax(got.syntax) ? String(got.syntax) : THEME_DEF.syntax,
     /* `=== true` rather than a cast: this is the one field the store can hold a
        string or a number in and mean nothing by it, and a truthy `"false"` would
        unlock the colour wells on a board nobody hand-tuned. */
@@ -356,6 +359,13 @@ function applyTheme() {
   /* The diff's own size, before `--fs` multiplies it — the stylesheet does that
      multiplication, so the three code blocks that share this size keep sharing it. */
   root.style.setProperty('--code-px', `${theme.diffSize}px`);
+  /* The syntax scheme as the variables the `.tok-*` rules read, and none for the
+     shipped one, whose colours are those rules' own fallbacks. */
+  const syn = Palette.SYNTAX_SCHEMES[/** @type {keyof typeof Palette.SYNTAX_SCHEMES} */ (theme.syntax)];
+  for (const role of Palette.SYNTAX_ROLES) {
+    if (syn) root.style.setProperty(`--syn-${role}`, syn[role]);
+    else root.style.removeProperty(`--syn-${role}`);
+  }
   /* **What the engine paints a `<select>`, a scrollbar and a range track.** Those
      are the browser's own widgets, and without this it draws them for a light page
      whatever the stylesheet says — so the settings pane's dropdowns came up white on
@@ -406,6 +416,7 @@ export function setTheme(/** @type {Partial<Theme>} */ patch) {
     diffSize: clampSize(next.diffSize, THEME_DEF.diffSize),
     opacity: clampOpacity(next.opacity),
     term: Palette.validScheme(next.term) ? next.term : THEME_DEF.term,
+    syntax: Palette.validSyntax(next.syntax) ? next.syntax : THEME_DEF.syntax,
     custom: next.custom === true,
   };
   try {

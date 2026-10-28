@@ -295,6 +295,43 @@ export function validScheme(/** @type {unknown} */ key) {
   return key === TERM_BOARD || (typeof key === 'string' && Object.hasOwn(TERM_SCHEMES, key));
 }
 
+/** Syntax colours for the diff, the viewer and the finder, by token role.
+ *
+ *  `muted` is the palette the stylesheet ships, written there as the fallback of
+ *  each `--syn-*` variable, so it is the absence of a choice rather than a copy:
+ *  picking it removes the variables. The others are the well-known editor themes'
+ *  own hues, taken as they are for the reason a terminal scheme is (see
+ *  [`TERM_SCHEMES`]); only the code ground is the board's.
+ */
+export const SYNTAX_MUTED = 'muted';
+export const SYNTAX_SCHEMES = {
+  'one-dark': { label: 'One Dark', keyword: '#C678DD', string: '#98C379', comment: '#7F848E', number: '#D19A66',
+    function: '#61AFEF', type: '#E5C07B', operator: '#56B6C2', punctuation: '#ABB2BF', property: '#E06C75', namespace: '#E5C07B' },
+  'github-dark': { label: 'GitHub Dark', keyword: '#FF7B72', string: '#A5D6FF', comment: '#8B949E', number: '#79C0FF',
+    function: '#D2A8FF', type: '#FFA657', operator: '#FF7B72', punctuation: '#C9D1D9', property: '#79C0FF', namespace: '#FFA657' },
+  dracula: { label: 'Dracula', keyword: '#FF79C6', string: '#F1FA8C', comment: '#6272A4', number: '#BD93F9',
+    function: '#50FA7B', type: '#8BE9FD', operator: '#FF79C6', punctuation: '#F8F8F2', property: '#FFB86C', namespace: '#8BE9FD' },
+  monokai: { label: 'Monokai', keyword: '#F92672', string: '#E6DB74', comment: '#75715E', number: '#AE81FF',
+    function: '#A6E22E', type: '#66D9EF', operator: '#F92672', punctuation: '#F8F8F2', property: '#FD971F', namespace: '#66D9EF' },
+  nord: { label: 'Nord', keyword: '#81A1C1', string: '#A3BE8C', comment: '#616E88', number: '#B48EAD',
+    function: '#88C0D0', type: '#8FBCBB', operator: '#81A1C1', punctuation: '#D8DEE9', property: '#D8DEE9', namespace: '#8FBCBB' },
+  'gruvbox-dark': { label: 'Gruvbox Dark', keyword: '#FB4934', string: '#B8BB26', comment: '#928374', number: '#D3869B',
+    function: '#8EC07C', type: '#FABD2F', operator: '#FE8019', punctuation: '#A89984', property: '#83A598', namespace: '#8EC07C' },
+  'github-light': { label: 'GitHub Light', keyword: '#CF222E', string: '#0A3069', comment: '#6E7781', number: '#0550AE',
+    function: '#8250DF', type: '#953800', operator: '#CF222E', punctuation: '#24292F', property: '#0550AE', namespace: '#953800' },
+};
+
+/** The roles a syntax scheme colours, each a `--syn-<role>` the stylesheet reads. */
+export const SYNTAX_ROLES = /** @type {const} */ ([
+  'keyword', 'string', 'comment', 'number', 'function', 'type', 'operator', 'punctuation', 'property', 'namespace',
+]);
+
+/** Whether `key` names a syntax scheme, the shipped one included. `Object.hasOwn`
+ *  for the reason [`validScheme`] gives. */
+export function validSyntax(/** @type {unknown} */ key) {
+  return key === SYNTAX_MUTED || (typeof key === 'string' && Object.hasOwn(SYNTAX_SCHEMES, key));
+}
+
 /** xterm's palette: the board's own three colours, or a named scheme taken whole.
  *
  *  `scheme` is a key of [`TERM_SCHEMES`], or `TERM_BOARD` for the derived palette

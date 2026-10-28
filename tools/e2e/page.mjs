@@ -293,6 +293,23 @@ try {
   await page.waitForTimeout(1200)
   check(await page.$eval('#machinebar', (b) => b.hidden), 'and a dismissed bar stays dismissed')
 
+  /* --- the syntax scheme reaches the code ---------------------------------------- */
+
+  const keyword = await page.evaluate(async () => {
+    const th = await import('/js/theme.js')
+    const span = document.body.appendChild(Object.assign(document.createElement('span'), { className: 'tok-keyword' }))
+    const read = () => getComputedStyle(span).color
+    const muted = read()
+    th.setTheme({ syntax: 'dracula' })
+    const dracula = read()
+    th.setTheme({ syntax: 'muted' })
+    const back = read()
+    span.remove()
+    return { muted, dracula, back }
+  })
+  check(keyword.dracula === 'rgb(255, 121, 198)' && keyword.back === keyword.muted && keyword.muted !== keyword.dracula,
+    `a syntax scheme recolours the code and Muted puts the shipped colours back, got ${JSON.stringify(keyword)}`)
+
   /* --- the changes pane's file tree -------------------------------------------- */
 
   /* The Files view draws the workspace from `/api/paths`, and a file row opens the

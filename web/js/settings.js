@@ -668,6 +668,7 @@ function showTheme() {
   ctl('thopacity').value = String(pct);
   $('thopacityval').textContent = `${pct}%`;
   showTermScheme();
+  ctl('thsyntax').value = theme.syntax;
   for (const { role, size, step } of ROLES) {
     showFont(role);
     if (size && step) showSize(step, theme[size]);
@@ -926,6 +927,15 @@ function setupSettings() {
   schemes.onchange = (/** @type {Event} */ ev) => {
     setTheme({ term: /** @type {HTMLSelectElement} */ (ev.target).value });
     showTermScheme();
+  };
+  // The same shape for code: the shipped colours first by name, then the schemes.
+  const syntax = ctl('thsyntax');
+  syntax.appendChild(el('option', null, 'Muted')).value = Palette.SYNTAX_MUTED;
+  for (const [key, s] of Object.entries(Palette.SYNTAX_SCHEMES)) {
+    syntax.appendChild(el('option', null, s.label)).value = key;
+  }
+  syntax.onchange = (/** @type {Event} */ ev) => {
+    setTheme({ syntax: /** @type {HTMLSelectElement} */ (ev.target).value });
   };
 
   /* One handler for the three roles, each with a well and a hex box saying the
