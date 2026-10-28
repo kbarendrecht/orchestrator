@@ -406,11 +406,12 @@ function renderFiles() {
    * With the diff open the same question is asked of the diff's own summary,
    * which carries line counts per file and a cursor. */
   const sum = diffState.open ? diffState.summary : null;
-  /* Pushed, the list is the fetched summary plus the snapshot's untracked rows: a
-     diff never sees an untracked file, and an untracked file is not pushed. */
+  /* Unpushed and uncommitted, the list is the fetched summary alone. It already
+     carries the untracked files, one row each (`diff::add_untracked`); adding the
+     snapshot's `?` rows as well listed every new file twice, plus a `src/` row for
+     the folder that cannot be diffed (#49). */
   const files = sum ? sum.files
-    : listSum ? [...listSum.files, ...(known || []).filter((f) => f.status === '?')]
-      .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
+    : listSum ? listSum.files
     : fetched ? []
     : (known || []);
   const since = sum ? sum.base : listSum ? listSum.base : fetched ? null : w.changed_since;

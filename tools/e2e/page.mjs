@@ -339,6 +339,43 @@ try {
   await page.click('#filestitle')
   check(await page.$eval('#filestitle', (b) => b.getAttribute('aria-pressed') === 'true'),
     'pressing Changes from the tree goes back to the changes, not to the base menu')
+
+  /* --- an untracked file is one row in every mode (#49) ------------------------ */
+
+  /* **Unpushed and Uncommitted listed every new file twice**, because the page
+     added the snapshot's `?` rows to a summary the daemon had already given them
+     to. `Changes` never did, which is the mode every other check here reads, so
+     nothing saw it. A file inside a new folder is in the set because that is the
+     half that differs: git's status says `src/`, the summary says `src/index.ts`. */
+  const wt = t.worktreePath('page')
+  const news = ['Dockerfile', 'src/index.ts']
+  fs.mkdirSync(path.join(wt, 'src'), { recursive: true })
+  for (const f of news) fs.writeFileSync(path.join(wt, f), 'new\n')
+  /* Waited for in `Changes`, which draws the snapshot's rows: until the page's own
+     snapshot has them, the fetched list is all there is and the double cannot show.
+     Without this the check passed on the code it was written against. */
+  const folderRow = await page.waitForFunction(() => [...document.querySelectorAll('#filepanes .frow .fname')]
+    .some((n) => (n.textContent || '').replace(/[\u202a-\u202e]/g, '') === 'src/'), null, { timeout: 15_000 })
+    .then(() => true, () => false)
+  check(folderRow, 'Changes lists a new folder as one row')
+  for (const mode of ['Unpushed', 'Uncommitted', 'Changes']) {
+    await page.click('#filestitle')
+    await page.waitForSelector('#ctxmenu:not([hidden]) button', { timeout: 5000 })
+    for (const item of await page.$$('#ctxmenu button')) {
+      if ((await item.textContent())?.trim().startsWith(mode)) { await item.click(); break }
+    }
+    if (mode === 'Changes') break
+    const rows = await page.waitForFunction(() => {
+      const names = [...document.querySelectorAll('#filepanes .frow .fname')]
+        .map((n) => (n.textContent || '').replace(/[\u202a-\u202e]/g, ''))
+      return names.includes('src/index.ts') ? names : null
+    }, null, { timeout: 10_000 }).then((h) => h.jsonValue(), () => [])
+    check(JSON.stringify(rows) === JSON.stringify(news),
+      `${mode} lists each untracked file once, got ${JSON.stringify(rows)}`)
+  }
+  // Gone again, so the text and tree checks after this read the tree they always did.
+  fs.rmSync(path.join(wt, 'Dockerfile'))
+  fs.rmSync(path.join(wt, 'src'), { recursive: true })
   await page.keyboard.press(chord('Shift+?'))
   await page.waitForSelector('#keyhelp:not([hidden])', { timeout: 5000 })
 
