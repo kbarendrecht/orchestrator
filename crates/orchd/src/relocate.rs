@@ -169,6 +169,13 @@ async fn swap_with_main_inner(
     Reading first removes the race rather than narrowing it: who was working on
     the branch that is about to leave is knowable before it leaves, and once the
     ids are captured a re-stamp cannot change the answer. */
+    /* **Re-stamped first, then read.** A record follows its tree's branch only when
+    a reconcile runs, and the HEAD poller runs one every two seconds. A swap pressed
+    inside that gap after an agent's `git switch -c` read the old branch, matched
+    nobody, and moved the branch without its conversation. Before anything moves,
+    so the race the paragraph above closes stays closed. */
+    let _ = app.reconcile(MAIN).await;
+    let _ = app.reconcile(&workspace).await;
     let (m0, t0) = (main.clone(), tree.clone());
     let (main_was, tree_was) =
         tokio::task::spawn_blocking(move || -> anyhow::Result<(String, String)> {
