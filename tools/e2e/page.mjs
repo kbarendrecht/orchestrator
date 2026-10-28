@@ -30,10 +30,6 @@
 //     each honest on its own, summing to a window that reads as a broken install.
 //   * a confirm box in front of a reversible action, or none in front of a lossy
 //     one. The rule lives at `confirmBox` in `core.js`; this is what holds it.
-//   * a `stack down` badge on a repo that has no stack. `docs/workspace-isolation.md`
-//     records that orchd carries no container config at all and calls that the
-//     portable default; the drawer contradicted it on every checkout with no
-//     compose file.
 //   * a pane header clipping its own label. `Changes` read as `Chang…` at the
 //     default width, which is a layout fault that shows up as missing words.
 //   * a column of clipped paths in the search index. The line and the path were
@@ -291,17 +287,6 @@ try {
   await page.click('#machinex')
   await page.waitForTimeout(1200)
   check(await page.$eval('#machinebar', (b) => b.hidden), 'and a dismissed bar stays dismissed')
-
-  /* --- a repo with no stack says nothing about one ---------------------------- */
-
-  /* The sandbox carries no compose file, which is the shape of nearly every repo
-     that is not the one orchd was written against. The drawer used to draw a red
-     dot and the words `stack down` on it, permanently — a feature of one repo
-     drawn as a fault on every other. Asserted on the *rendered* header, because
-     the daemon's `null` was always available and it was the SPA that read it as
-     "down". */
-  const stack = await page.$eval('#dcwd', (d) => d.textContent.trim())
-  check(stack === '', `a checkout with no compose file says nothing about a stack${stack ? `, got "${stack}"` : ''}`)
 
   /* --- the settings pane's two halves stay apart ------------------------------- */
 

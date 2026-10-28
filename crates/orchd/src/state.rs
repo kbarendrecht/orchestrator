@@ -362,15 +362,6 @@ pub struct Inner {
     pub automation: Durable<crate::model::AutomationStore>,
     /// Whether the main checkout's `docker compose` stack has running containers.
     ///
-    /// **`None` is "there is no stack here", not "down".** It is also the value
-    /// before the first probe, and the two are deliberately the same answer: both
-    /// mean the daemon has nothing to say about a stack, and the drawer draws
-    /// nothing rather than a red dot. Told apart it would be a tri-state whose
-    /// third case shows for the twenty seconds before the first poll, which is a
-    /// flicker rather than information. A repo with no compose file used to get a
-    /// permanent red `stack down`, which reads as a broken machine and is the
-    /// portable default — see `docs/workspace-isolation.md`.
-    pub stack_up: Option<bool>,
     /// The worktree cut in flight, and what its scripts are saying. Cleared to
     /// `running: false` when they finish, and left there — the last create's output
     /// is what the pane shows while the session it belongs to boots.
@@ -1090,7 +1081,6 @@ impl AppState {
                 reviews_fetched: None,
                 human_edits: HashMap::new(),
                 automation: Default::default(),
-                stack_up: None,
                 create_run: None,
                 update: None,
                 self_upgrade_run: None,
@@ -1766,7 +1756,6 @@ impl AppState {
             repos: self.repos.clone(),
             several_in_main: self.settings().allow_several_in_main,
             upstream_ref: self.cfg.upstream_ref.clone(),
-            stack_up: inner.stack_up,
             create_run: inner.create_run.clone(),
             update: inner.update.clone(),
             self_upgrade_run: inner.self_upgrade_run.clone(),
@@ -2529,10 +2518,6 @@ pub struct Snapshot {
     /// default as a literal, so on any repo that had edited it the UI named a ref
     /// the numbers did not come from.
     pub upstream_ref: String,
-    /// `docker compose` stack has running containers; `None` when this checkout
-    /// has no stack at all, which includes before the first probe. See
-    /// `Inner::stack_up` for why those are one answer.
-    pub stack_up: Option<bool>,
     /// The worktree cut in flight: which step, and what it has printed. See
     /// [`crate::model::CreateRun`].
     pub create_run: Option<crate::model::CreateRun>,

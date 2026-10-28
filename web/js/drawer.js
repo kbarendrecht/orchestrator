@@ -11,7 +11,7 @@
 // It reaches for `term` the way `rail` does — a tab is a terminal — and for
 // nothing else of the SPA's beyond `core`.
 
-import { $, activeCheckout, call, caret, currentSession, currentWorkspaceId, drawerCollapsed, drawerTouched, el, icon, openMenu, pendingProcFocus, procOrder, reason, selectedProc, setDrawerCollapsed, setDrawerTouched, setPendingProcFocus, setProcOrder, setSelectedProc, snap, toast, unchanged, workspaceById, wsKey } from './core.js';
+import { $, activeCheckout, call, caret, currentSession, currentWorkspaceId, drawerCollapsed, drawerTouched, el, icon, openMenu, pendingProcFocus, procOrder, reason, selectedProc, setDrawerCollapsed, setDrawerTouched, setPendingProcFocus, setProcOrder, setSelectedProc, toast, unchanged, workspaceById, wsKey } from './core.js';
 import * as Term from './term.js';
 
 /* The workspace whose tab strip is being dragged, or null. A snapshot arriving
@@ -205,7 +205,7 @@ export function renderDrawer() {
      every one of them is right here in the function. A tab is a button you click
      and drag; rebuilding the strip on every snapshot took the drag target out
      from under the pointer several times a second while an agent worked. */
-  if (unchanged(drawerDrawn, [wsId, w ? w.processes : null, snap.stack_up, drawerCollapsed,
+  if (unchanged(drawerDrawn, [wsId, w ? w.processes : null, w ? w.path : null, drawerCollapsed,
     selectedProc[wsKey(wsId)], procOrder[wsKey(wsId)], drawerTouched, pendingProcFocus,
     shownTab[wsKey(wsId)]])) {
     return;
@@ -213,19 +213,12 @@ export function renderDrawer() {
   const tabs = $('dtabs');
   tabs.replaceChildren();
 
-  /* Docker stack status, in place of the path: blue = up, red = down, and
-     **nothing at all when this checkout has no stack**. `null` is the daemon
-     saying there is no compose file here (and, for its first twenty seconds, that
-     it has not looked yet) — drawn as `stack down` it was a red dot that never
-     went out on every repo that carries no containers, which is most of them. A
-     label is only honest about a thing that exists. */
+  /* The workspace's path, with a home directory as `~`. Display only: the page
+     has no `$HOME`, so the prefix is read off the path's shape, and the full
+     path stays in the tooltip. */
   const dcwd = $('dcwd');
-  dcwd.replaceChildren();
-  if (snap.stack_up != null) {
-    const up = snap.stack_up === true;
-    dcwd.appendChild(el('span', 'stackdot ' + (up ? 'up' : 'down')));
-    dcwd.appendChild(el('span', null, up ? 'stack up' : 'stack down'));
-  }
+  dcwd.textContent = w ? w.path.replace(/^\/(?:home|Users)\/[^/]+(?=\/|$)/, '~') : '';
+  dcwd.title = w ? w.path : '';
 
   const procs = w ? w.processes : [];
   /* The rows below spell the workspace into their URLs. `procs` is empty unless

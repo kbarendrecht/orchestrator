@@ -541,7 +541,6 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
     }
     start_pr_poller(app.clone());
     start_review_poller(app.clone());
-    start_stack_poller(app.clone());
     start_workspace_watcher(app.clone());
     start_head_poller(app.clone());
     start_title_poller(app.clone());
@@ -1996,132 +1995,9 @@ fn start_restart_watcher(app: Arc<AppState>) {
     });
 }
 
-/// Whether the main checkout's `docker compose` stack is up, for the drawer
-/// header. Not the managed `docker` process's state — the containers' own — so it
-/// stays right whether the stack was brought up through the drawer or by hand.
-fn start_stack_poller(app: Arc<AppState>) {
-    tokio::spawn(async move {
-        let interval = std::time::Duration::from_secs(20);
-        loop {
-            let main = app.cfg.main_checkout.clone();
-            /* **`Some(false)` when the probe itself fails, not `None`.** `None` now
-            means "this checkout has no stack", and a panicked or cancelled
-            probe folded onto it would erase the badge from a checkout that
-            plainly has a compose file — silently, and for good, since an
-            unchanged value never notifies. A probe that did not answer is a
-            stack we cannot see, which is what down has always meant here. */
-            let up = tokio::task::spawn_blocking(move || stack_running(&main))
-                .await
-                .unwrap_or(Some(false));
-            // Scoped, because the guard used to outlive the `if` and stay held
-            // across the sleep below whenever the answer had not changed — which
-            // is every poll, normally. That is the state write lock, so the
-            // daemon spent 20 seconds out of every 20 holding it, and anything
-            // that touched state waited for the gap: a spawn, a hook, the
-            // rail's own snapshot.
-            let changed = {
-                let mut inner = app.inner.write().await;
-                let changed = inner.stack_up != up;
-                if changed {
-                    inner.stack_up = up;
-                }
-                changed
-            };
-            if changed {
-                app.notify().await;
-            }
-            tokio::time::sleep(interval).await;
-        }
-    });
-}
-
-/// `Some(true)` when `docker compose ps` reports at least one running container.
-/// A missing `docker` or a stopped daemon fails the command and reads as
-/// `Some(false)`, which is the honest answer for "is the stack up".
-///
-/// **`None` is a checkout with no compose file**, and that is the third answer
-/// this used to fold into "down". A repo that carries no containers at all got a
-/// permanent red dot and the words `stack down` in its drawer — a feature of one
-/// repo drawn as a fault on every other, and the opposite of what
-/// `docs/workspace-isolation.md` records as the portable default. The filesystem
-/// check was already here; it was the *return type* that had nowhere to put the
-/// answer.
-/// The four spellings docker accepts for a compose file.
-///
-/// One list, because two readers had their own: `firstrun::detect_processes` offers
-/// a `docker` process off it and [`has_compose_file`] decides whether a checkout has
-/// a stack at all, and they were written in different orders. A fifth spelling added
-/// to one of them would offer the process and draw no badge.
-pub(crate) const COMPOSE_FILES: [&str; 4] = [
-    "docker-compose.yml",
-    "docker-compose.yaml",
-    "compose.yml",
-    "compose.yaml",
-];
-
-/// Does this checkout carry a compose file at all?
-///
-/// Its own function so a test can drive it without spawning `docker`.
-fn has_compose_file(main: &std::path::Path) -> bool {
-    COMPOSE_FILES.iter().any(|f| main.join(f).exists())
-}
-
-fn stack_running(main: &std::path::Path) -> Option<bool> {
-    if !has_compose_file(main) {
-        return None;
-    }
-    Some(
-        std::process::Command::new("docker")
-            .args(["compose", "ps", "--status", "running", "-q"])
-            .current_dir(main)
-            .output()
-            .map(|o| o.status.success() && !String::from_utf8_lossy(&o.stdout).trim().is_empty())
-            .unwrap_or(false),
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A checkout with no compose file has no stack, and that is not "down".
-    ///
-    /// The distinction is invisible in Rust and loud in the window: folded into
-    /// `false` it drew a red dot and the words `stack down` in the drawer of every
-    /// repo that carries no containers. Asserted here because the filesystem check
-    /// has always been right and the *return type* was what threw the answer away.
-    #[test]
-    fn a_checkout_with_no_compose_file_has_no_stack_rather_than_a_stopped_one() {
-        let root = orchd::testutil::scratch("stack-state");
-        assert_eq!(
-            stack_running(&root),
-            None,
-            "no compose file is no stack at all"
-        );
-
-        /* **The compose-file half is deliberately not driven here.** With one
-        present `stack_running` shells out to `docker compose ps` with no deadline,
-        so a machine with the client installed and no reachable daemon can make
-        `cargo test` sit for as long as docker takes to give up — for an assertion
-        the `if !has_compose` branch above already settles. The filenames it looks
-        for are the thing worth holding, and they are held by name. */
-        for f in [
-            "docker-compose.yml",
-            "docker-compose.yaml",
-            "compose.yml",
-            "compose.yaml",
-        ] {
-            let one = root.join("only");
-            let _ = std::fs::remove_dir_all(&one);
-            std::fs::create_dir_all(&one).unwrap();
-            std::fs::write(one.join(f), "services: {}\n").unwrap();
-            assert!(
-                has_compose_file(&one),
-                "{f} must count as a compose file, or this checkout reads as having no stack"
-            );
-        }
-        let _ = std::fs::remove_dir_all(&root);
-    }
 
     /// The order the boot sweep walks, which is now the perceived start time.
     ///
