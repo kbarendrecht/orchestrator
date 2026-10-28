@@ -98,6 +98,8 @@
      window that changes size while the overlay is shut. A drag replaces it with
      pixels on `documentElement`, and the double-click reset removes that. */
   --fnhits:32%;
+  /* The name search's column beside the file; a drag of its edge overrides it. */
+  --fnside:min(340px, 34%);
   /* How far a bottom-docked bar is raised off the pty's floor, sized to clear the
      agent's own input box (~4-5 rows of the ~18px terminal line) so it never covers
      the line you would type into. Tune here if a taller composer still peeks
@@ -2385,7 +2387,7 @@ select.opfield,input.opfield{appearance:none}
    ranked names after. Contents keep the index above the file, where a line of
    code has the width it needs. */
 .overlay.find.on[data-mode="names"]{
-  display:grid;grid-template-columns:min(var(--fnside, min(340px, 34%)), calc(100% - 320px)) minmax(0,1fr);
+  display:grid;grid-template-columns:min(var(--fnside), calc(100% - 320px)) minmax(0,1fr);
   grid-template-rows:auto auto minmax(0,1fr) auto;
 }
 .overlay.find[data-mode="names"]>.ov-head,.overlay.find[data-mode="names"]>.fnfoot{grid-column:1 / -1}

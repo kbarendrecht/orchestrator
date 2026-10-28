@@ -18,7 +18,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   DEFAULT, contrast, parseHex, tokens, readable, legible, termColours,
-  MIN_CONTRAST, TERM_BOARD, TERM_SCHEMES,
+  MIN_CONTRAST, TERM_BOARD, TERM_SCHEMES, SYNTAX_ROLES,
 } from '../web/js/palette.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -163,6 +163,9 @@ function undefinedTokens() {
     ...[...css.matchAll(/(--[a-z0-9-]+)\s*:/g)].map((m) => m[1]),
     ...Object.keys(tokens(DEFAULT, { opacity: DEFAULT.opacity })),
     ...[...js.matchAll(/setProperty\(\s*['"`](--[a-z0-9-]+)/g)].map((m) => m[1]),
+    // The syntax scheme's, which `applyTheme` builds as `--syn-${role}`: read from
+    // the roles themselves, so a misspelt `var(--syn-…)` is still caught.
+    ...SYNTAX_ROLES.map((role) => `--syn-${role}`),
   ]);
   // Names built at run time — `var(--co-${band})` — cannot be matched literally,
   // so the family is accepted rather than each member invented here.
