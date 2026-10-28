@@ -288,6 +288,33 @@ try {
   await page.waitForTimeout(1200)
   check(await page.$eval('#machinebar', (b) => b.hidden), 'and a dismissed bar stays dismissed')
 
+  /* --- the changes pane's file tree -------------------------------------------- */
+
+  /* The Files view draws the workspace from `/api/paths`, and a file row opens the
+     file pane. Asserted end to end because each half has its own way to come up
+     empty: a module the host does not serve, or a paint check that never sees the
+     list arrive. The legend is open over the pane from the top of this file, so it
+     is put away for this and brought back after. */
+  await page.keyboard.press('Escape')
+  await page.waitForSelector('#keyhelp', { state: 'hidden', timeout: 5000 })
+  await page.click('#filestree')
+  const treeRows = await page.waitForSelector('#filepanes .trow', { timeout: 5000 }).then(() => true, () => false)
+  check(treeRows, 'the Files view lists the workspace as a tree')
+  const leafRow = await page.$('#filepanes .trow:not(.dir):not(.gone)')
+  const leafPath = leafRow && await leafRow.getAttribute('title')
+  if (leafRow && leafPath) {
+    await leafRow.click()
+    const opened = await page.waitForFunction((p) => document.getElementById('fvpath')?.textContent === p,
+      leafPath, { timeout: 5000 }).then(() => true, () => false)
+    check(opened, `a file row opens the file pane on ${leafPath}`)
+    await page.keyboard.press('Escape')
+  } else check(false, 'the tree has a file row at its top level')
+  await page.click('#filestitle')
+  check(await page.$eval('#filestitle', (b) => b.getAttribute('aria-pressed') === 'true'),
+    'pressing Changes from the tree goes back to the changes, not to the base menu')
+  await page.keyboard.press(chord('Shift+?'))
+  await page.waitForSelector('#keyhelp:not([hidden])', { timeout: 5000 })
+
   /* --- the settings pane's two halves stay apart ------------------------------- */
 
   /* **Both directions, because this has broken both ways.** A config field added to

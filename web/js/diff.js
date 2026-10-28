@@ -6,10 +6,11 @@
 // knows about strings and nothing about changesets. Three other modules wanted
 // it and none of them wanted a diff.
 
-import { $, FORGE_LABEL, activeWorkspaceId, borrowFocus, call, confirmBox, currentSession, el, get, icon, iconLabel, openMenu, pending, prForWorkspace, returnFocus, snap, reason, toast, paintSig, reconcile, unchanged, workspaceById } from './core.js';
+import { $, FORGE_LABEL, activeWorkspaceId, borrowFocus, call, confirmBox, currentSession, currentWorkspaceId, el, get, icon, iconLabel, openMenu, pending, prForWorkspace, returnFocus, snap, reason, toast, paintSig, reconcile, unchanged, workspaceById } from './core.js';
 import * as Editor from './editor.js';
 import { changeBlocks, revertedText } from './revert.js';
 import { charRanges, langFor, lineSegments } from './source.js';
+import * as Tree from './tree.js';
 
 // ---------------------------------------------------------------------------
 // The changed-files pane. Inside this seam rather than beside it: the list is
@@ -332,7 +333,10 @@ function fileRow(/** @type {import('../snapshot').WorkspaceView} */ w, /** @type
 function renderFiles() {
   // The diff overlay is opened against a workspace and keeps describing it while
   // it is open, session or no session.
-  const wsId = diffState.open ? diffState.ws : activeWorkspaceId();
+  // The tree is of a checkout's files, so with no session open it shows main's,
+  // as the drawer does.
+  const wsId = diffState.open ? diffState.ws
+    : diffState.view === 'files' ? currentWorkspaceId() : activeWorkspaceId();
   const w = workspaceById(wsId);
   /* Rebuilt only when it would come out different: a file row is a button you
      hover and click, and a snapshot lands several times a second while an agent
@@ -361,11 +365,18 @@ function renderFiles() {
   const known = w ? changedOf(w) : [];
   const commits = w ? commitsOf(w) : null;
   if (unchanged(drawn, [wsId, w, cur?.id ?? null, !!(cur && pending(cur)), snap.upstream_ref,
-    diffState.open, diffState.path, diffState.summary, mode, listSum, known, commits], NOT_SHOWN)) return;
+    diffState.open, diffState.path, diffState.summary, mode, listSum, known, commits, diffState.view,
+    Tree.rev()], NOT_SHOWN)) return;
   if (w) renderDivergence(w);
   const panes = $('filepanes');
 
+  const tree = diffState.view === 'files' && !diffState.open;
   $('filestitle').textContent = diffState.open ? 'Changeset' : MODES[mode].title;
+  $('filestitle').setAttribute('aria-pressed', String(!tree));
+  $('filestree').setAttribute('aria-pressed', String(tree));
+  // The changeset is what the open diff steps through, so it has no other view.
+  $('filestree').hidden = diffState.open;
+  $('filesbase').hidden = tree;
 
   if (!w) {
     const s = currentSession();
@@ -379,6 +390,12 @@ function renderFiles() {
     $('filesfoot').textContent = '';
     $('filesbase').textContent = '';
     $('fileshead').title = 'Click to pick what this pane lists';
+    return;
+  }
+
+  if (tree) {
+    $('filesfoot').textContent = Tree.render(panes, w.id, known || [], renderFiles);
+    $('fileshead').title = '';
     return;
   }
 
@@ -571,7 +588,7 @@ function commitsOf(/** @type {import('../snapshot').WorkspaceView} */ w) {
  *  off `/api/workspace/:id/diff`, and a renamed field on the Rust side should
  *  fail here rather than render as nothing.
  *
- *  @type {{ open: boolean, ws: string | null, base: string,
+ *  @type {{ open: boolean, ws: string | null, base: string, view: 'changes' | 'files',
  *           summary: import('../repo').DiffSummary | null, path: string | null,
  *           file: import('../repo').FileDiff | null, split: boolean,
  *           cursor: number, pendingCursor: 'first' | 'last' | null, context: number,
@@ -586,6 +603,9 @@ const diffState = {
    * new one. Pinned here, and re-pointed by `syncDiffToSession`. */
   ws: null,
   base: 'upstream',
+  /* What the pane lists: the changes, or every file as a tree (`tree.js`). The
+     open diff always lists its changeset, whichever this is. */
+  view: 'changes',
   summary: null,     // { base, files, added, deleted }
   path: null,
   file: null,        // { path, hunks, binary }
@@ -619,6 +639,31 @@ try {
   const kept = localStorage.getItem(BASE_KEY);
   diffState.base = kept === 'pushed' || kept === 'head' ? kept : 'upstream';
 } catch (err) { /* no storage: the pane opens on `Changes` */ }
+const VIEW_KEY = 'orch.changesView';
+try {
+  if (localStorage.getItem(VIEW_KEY) === 'files') diffState.view = 'files';
+} catch (err) { /* no storage: the pane opens on the changes */ }
+
+/** Switch the pane between the changes and the file tree. A press on the view
+ *  already showing is the base menu, which is what the title has always been. */
+function setView(/** @type {'changes' | 'files'} */ view, /** @type {MouseEvent} */ ev) {
+  if (view === 'changes' && (diffState.view === 'changes' || diffState.open)) {
+    baseMenu(ev);
+    return;
+  }
+  if (view === diffState.view) return;
+  diffState.view = view;
+  try {
+    localStorage.setItem(VIEW_KEY, view);
+  } catch (err) { /* private mode: it still switched for this session */ }
+  renderFiles();
+}
+
+/** The pane's refresh: the tree asks for its list again too. */
+function refreshTree() {
+  Tree.forget();
+  renderFiles();
+}
 
 /** The list for the two modes the snapshot does not carry: fetched, and fetched
  *  again whenever this workspace's own measurements move. `unpushed` is in the
@@ -1242,4 +1287,4 @@ function openEditor() {
   });
 }
 
-export { goTo, baseMenu, diffState as state, openDiff as open, closeDiff as close, renderDiff as render, stepChange as step, loadFile, renderFiles, openEditor };
+export { goTo, baseMenu, setView, refreshTree, diffState as state, openDiff as open, closeDiff as close, renderDiff as render, stepChange as step, loadFile, renderFiles, openEditor };

@@ -225,8 +225,13 @@ body[data-chrome="custom"] .top-r{padding-right:0}
 }
 /* A button since it switches the list, so it gives up the button's own padding
    and centring, and says it can be pressed by lighting the title on hover. */
-button.fhead-txt{padding:0;text-align:left;align-self:stretch}
-button.fhead-txt:hover>.eyebrow{color:var(--text)}
+/* The two views, as words: the one showing in the text colour, the other dim
+   until hovered. Neither shrinks, so the pair is never `Chang… Fi…`. */
+.fviews{display:flex;gap:10px;max-width:100%}
+.fview{flex:none;padding:0;line-height:1.25;white-space:nowrap}
+.fview[aria-pressed="false"]{color:var(--faint-solid)}
+.fview:hover{color:var(--text)}
+.top-r>.fhead-txt>button.ctx-btn{padding:0;text-align:left}
 .top-r>.refresh{flex:0 0 auto}
 
 .wctl-btn{
@@ -1099,6 +1104,20 @@ kbd{
 .fname{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;direction:rtl;text-align:left}
 .fname i{font-style:normal;color:var(--faint-solid)}
 #filepanes{flex:1;min-height:0;overflow-y:auto}
+/* The file tree (`tree.js`): the changed-file rows' type and height, indented
+   by depth, with the same status letters. */
+.trow{width:100%;display:flex;align-items:center;gap:6px;padding:3px 12px 3px calc(8px + var(--d, 0) * 12px);text-align:left;font-family:var(--mono);font-size:calc(11.5px * var(--fs))}
+.trow:hover{background:var(--hover)}
+.trow .tchev{width:11px;height:11px;flex:none;color:var(--faint-solid);transition:transform .12s}
+.trow.open .tchev{transform:rotate(90deg)}
+.trow .tgap{width:11px;flex:none}
+.trow .tname{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.trow.dir .tname{color:var(--dim)}
+.trow.gone .tname{color:var(--faint-solid);text-decoration:line-through}
+.trow.gone{cursor:default}
+.trow .fst{flex:none;width:11px}
+.trow .tdot{width:5px;height:5px;border-radius:50%;background:var(--attn);flex:none}
+.trow .ttag{flex:none;font-family:var(--sans);font-size:calc(10px * var(--fs));color:var(--faint-solid)}
 .fempty{padding:24px 16px;font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid);line-height:1.75}
 /* The one `.fempty` that is a row rather than a sentence: it carries the same
    pulsing dot as the empty terminal's "connecting…", so it needs the dot beside

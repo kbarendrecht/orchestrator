@@ -89,12 +89,16 @@
          space the title needed and `Changes` came back as `Chang…`, because both
          can shrink and the base is the longer string. Stacked, each gets the whole
          column and neither has to give way. -->
-    <!-- A button: pressing it switches the list between everything since the
-         workspace branched and what the next push would send. -->
-    <button class="fhead-txt" id="fileshead">
-      <span class="eyebrow" id="filestitle">Changes</span>
-      <span class="ctx-btn" id="filesbase"></span>
-    </button>
+    <!-- The first line is the pane's two views, the second what the changes are
+         counted from. Pressing the view already showing, or the second line, is
+         the menu of since branched, unpushed and uncommitted. -->
+    <div class="fhead-txt" id="fileshead">
+      <span class="fviews" role="group" aria-label="Show">
+        <button class="eyebrow fview" id="filestitle" aria-pressed="true">Changes</button>
+        <button class="eyebrow fview" id="filestree" aria-pressed="false">Files</button>
+      </span>
+      <button class="ctx-btn" id="filesbase"></button>
+    </div>
     <!-- Drawn, not typed: the reload glyph (U+21BB) is exactly the kind the font
          stack cannot be trusted for at this size — the same reason the gear and
          window controls are drawn. 1em so it still tracks the font-size setting. -->
