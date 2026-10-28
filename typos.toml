@@ -19,6 +19,10 @@ archiv = "archiv"
 # rather than one the source already contains — the assertion then proves the
 # terminal rendered it. See `tools/e2e/page.mjs`.
 ges = "ges"
+# Two names in the SPA: the PR action icon's class (`pract` + `ic`) and the
+# changes pane's title (`files` + `name`), beside `filestitle` and `filescount`.
+practic = "practic"
+filesname = "filesname"
 
 [default.extend-identifiers]
 # `PN` is the start of `PNGs`.
