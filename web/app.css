@@ -209,20 +209,7 @@ body[data-chrome="custom"] .top-r{padding-right:0}
    `flex:0 0 auto` on the controls was never the problem; what was missing is that
    everything *before* them can give way. `min-width:0` is the half that actually
    does it — without it the text is its own floor and the ellipsis never engages. */
-/* **The title and the base are stacked, and that is what stops the clipping.**
-   Side by side both could shrink, so at the default 296px the base won the space
-   and `Changes` rendered as `Chang…`. In a column each line has the whole width,
-   and 46px of bar holds a 9px eyebrow over a 10.5px line with room to spare.
-   `min-width:0` is still the half that makes the ellipsis work at all, for the
-   rare column narrow enough to need one. */
-.top-r>.fhead-txt{
-  display:flex;flex-direction:column;justify-content:center;align-items:flex-start;
-  flex:1 1 auto;min-width:0;gap:1px;
-}
-.top-r>.fhead-txt>.eyebrow,.top-r>.fhead-txt>.ctx-btn{
-  max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
-  line-height:1.25;
-}
+.top-r>.fhead-txt{display:flex;align-items:center;flex:1 1 auto;min-width:0}
 /* The view toggle is the finder's (`.fnmode`), a little tighter, with the count
    on the Changes half. */
 .top-r .fnmode>button{display:inline-flex;align-items:center;gap:5px;padding:0 7px}
@@ -2070,8 +2057,8 @@ button.settings-co:hover{color:var(--text);background:var(--hover)}
 .rvfilter[aria-pressed="true"]{color:var(--text)}
 .rvcount .n{color:var(--dim)}
 .rvcount .f{color:var(--bad)}
-/* One look for every glyph button in a pane header: the refresh in three of them,
-   and the review queue's open-all beside it. 12px with 3px of padding was a 16px
+/* One look for every glyph button in a pane header: the review queue's refresh,
+   and its open-all beside it. 12px with 3px of padding was a 16px
    target for a thing you press by hand, so it is 15px in a 24px box now. */
 .rvrefresh,.openall{font-size:calc(15px * var(--fs));line-height:1;color:var(--faint-solid);cursor:pointer;
   padding:4px 8px;border-radius:var(--r);transition:color .12s,background .12s}
@@ -2437,9 +2424,7 @@ select.opfield,input.opfield{appearance:none}
   font-family:var(--sans);font-size:calc(12px * var(--fs));color:var(--faint-solid);
 }
 .fnmode>button:hover{color:var(--text)}
-.fnmode[data-mode="names"]>[data-v="names"],
-.fnmode[data-mode="text"]>[data-v="text"],
-.top-r .fnmode>[aria-pressed="true"]{background:var(--raised);color:var(--text);box-shadow:0 1px 2px rgba(0,0,0,.4)}
+.fnmode>[aria-pressed="true"]{background:var(--raised);color:var(--text);box-shadow:0 1px 2px rgba(0,0,0,.4)}
 .fntg{
   font-family:var(--code);font-size:calc(10.5px * var(--fs));color:var(--faint-solid);
   border:1px solid var(--line);border-radius:var(--r);padding:3px 7px;

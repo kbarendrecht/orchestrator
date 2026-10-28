@@ -617,6 +617,7 @@ function openTerm(checkout, target, parent) {
       webgl.onContextLoss?.(() => {
         note(`${target}: webgl context lost, falling back to the dom renderer`);
         webgl.dispose();
+        repaintAll();
       });
       term.loadAddon(webgl);
       renderer = 'webgl';
@@ -1141,8 +1142,14 @@ function closeTerm(/** @type {import('../serve').Checkout} */ checkout, /** @typ
      macOS agent pane in the app. */
   requestAnimationFrame(() => requestAnimationFrame(() => {
     entry.term.dispose();
-    for (const e of terms.values()) repaint(e);
+    repaintAll();
   }));
+}
+
+/** Repaint every terminal, after a WebGL renderer was dropped: they share one
+ *  glyph atlas, and the ones left drew from the dropped one. */
+function repaintAll() {
+  for (const e of terms.values()) repaint(e);
 }
 
 /** Tab switch replays the daemon buffer; it never respawns (§9).
@@ -1254,6 +1261,15 @@ function readTerm(/** @type {import('../serve').Checkout} */ checkout, /** @type
 function hasSelection(/** @type {import('../serve').Checkout} */ checkout, /** @type {string} */ target) {
   const entry = terms.get(termKey(checkout, target));
   return !!entry && !!entry.term.getSelection().trim();
+}
+
+/** Give the keyboard to the selected session's terminal, when it has one. */
+export function focusSelected(/** @type {import('../serve').Checkout} */ checkout) {
+  const entry = selected ? terms.get(termKey(checkout, `session:${selected}`)) : null;
+  if (!entry || entry.closed) return;
+  try {
+    entry.term.focus();
+  } catch (e) { /* disposed meanwhile */ }
 }
 
 /** Type text into a pane as one paste, the way a terminal takes a dropped file.

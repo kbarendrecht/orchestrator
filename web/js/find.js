@@ -18,7 +18,7 @@
 // keeps the right where a column of them still lines up.
 
 import {
-  $, activeWorkspaceId, borrowFocus, el, get, MOD_LABEL, reason, returnFocus, toast, workspaceById,
+  $, activeCheckout, activeWorkspaceId, borrowFocus, el, get, MOD_LABEL, reason, returnFocus, toast, workspaceById,
 } from './core.js';
 import * as Editor from './editor.js';
 import { charRanges, paintRanges } from './source.js';
@@ -63,9 +63,7 @@ const LEADIN = 40;
  *    open: boolean, mode: 'text' | 'names', ws: string | null,
  *    hits: { path: string, line: number, last?: number, col: number, len: number, text?: string }[],
  *    truncated: boolean, cursor: number,
- *    paths: string[] | null, pathsFor: string | null, pathsAt: number,
- *    pathsTruncated: boolean, leftOut: string[],
- *    under: { ws: string | null, dir: string, paths: string[], at: number } | null,
+ *    paths: string[] | null, pathsTruncated: boolean, leftOut: string[],
  *    seq: number, timer: ReturnType<typeof setTimeout> | null,
  *    inflight: AbortController | null,
  *    picked: string | null, error: string | null,
@@ -78,13 +76,9 @@ const state = {
   truncated: false,
   cursor: 0,
   paths: null,
-  pathsFor: null,
-  pathsAt: 0,
   pathsTruncated: false,
   /** The ignored folders the list named as too big to hold (#44). */
   leftOut: [],
-  /** The one of those the query is typed into, listed on its own. */
-  under: null,
   seq: 0,
   timer: null,
   inflight: null,
@@ -143,10 +137,7 @@ export async function open(mode) {
     renderHits();
     void showCursor();
   }
-  /* Never its own query box. A selection that moves while this opens closes it
-     again (`syncToSession`), and a second open straight after found the box still
-     focused and saved it as the place to go back to. */
-  if (!$('fnoverlay').contains(document.activeElement)) borrowFocus('find');
+  borrowFocus('find', $('fnoverlay'));
   $('fnoverlay').classList.add('on');
   renderHead();
   clampSplit();
@@ -172,11 +163,6 @@ export async function close() {
   state.timer = null;
   $('fnoverlay').classList.remove('on');
   returnFocus('find', $('fnoverlay'));
-  // Nothing to go back to, and the keyboard would stay in a hidden box: the
-  // session's terminal is where typing after Escape is meant to land.
-  if ($('fnoverlay').contains(document.activeElement)) {
-    /** @type {HTMLElement | null} */ (document.querySelector('#termwrap .termhost:not([hidden]) .xterm-helper-textarea'))?.focus();
-  }
   return true;
 }
 
@@ -242,17 +228,20 @@ async function search() {
   state.inflight = ctl;
 
   try {
-    if (state.mode === 'names' && !q.trim()) {
-      // Nothing typed is the tree, and the one file picked in it.
-      state.hits = state.picked ? [{ path: state.picked, line: 1, col: 0, len: 0 }] : [];
+    if (browsing()) {
+      // Nothing typed is the tree, and the one file picked in it. The list is
+      // loaded too, for the foot's note on what it left out.
+      await loadPaths();
+      if (mine !== state.seq) return;
+      state.hits = pickedHits();
       state.truncated = false;
     } else if (state.mode === 'names') {
-      await loadPaths(ctl.signal);
+      await loadPaths();
       if (mine !== state.seq) return;
       /* **A left-out folder is searched once the query names it.** It was left
          out for being big, so it is listed only for the query that asked. */
       const dir = state.leftOut.find((d) => q.trim().startsWith(`${d}/`));
-      const inside = dir ? await loadUnder(dir, ctl.signal) : [];
+      const inside = dir ? await loadUnder(dir) : [];
       if (mine !== state.seq) return;
       state.hits = rank([...(state.paths ?? []), ...inside], q).map((path) => ({ path, line: 1, col: 0, len: 0 }));
       /* **The daemon's own flag, not `false`.** `MAX_PATHS` is 20,000 and this
@@ -302,28 +291,18 @@ async function search() {
  *  Per workspace rather than per keystroke: the ranking is a string walk over a
  *  list this size, and a round trip per character would be slower than the answer.
  */
-async function loadPaths(/** @type {AbortSignal | undefined} */ signal) {
-  const fresh = state.paths && state.pathsFor === state.ws
-    && Date.now() - state.pathsAt < PATHS_TTL;
-  if (fresh) return;
-  const url = `/api/paths?workspace=${encodeURIComponent(state.ws ?? '')}`;
-  const answer = signal ? await get(url, signal) : await get(url);
+async function loadPaths() {
+  // The one list the tree and the hover read too (`FileView.listed`), so browsing
+  // and then typing walks the workspace once.
+  const answer = await FileView.listed(activeCheckout(), state.ws ?? '', PATHS_TTL);
   state.paths = answer.paths;
-  state.pathsFor = state.ws;
-  state.pathsAt = Date.now();
-  state.pathsTruncated = !!answer.truncated;
-  state.leftOut = answer.left_out ?? [];
+  state.pathsTruncated = answer.truncated;
+  state.leftOut = answer.leftOut;
 }
 
-/** One left-out folder's files, kept for as long as the whole list is. */
-async function loadUnder(/** @type {string} */ dir, /** @type {AbortSignal} */ signal) {
-  const u = state.under;
-  if (u && u.ws === state.ws && u.dir === dir && Date.now() - u.at < PATHS_TTL) return u.paths;
-  const url = `/api/paths?workspace=${encodeURIComponent(state.ws ?? '')}&under=${encodeURIComponent(dir)}`;
-  /** @type {string[]} */
-  const paths = (await get(url, signal)).paths ?? [];
-  state.under = { ws: state.ws, dir, paths, at: Date.now() };
-  return paths;
+/** One left-out folder's files, through the same shared list. */
+async function loadUnder(/** @type {string} */ dir) {
+  return (await FileView.listed(activeCheckout(), state.ws ?? '', PATHS_TTL, dir)).paths;
 }
 
 /** What the foot says about the left-out folders, when it says anything.
@@ -421,6 +400,9 @@ function renderHits() {
         : leftOutNote();
 }
 
+/** The one hit a browse has: the file picked in the tree, if any. */
+const pickedHits = () => (state.picked ? [{ path: state.picked, line: 1, col: 0, len: 0 }] : []);
+
 /** A name search with nothing typed yet, which browses rather than ranks. */
 const browsing = () => state.mode === 'names' && !/** @type {HTMLInputElement} */ ($('fnq')).value.trim();
 
@@ -433,7 +415,7 @@ function renderTree(/** @type {HTMLElement} */ box) {
     picked: state.picked,
     pick: (path, ev) => {
       state.picked = path;
-      state.hits = [{ path, line: 1, col: 0, len: 0 }];
+      state.hits = pickedHits();
       state.cursor = 0;
       if (ev.detail > 1) return openCurrent();
       renderHits();
@@ -657,13 +639,14 @@ function edit() {
  *  rule, and the reset removes it again. */
 const SPLIT = { prop: '--fnhits', key: 'orch.findIndexHeight', min: 44, viewerMin: 120 };
 
-/** Put the index at `px`, never so tall that the file below it has nowhere to go
+/** The index at `px`, never so tall that the file below it has nowhere to go
  *  and never so short that the handle is off the end of what it moves. */
-function setSplit(/** @type {number} */ px) {
+function splitAt(/** @type {number} */ px) {
   const box = $('fnoverlay').getBoundingClientRect();
-  const room = Math.max(SPLIT.min, box.height - SPLIT.viewerMin);
-  document.documentElement.style.setProperty(
-    SPLIT.prop, `${Math.round(Math.max(SPLIT.min, Math.min(px, room)))}px`);
+  return Math.max(SPLIT.min, Math.min(px, Math.max(SPLIT.min, box.height - SPLIT.viewerMin)));
+}
+function setSplit(/** @type {number} */ px) {
+  document.documentElement.style.setProperty(SPLIT.prop, `${Math.round(splitAt(px))}px`);
 }
 
 /** Re-clamp what was remembered against the window as it is now.
@@ -674,100 +657,83 @@ function setSplit(/** @type {number} */ px) {
  *  the stylesheet's own default is in force: a percentage cannot be out of range.
  */
 function clampSplit() {
-  /* Contents only, and after the layout is the mode's. A name search puts the
-     index beside the file at the full height, and measured then it clamped the
-     file under it to its minimum the next time contents opened. */
-  if (state.mode !== 'text') return;
-  const now = $('fnhits').getBoundingClientRect().height;
-  if (document.documentElement.style.getPropertyValue(SPLIT.prop)) setSplit(now);
+  /* The stored value, not the index's height: a name search lays the index out
+     beside the file at the full height, and measured then it clamped the file to
+     its minimum the next time contents opened. */
+  const set = parseFloat(document.documentElement.style.getPropertyValue(SPLIT.prop));
+  if (set) setSplit(set);
 }
 
-/** Drag the line between the index and the file.
+/** A split handle: drag it to size what it divides, double-click it back to the
+ *  stylesheet's default, and the size is kept per browser.
  *
- *  **The same handle the drawer has**, on the same axis and with the same two
- *  gestures, because a window that resizes one way in one place and another way
- *  in another is a window you have to learn twice.
+ *  `at(m)` turns the pointer into the size and clamps it; `now()` reads the size
+ *  as laid out, which is what is kept.
  *
- *  Clamped from both ends: an index with no rows in it and a viewer with no file
- *  in it are each a pane you cannot get back by dragging, because the handle
- *  would be off the end of what it moves.
- */
-function dragSplit() {
-  const handle = $('fnsplit');
-  handle.addEventListener('mousedown', (ev) => {
-    const e = /** @type {MouseEvent} */ (ev);
-    if (e.button !== 0) return;
-    e.preventDefault();
-    handle.classList.add('dragging');
-    document.body.classList.add('row-resizing');
-    const top = $('fnhits').getBoundingClientRect().top;
-    const move = (/** @type {MouseEvent} */ m) => setSplit(m.clientY - top);
-    const done = () => {
-      window.removeEventListener('mousemove', move);
-      handle.classList.remove('dragging');
-      document.body.classList.remove('row-resizing');
-      try {
-        localStorage.setItem(SPLIT.key, String($('fnhits').getBoundingClientRect().height));
-      } catch (err) { /* private mode: the drag still worked for this session */ }
-    };
-    window.addEventListener('mousemove', move);
-    window.addEventListener('mouseup', done, { once: true });
-  });
-  handle.addEventListener('dblclick', () => {
-    document.documentElement.style.removeProperty(SPLIT.prop);
-    try {
-      localStorage.removeItem(SPLIT.key);
-    } catch (err) { /* nothing to forget */ }
-  });
-  const saved = Number(localStorage.getItem(SPLIT.key));
-  // Applied at boot rather than on open: the overlay has no size while it is
-  // `display:none`, so a clamp measured then would read zero and pin it to `min`.
-  if (saved) document.documentElement.style.setProperty(SPLIT.prop, `${Math.round(saved)}px`);
-}
-
-/** How wide the name search's column is, beside the file. */
-const SIDE = { prop: '--fnside', key: 'orch.findSideWidth', min: 180, viewerMin: 320 };
-
-/** Drag the edge between the name search's column and the file. The same two
- *  gestures as the split above: drag it, double-click it back to the default. */
-function dragSide() {
-  const handle = $('fnsidesplit');
+ *  @param {{ handle: HTMLElement, prop: string, key: string, cls: string,
+ *            at: (m: MouseEvent) => number, now: () => number }} split */
+function dragHandle({ handle, prop, key, cls, at, now }) {
   const root = document.documentElement.style;
   handle.addEventListener('mousedown', (ev) => {
     const e = /** @type {MouseEvent} */ (ev);
     if (e.button !== 0) return;
     e.preventDefault();
     handle.classList.add('dragging');
-    document.body.classList.add('col-resizing');
-    const box = $('fnoverlay').getBoundingClientRect();
-    const move = (/** @type {MouseEvent} */ m) => {
-      const px = Math.max(SIDE.min, Math.min(m.clientX - box.left, box.width - SIDE.viewerMin));
-      root.setProperty(SIDE.prop, `${Math.round(px)}px`);
-    };
+    document.body.classList.add(cls);
+    const move = (/** @type {MouseEvent} */ m) => root.setProperty(prop, `${Math.round(at(m))}px`);
     const done = () => {
       window.removeEventListener('mousemove', move);
       handle.classList.remove('dragging');
-      document.body.classList.remove('col-resizing');
+      document.body.classList.remove(cls);
       try {
-        localStorage.setItem(SIDE.key, String($('fnhits').getBoundingClientRect().width));
+        localStorage.setItem(key, String(now()));
       } catch (err) { /* private mode: the drag still worked for this session */ }
     };
     window.addEventListener('mousemove', move);
     window.addEventListener('mouseup', done, { once: true });
   });
   handle.addEventListener('dblclick', () => {
-    root.removeProperty(SIDE.prop);
+    root.removeProperty(prop);
     try {
-      localStorage.removeItem(SIDE.key);
+      localStorage.removeItem(key);
     } catch (err) { /* nothing to forget */ }
   });
+  // Applied at boot rather than on open: the overlay has no size while it is
+  // `display:none`, so a clamp measured then would read zero and pin it to `min`.
   try {
-    const saved = Number(localStorage.getItem(SIDE.key));
-    if (saved) root.setProperty(SIDE.prop, `${Math.round(saved)}px`);
-  } catch (err) { /* no storage: the default width */ }
+    const saved = Number(localStorage.getItem(key));
+    if (saved) root.setProperty(prop, `${Math.round(saved)}px`);
+  } catch (err) { /* no storage: the default */ }
 }
 
-const SIZE = { key: 'orch.findSize', minW: 560, minH: 320 };
+/** How wide the name search's column is, beside the file. */
+const SIDE = { min: 180, viewerMin: 320 };
+
+/** The two splits: the line between the index and the file, and the edge
+ *  between the name search's column and the file.
+ *
+ *  **The same handle the drawer has**, with the same two gestures, because a
+ *  window that resizes one way in one place and another way in another is a
+ *  window you have to learn twice. Clamped from both ends: an index with no rows
+ *  in it and a viewer with no file in it are each a pane you cannot get back by
+ *  dragging, because the handle would be off the end of what it moves. */
+function dragSplits() {
+  dragHandle({
+    handle: $('fnsplit'), prop: SPLIT.prop, key: SPLIT.key, cls: 'row-resizing',
+    at: (m) => splitAt(m.clientY - $('fnhits').getBoundingClientRect().top),
+    now: () => $('fnhits').getBoundingClientRect().height,
+  });
+  dragHandle({
+    handle: $('fnsidesplit'), prop: '--fnside', key: 'orch.findSideWidth', cls: 'col-resizing',
+    at: (m) => {
+      const box = $('fnoverlay').getBoundingClientRect();
+      return Math.max(SIDE.min, Math.min(m.clientX - box.left, box.width - SIDE.viewerMin));
+    },
+    now: () => $('fnhits').getBoundingClientRect().width,
+  });
+}
+
+const SIZE = { key: 'orch.findSize' };
 
 /** Drag the sheet's edges and corners to size it.
  *
@@ -797,8 +763,8 @@ function dragSize() {
     const move = (/** @type {MouseEvent} */ m) => {
       // The stylesheet's min and max clamp what is set here, so a drag past
       // either end stops the sheet rather than turning it inside out.
-      if (sx) root.setProperty('--findw', `${Math.round(Math.max(SIZE.minW, start.width + sx * (m.clientX - e.clientX)))}px`);
-      if (sy) root.setProperty('--findh', `${Math.round(Math.max(SIZE.minH, start.height + sy * (m.clientY - e.clientY)))}px`);
+      if (sx) root.setProperty('--findw', `${Math.round(start.width + sx * (m.clientX - e.clientX))}px`);
+      if (sy) root.setProperty('--findh', `${Math.round(start.height + sy * (m.clientY - e.clientY))}px`);
     };
     const done = () => {
       window.removeEventListener('mousemove', move);
@@ -830,8 +796,7 @@ function dragSize() {
 
 /** Wire the chrome. Called once, at boot. */
 export function init() {
-  dragSplit();
-  dragSide();
+  dragSplits();
   dragSize();
   const box = /** @type {HTMLInputElement} */ ($('fnq'));
   box.oninput = () => run();

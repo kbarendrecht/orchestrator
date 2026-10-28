@@ -3,7 +3,7 @@
 // The SPA is a module now, so what it reaches for is written down. `core.js` holds
 // the primitives every part needs; `queue.js` is the first seam extracted whole.
 import {
-$, AGENT_LABEL, el, icon, toast, reason, safeHref, copyText, call, callHost, get, activeCheckout, CHECKOUTS, setCheckouts, HOST, snapshotOf, repoSummary, everySession, enterCheckout, snap, receive, keyActivate, setZoom, setUiPx, uiPx, saveZoom, onScaleChange, ZOOM, selected, setSelected, onSelection, prForWorkspace, terms, CHROME, stateLabel, sessionDot, isWaiting, isArchived, byNewest, currentSession, activeWorkspaceId, currentWorkspaceId, closeMenu, menuOpen, openMenu, callOn, newSession, newWorktree, newShell, mainWorkspace, workspaceById, prState, prSeverity, prsOf, handedToPr, drawerCollapsed, setDrawerCollapsed, pendingSelect, setPendingSelect, onDrawerChange, onCreatingChange, creating, creatingIn, startingShown, appMod, IS_MAC, MOD_LABEL, closeLegend, toggleLegend, typingElsewhere, mark, reportBoot, dialogOpen, dismissDialog, promptBox, bytesOn, unchanged, tick,
+$, AGENT_LABEL, el, icon, toast, reason, safeHref, copyText, call, callHost, get, activeCheckout, CHECKOUTS, setCheckouts, HOST, snapshotOf, repoSummary, everySession, enterCheckout, snap, receive, keyActivate, setZoom, setUiPx, uiPx, saveZoom, onScaleChange, onNoFocusBack, ZOOM, selected, setSelected, onSelection, prForWorkspace, terms, CHROME, stateLabel, sessionDot, isWaiting, isArchived, byNewest, currentSession, activeWorkspaceId, currentWorkspaceId, closeMenu, menuOpen, openMenu, callOn, newSession, newWorktree, newShell, mainWorkspace, workspaceById, prState, prSeverity, prsOf, handedToPr, drawerCollapsed, setDrawerCollapsed, pendingSelect, setPendingSelect, onDrawerChange, onCreatingChange, creating, creatingIn, startingShown, appMod, IS_MAC, MOD_LABEL, closeLegend, toggleLegend, typingElsewhere, mark, reportBoot, dialogOpen, dismissDialog, promptBox, bytesOn, unchanged, tick,
 } from './js/core.js';
 import { onThemeChange } from './js/theme.js';
 import { detailEl, symbolAt } from './js/source.js';
@@ -43,6 +43,7 @@ onScaleChange(() => Term.applyScale());
    xterm takes hex strings — so the theme is announced and they register, the
    same inversion the UI scale already uses. */
 onThemeChange(() => Term.applyTermTheme());
+onNoFocusBack(() => Term.focusSelected(activeCheckout()));
 
 // Collapsing the drawer redraws it and gives the terminal above its height back;
 // xterm only refits on an explicit nudge, not on a sibling's size change.

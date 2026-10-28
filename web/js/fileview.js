@@ -445,7 +445,7 @@ function hoveredList(/** @type {string} */ checkout, /** @type {string} */ ws, /
  *  @param {string} ws
  *  @param {number} ttl
  *  @param {string} [under] a left-out folder, for that folder's own list */
-function listed(at, ws, ttl, under = '') {
+export function listed(at, ws, ttl, under = '') {
   const key = `${at.path}\0${ws}\0${under}`;
   const entry = hovered.get(key);
   if (entry && (entry.at === null || Date.now() - entry.at <= ttl)) return entry.list;

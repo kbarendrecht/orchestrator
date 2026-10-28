@@ -366,14 +366,15 @@ function renderFiles() {
   const fetched = mode !== 'upstream';
   const listSum = w && fetched && !diffState.open ? listedSummary(w) : null;
   const known = w ? changedOf(w) : [];
-  const commits = w ? commitsOf(w) : null;
+  const tree = diffState.view === 'files' && !diffState.open;
+  // Only the changes view's tooltip reads them, so the tree does not fetch them.
+  const commits = w && !tree ? commitsOf(w) : null;
   if (unchanged(drawn, [wsId, w, cur?.id ?? null, !!(cur && pending(cur)), snap.upstream_ref,
     diffState.open, diffState.path, diffState.summary, mode, listSum, known, commits, diffState.view,
     Tree.rev()], NOT_SHOWN)) return;
   if (w) renderDivergence(w);
   const panes = $('filepanes');
 
-  const tree = diffState.view === 'files' && !diffState.open;
   $('filesname').textContent = diffState.open ? 'Changeset' : MODES[mode].title;
   $('filestitle').setAttribute('aria-pressed', String(!tree));
   $('filestree').setAttribute('aria-pressed', String(tree));
@@ -392,19 +393,6 @@ function renderFiles() {
     $('filesfoot').textContent = '';
     $('filescount').textContent = '';
     $('filestitle').title = 'Click to pick what this pane lists';
-    return;
-  }
-
-  if (tree) {
-    $('filesfoot').textContent = Tree.render(panes, w.id, known || [], renderFiles);
-    /* The count the other half shows: the snapshot's for since branched, the
-       fetched list plus its untracked rows for the other two, as the changes
-       view counts them. */
-    const n = mode === 'upstream' ? (w.changed_total ?? (known || []).length)
-      : listSum ? listSum.files.length + (known || []).filter((f) => f.status === '?').length : 0;
-    // Nothing for none, here and in the changes view alike, so the toggle is one width in both.
-    $('filescount').textContent = n ? String(n) : '';
-    $('filestitle').title = 'Show the changes';
     return;
   }
 
@@ -427,6 +415,18 @@ function renderFiles() {
     : (known || []);
   const since = sum ? sum.base : listSum ? listSum.base : fetched ? null : w.changed_since;
   const counted = !!(sum || listSum);
+  const total = counted ? files.length : (w.changed_total ?? files.length);
+  /* The toggle's count, from the one list both views count. Nothing for none, so
+     the toggle is one width in both. */
+  $('filescount').textContent = total ? String(total) : '';
+
+  if (tree) {
+    $('filesfoot').textContent = Tree.render(panes, w.id, known || [], renderFiles);
+    $('filestitle').title = 'Show the changes';
+    return;
+  }
+
+
 
   /* **Keyed on the path, and the container is kept**, because this pane draws up
      to five hundred buttons and a rebuild destroys the one under the pointer.
@@ -471,7 +471,6 @@ function renderFiles() {
   //
   // A count of something not yet counted is the same fault with a different
   // cause, so the footer says so instead of showing a confident nothing.
-  const total = counted ? files.length : (w.changed_total ?? files.length);
   const bits = [total > files.length
     ? `${files.length} of ${total.toLocaleString()} files`
     : `${files.length} file${files.length === 1 ? '' : 's'}`];
@@ -488,7 +487,6 @@ function renderFiles() {
      line: `4 since develop`, never a bare sha. It was a second header line, and
      the Files view had nothing to put there, so switching moved the header. The
      count on the toggle is the files the list holds. */
-  $('filescount').textContent = total ? String(total) : '';
   $('filestitle').title = [
     ...(since ? [MODES[mode].line(w)] : []),
     mode === 'head' ? `uncommitted work on top of ${since ? since.slice(0, 7) : 'HEAD'}`

@@ -1702,10 +1702,14 @@ const focusReturn = new Map();
  *  when nothing is focused, so recording it would let a later close steal the
  *  keyboard from wherever it had legitimately gone.
  */
-export function borrowFocus(/** @type {string} */ who) {
+/* `from` is the dialog itself, on both halves. Borrowing never saves an element
+   inside it: a dialog closed by something other than its own Escape and opened
+   again straight after still had its own box focused, and saved that as the way
+   back. */
+export function borrowFocus(/** @type {string} */ who, /** @type {HTMLElement | null} */ from = null) {
   if (focusReturn.has(who)) return;
   const on = document.activeElement;
-  if (on && on !== document.body) focusReturn.set(who, /** @type {HTMLElement} */ (on));
+  if (on && on !== document.body && !(from && from.contains(on))) focusReturn.set(who, /** @type {HTMLElement} */ (on));
 }
 
 /** Give the keyboard back to whatever [`borrowFocus`] saw, and forget it.
@@ -1726,13 +1730,24 @@ export function borrowFocus(/** @type {string} */ who) {
 export function returnFocus(/** @type {string} */ who, /** @type {HTMLElement | null} */ from = null) {
   const back = focusReturn.get(who);
   focusReturn.delete(who);
-  if (!back || !document.contains(back)) return;
   const on = document.activeElement;
   if (on && on !== document.body && !(from && from.contains(on))) return;
+  // Nothing to go back to leaves the keyboard in a hidden box, so it goes where
+  // typing is meant to land instead: the session's terminal (`onNoFocusBack`).
+  if (!back || !document.contains(back)) {
+    noFocusBack?.();
+    return;
+  }
   try {
     back.focus();
   } catch (e) { /* disposed while the dialog was up */ }
 }
+
+/** @type {(() => void) | null} */
+let noFocusBack = null;
+/** Where the keyboard goes when a dialog closes with nothing saved to return to.
+ *  `app.js` hands it the terminal's focus, which this module cannot import. */
+export function onNoFocusBack(/** @type {() => void} */ fn) { noFocusBack = fn; }
 
 /** Each submenu row's "close now", so opening one level can shut its siblings.
  *  @type {WeakMap<Element, () => void>} */

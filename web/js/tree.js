@@ -1,27 +1,28 @@
 // The changes pane's other view: every file in the workspace, as folders.
 //
-// **Built from the list the name search already fetches** (`/api/paths`), so the
+// **Read through the finder's own list** (`FileView.listed`, `/api/paths`), so the
 // tree honours `.gitignore` and leaves main's worktrees out for the same reason
-// the finder does, and there is no second walk to keep in step with it. A folder
-// the walk left out as too big is drawn anyway and listed when you open it, the
-// way the finder lists it when you type its name.
+// the finder does, and the two share one walk. A folder the walk left out as too
+// big is drawn anyway and listed when you open it, the way the finder lists it
+// when you type its name.
 
-import { el, get, icon, paintSig, reason, reconcile, workspaceById } from './core.js';
+import { activeCheckout, el, icon, paintSig, reason, reconcile, workspaceById } from './core.js';
 import * as FileView from './fileview.js';
 
-/** How long a fetched list is trusted without a reason to ask again. A changed
- *  file list that moves is that reason, so this only covers an edit git cannot
- *  see, such as a new ignored file. */
+/** How long a fetched list is trusted without a reason to ask again. A change to
+ *  what is on disk is that reason, so this only covers an edit git cannot see,
+ *  such as a new ignored file. */
 const TTL = 60_000;
 
 /** One workspace's list and which of its folders are open.
  *
  *  `tree` is per folder, `''` being the root: the folders and files directly in
- *  it. `big` is the left-out folders, `under` their listings once opened, or
- *  `'loading'`, or why they could not be listed. `rev` moves whenever any of it
+ *  it, and `order`, the two sorted, built when first drawn and dropped when one
+ *  is added. `big` is the left-out folders, `under` their listings once opened,
+ *  or `'loading'`, or why they could not be listed. `rev` moves whenever any of it
  *  does, for the pane's paint check.
  *
- *  @typedef {{ dirs: Set<string>, files: Set<string> }} Folder
+ *  @typedef {{ dirs: Set<string>, files: Set<string>, order: { dirs: string[], files: string[] } | null }} Folder
  *  @type {{ rev: number, ws: string | null, key: string | null, at: number, loading: boolean, failed: string | null,
  *           tree: Map<string, Folder>, total: number, truncated: boolean, big: Set<string>,
  *           under: Map<string, string | string[]>, open: Map<string, Set<string>> }} */
@@ -40,11 +41,13 @@ function fold(/** @type {Map<string, Folder>} */ tree, /** @type {string[]} */ p
   const folder = (/** @type {string} */ dir) => {
     let f = tree.get(dir);
     if (!f) {
-      f = { dirs: new Set(), files: new Set() };
+      f = { dirs: new Set(), files: new Set(), order: null };
       tree.set(dir, f);
       if (dir) {
         const cut = dir.lastIndexOf('/');
-        folder(cut < 0 ? '' : dir.slice(0, cut)).dirs.add(dir);
+        const up = folder(cut < 0 ? '' : dir.slice(0, cut));
+        up.dirs.add(dir);
+        up.order = null;
       }
     }
     return f;
@@ -53,15 +56,18 @@ function fold(/** @type {Map<string, Folder>} */ tree, /** @type {string[]} */ p
   for (const p of paths) {
     const cut = p.lastIndexOf('/');
     const f = folder(cut < 0 ? '' : p.slice(0, cut));
-    f.files.add(p);
+    if (!f.files.has(p)) {
+      f.files.add(p);
+      f.order = null;
+    }
   }
 }
 
 /** Ask for the list again when `key` moved or the answer is stale, keeping the
  *  last tree on screen until the new one lands. */
 function load(/** @type {string} */ ws, /** @type {string} */ key, /** @type {() => void} */ redraw) {
-  const fresh = state.ws === ws && state.key === key && Date.now() - state.at < TTL;
-  if (fresh) return;
+  const same = state.ws === ws && state.key === key;
+  if (same && Date.now() - state.at < TTL) return;
   waiting.add(redraw);
   if (state.loading) return;
   if (state.ws !== ws) {
@@ -70,15 +76,15 @@ function load(/** @type {string} */ ws, /** @type {string} */ key, /** @type {()
     state.failed = null;
   }
   state.loading = true;
-  get(`/api/paths?workspace=${encodeURIComponent(ws)}`).then((/** @type {import('../repo').Paths} */ a) => {
+  // A moved key means the disk changed, so the shared list is not trusted then.
+  FileView.listed(activeCheckout(), ws, same ? TTL : 0).then(({ paths, truncated, leftOut }) => {
     const tree = new Map();
-    fold(tree, a.paths);
-    for (const dir of a.left_out) fold(tree, [`${dir}/`]);
+    fold(tree, paths);
+    for (const dir of leftOut) fold(tree, [`${dir}/`]);
     // A big folder already opened keeps its listing across a refresh.
     for (const got of state.under.values()) if (Array.isArray(got)) fold(tree, got);
     Object.assign(state, {
-      ws, key, at: Date.now(), tree, total: a.paths.length, truncated: a.truncated,
-      big: new Set(a.left_out), failed: null,
+      ws, key, at: Date.now(), tree, total: paths.length, truncated, big: new Set(leftOut), failed: null,
     });
   }, (e) => {
     Object.assign(state, { ws, key, at: Date.now(), failed: reason(e) });
@@ -95,10 +101,10 @@ function load(/** @type {string} */ ws, /** @type {string} */ key, /** @type {()
 function loadUnder(/** @type {string} */ ws, /** @type {string} */ dir, /** @type {() => void} */ redraw) {
   if (state.under.has(dir)) return;
   state.under.set(dir, 'loading');
-  get(`/api/paths?workspace=${encodeURIComponent(ws)}&under=${encodeURIComponent(dir)}`).then((/** @type {import('../repo').Paths} */ a) => {
+  FileView.listed(activeCheckout(), ws, TTL, dir).then(({ paths }) => {
     if (state.ws !== ws) return;
-    state.under.set(dir, a.paths);
-    fold(state.tree, a.paths);
+    state.under.set(dir, paths);
+    fold(state.tree, paths);
   }, (e) => {
     state.under.set(dir, reason(e));
   }).finally(() => {
@@ -108,7 +114,17 @@ function loadUnder(/** @type {string} */ ws, /** @type {string} */ dir, /** @typ
 }
 
 const leaf = (/** @type {string} */ p) => p.slice(p.lastIndexOf('/', p.length - 2) + 1);
-const byName = (/** @type {string} */ a, /** @type {string} */ b) => leaf(a).localeCompare(leaf(b));
+const collator = new Intl.Collator();
+const collate = (/** @type {string} */ a, /** @type {string} */ b) => collator.compare(a, b);
+/** A folder's entries by name, sorted once per change to it rather than per draw. */
+function sorted(/** @type {Folder} */ f) {
+  if (!f.order) {
+    const byName = (/** @type {string[]} */ xs) => xs.map((p) => [leaf(p), p])
+      .sort((a, b) => collate(a[0] ?? '', b[0] ?? '')).map((x) => x[1] ?? '');
+    f.order = { dirs: byName([...f.dirs]), files: byName([...f.files]) };
+  }
+  return f.order;
+}
 
 /** Draw the tree into `mount`.
  *
@@ -131,8 +147,12 @@ export function render(mount, ws, changed, redraw, how = {}) {
   /* Keyed on the snapshot's own list, not on `changed`: the pane hands over its
      fetched list when the snapshot's is capped, the finder the snapshot's, and
      two keys for one cache refetched the whole walk every time the other drew. */
+  /* Only what changes the tree's shape: a file that is new, added, deleted or
+     renamed. An edit to a file already there moves nothing on disk the walk
+     would see, and it is every edit an agent makes. */
   const w = workspaceById(ws);
-  load(ws, paintSig([w?.changed?.map((f) => f.path) ?? [], w?.changed_total, w?.changed_since]), redraw);
+  const shape = (w?.changed ?? []).filter((f) => /^[?ADR]/.test(f.status || '')).map((f) => f.path);
+  load(ws, paintSig([shape, w?.changed_since]), redraw);
   if (state.ws !== ws) {
     reconcile(mount, [{ key: 'twait', sig: '', build: () => el('div', 'fempty', 'Listing the files…') }]);
     return '';
@@ -169,7 +189,8 @@ export function render(mount, ws, changed, redraw, how = {}) {
   const walk = (/** @type {string} */ dir, /** @type {number} */ depth) => {
     const f = tree.get(dir);
     if (!f) return;
-    for (const d of [...f.dirs].sort(byName)) {
+    const order = sorted(f);
+    for (const d of order.dirs) {
       const isOpen = opened.has(d);
       const big = state.big.has(d);
       const got = state.under.get(d);
@@ -190,7 +211,7 @@ export function render(mount, ws, changed, redraw, how = {}) {
       });
       if (isOpen) walk(d, depth + 1);
     }
-    for (const p of [...f.files].sort(byName)) {
+    for (const p of order.files) {
       // `src/new/` is a folder git reported whole, already drawn as one.
       if (p.endsWith('/')) continue;
       const st = status.get(p) ?? (inFresh(p) ? '?' : '');
@@ -224,7 +245,7 @@ function dirRow(
   /** @type {string} */ dir, /** @type {number} */ depth, /** @type {boolean} */ isOpen,
   /** @type {boolean} */ holds, /** @type {string} */ note, /** @type {() => void} */ toggle,
 ) {
-  const row = el('button', 'trow dir' + (isOpen ? ' open' : ''));
+  const row = el('button', 'trow dir');
   row.style.setProperty('--d', String(depth));
   row.setAttribute('aria-expanded', String(isOpen));
   row.append(icon('tic', 1.3, ...(isOpen ? FOLDER_OPEN : FOLDER)), el('span', 'tname', leaf(dir)));
