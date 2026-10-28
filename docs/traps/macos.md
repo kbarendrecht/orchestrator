@@ -53,8 +53,8 @@ is and is not — a **mistake-catcher, not a control**, Bash only, so `gh` or a
 script the agent writes goes around it. Do not write docs that claim otherwise;
 the README did, and that is the kind of sentence that earns misplaced trust.
 Three rules: no lease-less force push, no push that writes the base branch (from
-`upstream_ref`, never a list of likely names) or removes branches, and no git that
-changes main or another managed worktree. **Rebase, never `git merge`, is *this*
+`upstream_ref`, never a list of likely names, and only while `protect_base` is on)
+or removes branches, and no git that changes main or another managed worktree. **Rebase, never `git merge`, is *this*
 repo's convention** for its own branches,
 not a rule the guard or the skills impose: `fix-pr` reads each repo's
 own convention and merge the base in where that repo does.

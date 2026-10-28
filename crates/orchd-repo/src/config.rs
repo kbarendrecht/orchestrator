@@ -141,6 +141,16 @@ pub struct Config {
     /// not a thing to flick mid-session.
     #[serde(default)]
     pub allow_several_in_main: bool,
+    /// Whether the push guard refuses a push to the base branch (the one
+    /// `upstream_ref` names), in the agent's Bash hook and in the daemon's own push.
+    ///
+    /// On, because a repo that merges through PRs wants that mistake caught. Off is
+    /// for a project that commits straight to its main branch, where the base is
+    /// the branch every push goes to and the guard refused all of them. The other
+    /// two rules, a lease on every force push and no branch deletion, stay either
+    /// way. Read at start, like `upstream_ref`, because it is baked into the hook.
+    #[serde(default = "default_protect_base")]
+    pub protect_base: bool,
     /// What a plain `+` starts when more than one agent is installed. Unset is
     /// the one you picked last. An agent that is not on PATH falls back to that
     /// too, so a fixed choice cannot leave the button starting nothing.
@@ -467,6 +477,9 @@ pub struct Settings {
     pub workspace_notes: WorkspaceNotes,
     pub worktree_retention_days: u32,
     pub allow_several_in_main: bool,
+    /// Defaulted on, so a save from a page that predates it keeps the guard.
+    #[serde(default = "default_protect_base")]
+    pub protect_base: bool,
     pub default_agent: Option<crate::agent::Agent>,
     /// Defaulted, so a save from a page that predates it still parses.
     #[serde(default)]
@@ -520,6 +533,7 @@ impl Settings {
             workspace_notes: cfg.workspace_notes.clone(),
             worktree_retention_days: cfg.worktree_retention_days,
             allow_several_in_main: cfg.allow_several_in_main,
+            protect_base: cfg.protect_base,
             default_agent: cfg.default_agent,
             story_link: cfg.story_link.clone(),
         }
@@ -547,14 +561,15 @@ impl Settings {
 
     /// Whether moving from `self` to `next` needs the daemon restarted.
     ///
-    /// **Three fields, because only three are fixed at start.** `upstream_ref` is
-    /// baked into the push guard's hook, `upstream_remote` decides which repository
+    /// **Four fields, because only four are fixed at start.** `upstream_ref` and
+    /// `protect_base` are baked into the push guard's hook, `upstream_remote` decides which repository
     /// every poller talks to, and `main_processes` describes processes already
     /// running. Everything else is read when it is used, from
     /// `AppState::settings`, so a save applies it at once. Compared through JSON so
     /// a process spec needs no `PartialEq` of its own.
     pub fn needs_restart(&self, next: &Settings) -> bool {
         self.upstream_ref != next.upstream_ref
+            || self.protect_base != next.protect_base
             || self.upstream_remote != next.upstream_remote
             || serde_json::to_value(&self.main_processes).ok()
                 != serde_json::to_value(&next.main_processes).ok()
@@ -597,6 +612,10 @@ impl Settings {
 /// fork user never has to learn there are two keys to set.
 fn default_upstream() -> String {
     "origin/HEAD".to_string()
+}
+
+fn default_protect_base() -> bool {
+    true
 }
 
 fn default_auto_resume() -> bool {
@@ -1776,6 +1795,7 @@ mod tests {
             },
             worktree_retention_days: 60,
             allow_several_in_main: false,
+            protect_base: true,
             default_agent: None,
             story_link: None,
         };
@@ -1842,6 +1862,23 @@ mod tests {
         );
     }
 
+    /// The base-branch guard is on unless a project turns it off, and turning it
+    /// off waits for a restart, because the guard's hook is written at start.
+    #[test]
+    fn the_base_guard_is_on_by_default_and_a_change_to_it_needs_a_restart() {
+        let saved: Settings = serde_json::from_str(
+            r#"{"default_language":"English","upstream_ref":"origin/main","upstream_remote":"origin",
+                "reviews_command":[],"reviews_source":"default","reviews_rules":{},"main_processes":[],
+                "worktree_init":[],"worktree_setup":[],"workspace_notes":{},"worktree_retention_days":60,
+                "allow_several_in_main":false,"default_agent":null}"#,
+        )
+        .expect("a save from a page that predates the setting still parses");
+        assert!(saved.protect_base, "a missing key keeps the guard on");
+        let mut off = saved.clone();
+        off.protect_base = false;
+        assert!(saved.needs_restart(&off), "the hook only reads it at start");
+    }
+
     #[test]
     fn every_field_that_changes_the_queue_asks_for_a_refresh() {
         let base = Settings {
@@ -1857,6 +1894,7 @@ mod tests {
             workspace_notes: WorkspaceNotes::default(),
             worktree_retention_days: 60,
             allow_several_in_main: false,
+            protect_base: true,
             default_agent: None,
             story_link: None,
         };

@@ -1337,12 +1337,16 @@ impl AppState {
         path: std::path::PathBuf,
         branch: String,
     ) -> anyhow::Result<()> {
-        let (main, upstream) = (
+        let (main, upstream, protect) = (
             self.cfg.main_checkout.clone(),
             self.cfg.upstream_ref.clone(),
+            self.cfg.protect_base,
         );
         crate::proc::run_blocking("the push", move || {
-            let base = crate::git::base_checkout_branch(&main, &upstream);
+            // Off, the base is no different from any branch, as in the hook.
+            let base = protect
+                .then(|| crate::git::base_checkout_branch(&main, &upstream))
+                .flatten();
             crate::git::push_with_lease(&path, &branch, base.as_deref())
         })
         .await?

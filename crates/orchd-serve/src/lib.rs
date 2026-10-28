@@ -351,9 +351,12 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
         }
         // The push guard protects the branch this repo is measured against, so it
         // is read from config rather than a list of likely names. `origin/HEAD`
-        // that has never been fetched resolves to nothing, and the guard then
-        // enforces the force-with-lease rule alone.
-        let base = git::base_checkout_branch(&cfg.main_checkout, &cfg.upstream_ref);
+        // that has never been fetched resolves to nothing, and so does a project
+        // with `protect_base` off; the guard then enforces the other rules alone.
+        let base = cfg
+            .protect_base
+            .then(|| git::base_checkout_branch(&cfg.main_checkout, &cfg.upstream_ref))
+            .flatten();
         hooks::write_settings(
             cfg.port,
             cfg.tracker.as_ref().map(|t| t.mcp_server.as_str()),

@@ -958,6 +958,16 @@
         saying who wrote what, and one agent's <code>git add</code> stages the other's
         work. A worktree is the answer that carries none of those costs. Worktrees are
         always one at a time, whatever this says.</p>
+
+      <label class="settings-field">
+        <span class="settings-k">Refuse pushes to the base branch</span>
+        <input class="settings-check" id="setprotect" type="checkbox">
+      </label>
+      <p class="settings-help">An agent's <code>git push</code> to the branch this
+        project is measured against is refused, with "open a PR instead". Turn it off
+        for a project that commits straight to its main branch. A force push still
+        needs a lease, and deleting a remote branch is still refused. Applies after a
+        restart.</p>
     </section>
 
     <!-- `data-config` marks the half that is a *draft* until Save, which is what
