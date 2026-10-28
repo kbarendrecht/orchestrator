@@ -826,6 +826,19 @@ pub fn swap_branches(main: &Path, worktree: &Path) -> Result<Swap> {
     if main_branch == tree_branch {
         bail!("both are on {main_branch}, so there is nothing to exchange");
     }
+    /* **A detached tree has no branch to give, and `current_branch` says `HEAD`.**
+    Taken as a name, it let main take the worktree's branch and then failed in
+    step three on `git switch -c HEAD`, with a rollback that could not put main
+    back on a branch it never had (#50). Refused here, before anything moves. */
+    for (tree, branch) in [(main, &main_branch), (worktree, &tree_branch)] {
+        if branch == "HEAD" {
+            bail!(
+                "{} is on a detached HEAD, so it has no branch to exchange; \
+                 check a branch out there first",
+                tree.display()
+            );
+        }
+    }
 
     // Uncommitted work travels with its branch, or the swap moves the code and
     // leaves the edits behind — which is worse than refusing, because you would
@@ -884,15 +897,27 @@ pub fn swap_branches(main: &Path, worktree: &Path) -> Result<Swap> {
     if let Err(e) = switch_branch(worktree, &main_branch) {
         // Main already moved. Putting it back frees `tree_branch` again, so the
         // worktree can return to it and the pair is where it started.
-        let _ = switch_branch(main, &main_branch);
-        let _ = switch_branch(worktree, &tree_branch);
-        return Err(home(
-            e.context(format!(
+        //
+        // **Checked, because the log is the only record of where they are.** Both
+        // results were dropped, and the error said "both were put back" over a
+        // main still on the worktree's branch and a worktree left detached (#50).
+        let undone = switch_branch(main, &main_branch)
+            .with_context(|| format!("main is still on {tree_branch}"))
+            .and_then(|()| {
+                switch_branch(worktree, &tree_branch)
+                    .with_context(|| format!("{} is left detached", worktree.display()))
+            });
+        let said = match undone {
+            Ok(()) => format!(
                 "{} could not take {main_branch}; both were put back",
                 worktree.display()
-            )),
-            &tree_wip,
-        ));
+            ),
+            Err(back) => format!(
+                "{} could not take {main_branch}, and putting them back failed: {back:#}",
+                worktree.display()
+            ),
+        };
+        return Err(home(e.context(said), &tree_wip));
     }
 
     // Crosswise, and after both branches are in place. A failure here is reported,

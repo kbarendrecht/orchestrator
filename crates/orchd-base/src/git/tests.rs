@@ -1321,6 +1321,35 @@ fn swapping_exchanges_two_branches_and_is_its_own_inverse() {
     git(&same, &["switch", "-q", "--detach"]).unwrap();
     assert!(swap_branches(&main, &main).is_err(), "main against itself");
 
+    /* **A detached checkout is refused before anything moves** (#50). Its branch
+    reads as `HEAD`, and the swap used to hand main the worktree's branch, fail
+    on `git switch -c HEAD`, and leave both trees moved. The worktree's edit is
+    there to show the refusal also leaves the work where it was. */
+    std::fs::write(tree.join("f.txt"), "still editing\n").unwrap();
+    git(&main, &["switch", "-q", "--detach"]).unwrap();
+    let Err(e) = swap_branches(&main, &tree) else {
+        panic!("main is detached, and the swap went ahead");
+    };
+    assert!(format!("{e:#}").contains("detached HEAD"), "{e:#}");
+    assert_eq!(current_branch(&main).unwrap(), "HEAD", "main did not move");
+    assert_eq!(
+        current_branch(&tree).unwrap(),
+        "feature/b",
+        "the worktree did not move"
+    );
+    assert_eq!(
+        std::fs::read_to_string(tree.join("f.txt")).unwrap(),
+        "still editing\n",
+        "the work stayed in the worktree"
+    );
+    git(&main, &["switch", "-q", "main"]).unwrap();
+    git(&tree, &["switch", "-q", "--detach"]).unwrap();
+    let Err(e) = swap_branches(&main, &tree) else {
+        panic!("the worktree is detached, and the swap went ahead");
+    };
+    assert!(format!("{e:#}").contains("detached HEAD"), "{e:#}");
+    assert_eq!(current_branch(&main).unwrap(), "main", "main did not move");
+
     let _ = std::fs::remove_dir_all(&dir);
 }
 
