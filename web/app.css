@@ -332,6 +332,10 @@ button.ctx-btn:hover{color:var(--text)}
    where that meaning comes from. */
 .brand .mk-ink{stroke:var(--dim)}
 .brand .mk-amb{stroke:var(--attn)}
+/* The ink prompt folds onto the amber one, in the svg's own units, from its own box. */
+.brand path{transform-box:fill-box}
+.brand svg,.brandname{cursor:pointer}
+.brandname i{font-style:normal}
 /* The product's name beside its mark, set the way the splash sets it: Geist 600 with
    no tracking, the face and setting `web/wordmark.svg` was drawn from.
    **The two were different treatments of one word** once, and the board opened on a

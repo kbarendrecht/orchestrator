@@ -69,7 +69,8 @@
          route, a second copy to keep in step, and this one changes colour with the
          theme.
          Still, not looping: on the splash the motion says "starting", and a titlebar
-         that never stops saying it is saying nothing. A hover replays the fork once.
+         that never stops saying it is saying nothing. A click plays it once (`sweep`
+         in app.js).
          `aria-hidden` because the word beside it is the accessible name; a reader
          announcing both would say the product's name twice. -->
     <span class="brand" id="brand">
@@ -77,7 +78,7 @@
            fill="none" stroke-width="13" stroke-linecap="round" stroke-linejoin="round">
         <path class="mk-ink" d="M18 34 44 60 18 86"/>
         <path class="mk-amb" d="M46 34 72 60 46 86"/>
-        <path class="mk-ink" d="M86 86h16"/>
+        <path class="mk-ink mk-cur" d="M86 86h16"/>
       </svg>
       <span class="brandname">orchestrator</span>
     </span>

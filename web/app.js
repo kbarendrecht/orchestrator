@@ -2041,6 +2041,105 @@ function land() {
   void flight.finished.then(finish, finish);
 }
 
+/* ---------------------------------------------------------------------------
+   The mark, played by a click
+   ---------------------------------------------------------------------------
+   The ink prompt folds into the amber one, the amber one runs through the name and
+   each letter goes the moment its tip reaches it, it comes back in from the left,
+   the ink prompt forks out of it again, and the name is typed back in behind the
+   cursor. The splash's own vocabulary, so a click replays the launch rather than
+   inventing a second language for the mark.
+
+   **The whole svg travels, and that is why it is still one svg.** The landing flies
+   `#brand svg` into place, so splitting the mark would hand it half a logo. The
+   cursor rides along hidden, since it is out for the whole trip. Web Animations
+   rather than classes, because each letter's moment is measured from where it is
+   drawn, which no stylesheet knows. */
+const brandName = $('brand').querySelector('.brandname');
+if (brandName) {
+  // One span a letter, so each can go on its own; the word is still the same text.
+  brandName.replaceChildren(...[...(brandName.textContent ?? '')].map((ch) => el('i', null, ch)));
+}
+
+function sweep() {
+  const brand = $('brand');
+  const mark = brand.querySelector('svg');
+  const ink = brand.querySelector('.mk-ink:not(.mk-cur)');
+  const cur = brand.querySelector('.mk-cur');
+  const chars = [...brand.querySelectorAll('.brandname i')];
+  if (!(mark instanceof SVGElement) || !ink || !cur || !chars.length) return;
+  // Again from the start, the way a second press of a button would.
+  for (const a of brand.getAnimations({ subtree: true })) a.cancel();
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  const box = mark.getBoundingClientRect();
+  // The amber prompt's tip, x 72 of 120 plus half its stroke, is the leading edge.
+  const lead = box.left + box.width * (78.5 / 120);
+  const out = (chars.at(-1)?.getBoundingClientRect().right ?? lead) - lead + 14;
+  const SPEED = 0.42;                    // px per ms: quick, and each letter is seen to go
+  const tOut = out / SPEED;
+  // The ink prompt's offset onto the amber one, in the svg's own units.
+  const ONTO = 'translateX(28px)';
+  const spring = 'cubic-bezier(.34,1.56,.64,1)';
+
+  // The fold: the ink prompt slides into the amber one, and one is left.
+  const FOLD = 200;
+  cur.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 80, fill: 'forwards' });
+  ink.animate([{ transform: 'none', opacity: 1 }, { transform: ONTO, opacity: 0 }],
+    { duration: FOLD, easing: 'cubic-bezier(.4,0,.6,1)', fill: 'forwards' });
+
+  // The sweep, each letter gone the moment the tip reaches it.
+  mark.animate([
+    { transform: 'translateX(0)', opacity: 1 },
+    { transform: `translateX(${out}px)`, opacity: 1, offset: 0.92 },
+    { transform: `translateX(${out + 8}px)`, opacity: 0 },
+  ], { duration: tOut, delay: FOLD, easing: 'linear', fill: 'forwards' });
+  for (const c of chars) {
+    const at = FOLD + Math.max(0, (c.getBoundingClientRect().left - lead) / SPEED);
+    c.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 1, delay: at, fill: 'forwards' });
+  }
+
+  // Back in from the left as the amber prompt, landing with a small overshoot.
+  const back = FOLD + tOut + 120;
+  const LAND = 420;
+  mark.animate([
+    { transform: 'translateX(-34px)', opacity: 0 },
+    { transform: 'translateX(-20px)', opacity: 1, offset: 0.3 },
+    { transform: 'translateX(0)', opacity: 1 },
+  ], { duration: LAND, delay: back, easing: spring, fill: 'forwards' });
+
+  // The fork: the ink prompt springs back out of the amber one.
+  const fork = back + LAND;
+  const FORK = 440;
+  ink.animate([
+    { transform: ONTO, opacity: 0 },
+    { transform: ONTO, opacity: 1, offset: 0.2 },
+    { transform: 'none', opacity: 1 },
+  ], { duration: FORK, delay: fork, easing: spring, fill: 'forwards' });
+
+  /* The cursor, then the letters. One 38ms step between the cursor and the first
+     letter read as the same moment, so the cursor waits LEAD at the prompt, and the
+     letters keep their own beat. */
+  const typed = fork + FORK - 80;
+  const BEAT = 60;
+  const LEAD = 220;
+  cur.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 1, delay: typed, fill: 'forwards' });
+  chars.forEach((c, n) => {
+    c.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 1, delay: typed + LEAD + n * BEAT, fill: 'forwards' });
+  });
+  cur.animate([{ opacity: 1 }, { opacity: 0 }, { opacity: 1 }],
+    { duration: 530, delay: typed + LEAD + chars.length * BEAT, iterations: 2, easing: 'steps(1, end)' });
+}
+
+/* The mark and the name play it, not the rest of the segment: `.brand` stretches
+   across the strip, and that empty part is the window's to drag. A press that does
+   not move never starts a drag, so the two never meet. Never over the landing, which
+   is flying this same svg into place. */
+$('brand').addEventListener('click', (e) => {
+  if (!(/** @type {HTMLElement} */ (e.target).closest?.('svg, .brandname'))) return;
+  if (document.documentElement.classList.contains('from-splash')) return;
+  sweep();
+});
+
 // ---------------------------------------------------------------------------
 // Live state
 // ---------------------------------------------------------------------------

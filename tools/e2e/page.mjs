@@ -293,6 +293,24 @@ try {
   await page.waitForTimeout(1200)
   check(await page.$eval('#machinebar', (b) => b.hidden), 'and a dismissed bar stays dismissed')
 
+  /* --- the mark plays once on a click, and ends where it started ------------------- */
+
+  await page.click('#brand svg')
+  const moving = await page.evaluate(() => document.getElementById('brand')?.getAnimations({ subtree: true }).length ?? 0)
+  check(moving > 0, `a click on the mark plays it, got ${moving} animations`)
+  await page.waitForTimeout(3500)
+  const rest = await page.evaluate(() => {
+    const brand = document.getElementById('brand')
+    const letters = [...(brand?.querySelectorAll('.brandname i') ?? [])]
+    return {
+      word: letters.map((l) => l.textContent).join(''),
+      hidden: letters.filter((l) => getComputedStyle(l).opacity !== '1').length,
+      mark: getComputedStyle(/** @type {Element} */ (brand?.querySelector('svg'))).transform,
+    }
+  })
+  check(rest.word === 'orchestrator' && rest.hidden === 0 && (rest.mark === 'none' || rest.mark === 'matrix(1, 0, 0, 1, 0, 0)'),
+    `and the titlebar is whole again after it, got ${JSON.stringify(rest)}`)
+
   /* --- the syntax scheme reaches the code ---------------------------------------- */
 
   const keyword = await page.evaluate(async () => {
