@@ -129,9 +129,11 @@ function sorted(/** @type {Folder} */ f) {
 /** Draw the tree into `mount`.
  *
  *  `changed` is the pane's own list, so a file in the tree carries the letter its
- *  row there carries and a folder that holds one says so with a dot. A deleted
- *  file is on that list and not on disk, so it is put back in, struck through,
- *  where it was.
+ *  row there carries and a folder that holds one says so with a dot. **Every
+ *  changed path is put in, not only what the walk listed**, so a dot always leads
+ *  to its file: a deleted one is not on disk, and a monorepo past `MAX_PATHS`
+ *  (scienta's 20,438) is cut off partway, which left `projects/ai/tests` dotted
+ *  with its changed folders missing. A deleted file shows struck through.
  *
  *  `pick` is what a file row does, opening the file pane when not given; the
  *  finder passes its own, to show the file beside the tree. `picked` is the row
@@ -168,9 +170,8 @@ export function render(mount, ws, changed, redraw, how = {}) {
      row's mark rather than none. */
   const fresh = [...status.keys()].filter((p) => p.endsWith('/'));
   const inFresh = (/** @type {string} */ p) => fresh.some((d) => p.startsWith(d));
-  const gone = changed.filter((f) => f.status === 'D').map((f) => f.path);
   const tree = state.tree;
-  fold(tree, gone);
+  fold(tree, changed.map((f) => f.path));
   /* The folders on the way to a change, for the dot. An untracked directory comes
      as one row, `src/new/`, so it marks itself as well as its parents. */
   const holds = new Set();
