@@ -422,7 +422,7 @@ function renderFiles() {
   $('filescount').textContent = total ? String(total) : '';
 
   if (tree) {
-    $('filesfoot').textContent = Tree.render(panes, w.id, known || [], renderFiles);
+    $('filesfoot').textContent = Tree.render(panes, w.id, known || [], renderFiles, { onlyChanged: Tree.onlyChanged() });
     $('filestitle').title = 'Show the changes';
     return;
   }
@@ -656,6 +656,13 @@ try {
 function setView(/** @type {'changes' | 'files'} */ view, /** @type {MouseEvent} */ ev) {
   if (view === 'changes' && (diffState.view === 'changes' || diffState.open)) {
     baseMenu(ev);
+    return;
+  }
+  if (view === 'files' && diffState.view === 'files') {
+    openMenu(ev, [['Only changed files', `pick${Tree.onlyChanged() ? ' on' : ''}`, () => {
+      Tree.setOnlyChanged(!Tree.onlyChanged());
+      renderFiles();
+    }]]);
     return;
   }
   if (view === diffState.view) return;

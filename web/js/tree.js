@@ -25,11 +25,27 @@ const TTL = 60_000;
  *  @typedef {{ dirs: Set<string>, files: Set<string>, order: { dirs: string[], files: string[] } | null }} Folder
  *  @type {{ rev: number, ws: string | null, key: string | null, at: number, loading: boolean, failed: string | null,
  *           tree: Map<string, Folder>, total: number, truncated: boolean, big: Set<string>,
- *           under: Map<string, string | string[]>, open: Map<string, Set<string>> }} */
+ *           under: Map<string, string | string[]>, open: Map<string, Set<string>>,
+ *           shut: Map<string, Set<string>>, onlyChanged: boolean }} */
 const state = {
   rev: 0, ws: null, key: null, at: 0, loading: false, failed: null,
-  tree: new Map(), total: 0, truncated: false, big: new Set(), under: new Map(), open: new Map(),
+  tree: new Map(), total: 0, truncated: false, big: new Set(), under: new Map(), open: new Map(), shut: new Map(),
+  onlyChanged: false,
 };
+try {
+  state.onlyChanged = localStorage.getItem('orch.treeOnlyChanged') === '1';
+} catch (err) { /* no storage: the whole tree */ }
+
+/** Whether the changes pane's tree keeps only what changed. */
+export const onlyChanged = () => state.onlyChanged;
+/** Switch it, and keep it for this browser. */
+export function setOnlyChanged(/** @type {boolean} */ on) {
+  state.onlyChanged = on;
+  state.rev++;
+  try {
+    localStorage.setItem('orch.treeOnlyChanged', on ? '1' : '0');
+  } catch (err) { /* private mode: it still switched for this session */ }
+}
 
 /** Every caller that asked while a fetch was in flight. The pane and the finder
  *  both draw from this one cache, so the answer has to reach whichever asked, not
@@ -143,7 +159,12 @@ function sorted(/** @type {Folder} */ f) {
  *  @param {string} ws
  *  @param {{ path: string, status: string }[]} changed
  *  @param {() => void} redraw
- *  @param {{ pick?: (path: string, ev: MouseEvent) => void, picked?: string | null }} [how]
+ *  `onlyChanged` keeps only the folders and files that hold a change: the
+ *  changed files grouped by folder, as JetBrains' "group by directory" lists
+ *  them (#46). Its folders start open, since the point is to see the files, and
+ *  one closed by hand stays closed.
+ *
+ *  @param {{ pick?: (path: string, ev: MouseEvent) => void, picked?: string | null, onlyChanged?: boolean }} [how]
  *  @returns {string} what the footer says */
 export function render(mount, ws, changed, redraw, how = {}) {
   /* Keyed on the snapshot's own list, not on `changed`: the pane hands over its
@@ -181,9 +202,15 @@ export function render(mount, ws, changed, redraw, how = {}) {
     if (p.endsWith('/')) holds.add(dir);
   }
 
-  let open = state.open.get(ws);
-  if (!open) state.open.set(ws, open = new Set());
-  const opened = open;
+  /* Two sets per workspace, one per kind of tree: the folders opened in the
+     whole tree, and the ones closed in the changed-only one, whose default is
+     open. */
+  const only = !!how.onlyChanged;
+  const marks = only ? state.shut : state.open;
+  let set = marks.get(ws);
+  if (!set) marks.set(ws, set = new Set());
+  const toggled = set;
+  const isOpenDir = (/** @type {string} */ d) => (only ? !toggled.has(d) : toggled.has(d));
 
   /** @type {{ key: string, sig: string, build: () => Element }[]} */
   const items = [];
@@ -192,18 +219,19 @@ export function render(mount, ws, changed, redraw, how = {}) {
     if (!f) return;
     const order = sorted(f);
     for (const d of order.dirs) {
-      const isOpen = opened.has(d);
+      const marked = holds.has(d) || inFresh(`${d}/`);
+      if (only && !marked) continue;
+      const isOpen = isOpenDir(d);
       const big = state.big.has(d);
       const got = state.under.get(d);
-      const marked = holds.has(d) || inFresh(`${d}/`);
       const note = got === 'loading' ? 'listing…' : typeof got === 'string' ? got : '';
       items.push({
         key: `td:${d}`,
         sig: paintSig([isOpen, marked, note, depth]),
         build: () => dirRow(d, depth, isOpen, marked, note, () => {
-          if (opened.has(d)) opened.delete(d);
-          else {
-            opened.add(d);
+          if (toggled.has(d)) toggled.delete(d);
+          else toggled.add(d);
+          if (isOpenDir(d)) {
             /* A big ignored folder is never in the list, and in a list cut off
                at its cap any folder may be missing part of what is in it, so
                either is listed on its own when opened. */
@@ -219,12 +247,16 @@ export function render(mount, ws, changed, redraw, how = {}) {
       // `src/new/` is a folder git reported whole, already drawn as one.
       if (p.endsWith('/')) continue;
       const st = status.get(p) ?? (inFresh(p) ? '?' : '');
+      if (only && !st) continue;
       const on = p === how.picked;
       items.push({ key: `tf:${p}`, sig: paintSig([st, depth, ws, on]), build: () => fileRow(ws, p, depth, st, on, how.pick) });
     }
   };
   walk('', 0);
-  if (items.length === 0) items.push({ key: 'tnone', sig: '', build: () => el('div', 'fempty', 'No files here.') });
+  if (items.length === 0) {
+    const none = only ? 'Nothing changed here.' : 'No files here.';
+    items.push({ key: 'tnone', sig: none, build: () => el('div', 'fempty', none) });
+  }
   reconcile(mount, items);
 
   const n = state.total.toLocaleString();

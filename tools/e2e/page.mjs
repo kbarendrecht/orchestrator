@@ -336,6 +336,20 @@ try {
       .then(() => true, () => false)
     check(shut, 'and Escape closes it again')
   } else check(false, 'the tree has a file row at its top level')
+  /* Files, pressed while it shows, is its menu, and "Only changed files" keeps the
+     rows that carry a change: the changed files grouped by folder (#46). */
+  const onlyChanged = async () => {
+    await page.click('#filestree')
+    const item = page.locator('#ctxmenu button', { hasText: 'Only changed files' })
+    await item.waitFor({ timeout: 5000 })
+    await item.click()
+    await page.waitForTimeout(300)
+  }
+  await onlyChanged()
+  const changedOnly = await page.$$eval('#filepanes .trow', (rows) => rows.every((r) =>
+    r.classList.contains('dir') ? !!r.querySelector('.tdot') : !!r.querySelector('.tcd')))
+  check(changedOnly, 'only changed files keeps no row without a change')
+  await onlyChanged()
   await page.click('#filestitle')
   check(await page.$eval('#filestitle', (b) => b.getAttribute('aria-pressed') === 'true'),
     'pressing Changes from the tree goes back to the changes, not to the base menu')

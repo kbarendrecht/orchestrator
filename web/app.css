@@ -220,9 +220,14 @@ body[data-chrome="custom"] .top-r{padding-right:0}
 .top-r>.fhead-txt{display:flex;align-items:center;flex:1 1 auto;min-width:0}
 /* The view toggle is the finder's (`.fnmode`), a little tighter, with the count
    on the Changes half. */
-.top-r .fnmode>button{display:inline-flex;align-items:center;gap:5px;padding:0 7px}
+.top-r .fnmode>button{display:inline-flex;align-items:center;gap:4px;padding:0 5px}
 .top-r .fcount{font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid)}
 .top-r .fcount:empty{display:none}
+/* Each half has a menu, opened by pressing the half that is showing, so only that
+   half carries the chevron. One chevron at a time is also what keeps the toggle
+   one width in both views, inside the 181px the window buttons leave it. */
+.top-r .fcaret{width:calc(9px * var(--fs));height:calc(9px * var(--fs));flex:none;color:var(--faint-solid);margin-left:-2px}
+.top-r .fnmode>[aria-pressed="false"] .fcaret{display:none}
 
 .wctl-btn{
   width:34px;height:45px;position:relative;background:none;border:0;cursor:default;
