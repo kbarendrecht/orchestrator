@@ -654,14 +654,6 @@
     <section class="settings-sec" data-tab="theme">
       <div class="settings-group">Diff</div>
       <div class="settings-row">
-        <span class="settings-k">Syntax
-          <span class="settings-hint">the diff, the file viewer and the finder</span>
-        </span>
-        <span class="settings-step">
-          <select class="settings-select" id="thsyntax" aria-label="Syntax colours"></select>
-        </span>
-      </div>
-      <div class="settings-row">
         <span class="settings-k">Font</span>
         <span class="settings-step">
           <span class="thsample" id="thcodesample">Handgloves 0123</span>
@@ -702,6 +694,31 @@
 
       <!-- Not appearance: how far a gesture scrolls. It sat under Appearance because it
            is a stepper and the steppers were there. -->
+    </section>
+
+    <section class="settings-sec" data-tab="theme">
+      <div class="settings-group">Syntax</div>
+      <div class="settings-row">
+        <span class="settings-k">Colours
+          <span class="settings-hint">the diff, the file viewer and the finder</span>
+        </span>
+        <span class="settings-step">
+          <select class="settings-select" id="thsyntax" aria-label="Syntax colours"></select>
+        </span>
+      </div>
+      <!-- Plain code in the diff's own rows and font, so a scheme is judged on what
+           it colours and nothing else. The `--syn-*` it sets reach these through the
+           same `.tok-*` rules every pane uses, so no script draws it. -->
+      <div class="settings-diffdemo diff" aria-hidden="true">
+        <div class="ln"><i data-n="1"></i><s><span class="tok-keyword">import</span> <span class="tok-punctuation">{</span> stock <span class="tok-punctuation">}</span> <span class="tok-keyword">from</span> <span class="tok-string">'./lib/store.js'</span><span class="tok-punctuation">;</span></s></div>
+        <div class="ln"><i data-n="2"></i><s> </s></div>
+        <div class="ln"><i data-n="3"></i><s><span class="tok-comment">// Take n of one SKU, or say how many are left.</span></s></div>
+        <div class="ln"><i data-n="4"></i><s><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> <span class="tok-function">reserve</span><span class="tok-punctuation">(</span>sku<span class="tok-punctuation">,</span> n <span class="tok-operator">=</span> <span class="tok-number">1</span><span class="tok-punctuation">)</span> <span class="tok-punctuation">{</span></s></div>
+        <div class="ln"><i data-n="5"></i><s>  <span class="tok-keyword">const</span> left <span class="tok-operator">=</span> stock<span class="tok-punctuation">.</span><span class="tok-function">get</span><span class="tok-punctuation">(</span>sku<span class="tok-punctuation">)</span> <span class="tok-operator">??</span> <span class="tok-number">0</span><span class="tok-punctuation">;</span></s></div>
+        <div class="ln"><i data-n="6"></i><s>  <span class="tok-keyword">if</span> <span class="tok-punctuation">(</span>left <span class="tok-operator">&lt;</span> n<span class="tok-punctuation">)</span> <span class="tok-keyword">throw</span> <span class="tok-keyword">new</span> <span class="tok-class-name">RangeError</span><span class="tok-punctuation">(</span><span class="tok-string">`only ${left} left`</span><span class="tok-punctuation">);</span></s></div>
+        <div class="ln"><i data-n="7"></i><s>  <span class="tok-keyword">return</span> <span class="tok-punctuation">{</span> <span class="tok-property">sku</span><span class="tok-punctuation">,</span> <span class="tok-property">taken</span><span class="tok-punctuation">:</span> n<span class="tok-punctuation">,</span> <span class="tok-property">ok</span><span class="tok-punctuation">:</span> <span class="tok-boolean">true</span> <span class="tok-punctuation">};</span></s></div>
+        <div class="ln"><i data-n="8"></i><s><span class="tok-punctuation">}</span></s></div>
+      </div>
     </section>
 
     <section class="settings-sec" data-tab="other">
