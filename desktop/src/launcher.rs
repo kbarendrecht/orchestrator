@@ -273,20 +273,37 @@ pub(crate) fn install_desktop_entry() -> Result<Option<std::path::PathBuf>> {
     let home = std::env::var_os("HOME").context("HOME is not set")?;
     let data = data_home(&home);
 
+    /* **The bare mark, not the macOS tile.** A Mac icon is a tile inside Apple's
+    grid, with a tenth of the square left empty on every side; next to Linux icons,
+    which fill their square, that drew ours visibly smaller in the taskbar. The
+    tile stays the Mac's (the PNGs in `icons` build its `.icns`); `icons/linux` is the
+    mark alone, with a dark edge so its white strokes hold on a light panel. */
+    let mut icons_changed = false;
     for (px, bytes) in [
-        (32u32, &include_bytes!("../icons/32x32.png")[..]),
-        (128, &include_bytes!("../icons/128x128.png")[..]),
-        (256, &include_bytes!("../icons/128x128@2x.png")[..]),
+        (32u32, &include_bytes!("../icons/linux/32x32.png")[..]),
+        (128, &include_bytes!("../icons/linux/128x128.png")[..]),
+        (256, &include_bytes!("../icons/linux/128x128@2x.png")[..]),
         // 512 because a launcher draws the largest size it finds. A 512 left by an
         // earlier install outranks all three above, so without this a changed icon
         // reaches three directories and shows in none.
-        (512, &include_bytes!("../icons/icon.png")[..]),
+        (512, &include_bytes!("../icons/linux/icon.png")[..]),
     ] {
         let dir = data
             .join("icons/hicolor")
             .join(format!("{px}x{px}"))
             .join("apps");
-        write_if_changed(&dir.join(format!("{APP_ID}.png")), bytes)?;
+        icons_changed |= write_if_changed(&dir.join(format!("{APP_ID}.png")), bytes)?;
+    }
+    /* **A new icon is not on screen until the theme's cache says so.** GTK reads
+    `hicolor/icon-theme.cache` when there is one, so the new files sat on disk
+    under the old icon, and the entry's text had not changed, so nothing else ran.
+    Best effort, like the two calls below: a desktop without the tool reads the
+    directories instead. */
+    if icons_changed {
+        let _ = std::process::Command::new("gtk-update-icon-cache")
+            .args(["-f", "-t"])
+            .arg(data.join("icons/hicolor"))
+            .status();
     }
 
     let apps = data.join("applications");
@@ -306,7 +323,9 @@ pub(crate) fn install_desktop_entry() -> Result<Option<std::path::PathBuf>> {
         scheme = orchd_serve::link::SCHEME,
     );
     if !write_if_changed(&file, entry.as_bytes())? {
-        return Ok(None);
+        // The icons alone changing is still a write, so `--install-desktop-entry`
+        // does not say "already current" over four new files.
+        return Ok(icons_changed.then_some(file));
     }
 
     // Best effort: most desktops notice the file on their own, and a missing
