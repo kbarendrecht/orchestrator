@@ -156,14 +156,14 @@ pub(super) fn fsmonitor_plan(current: Option<&str>, boolean_git: bool) -> Fsmoni
 /// and your fork's own `fix-x` are two branches with one name, and matching on
 /// the name alone attached the PR to whichever the checkout happened to have.
 /// This is the other half of the identity, read from the config git already keeps:
-/// `remote.<r>.url` and `branch.<b>.remote`.
+/// `remote.<r>.url`, and `branch.<b>.remote` with the `branch.<b>.merge` beside it.
 #[derive(Debug, Default, Clone)]
 pub struct HeadCheck {
     /// `(remote, owner/name)`, lowercased, for each remote whose URL names a
     /// hosted repository. A local path names none and is left out.
     remotes: Vec<(String, String)>,
-    /// Local branch → the remote it tracks.
-    tracking: std::collections::HashMap<String, String>,
+    /// Local branch → the remote it tracks, and the branch it tracks there.
+    tracking: std::collections::HashMap<String, (String, Option<String>)>,
 }
 
 impl HeadCheck {
@@ -187,11 +187,19 @@ impl HeadCheck {
                 Some((name.to_string(), repo_of_url(&url)?))
             })
             .collect();
+        let merges: std::collections::HashMap<String, String> = pairs(r"^branch\..*\.merge$")
+            .into_iter()
+            .filter_map(|(key, merge)| {
+                let branch = key.strip_prefix("branch.")?.strip_suffix(".merge")?;
+                let name = merge.strip_prefix("refs/heads/").unwrap_or(&merge);
+                Some((branch.to_string(), name.to_string()))
+            })
+            .collect();
         let tracking = pairs(r"^branch\..*\.remote$")
             .into_iter()
             .filter_map(|(key, remote)| {
                 let branch = key.strip_prefix("branch.")?.strip_suffix(".remote")?;
-                Some((branch.to_string(), remote))
+                Some((branch.to_string(), (remote, merges.get(branch).cloned())))
             })
             .collect();
         HeadCheck { remotes, tracking }
@@ -218,9 +226,16 @@ impl HeadCheck {
     /// a hosted repository (a local-path remote, a host this cannot parse), answers
     /// `None` and the name is matched as it always was. Only two things refuse — a
     /// head repo that none of the remotes carries, and a local branch that tracks
-    /// a *different* remote from the ones that do. A local branch tracking nothing
-    /// is taken as the PR's: it is what a branch you made and pushed without `-u`
-    /// looks like, and that is the common way to have opened the PR.
+    /// *its own name* on a different remote from the ones that do. A local branch
+    /// tracking nothing is taken as the PR's: it is what a branch you made and
+    /// pushed without `-u` looks like, and that is the common way to have opened
+    /// the PR.
+    ///
+    /// **Tracking another branch is not a claim about this one.** A branch cut with
+    /// `git checkout -b fix-x upstream/develop` tracks `upstream`'s `develop`: it
+    /// says where the work started, and the PR from your fork is still its head.
+    /// Read as "tracks upstream", that refused the very branch the PR was opened
+    /// from (#36486, its head the local tip to the commit).
     pub fn refusal(&self, head_ref: &str, head_repo: Option<&str>) -> Option<String> {
         let head_repo = head_repo?;
         if self.remotes.is_empty() {
@@ -236,11 +251,16 @@ impl HeadCheck {
             ));
         }
         match self.tracking.get(head_ref) {
-            Some(tracks) if !carrying.contains(&tracks.as_str()) => Some(format!(
-                "its head is {head_repo}:{head_ref}, and the local {head_ref} tracks \
-                 {tracks}, which is a different repository — a branch with the same \
-                 name, not this PR's"
-            )),
+            Some((tracks, merge))
+                if !carrying.contains(&tracks.as_str())
+                    && merge.as_deref().is_none_or(|m| m == head_ref) =>
+            {
+                Some(format!(
+                    "its head is {head_repo}:{head_ref}, and the local {head_ref} tracks \
+                     {tracks}, which is a different repository — a branch with the same \
+                     name, not this PR's"
+                ))
+            }
             _ => None,
         }
     }

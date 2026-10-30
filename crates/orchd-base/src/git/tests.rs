@@ -2208,6 +2208,14 @@ fn a_head_is_the_local_branch_only_when_its_repository_agrees() {
     g(&["branch", "fix-x"]);
     g(&["config", "branch.fix-x.remote", "origin"]);
     g(&["branch", "untracked"]);
+    // Cut from the base, the way a branch starts here: it tracks upstream's develop.
+    g(&["branch", "cut"]);
+    g(&["config", "branch.cut.remote", "upstream"]);
+    g(&["config", "branch.cut.merge", "refs/heads/develop"]);
+    // And one that does track its own name on upstream: that one is upstream's.
+    g(&["branch", "theirs"]);
+    g(&["config", "branch.theirs.remote", "upstream"]);
+    g(&["config", "branch.theirs.merge", "refs/heads/theirs"]);
     let check = HeadCheck::read(&repo);
 
     // Unknown head repository: the name is all there is.
@@ -2224,6 +2232,11 @@ fn a_head_is_the_local_branch_only_when_its_repository_agrees() {
     assert!(other.contains("tracks origin"), "{other}");
     // A branch tracking nothing is what one pushed without `-u` looks like.
     assert_eq!(check.refusal("untracked", Some("acme/repo")), None);
+    // Tracking the base it was cut from says nothing about which fork its PR is on.
+    assert_eq!(check.refusal("cut", Some("me/repo")), None);
+    // Tracking its own name on another repository is that repository's branch.
+    let same_name = check.refusal("theirs", Some("me/repo")).expect("refused");
+    assert!(same_name.contains("tracks upstream"), "{same_name}");
     // A repository none of the remotes is.
     let foreign = check
         .refusal("fix-x", Some("someone/else"))
