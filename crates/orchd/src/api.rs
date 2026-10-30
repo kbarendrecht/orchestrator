@@ -2392,8 +2392,9 @@ pub async fn definitions(
 #[derive(Deserialize)]
 pub struct PathsQuery {
     pub workspace: String,
-    /// One folder the full list left out as too big, listed on its own. See
-    /// [`crate::search::left_out`].
+    /// One folder, listed on its own: one the full list left out as too big (see
+    /// [`crate::search::left_out`]), or any folder of a list cut off at its cap.
+    /// See [`crate::search::paths_under`].
     #[serde(default)]
     pub under: Option<String>,
 }

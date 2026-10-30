@@ -97,7 +97,7 @@ function load(/** @type {string} */ ws, /** @type {string} */ key, /** @type {()
   });
 }
 
-/** List one left-out folder, the first time it is opened. */
+/** List one folder on its own, the first time it is opened: a left-out one, or any in a list cut off at its cap. */
 function loadUnder(/** @type {string} */ ws, /** @type {string} */ dir, /** @type {() => void} */ redraw) {
   if (state.under.has(dir)) return;
   state.under.set(dir, 'loading');
@@ -196,7 +196,7 @@ export function render(mount, ws, changed, redraw, how = {}) {
       const big = state.big.has(d);
       const got = state.under.get(d);
       const marked = holds.has(d) || inFresh(`${d}/`);
-      const note = !big ? '' : got === 'loading' ? 'listing…' : typeof got === 'string' ? got : '';
+      const note = got === 'loading' ? 'listing…' : typeof got === 'string' ? got : '';
       items.push({
         key: `td:${d}`,
         sig: paintSig([isOpen, marked, note, depth]),
@@ -204,7 +204,10 @@ export function render(mount, ws, changed, redraw, how = {}) {
           if (opened.has(d)) opened.delete(d);
           else {
             opened.add(d);
-            if (big) loadUnder(ws, d, redraw);
+            /* A big ignored folder is never in the list, and in a list cut off
+               at its cap any folder may be missing part of what is in it, so
+               either is listed on its own when opened. */
+            if (big || state.truncated) loadUnder(ws, d, redraw);
           }
           state.rev++;
           redraw();

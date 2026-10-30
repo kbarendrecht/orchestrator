@@ -738,7 +738,22 @@ fn ignored_walkers(root: &Path, exclude: Option<&str>, glob: Option<&str>) -> Ve
 /// from `Config::worktrees_subdir_str`, so a relocated layout is followed rather
 /// than guessed at.
 fn walker(root: &Path, exclude: Option<&str>, glob: Option<&str>) -> Result<WalkBuilder> {
-    let mut w = WalkBuilder::new(root);
+    let mut w = walker_from(root, exclude, root);
+    if let Some(g) = glob.map(as_glob).filter(|g| !g.is_empty()) {
+        let mut ov = OverrideBuilder::new(root);
+        ov.add(&g)
+            .with_context(|| format!("{g} is not a path filter"))?;
+        w.overrides(ov.build()?);
+    }
+    Ok(w)
+}
+
+/// The tree's own walk, started at `from` inside `root`: the ignore files above
+/// `from` still apply (`parents` is on by default), and `exclude` is still read
+/// against `root`, so a walk of one folder skips exactly what the whole walk
+/// would.
+fn walker_from(root: &Path, exclude: Option<&str>, from: &Path) -> WalkBuilder {
+    let mut w = WalkBuilder::new(from);
     let (at, skip) = (root.to_path_buf(), exclude.map(|e| e.to_string()));
     w.hidden(false).threads(0).filter_entry(move |e| {
         if e.file_name() == ".git" {
@@ -751,13 +766,7 @@ fn walker(root: &Path, exclude: Option<&str>, glob: Option<&str>) -> Result<Walk
             None => true,
         }
     });
-    if let Some(g) = glob.map(as_glob).filter(|g| !g.is_empty()) {
-        let mut ov = OverrideBuilder::new(root);
-        ov.add(&g)
-            .with_context(|| format!("{g} is not a path filter"))?;
-        w.overrides(ov.build()?);
-    }
-    Ok(w)
+    w
 }
 
 /// `path` as the page names it: relative to the root, `/` separated.
@@ -901,14 +910,21 @@ pub fn paths(root: &Path, exclude: Option<&str>) -> Result<Paths> {
     })
 }
 
-/// Every file in one left-out folder, with a [`MAX_PATHS`] of its own.
+/// Every file in one folder, with a [`MAX_PATHS`] of its own.
 ///
-/// **Only a folder [`left_out`] named**, so this cannot become a way to list an
-/// arbitrary path: `under` is checked against that list rather than resolved.
+/// Two kinds of folder, and neither makes this a way to list an arbitrary path:
+///
+/// - **One [`left_out`] named**, checked against that list rather than resolved,
+///   and walked with the ignore rules off, since the folder is ignored as a whole.
+/// - **Any other folder in the tree**, for a list [`paths`] cut off at its cap: a
+///   tree past it (scienta's 20,438 files) showed a folder with half its contents.
+///   Walked with the whole walk's own rules, so it lists nothing that walk would
+///   not, and refused unless it is a relative path that stays inside `root` once
+///   its links are resolved.
 pub fn paths_under(root: &Path, exclude: Option<&str>, under: &str) -> Result<Paths> {
     let under = under.trim_end_matches('/');
     if !left_out(root, exclude).iter().any(|d| d == under) {
-        anyhow::bail!("{under} is not a folder left out of the file list");
+        return paths_in(root, exclude, under);
     }
     let base = root.join(under);
     let mut out: Vec<String> = Vec::new();
@@ -916,6 +932,43 @@ pub fn paths_under(root: &Path, exclude: Option<&str>, under: &str) -> Result<Pa
         if entry.file_type().is_some_and(|t| t.is_file()) {
             // Named through the folder, not through where a link points.
             out.push(format!("{under}/{}", rel(&base, entry.path())));
+            if out.len() > MAX_PATHS {
+                break;
+            }
+        }
+    }
+    let truncated = out.len() > MAX_PATHS;
+    out.truncate(MAX_PATHS);
+    out.sort();
+    Ok(Paths {
+        paths: out,
+        truncated,
+        left_out: Vec::new(),
+    })
+}
+
+/// One folder of the tree, by the whole walk's rules. See [`paths_under`].
+fn paths_in(root: &Path, exclude: Option<&str>, under: &str) -> Result<Paths> {
+    let rel_path = Path::new(under);
+    let plain = !under.is_empty()
+        && rel_path
+            .components()
+            .all(|c| matches!(c, std::path::Component::Normal(_)));
+    let inside = plain
+        && std::fs::canonicalize(root.join(rel_path))
+            .ok()
+            .zip(std::fs::canonicalize(root).ok())
+            .is_some_and(|(at, top)| at.starts_with(&top) && at.is_dir());
+    if !inside {
+        anyhow::bail!("{under} is not a folder in this workspace");
+    }
+    let mut out: Vec<String> = Vec::new();
+    for entry in walker_from(root, exclude, &root.join(rel_path))
+        .build()
+        .flatten()
+    {
+        if entry.file_type().is_some_and(|t| t.is_file()) {
+            out.push(rel(root, entry.path()));
             if out.len() > MAX_PATHS {
                 break;
             }
@@ -1319,6 +1372,53 @@ mod tests {
         let _ = fs::remove_dir_all(&small);
     }
 
+    /// A folder of a list cut off at its cap is listed on its own, by the whole
+    /// walk's rules, and nothing outside the tree can be named that way.
+    #[test]
+    fn any_folder_in_the_tree_lists_by_the_walks_own_rules() {
+        let main = orchd_base::testutil::scratch_repo("search-under");
+        fs::write(main.join(".gitignore"), "*.log\n").unwrap();
+        fs::create_dir_all(main.join("projects/ai/tests/db")).unwrap();
+        fs::write(main.join("projects/ai/tests/db/a.spec.ts"), "x\n").unwrap();
+        fs::write(main.join("projects/ai/tests/run.log"), "noise\n").unwrap();
+        fs::create_dir_all(main.join(".claude/worktrees/w/projects")).unwrap();
+        fs::write(main.join(".claude/worktrees/w/projects/b.ts"), "y\n").unwrap();
+
+        let under = paths_under(&main, None, "projects/ai/tests").unwrap();
+        assert_eq!(
+            under.paths,
+            vec!["projects/ai/tests/db/a.spec.ts"],
+            "ignored files stay out"
+        );
+        let from_main = paths_under(&main, Some(".claude/worktrees/"), ".claude").unwrap();
+        assert!(
+            from_main.paths.is_empty(),
+            "main's exclude holds: {:?}",
+            from_main.paths
+        );
+
+        assert!(paths_under(&main, None, "/etc").is_err(), "absolute");
+        assert!(
+            paths_under(&main, None, "projects/../..").is_err(),
+            "climbs out"
+        );
+        assert!(
+            paths_under(&main, None, "").is_err(),
+            "the root is the whole walk's job"
+        );
+        let outside = orchd_base::testutil::scratch("search-under-outside");
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&outside, main.join("away")).unwrap();
+            assert!(
+                paths_under(&main, None, "away").is_err(),
+                "a link out of the tree"
+            );
+        }
+        let _ = fs::remove_dir_all(&outside);
+        let _ = fs::remove_dir_all(&main);
+    }
+
     /// A notes folder past the cap is named, listed on its own, and searched
     /// when the path filter names it (#44).
     ///
@@ -1346,7 +1446,7 @@ mod tests {
         assert!(under.paths.contains(&".plan/plan.md".to_string()));
         assert!(under.left_out.is_empty());
 
-        // Only a folder the list named: this is not a way to walk any path.
+        // A folder, inside the tree: this is not a way to walk any path.
         assert!(paths_under(&main, None, "tracked.txt").is_err());
         assert!(paths_under(&main, None, "..").is_err());
 
