@@ -115,6 +115,28 @@ function toPanel(which) {
   $('opclose').hidden = !anyCheckoutOpen();
 }
 
+/** The product's mark, as the titlebar draws it: two chevrons and a cursor, the amber
+ *  one the session that needs you. Built here rather than pasted, because this card
+ *  is made in code; the strokes are styled by `.opbrand` in app.css. */
+function brandMark() {
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  for (const [k, v] of [
+    ['viewBox', '0 0 120 120'], ['width', '18'], ['height', '18'], ['fill', 'none'],
+    ['stroke-width', '13'], ['stroke-linecap', 'round'], ['stroke-linejoin', 'round'],
+    ['aria-hidden', 'true'],
+  ]) svg.setAttribute(k, v);
+  for (const [cls, d] of [
+    ['mk-ink', 'M18 34 44 60 18 86'], ['mk-amb', 'M46 34 72 60 46 86'], ['mk-ink', 'M86 86h16'],
+  ]) {
+    const path = document.createElementNS(ns, 'path');
+    path.setAttribute('class', cls);
+    path.setAttribute('d', d);
+    svg.append(path);
+  }
+  return svg;
+}
+
 function welcomePanel() {
   const panel = el('div', 'oppanel');
   panel.id = 'opwelcome';
@@ -128,7 +150,7 @@ function welcomePanel() {
   x.title = 'Close · Esc';
   x.appendChild(icon('', 1.5, 'M4 4l8 8M12 4l-8 8'));
   x.onclick = () => void close();
-  brand.append(el('span', 'opdot'), el('span', 'opname', 'orchd'), x);
+  brand.append(brandMark(), el('span', 'opname', 'orchestrator'), x);
   panel.append(brand, el('h1', 'ophead', 'Open a project to orchestrate'));
   panel.append(el('p', 'opsub',
     'A project is a git checkout. orchd runs one daemon per checkout, cuts worktrees '

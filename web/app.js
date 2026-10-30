@@ -1987,6 +1987,61 @@ window.addEventListener('focus', refreshOnReturn);
 document.addEventListener('visibilitychange', refreshOnReturn);
 
 // ---------------------------------------------------------------------------
+// Landing — the board's half of the splash hand-off
+// ---------------------------------------------------------------------------
+
+/* The splash is a `data:` page and the board is this one, so nothing animates across
+   the navigation between them. The host marks the board's URL with `#splash` when it
+   hands off, and the script in index.html's `<head>` turns that into `from-splash`
+   on the root before the first paint, which shows `#landing` — a copy of the splash's
+   last frame. This plays the rest: the name and status fade, the mark flies into
+   `#brand`, and the overlay fades to the board.
+
+   **It waits for the first snapshot**, so the board it uncovers is drawn rather than
+   "connecting". The deadline is for the first-run screen, which has no checkout and
+   so never receives one. */
+const LANDING_DEADLINE_MS = 1500;
+let landed = !document.documentElement.classList.contains('from-splash');
+if (!landed) setTimeout(land, LANDING_DEADLINE_MS);
+
+/** Fly the splash's mark into the titlebar and fade to the board. Once, and a no-op
+ *  when this page was not opened from the splash. */
+function land() {
+  if (landed) return;
+  landed = true;
+  const overlay = $('landing');
+  const from = overlay.querySelector('.landmark');
+  const to = document.querySelector('#brand svg');
+  if (!(from instanceof SVGElement) || !(to instanceof SVGElement)) {
+    overlay.remove();
+    document.documentElement.classList.remove('from-splash');
+    return;
+  }
+  const a = from.getBoundingClientRect();
+  const b = to.getBoundingClientRect();
+  // The titlebar's own mark stays hidden until this one arrives on top of it, or the
+  // two would be on screen at once for the whole flight.
+  to.style.visibility = 'hidden';
+  const finish = () => {
+    to.style.visibility = '';
+    overlay.remove();
+    document.documentElement.classList.remove('from-splash');
+  };
+  const out = 'cubic-bezier(.16,1,.3,1)';
+  for (const node of overlay.querySelectorAll('.wordmark, .landstatus')) {
+    node.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 160, fill: 'forwards' });
+  }
+  overlay.animate([{ backgroundColor: '#101010' }, { backgroundColor: 'transparent' }],
+    { duration: 260, delay: 120, fill: 'forwards' });
+  from.style.transformOrigin = '0 0';
+  const flight = from.animate([
+    { transform: 'none' },
+    { transform: `translate(${b.left - a.left}px, ${b.top - a.top}px) scale(${b.width / a.width})` },
+  ], { duration: 480, easing: out, fill: 'forwards' });
+  void flight.finished.then(finish, finish);
+}
+
+// ---------------------------------------------------------------------------
 // Live state
 // ---------------------------------------------------------------------------
 
@@ -2061,6 +2116,8 @@ function connect(path) {
     // The first snapshot has landed, so drop the "connecting" hold and let the
     // real board — empty or not — show. Idempotent after that.
     document.body.classList.add('ready');
+    // And the splash's mark, if this page opened from it, can now land on a drawn board.
+    land();
     // The board is now drawable, which is the moment the window stops looking
     // broken. Everything after it is the centre pane filling in.
     mark('snapshot');

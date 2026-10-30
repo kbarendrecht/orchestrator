@@ -64,7 +64,7 @@ THE SOFTWARE.
 
 ## Fonts
 
-All five families are under the SIL Open Font License 1.1. The full text sits
+All six families are under the SIL Open Font License 1.1. The full text sits
 beside each one in `web/vendor/fonts/`, carrying that family's own copyright and
 Reserved Font Name, which is what the OFL asks for. Versions here are read from
 each file's own `name` table.
@@ -78,11 +78,16 @@ each file's own `name` table.
 | `martian-mono.woff2` | [Martian Mono SemiExpanded](https://github.com/evilmartians/mono) | 1.000 | OFL-1.1 — `martian-mono-OFL.txt` |
 | `jetbrains-mono-400.woff2` | [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono) | 2.304 | OFL-1.1 — `jetbrains-mono-OFL.txt` |
 | `inter.woff2` | [Inter](https://github.com/rsms/inter) | 4.001 | OFL-1.1 — `inter-OFL.txt` |
+| `geist.woff2` | [Geist](https://github.com/vercel/geist-font) | 1.800 | OFL-1.1 — `geist-OFL.txt` |
 
-All seven are Latin-subset builds, so they are modified copies in the OFL's sense:
+All eight are Latin-subset builds, so they are modified copies in the OFL's sense:
 the outlines are upstream's, with the rest of the Unicode range dropped. The OFL
 permits that and the family names are unchanged, which it also permits — the
 Reserved Font Name clause bites on *renaming*, not on subsetting.
+
+The wordmark in `web/wordmark.svg`, `docs/logo-*.svg` and the splash is Geist's
+outlines for one word, drawn as paths rather than shipped as a font. That is
+artwork made with the font, which the OFL leaves unrestricted.
 
 ## Rust dependencies
 

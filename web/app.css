@@ -22,6 +22,12 @@
   font-weight:600;font-style:normal;font-display:swap}
 @font-face{font-family:'Martian Mono';src:url('/vendor/fonts/martian-mono.woff2') format('woff2');
   font-weight:100 800;font-style:normal;font-display:swap}
+/* The product's name beside its mark, and nowhere else. The splash cannot load a
+   font, so it draws the same name as outlines (`web/wordmark.svg`); this face is what
+   lets the titlebar keep live text, which can end in an ellipsis and follows the UI
+   scale. */
+@font-face{font-family:'Geist';src:url('/vendor/fonts/geist.woff2') format('woff2');
+  font-weight:100 900;font-style:normal;font-display:swap}
 /* Diffs only, so one weight: nothing in a diff is bold. */
 @font-face{font-family:'JetBrains Mono';src:url('/vendor/fonts/jetbrains-mono-400.woff2') format('woff2');
   font-weight:400;font-style:normal;font-display:swap}
@@ -316,17 +322,28 @@ button.ctx-btn:hover{color:var(--text)}
   color:var(--faint-solid);
 }
 .brand svg{flex:0 0 auto}
-/* The product's name beside its mark, set the way the splash sets it.
-   **The two were different treatments of one word.** The splash draws the wordmark
-   at 600 with `.02em` of tracking, and the board opened on a different face with
-   none — so the first thing you see and the thing you then look at all day did not
-   match. The size is this strip's, the rest is the splash's (`desktop/src/main.rs`).
+/* The ink takes the name's colour so the two read as one lockup; the amber is the
+   attention amber, the one place it appears without meaning "needs you" — the mark is
+   where that meaning comes from. */
+.brand .mk-ink{stroke:var(--dim)}
+.brand .mk-amb{stroke:var(--attn)}
+/* The fork, once, on hover: the splash's second beat, and the only motion the
+   titlebar is allowed. CSS rather than a listener, so it replays on every hover and
+   costs nothing between them. */
+.brand:hover .mk-amb{animation:brandfork .44s cubic-bezier(.34,1.56,.64,1)}
+@keyframes brandfork{from{transform:translateX(-28px);opacity:0}20%{opacity:1}}
+@media(prefers-reduced-motion:reduce){.brand:hover .mk-amb{animation:none}}
+/* The product's name beside its mark, set the way the splash sets it: Geist 600 with
+   no tracking, the face and setting `web/wordmark.svg` was drawn from.
+   **The two were different treatments of one word** once, and the board opened on a
+   face the splash never used — so the first thing you see and the thing you then
+   look at all day did not match. The size is this strip's, the rest is the splash's.
    Quieter than a project name, because this strip is the one place nothing ever
    changes: the word is there to be found, not read. Ellipsised because the rail is
    a resizable column and the titlebar has to survive being dragged narrow. */
 .brandname{
-  margin-left:8px;font-family:var(--label);font-size:calc(12px * var(--fs));
-  font-weight:600;letter-spacing:.02em;color:var(--dim);
+  margin-left:8px;font-family:'Geist',var(--label);font-size:calc(12px * var(--fs));
+  font-weight:600;letter-spacing:0;color:var(--dim);
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;
 }
 .gear,.helpbtn{
@@ -1116,6 +1133,21 @@ kbd{
    to #termempty so the other empty panes keep their plain one-liner. */
 #termempty .empty-big{display:block;color:var(--dim);font-size:calc(11.5px * var(--fs));margin-bottom:11px}
 #termempty .empty-k{display:block;margin-top:5px}
+
+/* The landing (`#landing` in index.html): the splash's last frame, drawn again here
+   so the hand-off reads as one motion across two pages. **Every value below is the
+   splash's** (`splash_html` in desktop/src/main.rs) — the ground, the sizes, the gap,
+   the status line — because a pixel of difference is a visible jump on the very
+   first frame. Literal colours for the same reason: the splash cannot know the
+   theme, so neither can the frame that continues it. */
+.landing{position:fixed;inset:0;z-index:1000;display:none;flex-direction:column;
+  align-items:center;justify-content:center;gap:18px;background:#101010}
+/* Set by the script in index.html's `<head>`, before the first paint. */
+.from-splash .landing{display:flex}
+.landmark{display:block}
+.landing .wordmark{display:block;height:24px;width:auto;color:#D2D2D2}
+.landstatus{position:absolute;left:0;right:0;bottom:22px;text-align:center;
+  font:11.5px ui-monospace,'SF Mono',Menlo,Consolas,monospace;color:#787878}
 
 /* First paint: hold "connecting" until the first snapshot (body.ready, set in
    app.js), so the empty-board message and its chord hints are only ever shown
@@ -2269,8 +2301,9 @@ button.settings-co:hover{color:var(--text);background:var(--hover)}
 }
 .opclose:hover{color:var(--text);background:var(--hover)}
 .opclose[hidden]{display:none}
-.opdot{width:8px;height:8px;border-radius:50%;background:var(--attn)}
-.opname{font-family:var(--mono);font-size:calc(13px * var(--fs));font-weight:600;letter-spacing:.02em}
+.opbrand .mk-ink{stroke:var(--text)}
+.opbrand .mk-amb{stroke:var(--attn)}
+.opname{font-family:'Geist',var(--label);font-size:calc(14px * var(--fs));font-weight:600}
 .ophead{font-size:calc(21px * var(--fs));font-weight:600;letter-spacing:-.015em;line-height:1.15}
 .opsub{color:var(--dim);font-size:calc(12.5px * var(--fs));max-width:56ch;line-height:1.5}
 .opsub2{display:block;color:var(--faint-solid);font-size:calc(10.5px * var(--fs));font-family:var(--mono);margin-top:3px}

@@ -921,8 +921,11 @@ fn boot_daemon(
 
                     Interpolated into a single-quoted string rather than escaped,
                     because `Serving::url` is `http://127.0.0.1:<port>/?token=<hex>`
-                    and a port and 32 hex characters cannot carry a quote. */
-                    if let Err(e) = w.eval(format!("location.replace('{url}')")) {
+                    and a port and 32 hex characters cannot carry a quote. `#splash`
+                    tells the board to play the landing, the second half of the
+                    splash's motion; the `navigate` fallback below carries no such
+                    mark, so a late hand-off simply opens the board still. */
+                    if let Err(e) = w.eval(format!("location.replace('{url}#splash')")) {
                         tracing::warn!("the replace hand-off did not run: {e}");
                     }
                     /* **A hand-off that silently does not happen is a window stuck
@@ -1176,37 +1179,68 @@ fn splash_url() -> Result<tauri::Url> {
         .context("the splash data URL")
 }
 
-/// The splash markup: the wordmark, a cluster of pulsing session dots and the
-/// tagline, on orchd's own near-black ground. Self-contained — no external fonts,
-/// so nothing loads before it paints; the shipped SPA uses IBM Plex, this leans on
-/// the system mono while it is only on screen for about a second.
+/// The product's name, as Geist's outlines for one word with one path a letter, so the
+/// splash can type it in without loading a font. The board's landing (`#landing` in
+/// `web/index.html`) pastes this same file, and a test in the host holds the two equal:
+/// the landing starts from the splash's last frame, so a difference is a visible jump.
+const WORDMARK: &str = include_str!("../../web/wordmark.svg");
+
+/// The splash markup: the mark, the name and the status line, on orchd's own
+/// near-black ground. Self-contained — no font and no script, so nothing loads before
+/// it paints.
+///
+/// **The motion is the mark explaining itself**, in four beats: the ink chevron lands
+/// like a shell opening, the amber one slides out of it (one prompt becomes two), the
+/// name types in after the cursor, and then only the cursor repeats, blinking at a
+/// terminal's beat. Nothing else loops, because a loop is what says "starting" — and
+/// the amber chevron holds still, since a nudge that happened to be mid-swing at the
+/// hand-off was a wiggle the board's landing then had to undo.
+///
+/// **The layout is the landing's**, value for value: the board opens on a copy of this
+/// last frame and flies the mark into the titlebar, so the ground, the 76px mark, the
+/// 24px name, the 18px gap and the status line must match `.landing` in `app.css`.
 fn splash_html() -> String {
+    // One delay a letter, from the moment the cursor appears.
+    let letters: String = (1..=WORDMARK.matches("<path").count())
+        .map(|n| {
+            let ms = 760 + 32 * (n - 1);
+            format!(".wordmark path:nth-child({n}){{animation-delay:{ms}ms}}")
+        })
+        .collect();
     format!(
-        r#"<!doctype html><html><head><meta charset="utf-8"><style>
+        r##"<!doctype html><html><head><meta charset="utf-8"><style>
   html,body{{height:100%;margin:0}}
-  body{{background:#101010;color:#D2D2D2;display:flex;flex-direction:column;
-    align-items:center;justify-content:center;gap:22px;
+  body{{background:#101010;display:flex;flex-direction:column;
+    align-items:center;justify-content:center;gap:18px;
     font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;
     -webkit-font-smoothing:antialiased;user-select:none;cursor:default}}
-  .dots{{display:grid;grid-template-columns:repeat(3,9px);gap:5px}}
-  .dots i{{width:9px;height:9px;border-radius:50%;background:#2C2C2C}}
-  .dots i.on{{background:#E0A244;animation:p 1.5s ease-in-out infinite}}
-  .dots i.on.b{{animation-delay:.25s}} .dots i.on.c{{animation-delay:.5s}}
-  @keyframes p{{0%,100%{{opacity:.28}}50%{{opacity:1}}}}
-  @media(prefers-reduced-motion:reduce){{.dots i.on{{animation:none;opacity:.85}}}}
-  .mark{{font-size:34px;font-weight:600;letter-spacing:.02em}}
-  .mark b{{color:#E0A244;font-weight:600}}
-  .tag{{font-size:12px;color:#8E8E8E;letter-spacing:.22em;text-transform:uppercase}}
-  .boot{{position:fixed;bottom:22px;font-size:11.5px;color:#787878}}
+  .mark{{display:block}}
+  .ink{{animation:type .28s cubic-bezier(.16,1,.3,1) .12s backwards}}
+  .amb{{animation:fork .44s cubic-bezier(.34,1.56,.64,1) .4s backwards}}
+  .cur{{animation:appear 0s .76s backwards,blink 1.06s steps(1,end) .76s infinite}}
+  .wordmark{{display:block;height:24px;width:auto;color:#D2D2D2}}
+  .wordmark path{{animation:appear 0s backwards}}
+  {letters}
+  @keyframes type{{from{{transform:translateX(-10px);opacity:0}}}}
+  @keyframes fork{{from{{transform:translateX(-28px);opacity:0}}20%{{opacity:1}}}}
+  @keyframes appear{{from{{opacity:0}}}}
+  @keyframes blink{{50%{{opacity:0}}}}
+  @media(prefers-reduced-motion:reduce){{.ink,.amb,.cur,.wordmark path{{animation:none}}}}
+  .boot{{position:fixed;left:0;right:0;bottom:22px;text-align:center;font-size:11.5px;color:#787878}}
   .ver{{position:fixed;top:16px;right:16px;font-size:11px;color:#787878}}
 </style></head><body>
   <span class="ver">v{version}</span>
-  <div class="dots"><i class="on"></i><i></i><i class="on c"></i><i></i><i class="on b"></i><i></i><i class="on c"></i><i></i><i class="on"></i></div>
-  <div class="mark">orch<b>d</b></div>
-  <div class="tag">session orchestrator</div>
+  <svg class="mark" viewBox="0 0 120 120" width="76" height="76" fill="none" stroke-width="13"
+       stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path class="ink" stroke="#E8E8EA" d="M18 34 44 60 18 86"/>
+    <path class="amb" stroke="#E0A244" d="M46 34 72 60 46 86"/>
+    <path class="cur" stroke="#E8E8EA" d="M86 86h16"/>
+  </svg>
+  {wordmark}
   <div class="boot">starting daemon…</div>
-</body></html>"#,
+</body></html>"##,
         version = env!("CARGO_PKG_VERSION"),
+        wordmark = WORDMARK.trim(),
     )
 }
 

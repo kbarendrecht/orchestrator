@@ -1672,8 +1672,8 @@ async fn font(UrlPath(file): UrlPath<String>) -> Response {
     if file.contains('/') || file.contains("..") {
         return (StatusCode::BAD_REQUEST, "bad asset").into_response();
     }
-    // Plex Sans, Inter and Martian Mono ship as variable fonts, so one file covers every
-    // weight the UI asks for. Plex Mono is still static per weight.
+    // Plex Sans, Inter, Martian Mono and Geist ship as variable fonts, so one file covers
+    // every weight the UI asks for. Plex Mono is still static per weight.
     let body: &'static [u8] = match file.as_str() {
         "plex-sans.woff2" => include_bytes!("../../../web/vendor/fonts/plex-sans.woff2"),
         "plex-mono-400.woff2" => include_bytes!("../../../web/vendor/fonts/plex-mono-400.woff2"),
@@ -1681,6 +1681,8 @@ async fn font(UrlPath(file): UrlPath<String>) -> Response {
         "plex-mono-600.woff2" => include_bytes!("../../../web/vendor/fonts/plex-mono-600.woff2"),
         "martian-mono.woff2" => include_bytes!("../../../web/vendor/fonts/martian-mono.woff2"),
         "inter.woff2" => include_bytes!("../../../web/vendor/fonts/inter.woff2"),
+        // The product's name in the titlebar, and nothing else.
+        "geist.woff2" => include_bytes!("../../../web/vendor/fonts/geist.woff2"),
         // Diffs only, and only the one weight they use.
         "jetbrains-mono-400.woff2" => {
             include_bytes!("../../../web/vendor/fonts/jetbrains-mono-400.woff2")
@@ -2016,6 +2018,20 @@ async fn dispatch(host: &Arc<Host>, cmd: orchd::window::WindowCmd) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The board's landing starts from the splash's last frame, so it draws the very
+    /// name the splash draws. The splash includes `web/wordmark.svg` directly; the page
+    /// cannot include a file, so it carries a copy, and this is what keeps the copy
+    /// honest — a regenerated wordmark that reached only one of them would be a jump
+    /// on the first frame of every launch.
+    #[test]
+    fn the_landing_draws_the_splash_wordmark() {
+        let wordmark = include_str!("../../../web/wordmark.svg").trim();
+        assert!(
+            INDEX.contains(wordmark),
+            "web/index.html's #landing must paste web/wordmark.svg exactly"
+        );
+    }
 
     /// The Linux half of a deep link, over a real socket: a second launch hands
     /// its URL to the running host, which holds it for the page that has not

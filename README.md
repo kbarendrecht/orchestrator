@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/logo-dark.svg">
+  <img alt="orchestrator" src="docs/logo-light.svg" width="280">
+</picture>
+
 # orchestrator
 
 **An agentic development environment (ADE), from prompt to commit to PR to review.**
