@@ -327,12 +327,6 @@ button.ctx-btn:hover{color:var(--text)}
    where that meaning comes from. */
 .brand .mk-ink{stroke:var(--dim)}
 .brand .mk-amb{stroke:var(--attn)}
-/* The fork, once, on hover: the splash's second beat, and the only motion the
-   titlebar is allowed. CSS rather than a listener, so it replays on every hover and
-   costs nothing between them. */
-.brand:hover .mk-amb{animation:brandfork .44s cubic-bezier(.34,1.56,.64,1)}
-@keyframes brandfork{from{transform:translateX(-28px);opacity:0}20%{opacity:1}}
-@media(prefers-reduced-motion:reduce){.brand:hover .mk-amb{animation:none}}
 /* The product's name beside its mark, set the way the splash sets it: Geist 600 with
    no tracking, the face and setting `web/wordmark.svg` was drawn from.
    **The two were different treatments of one word** once, and the board opened on a
