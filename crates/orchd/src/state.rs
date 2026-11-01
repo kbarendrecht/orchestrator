@@ -142,7 +142,13 @@ pub struct AppState {
     ///
     /// One flag rather than one per workspace, because every swap involves main:
     /// two of them are never independent.
-    pub swapping: tokio::sync::Mutex<()>,
+    ///
+    /// **Private, and [`AppState::move_main`] is the only way to it.** Six paths
+    /// move main's branch, each took this by hand, and one did not: a swap and an
+    /// `open PR` could each move main at once. Every function that moves the
+    /// branch now asks for the [`MainMove`] this hands out, so forgetting the lock
+    /// is a compile error rather than a race found later.
+    swapping: tokio::sync::Mutex<()>,
     /// Held for the length of a reconcile sweep, so two of them cannot overlap.
     ///
     /// One sweep is seven git runs per workspace and there are as many workspaces
@@ -407,6 +413,49 @@ pub struct Inner {
 /// The one guard for every named lock. `api.rs` carried a second copy of this for
 /// the post lock, and both released through a spawned task; see
 /// [`AppState::locks_held`] for why the release is synchronous now.
+/// Proof that the holder has the one lock every move of main's branch takes.
+///
+/// Only [`AppState::move_main`] makes one, and the functions that move the branch
+/// take it by reference, so a path that moves main without the lock does not
+/// compile. Held for as long as the move — and, where a session then claims main,
+/// until that claim — and given back on drop.
+pub struct MainMove<'a> {
+    _held: tokio::sync::MutexGuard<'a, ()>,
+}
+
+/// Who is in a workspace. See [`AppState::occupancy`].
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Occupancy {
+    /// Sessions that occupy it now ([`occupies`]), oldest first.
+    pub live: Vec<SessionId>,
+    /// A session auto-resume has not reached yet, which holds its tree as much.
+    pub waiting: Option<SessionId>,
+}
+
+impl Occupancy {
+    /// Whoever a refusal should name: the oldest live session, else the one
+    /// coming back.
+    pub fn holder(&self) -> Option<SessionId> {
+        self.live.first().copied().or(self.waiting)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.live.is_empty() && self.waiting.is_none()
+    }
+}
+
+/// Whether a session occupies its workspace: its state is live, and its process
+/// is not known to be dead.
+///
+/// **A dead pid does not count, and a missing one does.** The first is §8b: after
+/// a crash the in-memory state is exactly what cannot be trusted, and teardown
+/// asks this before it deletes a tree. The second is a session the spawn has
+/// recorded before its pty exists — `insert_and_spawn` writes `pid: None` first —
+/// and treating that as nobody let two presses inside the window both pass.
+pub fn occupies(s: &Session) -> bool {
+    s.state.is_live() && s.pid.is_none_or(pid_alive)
+}
+
 pub struct Claim {
     app: Arc<AppState>,
     lock: String,
@@ -1855,30 +1904,14 @@ impl AppState {
             .workspaces
             .get(MAIN)
             .and_then(|w| w.occupant)
-            .filter(|id| {
-                inner
-                    .sessions
-                    .get(id)
-                    .map(|s| s.state.is_live())
-                    .unwrap_or(false)
-            });
+            .filter(|id| inner.sessions.get(id).is_some_and(occupies));
         // With `allow_several_in_main` there can be a live session in main that the
         // single `occupant` field does not name, and every caller here is asking
         // "may I move this checkout" rather than "who is the holder". Answering
         // with the recorded one alone would let a swap pull the tree out from under
         // the others. Deterministic — oldest first — so the message names the same
         // session twice running.
-        recorded
-            .or_else(|| {
-                let mut live: Vec<&Session> = inner
-                    .sessions
-                    .values()
-                    .filter(|s| s.workspace == MAIN && s.state.is_live())
-                    .collect();
-                live.sort_by_key(|s| s.created_at);
-                live.first().map(|s| s.id)
-            })
-            .or_else(|| self.waiting_in_main(inner))
+        recorded.or_else(|| self.occupancy_in(inner, MAIN).holder())
     }
 
     /// Auto-resume's intent for this session is over: it has been spawned or has
@@ -1891,20 +1924,51 @@ impl AppState {
             .remove(&id);
     }
 
-    /// The session in main that auto-resume has not reached yet, if there is one.
+    /// Take the lock for moving main's branch, or `None` while another move holds
+    /// it. Refused rather than queued at every caller: a second move would run on
+    /// the strength of what was read before the first.
+    pub fn move_main(&self) -> Option<MainMove<'_>> {
+        self.swapping
+            .try_lock()
+            .ok()
+            .map(|held| MainMove { _held: held })
+    }
+
+    /// Who is in `workspace`, by the daemon's one rule.
     ///
-    /// See [`AppState::auto_resuming`]: it holds main until auto-resume is done.
-    pub fn waiting_in_main(&self, inner: &Inner) -> Option<SessionId> {
-        self.waiting_in(inner, MAIN)
+    /// **Every question about occupancy asks this**: refusing a second session,
+    /// handing a PR verb to the session already there, what a swap or a move out
+    /// of main carries, whether main may be parked or claimed, teardown's "nobody
+    /// in it". There were eight answers, and they disagreed: some checked the
+    /// process and some did not, and only main's counted a session auto-resume had
+    /// not reached — which is how a worktree took a second agent in the resume
+    /// stagger, and `orch new` a second one beside its caller.
+    pub fn occupancy_in(&self, inner: &Inner, workspace: &str) -> Occupancy {
+        let mut live: Vec<&Session> = inner
+            .sessions
+            .values()
+            .filter(|s| s.workspace == workspace && occupies(s))
+            .collect();
+        // Oldest first, and deterministic, so a refusal names the same session
+        // twice running.
+        live.sort_by_key(|s| (s.created_at, s.id));
+        Occupancy {
+            live: live.into_iter().map(|s| s.id).collect(),
+            waiting: self.waiting(inner, workspace),
+        }
+    }
+
+    /// [`AppState::occupancy_in`], for a caller not already holding the state.
+    pub async fn occupancy(&self, workspace: &str) -> Occupancy {
+        let inner = self.inner.read().await;
+        self.occupancy_in(&inner, workspace)
     }
 
     /// The session in `workspace` that auto-resume has not reached yet.
     ///
-    /// **A worktree is held by it as much as main is.** Only main asked this, so in
-    /// the resume stagger a `+` on a worktree found nobody live, started a session,
-    /// and auto-resume then spawned the recorded one beside it — two agents in one
-    /// index, the state the restore path itself refuses to build.
-    pub fn waiting_in(&self, inner: &Inner, workspace: &str) -> Option<SessionId> {
+    /// See [`AppState::auto_resuming`]: it holds its tree until auto-resume is
+    /// done, or a resume that failed would hold it for good.
+    fn waiting(&self, inner: &Inner, workspace: &str) -> Option<SessionId> {
         if !self.auto_resuming.load(std::sync::atomic::Ordering::SeqCst) {
             return None;
         }
@@ -1916,14 +1980,8 @@ impl AppState {
             .sessions
             .values()
             .filter(|s| s.workspace == workspace && !s.state.is_live() && pending.contains(&s.id))
-            .min_by_key(|s| s.created_at)
+            .min_by_key(|s| (s.created_at, s.id))
             .map(|s| s.id)
-    }
-
-    /// [`AppState::waiting_in_main`], for a caller not already holding the state.
-    pub async fn waiting_main(&self) -> Option<SessionId> {
-        let inner = self.inner.read().await;
-        self.waiting_in_main(&inner)
     }
 
     /// Take a named lock, or `None` when somebody already holds it.
@@ -1965,28 +2023,16 @@ impl AppState {
         the other is still working, and a third came in with the setting off. The
         swap is not refused by this: it moves the outgoing session out before the
         incoming one claims, and a resume claims under its own id. */
+        let occupancy = self.occupancy_in(&inner, MAIN);
         let held = inner
             .workspaces
             .get(MAIN)
             .and_then(|w| w.occupant)
-            .filter(|id| {
-                inner
-                    .sessions
-                    .get(id)
-                    .map(|s| s.state.is_live())
-                    .unwrap_or(false)
-            })
-            .or_else(|| {
-                inner
-                    .sessions
-                    .values()
-                    .filter(|s| s.workspace == MAIN && s.state.is_live() && s.id != session)
-                    .min_by_key(|s| s.created_at)
-                    .map(|s| s.id)
-            })
+            .filter(|id| inner.sessions.get(id).is_some_and(occupies))
+            .or_else(|| occupancy.live.iter().copied().find(|id| *id != session))
             // A session auto-resume has not reached yet holds main too, except
             // against its own resume.
-            .or_else(|| self.waiting_in_main(&inner).filter(|id| *id != session));
+            .or_else(|| occupancy.waiting.filter(|id| *id != session));
         if let Some(holder) = held {
             if holder != session && !several {
                 bail!("main is occupied by session {holder}");
@@ -2160,17 +2206,9 @@ impl AppState {
             .and_then(|w| w.banked.clone())
     }
 
-    /// Sessions in a workspace that are neither `Exited` nor `Archived`, checked
-    /// against the process (`pid_alive`) rather than in-memory state (§8b).
+    /// The live half of [`AppState::occupancy`], oldest first.
     pub async fn live_sessions_in(&self, workspace: &str) -> Vec<SessionId> {
-        let inner = self.inner.read().await;
-        inner
-            .sessions
-            .values()
-            .filter(|s| s.workspace == workspace && s.state.is_live())
-            .filter(|s| s.pid.map(pid_alive).unwrap_or(false))
-            .map(|s| s.id)
-            .collect()
+        self.occupancy(workspace).await.live
     }
 
     /// Everything running in a workspace nobody is in any more, by name and pty.
@@ -3381,6 +3419,62 @@ mod tests {
         );
         // And a claim succeeds, proving the two readers agree main is free.
         assert!(app.claim_main(Uuid::new_v4()).await.is_ok());
+    }
+
+    /// The one occupancy rule, in every workspace alike: live state with no pid
+    /// yet occupies (the spawn window), live state with a dead pid does not (§8b),
+    /// and a session auto-resume has not reached occupies until auto-resume ends.
+    #[tokio::test]
+    async fn occupancy_is_one_rule_for_every_workspace() {
+        use std::sync::atomic::Ordering::SeqCst;
+
+        // A pid that has certainly exited: a child we started and reaped.
+        let dead = {
+            let mut child = std::process::Command::new("true")
+                .spawn()
+                .expect("true runs");
+            let pid = child.id();
+            child.wait().expect("reaped");
+            pid
+        };
+        let app = app().await;
+        let (spawning, crashed, waiting) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        {
+            let mut inner = app.inner.write().await;
+            for (id, ws, state, pid) in [
+                (spawning, "a", State::Starting, None),
+                (crashed, "b", State::Working, Some(dead)),
+                (waiting, "c", State::Exited, None),
+            ] {
+                let mut s =
+                    Session::new(id, ws.to_string(), std::path::PathBuf::from("/tmp"), None);
+                s.set_state(state);
+                s.pid = pid;
+                inner.sessions.insert(id, s);
+            }
+        }
+        app.pending_resume
+            .lock()
+            .expect("the pending set")
+            .insert(waiting);
+        app.auto_resuming.store(true, SeqCst);
+
+        assert_eq!(
+            app.occupancy("a").await.live,
+            vec![spawning],
+            "a session the spawn has recorded holds its tree before its pty exists"
+        );
+        assert!(
+            app.occupancy("b").await.is_empty(),
+            "a live state over a dead process holds nothing"
+        );
+        assert_eq!(app.occupancy("c").await.holder(), Some(waiting));
+
+        app.auto_resuming.store(false, SeqCst);
+        assert!(
+            app.occupancy("c").await.is_empty(),
+            "a resume that never came holds nothing once auto-resume is over"
+        );
     }
 
     /// The page is handed the holder the daemon refuses on, not the bare claim: a

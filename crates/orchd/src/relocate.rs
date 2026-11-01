@@ -129,7 +129,7 @@ async fn swap_with_main_inner(
     // with its branch back in the worktree. Queueing would run the second one on the
     // strength of what you saw before the first, which is not what you would ask for
     // if you could see the result.
-    let _swap = app.swapping.try_lock().map_err(|_| {
+    let held = app.move_main().ok_or_else(|| {
         ApiError(anyhow::anyhow!(
             "a swap is already running; it moves whole checkouts and their \
              conversations, so give it a moment and look at the rail before asking again"
@@ -206,7 +206,7 @@ async fn swap_with_main_inner(
     // send it straight back.
     let (_, mut outgoing_records) = to_carry(&app, MAIN, &main_was).await;
     let (on_branch, incoming_records) = to_carry(&app, &workspace, &tree_was).await;
-    let outgoing = live_in(&app, MAIN).await;
+    let outgoing = app.live_sessions_in(MAIN).await;
     let several = app.settings().allow_several_in_main;
     let incoming = match pick_incoming(&app, &workspace, &on_branch, pressed, several).await {
         Ok(ids) => ids,
@@ -354,7 +354,7 @@ async fn swap_with_main_inner(
             records_out,
             files: carried.moved.clone(),
         };
-        match undo_swap(&app, &main, &tree, &workspace, &swapped, undo, failed).await {
+        match undo_swap(&app, &held, &tree, &workspace, &swapped, undo, failed).await {
             Ok(()) => {
                 tracing::warn!(%workspace, %why, ?restored, "swap undone");
                 refuse_busy!("swap failed, nothing moved: {why}");
@@ -463,7 +463,7 @@ pub async fn move_out_of_main(
     // reason: two moves of main at once each read "who was on the branch that just
     // left" and each relocate on the strength of it. Nothing in the SPA stops the
     // two buttons being pressed together. Refused rather than queued, like the swap.
-    let _swap = app.swapping.try_lock().map_err(|_| {
+    let held = app.move_main().ok_or_else(|| {
         ApiError(anyhow::anyhow!(
             "a swap is already running; it moves main's checkout, so give it a moment \
              and look at the rail before asking again"
@@ -501,7 +501,7 @@ pub async fn move_out_of_main(
     swap, so a reconcile in between cannot change the answer. The pressed session
     goes first when it is live, because it is the one the response describes. */
     let travelling: Vec<(SessionId, crate::model::State)> = {
-        let mut ids = live_in(&app, MAIN).await;
+        let mut ids = app.live_sessions_in(MAIN).await;
         if live {
             ids.retain(|s| *s != id);
             ids.insert(0, id);
@@ -514,7 +514,7 @@ pub async fn move_out_of_main(
     };
 
     let main = app.cfg.main_checkout.clone();
-    let out = crate::carry::move_out(&app, crate::model::Board::Loud, None).await?;
+    let out = crate::carry::move_out(&app, &held, crate::model::Board::Loud, None).await?;
     let crate::carry::MovedOut {
         name,
         path,
@@ -689,13 +689,14 @@ async fn state_of(app: &Arc<AppState>, id: SessionId) -> crate::model::State {
 /// together: a half-finished undo that stops at the first error hides the rest.
 async fn undo_swap(
     app: &Arc<AppState>,
-    main: &std::path::Path,
+    _held: &crate::state::MainMove<'_>,
     tree: &std::path::Path,
     workspace: &str,
     swapped: &crate::git::Swap,
     undo: Undo,
     failed: Landed,
 ) -> anyhow::Result<()> {
+    let main = app.cfg.main_checkout.as_path();
     let Undo {
         moves: journal,
         records_out,
@@ -803,22 +804,6 @@ async fn undo_swap(
     } else {
         anyhow::bail!("{}", left.join("; "))
     }
-}
-
-/// Every live session in a workspace, oldest first.
-///
-/// Main's side of a swap, where the branch does not matter: whatever is running in
-/// main has the tree replaced under it, so all of it goes.
-async fn live_in(app: &Arc<AppState>, workspace: &str) -> Vec<SessionId> {
-    let inner = app.inner.read().await;
-    let mut live: Vec<_> = inner
-        .sessions
-        .values()
-        .filter(|s| s.workspace == workspace && s.state.is_live())
-        .map(|s| (s.created_at, s.id))
-        .collect();
-    live.sort_by_key(|(created, _)| *created);
-    live.into_iter().map(|(_, id)| id).collect()
 }
 
 /// Which of the worktree's live sessions go into main.

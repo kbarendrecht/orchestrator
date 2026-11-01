@@ -74,13 +74,15 @@ pub async fn open_pr(
     let workspace = match body.place.as_str() {
         "worktree" => spawn::ensure_pr_worktree(&app, number, &pr.head_ref).await?,
         "main" => {
-            _swap = Some(app.swapping.try_lock().map_err(|_| {
+            let held = app.move_main().ok_or_else(|| {
                 ApiError(anyhow::anyhow!(
                     "a swap is already running; it moves main's checkout, so give it a \
                      moment and look at the rail before asking again"
                 ))
-            })?);
-            spawn::switch_main_to_pr(&app, number, &pr.head_ref).await?
+            })?;
+            let ws = spawn::switch_main_to_pr(&app, &held, number, &pr.head_ref).await?;
+            _swap = Some(held);
+            ws
         }
         other => refuse!("unknown place {other}"),
     };

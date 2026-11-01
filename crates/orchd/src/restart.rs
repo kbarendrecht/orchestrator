@@ -146,7 +146,7 @@ pub async fn run_due(app: &Arc<AppState>) {
         let Some((id, workspace)) = next_due(app).await else {
             return;
         };
-        let Ok(_swap) = app.swapping.try_lock() else {
+        let Some(_swap) = app.move_main() else {
             return;
         };
         tracing::info!(session = %id, "restarting on the installed agent");

@@ -156,8 +156,16 @@ pub(crate) async fn hand_to_live_session(
     if app.pr_head(pr).await.refusal.is_some() {
         return Ok(None);
     }
-    let Some(ws) = app.workspace_for(head_ref).await else {
-        return Ok(None);
+    /* **Main is asked of git, as the refusal asks it.** `workspace_for` reads
+    `Tree::branch`, which the head poller refreshes every two seconds; the path
+    that refuses ("a session is still open there") reads main's branch from git.
+    A `git switch` in main followed by a press inside that gap found nobody here
+    and was then refused by the other path — the one session that should have
+    been asked. Measured: e2e flow 19 failed one run in six on exactly this. */
+    let ws = match app.workspace_for(head_ref).await {
+        Some(ws) => ws,
+        None if crate::spawn::main_is_on(app, head_ref).await? => MAIN.to_string(),
+        None => return Ok(None),
     };
     let live = app.live_sessions_in(&ws).await;
     let Some(id) = live.first() else {

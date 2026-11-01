@@ -542,6 +542,7 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
     if app.cfg.auto_resume && !opts.no_resume {
         auto_resume(app.clone(), records, probed);
     }
+    start_sweeper(app.clone());
     start_pr_poller(app.clone());
     start_review_poller(app.clone());
     start_workspace_watcher(app.clone());
@@ -1148,6 +1149,53 @@ fn settle_run(
     })
 }
 
+/// Keep every tree's measurements and the spare current, on a clock of its own.
+///
+/// **Its own task, not a step of the PR poll, and a checkout with no forge is
+/// why.** It ran inside `start_pr_poller`'s loop, and that task returns at once
+/// when there is no GitHub repo to poll — so on such a checkout the base was
+/// fetched once at boot and never again, the sweep never ran, and the spare was
+/// never refreshed. Nothing about any of the three needs a forge.
+///
+/// **On its own clock, never because of a refresh.** A refresh is the PR pane's
+/// button and the page coming back into focus, which it does every time you return
+/// from GitHub: when the sweep rode the poll's wake-ups it landed every one to
+/// three minutes instead of every five. A plain sleep cannot be woken that way.
+fn start_sweeper(app: Arc<AppState>) {
+    tokio::spawn(async move {
+        let interval = std::time::Duration::from_secs(app.cfg.poll_seconds.max(30));
+        /* **`start` has already done this pass**, so the loop waits before it
+        sweeps: boot fetches the base ref and spawns the first sweep before this
+        task exists,
+        and repeating them is a network round trip and a walk of every worktree
+        for an answer just given. (CLAUDE.md carries what the two cost.)
+
+        Skipping is safe because boot's fetch is *unconditional* and awaited: by
+        now it has either refreshed the ref or logged that it could not, and the
+        second case is the offline one `start` already treats as "the last-known
+        ref still resolves". The worst this costs is a base one poll interval
+        staler, in the case where fetching does not work anyway.
+
+        The sweep half was already *usually* skipped by `AppState::sweeping`,
+        which made the behaviour depend on which of the two finished first. Not
+        doing it at all is the same outcome without the race; the lock stays for
+        the genuinely concurrent cases (a manual reconcile, the workspace
+        watcher, a later tick that overruns). */
+        loop {
+            tokio::time::sleep(interval).await;
+            // The upstream fetch first (§5): the merge-base and the behind count
+            // are both answered from that ref.
+            let main = app.cfg.main_checkout.clone();
+            let base = app.cfg.upstream_ref.clone();
+            let _ = tokio::task::spawn_blocking(move || git::fetch_upstream(&main, &base)).await;
+            reconcile_all(&app, Scope::Live).await;
+            // After the fetch, because "behind the base" is the question this
+            // answers and the fetch is what makes the answer current.
+            orchd::spare::refresh(&app).await;
+        }
+    });
+}
+
 /// One GraphQL query per 5 minutes, read-only (§6).
 ///
 /// No ETag caching: conditional requests are a REST feature and the GraphQL
@@ -1166,56 +1214,11 @@ fn start_pr_poller(app: Arc<AppState>) {
         tracing::info!("polling PRs for {}/{}", repo.0, repo.1);
 
         let interval = std::time::Duration::from_secs(app.cfg.poll_seconds.max(30));
-        /* **`start` has already done this pass**, so the first tick skips it: it
-        fetches the base ref and spawns the first sweep before this task exists,
-        and repeating them is a network round trip and a walk of every worktree
-        for an answer just given. (CLAUDE.md carries what the two cost.)
-
-        Skipping is safe because boot's fetch is *unconditional* and awaited: by
-        now it has either refreshed the ref or logged that it could not, and the
-        second case is the offline one `start` already treats as "the last-known
-        ref still resolves". The worst this costs is a base one poll interval
-        staler, in the case where fetching does not work anyway.
-
-        The sweep half was already *usually* skipped by `AppState::sweeping`,
-        which made the behaviour depend on which of the two finished first. Not
-        doing it at all is the same outcome without the race; the lock stays for
-        the genuinely concurrent cases (a manual reconcile, the workspace
-        watcher, a later tick that overruns). */
-        let mut boot_already_did_this = true;
         // Session PRs already asked about this run; see `session_prs_to_ask`.
         let mut asked_once = std::collections::HashSet::new();
         // And branches asked about this run; see `session_heads_to_ask`.
         let mut heads_asked = std::collections::HashSet::new();
-        // Boot's sweep is the first one, so the clock starts there.
-        let mut last_sweep = std::time::Instant::now();
         loop {
-            if boot_already_did_this {
-                boot_already_did_this = false;
-            } else if last_sweep.elapsed() >= interval {
-                /* **On its own clock, never because of a refresh.** A refresh is
-                the PR pane's button and the page coming back into focus, which it
-                does every time you return from GitHub: each one ran the base fetch
-                and the whole sweep as well, so a sweep landed every one to three
-                minutes instead of every five.
-                **And not on "the timer fired" either**, which was the first
-                version of this: a refresh restarts `next_tick`'s period, and focus
-                refreshes come more often than five minutes while you work in the
-                app, so the timer never ran out and nothing was swept at all. Due
-                is due, whichever wake notices it. */
-                last_sweep = std::time::Instant::now();
-                // Piggyback the upstream fetch on this timer (§5): the merge-base
-                // and the behind count are both answered from that ref.
-                let main = app.cfg.main_checkout.clone();
-                let base = app.cfg.upstream_ref.clone();
-                let _ =
-                    tokio::task::spawn_blocking(move || git::fetch_upstream(&main, &base)).await;
-                reconcile_all(&app, Scope::Live).await;
-                // After the fetch, because "behind the base" is the question this
-                // answers and the fetch is what makes the answer current.
-                orchd::spare::refresh(&app).await;
-            }
-
             app.inner.write().await.pr_polling = true;
             app.notify().await;
             // Off the runtime. The ladder ends at `gh auth token`, a bounded child
@@ -1386,18 +1389,7 @@ fn start_pr_poller(app: Arc<AppState>) {
                 inner.pr_polling = false;
             }
             app.notify().await;
-            /* Woken in time for the sweep as well as the poll. A refresh restarts
-            the poll period, so one landing just before the sweep was due put it
-            off by almost a whole interval more; waiting only until it is due
-            costs at most one extra PR poll, which is one GraphQL query. */
-            let until_sweep = interval.saturating_sub(last_sweep.elapsed());
-            next_tick(
-                interval
-                    .min(until_sweep)
-                    .max(std::time::Duration::from_secs(1)),
-                &app.pr_refresh,
-            )
-            .await;
+            next_tick(interval, &app.pr_refresh).await;
         }
     });
 }

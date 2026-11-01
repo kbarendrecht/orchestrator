@@ -1598,7 +1598,7 @@ pub async fn branch_busy(app: &Arc<AppState>, pr: u64, head_ref: &str) -> Option
 /// flow for it was impossible until you went and stashed by hand. They are carried
 /// now; see the move in [`ensure_pr_worktree`].
 async fn refuse_if_main_is_busy(app: &Arc<AppState>, pr: u64, head_ref: &str) -> Result<()> {
-    if app.live_sessions_in(MAIN).await.is_empty() && app.waiting_main().await.is_none() {
+    if app.occupancy(MAIN).await.is_empty() {
         return Ok(());
     }
     bail!(
@@ -1635,7 +1635,7 @@ async fn park_main(app: &Arc<AppState>) {
     }
     // Nor while auto-resume is still bringing a session back into main: it expects
     // the branch it left on, the same reason a shutdown does not park.
-    if !app.live_sessions_in(MAIN).await.is_empty() || app.waiting_main().await.is_some() {
+    if !app.occupancy(MAIN).await.is_empty() {
         return;
     }
     /* **This moves main's branch, and possibly a worktree's, so it is a swap.**
@@ -1650,7 +1650,7 @@ async fn park_main(app: &Arc<AppState>) {
     against state the swap has since changed. A skip costs nothing that is not
     already recoverable — the branch stays in main until the next session there
     closes, and the swap holding the lock is itself moving main. */
-    let Ok(_swap) = app.swapping.try_lock() else {
+    let Some(held) = app.move_main() else {
         tracing::info!("main stays where it is: a swap is moving it");
         return;
     };
@@ -1791,7 +1791,7 @@ async fn park_main(app: &Arc<AppState>) {
     }
 
     if !about.is_empty() {
-        match crate::carry::move_out(app, Board::Quiet, None).await {
+        match crate::carry::move_out(app, &held, Board::Quiet, None).await {
             Ok(out) => {
                 for id in &out.records {
                     crate::carry::carry_record(app, *id, &out.name, &out.path, &out.git.branch)
@@ -1897,7 +1897,7 @@ pub async fn ensure_pr_worktree(app: &Arc<AppState>, pr: u64, head_ref: &str) ->
         strength of what you saw before the first. */
         let mut moved_out = false;
         if main_is_on(app, head_ref).await? {
-            let _swap = app.swapping.try_lock().map_err(|_| {
+            let held = app.move_main().ok_or_else(|| {
                 anyhow::anyhow!(
                     "the main checkout is on #{pr}'s branch and a swap is already moving it; \
                      give it a moment and look at the rail before asking again"
@@ -1911,7 +1911,8 @@ pub async fn ensure_pr_worktree(app: &Arc<AppState>, pr: u64, head_ref: &str) ->
                 // it holds `cutting` around the `git worktree add`, which this arm
                 // did not, and it hands back the stopped sessions about the branch
                 // so they follow it into the tree rather than stay in main.
-                let out = crate::carry::move_out(app, Board::Loud, Some((&name, &path))).await?;
+                let out =
+                    crate::carry::move_out(app, &held, Board::Loud, Some((&name, &path))).await?;
                 for id in &out.records {
                     crate::carry::carry_record(app, *id, &out.name, &out.path, head_ref).await;
                 }
@@ -1971,7 +1972,7 @@ pub async fn pr_tree(app: &Arc<AppState>, head_ref: &str) -> Result<Option<std::
 }
 
 /// Whether the main checkout has this branch checked out right now.
-async fn main_is_on(app: &Arc<AppState>, head_ref: &str) -> Result<bool> {
+pub(crate) async fn main_is_on(app: &Arc<AppState>, head_ref: &str) -> Result<bool> {
     let main = app.cfg.main_checkout.clone();
     let on = tokio::task::spawn_blocking(move || crate::git::current_branch(&main))
         .await
@@ -1986,7 +1987,12 @@ async fn main_is_on(app: &Arc<AppState>, head_ref: &str) -> Result<bool> {
 /// in the handler while the other was a call. Refuses rather than half-doing it
 /// — main is exclusive, and switching the one tree every worktree is cut from
 /// under uncommitted work is not recoverable by pressing back.
-pub async fn switch_main_to_pr(app: &Arc<AppState>, pr: u64, head_ref: &str) -> Result<String> {
+pub async fn switch_main_to_pr(
+    app: &Arc<AppState>,
+    held: &crate::state::MainMove<'_>,
+    pr: u64,
+    head_ref: &str,
+) -> Result<String> {
     // The same identity check `ensure_pr_worktree` makes, for the same reason: a
     // switch by name would put main on somebody else's branch of that name.
     let head = app.pr_head(pr).await;
@@ -2041,7 +2047,7 @@ pub async fn switch_main_to_pr(app: &Arc<AppState>, pr: u64, head_ref: &str) -> 
     if let Some(on) = on.filter(|on| Some(on) != base.as_ref() && on != head_ref) {
         let (_, about) = crate::carry::to_carry(app, MAIN, &on).await;
         if !about.is_empty() {
-            let out = crate::carry::move_out(app, Board::Loud, None).await?;
+            let out = crate::carry::move_out(app, held, Board::Loud, None).await?;
             for id in &out.records {
                 crate::carry::carry_record(app, *id, &out.name, &out.path, &out.git.branch).await;
             }

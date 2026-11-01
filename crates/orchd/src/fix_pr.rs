@@ -93,11 +93,10 @@ pub async fn start(
     both spawned. Two runs then rebase and force-push the same branch, and
     `settle` (keyed on the PR) clears the record when the first of them exits.
 
-    `branch_busy` could not cover it either: `live_sessions_in` filters on
-    `pid_alive`, and `insert_and_spawn` records with `pid: None` before the pty
-    exists, so the first run is invisible to it for exactly the window that
-    matters. Held until this function returns, by which point `Running` is
-    written and the ordinary guard takes over. */
+    Occupancy does not cover it either: it counts a session from the moment
+    `insert_and_spawn` records it, but that is after `ensure_pr_worktree`, and
+    both presses can be past the guard by then. Held until this function returns,
+    by which point `Running` is written and the ordinary guard takes over. */
     let _claim = app.try_claim(format!("fix-pr:{number}")).ok_or_else(|| {
         anyhow::anyhow!("a fix run for PR #{number} is already starting; wait for it")
     })?;

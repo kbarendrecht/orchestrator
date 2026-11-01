@@ -43,6 +43,7 @@ pub(crate) struct MovedOut {
 /// `pr-<n>` or a recorded tree being cut again where it stood.
 pub(crate) async fn move_out(
     app: &Arc<AppState>,
+    _held: &crate::state::MainMove<'_>,
     board: Board,
     at: Option<(&str, &std::path::Path)>,
 ) -> anyhow::Result<MovedOut> {

@@ -448,15 +448,15 @@ pub(crate) async fn refuse_if_occupied(
     if workspace == MAIN && app.settings().allow_several_in_main {
         return Ok(());
     }
-    // A session auto-resume has not reached yet holds its tree too, as it does main
-    // (`AppState::waiting_in`).
-    let waiting = {
-        let inner = app.inner.read().await;
-        app.waiting_in(&inner, workspace)
-            .filter(|id| Some(*id) != resuming)
-    };
-    let live = app.live_sessions_in(workspace).await.into_iter().next();
-    let Some(held) = live.or(waiting) else {
+    // A session auto-resume has not reached yet holds its tree too
+    // (`AppState::occupancy`), except against its own resume.
+    let occupancy = app.occupancy(workspace).await;
+    let held = occupancy
+        .live
+        .first()
+        .copied()
+        .or(occupancy.waiting.filter(|id| Some(*id) != resuming));
+    let Some(held) = held else {
         return Ok(());
     };
     // Name it the way the rail does, so the message points at a row you can find.
