@@ -609,6 +609,43 @@ fn a_fork_layout_is_detected_and_nothing_else_is_assumed() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A repo nobody has pushed anywhere is a checkout like any other: its base is its
+/// own branch, and keeping that base fresh is not a failure every five minutes.
+#[test]
+fn a_checkout_with_no_remote_is_based_on_its_own_branch() {
+    let dir = std::env::temp_dir().join(format!(
+        "orchd-localbase-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let repo = dir.join("repo");
+    git(&dir, &["init", "-q", "-b", "trunk", "repo"]).unwrap();
+
+    // Nothing committed: no branch exists to cut a worktree from.
+    assert_eq!(local_base(&repo), None);
+
+    git(&repo, &["config", "user.email", "t@t"]).unwrap();
+    git(&repo, &["config", "user.name", "t"]).unwrap();
+    std::fs::write(repo.join("a.txt"), "a\n").unwrap();
+    git(&repo, &["add", "-A"]).unwrap();
+    git(&repo, &["commit", "-qm", "a"]).unwrap();
+    assert_eq!(local_base(&repo).as_deref(), Some("trunk"));
+    fetch_upstream(&repo, "trunk").expect("a local base has nothing to fetch");
+    // A remote ref is still a remote ref: a missing remote is the real failure.
+    assert!(fetch_upstream(&repo, "origin/trunk").is_err());
+
+    // Any remote means the base is somewhere else, and this has no opinion.
+    git(
+        &repo,
+        &["remote", "add", "origin", "git@github.com:you/thing.git"],
+    )
+    .unwrap();
+    assert_eq!(local_base(&repo), None);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A WIP that will not re-apply is a warning on a swap that happened, never an
 /// error instead of it.
 ///

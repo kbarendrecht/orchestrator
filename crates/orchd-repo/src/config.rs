@@ -1351,6 +1351,9 @@ impl Config {
             tracing::info!(%base, %remote, "first run: detected a fork layout");
             obj.insert("upstream_ref".into(), base.into());
             obj.insert("upstream_remote".into(), remote.into());
+        } else if let Some(base) = orchd_base::git::local_base(&main_checkout) {
+            tracing::info!(%base, "first run: no remote, so a local base");
+            obj.insert("upstream_ref".into(), base.into());
         }
         let raw = serde_json::Value::Object(obj).to_string();
         // Cannot fail: every key written here is known-valid.
@@ -1756,6 +1759,43 @@ mod tests {
         let fork = Config::default_for(dir.clone());
         assert_eq!(fork.upstream_ref, "upstream/HEAD");
         assert_eq!(fork.upstream_remote, "upstream");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_first_run_with_no_remote_is_based_on_the_checked_out_branch() {
+        let dir = std::env::temp_dir().join(format!(
+            "orchd-firstrun-local-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let run = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&dir)
+                .output()
+                .expect("git runs")
+        };
+        run(&["init", "-q", "-b", "trunk", "."]);
+        run(&[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "a",
+        ]);
+
+        // `origin/HEAD` cannot resolve without an origin, and every worktree cut
+        // failed on it.
+        let local = Config::default_for(dir.clone());
+        assert_eq!(local.upstream_ref, "trunk");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

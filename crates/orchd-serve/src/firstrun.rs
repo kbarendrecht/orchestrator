@@ -312,7 +312,9 @@ pub fn detect(path: &Path) -> Detected {
         .or_else(|| base_branches.first().cloned())
         .unwrap_or_else(|| match &fork {
             Some((b, _)) => b.clone(),
-            None => "origin/HEAD".to_string(),
+            // No remote at all: the daemon's first write picks the same branch, and
+            // `origin/HEAD` is the one answer that can never resolve there.
+            None => orchd::git::local_base(path).unwrap_or_else(|| "origin/HEAD".to_string()),
         });
 
     let repo = orchd::forge::GitHubForge::detect(path, remote)
@@ -428,6 +430,8 @@ fn write_config_to(file: &Path, path: &Path, ov: &Overrides) -> Result<()> {
             tracing::info!(%base, %remote, "detected a fork layout");
             obj.insert("upstream_ref".into(), json!(base));
             obj.insert("upstream_remote".into(), json!(remote));
+        } else if let Some(base) = orchd::git::local_base(path) {
+            obj.insert("upstream_ref".into(), json!(base));
         }
     }
     if let Some(repo) = ov.repo.as_deref().filter(|s| !s.is_empty()) {
@@ -622,8 +626,26 @@ mod tests {
         assert_eq!(d.worktrees, ".claude/worktrees");
         assert_eq!(
             d.base_branch, "origin/HEAD",
-            "nothing fetched, so the daemon default"
+            "nothing committed, so the daemon default"
         );
+
+        // With a commit and still no remote, the base is the checked-out branch.
+        run_git(&dir, &["checkout", "-q", "-b", "trunk"]);
+        run_git(
+            &dir,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "a",
+            ],
+        );
+        assert_eq!(detect(&dir).base_branch, "trunk");
 
         // A GitHub origin becomes the repo to watch.
         run_git(

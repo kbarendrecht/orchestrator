@@ -643,7 +643,14 @@ pub(super) fn conflicted_files(cwd: &Path) -> Result<Vec<String>> {
 /// silently fails. So the `HEAD` arm asks the remote what its default branch is,
 /// records it in the symref, and then fetches that one branch by name — correct
 /// on a fresh checkout and no more expensive than the named case.
+///
+/// **A local base has nothing to fetch**, and is not an error: a checkout with no
+/// remote is measured against one of its own branches ([`local_base`]), and
+/// failing here put "upstream fetch failed" on every boot, sweep and rebase.
 pub fn fetch_upstream(main: &Path, upstream_ref: &str) -> Result<()> {
+    if is_local_base(main, upstream_ref) {
+        return Ok(());
+    }
     let (remote, branch) = split_upstream(upstream_ref);
     if !branch.eq_ignore_ascii_case("HEAD") {
         // Through `git_net_ok` like the two `HEAD` arms below, not `git`: this is
@@ -733,6 +740,46 @@ pub fn detect_base(main: &Path) -> Option<(String, String)> {
     // `fetch_upstream` refreshes the symref either way.
     let branch = default_branch(main, "upstream").unwrap_or_else(|| "HEAD".to_string());
     Some((format!("upstream/{branch}"), "upstream".to_string()))
+}
+
+/// The base for a checkout with no remote at all: the branch main has checked out.
+///
+/// The other half of [`detect_base`], for a repo nobody has pushed anywhere. The
+/// default `origin/HEAD` cannot resolve there, so without this every worktree cut
+/// failed with "base ref origin/HEAD does not resolve" and the checkout could only
+/// ever run a session in main. A local branch is a base like any other: worktrees
+/// branch from it, diffs measure against it, and [`fetch_upstream`] skips it.
+///
+/// `None` when there is any remote — that repo has a base somewhere else, and a
+/// guess here would hide it — and on a branch with no commit yet, which nothing
+/// can branch from either.
+pub fn local_base(main: &Path) -> Option<String> {
+    let remotes = git(main, &["remote"]).ok()?;
+    if !remotes.trim().is_empty() {
+        return None;
+    }
+    let branch = current_branch(main).ok()?;
+    is_local_base(main, &branch).then_some(branch)
+}
+
+/// Whether `upstream_ref` names a branch of this checkout rather than a remote's.
+///
+/// A bare `main` reads as `origin/main` to [`split_upstream`], which is right
+/// while there is an origin; so it is local only when that remote is absent and
+/// the branch exists.
+pub fn is_local_base(main: &Path, upstream_ref: &str) -> bool {
+    let (remote, _) = split_upstream(upstream_ref);
+    !has_remote(main, remote)
+        && git(
+            main,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{upstream_ref}"),
+            ],
+        )
+        .is_ok()
 }
 
 /// The local branch to check out for `upstream_ref`, resolving a `HEAD` symref.
