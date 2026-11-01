@@ -88,7 +88,7 @@ pub async fn open_pr(
     // `ensure_pr_worktree` reuses a worktree that already holds the branch, so
     // pressing this twice would otherwise stack a second session in it. (The `main`
     // arm already refused an occupied main inside `switch_main_to_pr`.)
-    refuse_if_occupied(&app, &workspace).await?;
+    refuse_if_occupied(&app, &workspace, None).await?;
     let agent = app.agent_for(None).await?;
     let id = spawn::spawn_session(&app, &workspace, None, spawn::Source::New(agent)).await?;
     /* Named for the PR (#36). Until Claude Code titled it, the row fell back to the

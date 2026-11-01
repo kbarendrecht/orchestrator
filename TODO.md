@@ -247,6 +247,18 @@ this file, which churned it from every build; that feature is gone.
     `base_ref` (option C on the page). Worth it only if the flat list starts to
     hide which PRs belong together.
 
+- **Deferred: a checkout with no forge has no way to land work.** A repo with no
+  remote is based on main's own branch now (`git::local_base`), so worktrees cut
+  and diff the way they do anywhere. What it lacks is the step a merged PR is
+  everywhere else: nothing moves a worktree's commits onto the base. The agent's
+  push guard refuses git that changes main from a worktree, the swap refuses to
+  hand the base out (`relocate::swap_with_main_inner`), and teardown keeps every
+  tree whose commits are not on the base yet — so today the work lands only by
+  hand, in main. Two shapes when it is needed: a row-menu `merge into base` that
+  fast-forwards or merges in main, refused when main is dirty or occupied; or a
+  skill a session in main runs. Built when a no-forge checkout is actually used,
+  not before.
+
 - **Deferred: setup can fail and say nothing.** `worktree_init` and
   `worktree_setup` are non-fatal, the second runs even after the first failed, and
   `env_source` failures are silent by design — a degraded session beats a lost one,

@@ -108,18 +108,6 @@ pub async fn start(
     }
     .ok_or_else(|| anyhow::anyhow!("PR #{number} is not in the current poll"))?;
 
-    // Asked the way the spawn enforces it, not with a second rule: an idle session
-    // on the branch used to pass here and be refused a moment later by
-    // `spawn_fix_pr_session`, once the run looked started.
-    //
-    // The worktree is not cut before this. `spawn_fix_pr_session` calls
-    // `ensure_pr_worktree` itself, so creating one here only meant a refused run
-    // left a worktree behind — and it is what split the two rules apart, since the
-    // guard then asked about the empty tree it had just made.
-    let branch_busy = crate::spawn::branch_busy(app, number, &pr.head_ref)
-        .await
-        .is_some();
-
     let verdict = {
         let inner = app.inner.read().await;
         evaluate(&GuardInput {
@@ -147,18 +135,14 @@ pub async fn start(
     unattended run started, the session you were in did. */
     // Every rule above still answers first, so a PR you cannot push to is
     // refused before any session is asked to try.
-    if branch_busy {
-        if let Some(id) = crate::triage::hand_to_live_session(
-            app,
-            number,
-            &pr.head_ref,
-            crate::model::Pass::FIX_PR,
-        )
-        .await?
-        {
-            app.notify().await;
-            return Ok(id);
-        }
+    // Nobody there is `None`, and the run is cut below. Main is asked too, which
+    // `spawn::branch_busy` does not look in: see `hand_to_live_session`.
+    if let Some(id) =
+        crate::triage::hand_to_live_session(app, number, &pr.head_ref, crate::model::Pass::FIX_PR)
+            .await?
+    {
+        app.notify().await;
+        return Ok(id);
     }
 
     /* **The tree is gated before anything touches it**, like the review flows. A

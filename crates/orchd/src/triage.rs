@@ -132,8 +132,14 @@ async fn may_push(app: &Arc<AppState>, pr: u64) -> Result<()> {
     }
 }
 
-/// Hand `/orchd:<command> <pr>` to the live session on `head_ref`'s worktree, if
-/// there is one, and say which session that was.
+/// Hand `/orchd:<command> <pr>` to the live session on `head_ref`'s tree, if there
+/// is one, and say which session that was.
+///
+/// **Main included**, unlike [`AppState::worktree_holding`]. That one places a run
+/// the daemon *starts*, and a run started in main would rebase and force-push the
+/// tree everything is cut from. This starts nothing: it types a turn into a session
+/// you opened there, through "open in main" — and leaving main out made that PR's
+/// `handle` and `fix` refuse with "close that session", the one PR you had open.
 ///
 /// `None` is "nobody is there", and the caller starts its own run. Shared by the
 /// review pass and by `fix-pr`, because a button pressed on a PR whose branch
@@ -150,7 +156,7 @@ pub(crate) async fn hand_to_live_session(
     if app.pr_head(pr).await.refusal.is_some() {
         return Ok(None);
     }
-    let Some(ws) = app.worktree_holding(head_ref).await else {
+    let Some(ws) = app.workspace_for(head_ref).await else {
         return Ok(None);
     };
     let live = app.live_sessions_in(&ws).await;
@@ -549,6 +555,64 @@ mod tests {
         assert!(
             err.contains("not running"),
             "the command never reached the session: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A session in main on the PR's branch is asked too, by both verbs.
+    ///
+    /// "Open in main" makes exactly this, and main was left out of the hand-off: the
+    /// row hid `handle` and `fix`, and the daemon refused both with "close that
+    /// session" — on the one PR you had open. Reaching `type_user_turn`'s refusal
+    /// is proof the typing was attempted, as in the test above.
+    #[tokio::test]
+    async fn a_session_in_main_on_the_branch_is_asked_too() {
+        let (app, dir, worktree_session) = with_live_session("handle-main", None).await;
+        let in_main = uuid::Uuid::new_v4();
+        {
+            let mut inner = app.inner.write().await;
+            // The PR's branch is in main, and nowhere else.
+            inner.workspaces.remove("pr-4");
+            inner.sessions.remove(&worktree_session);
+            inner.workspaces.insert(
+                MAIN.into(),
+                crate::model::Workspace {
+                    id: MAIN.into(),
+                    path: dir.clone(),
+                    kind: crate::model::WorkspaceKind::Main,
+                    branches: ["feature/x".to_string()].into_iter().collect(),
+                    processes: Vec::new(),
+                    occupant: Some(in_main),
+                    tree: crate::model::Tree {
+                        branch: Some("feature/x".into()),
+                        ..Default::default()
+                    },
+                    banked: None,
+                },
+            );
+            let mut s = Session::new(in_main, MAIN.into(), dir.clone(), None);
+            s.set_state(State::YourTurn {
+                since: std::time::SystemTime::now(),
+                reason: crate::model::TurnReason::TurnComplete,
+            });
+            s.pid = Some(std::process::id());
+            inner.sessions.insert(in_main, s);
+        }
+        let pane = spawn_command_session(&app, 4, "feature/x", Pass::HANDLE_REVIEW).await;
+        let fix = crate::fix_pr::start(&app, 4).await;
+        for (what, out) in [("handle", pane), ("fix", fix)] {
+            let err = format!(
+                "{:#}",
+                out.expect_err("no pty here, so the typing cannot land")
+            );
+            assert!(
+                err.contains("not running"),
+                "{what} never reached the session in main: {err}"
+            );
+        }
+        assert!(
+            app.inner.read().await.automation.get(4).is_none(),
+            "a hand-off starts no run, so it records none"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

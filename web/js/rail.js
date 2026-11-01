@@ -1107,15 +1107,14 @@ function prRow(/** @type {any} */ p) {
          `/orchd:handle-review` or `/orchd:fix-pr` typed as your turn, or the
          refusal said if it is mid-turn or asking you something. */
       /* **Only where a press can do what it says.** The daemon hands the job to
-         an ordinary conversation in the PR's worktree. Beside a pass (a `handle`
-         pane or a `fix-pr` run, whose `pass` stays set) it refuses by
-         name, and a session in main is not one it looks for: both were buttons
-         whose only outcome was an error toast. */
+         an ordinary conversation on the PR's branch, in a worktree or in main.
+         Beside a pass (a `handle` pane or a `fix-pr` run, whose `pass` stays set)
+         it refuses by name, which was a button whose only outcome was an error
+         toast. */
       const holder = p.session
         ? (snap.sessions || []).find((/** @type {import('../snapshot').SessionView} */ s) => s.id === p.session)
         : null;
-      const canPress = !p.session
-        || (!!holder && !holder.pass && holder.workspace !== mainWorkspace(snap)?.id);
+      const canPress = !p.session || (!!holder && !holder.pass);
       if (handler) {
         const b = prAction('span', 'handle', 'Handling\u2026', true);
         b.title = 'Go to the session handling the review';

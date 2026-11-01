@@ -5,8 +5,8 @@
 // main for days, and every PR flow for it is impossible while it does — git allows
 // one checkout per branch, so there is no tree to cut. `ensure_pr_worktree` moves
 // the branch *and* the work into the tree it was about to create anyway and puts
-// main back on base. The one thing still refused is a live session in main, which
-// is somebody still using the checkout.
+// main back on base. A live session in main is somebody still using the checkout,
+// so the branch stays and the press is handed to that session instead.
 //
 // The forge is canned the way flow 08 cans it: a `curl` shim, because
 // `forge::github::graphql` is the daemon's only route out.
@@ -41,16 +41,21 @@ export async function run(t) {
   await until('the poll to report the PR as pushable', async () =>
     (await t.pollPrs()).prs.find((p) => p.number === PR)?.head_pushable === true)
 
-  // --- a live session in main is the refusal ----------------------------------
+  // --- a live session in main is asked, and nothing moves ---------------------
 
+  /* It used to be refused with "close that session" — the PR opened in main was
+     the one PR whose `fix` could not be pressed. The session there is asked, the
+     way a session in the PR's worktree is (flow 45). */
   const { session } = await t.api('POST', '/api/session', { workspace: 'main' })
   await t.settled(session)
-  await assert.rejects(
-    () => t.api('POST', `/api/pr/${PR}/fix-pr`),
-    /still open there/,
-  )
-  assert.ok(!fs.existsSync(t.worktreePath(`pr-${PR}`)), 'a refusal must not cut a worktree')
-  assert.equal(branchOf(t.repo), HEAD, 'a refusal must not move main either')
+  const asked = await t.api('POST', `/api/pr/${PR}/fix-pr`)
+  assert.equal(asked.session, session, 'the press goes to the session in main')
+  await until('the session in main to be typed the fix', async () =>
+    t.agentLog().includes(`turn: /orchd:fix-pr ${PR}`))
+  assert.ok(!fs.existsSync(t.worktreePath(`pr-${PR}`)), 'a hand-off must not cut a worktree')
+  assert.equal(branchOf(t.repo), HEAD, 'a hand-off must not move main either')
+  const auto = (await t.state()).automation?.[PR]
+  assert.ok(!auto || auto.state !== 'running', `no fix run is recorded, got ${JSON.stringify(auto)}`)
 
   // Deleted rather than closed: a closed session is still about this branch, and
   // parking main moves a branch out with the sessions about it, work included —

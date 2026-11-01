@@ -76,17 +76,15 @@ command.
                        exist — an unknown name is refused with the list of the
                        ones that do. `orch ls` prints them too.
 
-                       Note what this means: a session already in that workspace
-                       keeps working in it. Two agents in one tree share one git
-                       index. That is what you want for a hand with the thing you
-                       are doing, and not what you want for two parallel jobs.
+                       It must also be free: a workspace with a live session in
+                       it is refused, naming that session. Two agents in one tree
+                       share one git index, and a restart brings only one back.
 
   --prompt <text>      Typed into the new session once it is up. Without one it
                        sits at an empty prompt waiting for somebody.
 
-With neither flag it lands somewhere it can actually run: beside you in your own
-worktree, or in a worktree cut for it when you are in main — main holds one
-session and you are it.
+With neither flag it gets a worktree cut for it, as `--worktree` without a name
+does. Your own tree is never shared: you are the session in it.
 
 Refused when the machine is low on memory, so this cannot be how the desktop
 dies. `orch kill` is the way back out.

@@ -37,27 +37,38 @@ export async function run(t) {
     /not both/,
   )
 
-  // 2. The default: a hand with the thing you are already doing, in your own tree.
-  const beside = await t.api('POST', `/api/session/${parent}/spawn`, { prompt: 'help me' })
-  assert.equal(beside.workspace, 'invoice', 'a helper belongs beside its parent')
-  assert.equal(fs.realpathSync(beside.path), fs.realpathSync(invoice))
+  // 2. Your own tree is never shared: it holds you, and a second agent there
+  //    shares your index and is dropped by the next restart.
+  await assert.rejects(
+    () => t.api('POST', `/api/session/${parent}/spawn`, { workspace: 'invoice' }),
+    /invoice already has a live session/,
+  )
+
+  // A tree that exists and is free is a place you may name, and the undo must
+  // leave it alone — the spawn did not cut it, so it is not the spawn's to remove.
+  const { session: notesOwner } = await t.api('POST', '/api/worktree', { name: 'notes' })
+  await t.settled(notesOwner)
+  await t.api('POST', `/api/session/${notesOwner}/kill`)
+  await until('the notes session to end', async () => !(await t.session(notesOwner))?.alive)
+  const notes = t.worktreePath('notes')
+  const beside = await t.api('POST', `/api/session/${parent}/spawn`, { workspace: 'notes', prompt: 'help me' })
+  assert.equal(beside.workspace, 'notes')
+  assert.equal(fs.realpathSync(beside.path), fs.realpathSync(notes))
   await t.settled(beside.session)
 
-  // Discarding it must not touch the parent's tree — the spawn did not cut it, so
-  // it is not the spawn's to remove. Asserted on the absence of *both* outcomes,
-  // because a teardown that was attempted and refused would report `kept`, and
-  // "refused anyway" is a different bug from "never tried".
+  // Asserted on the absence of *both* outcomes, because a teardown that was
+  // attempted and refused would report `kept`, and "refused anyway" is a
+  // different bug from "never tried".
   const undone = await t.api('POST', `/api/session/${parent}/spawned/${beside.session}/discard`)
   assert.equal(undone.removed, undefined, 'it removed a worktree it did not create')
   assert.equal(undone.kept, undefined, 'it should not have reached teardown at all')
   assert.equal(await t.session(beside.session), undefined, 'the record outlived the discard')
-  assert.ok(fs.existsSync(invoice), 'the parent lost its worktree')
-  assert.ok(await t.workspace('invoice'), 'the parent lost its workspace record')
+  assert.ok(fs.existsSync(notes), 'the named tree was removed')
+  assert.ok(await t.workspace('notes'), 'the named tree lost its workspace record')
 
-  // 3. The shape the CLI could not express: a fresh tree, its own branch, its own
-  //    index. Two of these is "spawn two fixers, one PR each".
+  // 3. A fresh tree, its own branch, its own index — the default, and what a name
+  //    asks for. Two of these is "spawn two fixers, one PR each".
   const fixer = await t.api('POST', `/api/session/${parent}/spawn`, {
-    worktree: true,
     name: 'fixer-a',
     prompt: 'fix the dependabot bump',
   })

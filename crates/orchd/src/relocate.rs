@@ -176,16 +176,29 @@ async fn swap_with_main_inner(
     so the race the paragraph above closes stays closed. */
     let _ = app.reconcile(MAIN).await;
     let _ = app.reconcile(&workspace).await;
-    let (m0, t0) = (main.clone(), tree.clone());
-    let (main_was, tree_was) =
-        tokio::task::spawn_blocking(move || -> anyhow::Result<(String, String)> {
+    let (m0, t0, base) = (main.clone(), tree.clone(), app.cfg.upstream_ref.clone());
+    let (main_was, tree_was, local_base) =
+        tokio::task::spawn_blocking(move || -> anyhow::Result<(String, String, bool)> {
             Ok((
                 crate::git::current_branch(&m0)?,
                 crate::git::current_branch(&t0)?,
+                crate::git::is_local_base(&m0, &base),
             ))
         })
         .await
         .map_err(|e| anyhow::anyhow!("reading the branches panicked: {e}"))??;
+    /* **A local base is not a branch to hand out.** On a checkout with no remote
+    the base is main's own branch (`git::local_base`), so the swap gave the base
+    ref itself to the worktree: its commits then moved the base, its changed-files
+    pane emptied on every commit and behind/ahead read 0/0 for good. With a remote
+    base the exchange hands out a local branch that only tracks it, which is why
+    the swap is otherwise allowed to take main off base. */
+    if local_base && main_was == app.cfg.upstream_ref {
+        refuse!(
+            "main is on {main_was}, the base every worktree is measured against, and no \
+             worktree may hold it; merge {tree_was} into it from main instead"
+        );
+    }
     // By branch, not by address: each side asks "who here is working on the branch
     // that is about to move out". Both are picked before either moves, because
     // choosing as we go would let the second choice see the session the first one
@@ -941,6 +954,74 @@ mod tests {
             "but not as a spare: {:#}",
             err.0
         );
+    }
+
+    /// With no remote the base is main's own branch, and a swap would hand that
+    /// branch to a worktree: its commits would move the base itself. Refused, and
+    /// a remote base is not, because there the exchange hands out a branch that
+    /// only tracks the base.
+    #[tokio::test]
+    async fn a_swap_never_hands_out_a_local_base() {
+        let dir = crate::testutil::scratch("swap-local-base");
+        let git = |at: &std::path::Path, args: &[&str]| crate::testutil::git(at, args);
+        git(&dir, &["init", "-q", "-b", "trunk"]);
+        git(
+            &dir,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "a",
+            ],
+        );
+        let wt = dir.join("wt");
+        git(
+            &dir,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "worktree-wt",
+                &wt.to_string_lossy(),
+            ],
+        );
+
+        let app = crate::testutil::app_at(&dir, r#""upstream_ref":"trunk""#);
+        app.inner.write().await.workspaces.insert(
+            "wt".into(),
+            crate::model::Workspace {
+                id: "wt".into(),
+                path: wt.clone(),
+                kind: crate::model::WorkspaceKind::Worktree { name: "wt".into() },
+                branches: Default::default(),
+                processes: Vec::new(),
+                occupant: None,
+                tree: Default::default(),
+                banked: None,
+            },
+        );
+        let err = swap_with_main_inner(app, "wt".into(), None)
+            .await
+            .expect_err("the local base must stay in main");
+        let err = format!("{:#}", err.0);
+        assert!(err.contains("no worktree may hold it"), "{err}");
+        assert_eq!(
+            crate::git::current_branch(&dir).unwrap(),
+            "trunk",
+            "main moved"
+        );
+        assert_eq!(
+            crate::git::current_branch(&wt).unwrap(),
+            "worktree-wt",
+            "the tree moved"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The move switches main's checkout, so an agent mid-turn *anywhere* in main

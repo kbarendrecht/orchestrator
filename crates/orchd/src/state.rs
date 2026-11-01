@@ -1895,6 +1895,16 @@ impl AppState {
     ///
     /// See [`AppState::auto_resuming`]: it holds main until auto-resume is done.
     pub fn waiting_in_main(&self, inner: &Inner) -> Option<SessionId> {
+        self.waiting_in(inner, MAIN)
+    }
+
+    /// The session in `workspace` that auto-resume has not reached yet.
+    ///
+    /// **A worktree is held by it as much as main is.** Only main asked this, so in
+    /// the resume stagger a `+` on a worktree found nobody live, started a session,
+    /// and auto-resume then spawned the recorded one beside it — two agents in one
+    /// index, the state the restore path itself refuses to build.
+    pub fn waiting_in(&self, inner: &Inner, workspace: &str) -> Option<SessionId> {
         if !self.auto_resuming.load(std::sync::atomic::Ordering::SeqCst) {
             return None;
         }
@@ -1905,7 +1915,7 @@ impl AppState {
         inner
             .sessions
             .values()
-            .filter(|s| s.workspace == MAIN && !s.state.is_live() && pending.contains(&s.id))
+            .filter(|s| s.workspace == workspace && !s.state.is_live() && pending.contains(&s.id))
             .min_by_key(|s| s.created_at)
             .map(|s| s.id)
     }

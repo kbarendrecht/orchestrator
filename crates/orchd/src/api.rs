@@ -434,9 +434,13 @@ pub struct NewSession {
 /// not one atomic step, so two *simultaneous* duplicate requests could both pass —
 /// which teardown already tolerates and which only the (rejected) in-`spawn_session`
 /// version would close.
+///
+/// `resuming` is the session a resume is bringing back, which may itself be the one
+/// auto-resume is still waiting to reach — it does not occupy its own workspace.
 pub(crate) async fn refuse_if_occupied(
     app: &Arc<AppState>,
     workspace: &str,
+    resuming: Option<SessionId>,
 ) -> Result<(), ApiError> {
     // The one relaxation, and it is main's alone: a worktree exists so that two
     // pieces of work do not share an index, so lifting it there would undo the
@@ -444,7 +448,15 @@ pub(crate) async fn refuse_if_occupied(
     if workspace == MAIN && app.settings().allow_several_in_main {
         return Ok(());
     }
-    let Some(held) = app.live_sessions_in(workspace).await.into_iter().next() else {
+    // A session auto-resume has not reached yet holds its tree too, as it does main
+    // (`AppState::waiting_in`).
+    let waiting = {
+        let inner = app.inner.read().await;
+        app.waiting_in(&inner, workspace)
+            .filter(|id| Some(*id) != resuming)
+    };
+    let live = app.live_sessions_in(workspace).await.into_iter().next();
+    let Some(held) = live.or(waiting) else {
         return Ok(());
     };
     // Name it the way the rail does, so the message points at a row you can find.
@@ -465,7 +477,7 @@ pub async fn new_session(
     State(app): State<Arc<AppState>>,
     Json(body): Json<NewSession>,
 ) -> ApiResult<serde_json::Value> {
-    refuse_if_occupied(&app, &body.workspace).await?;
+    refuse_if_occupied(&app, &body.workspace, None).await?;
     let agent = app.agent_for(body.agent).await?;
     let id = spawn::spawn_session(&app, &body.workspace, None, spawn::Source::New(agent)).await?;
     Ok(Json(json!({ "session": id })))
@@ -1313,8 +1325,8 @@ pub async fn outside_allowed(
 
 #[derive(Deserialize)]
 pub struct SpawnBody {
-    /// An *existing* workspace to work in. Defaults to the caller's own, which is
-    /// what you mean when you want a hand with the thing you are already doing.
+    /// An *existing* workspace to work in, which must have no live session. Absent
+    /// means a fresh worktree: one session per tree holds here as everywhere.
     #[serde(default)]
     pub workspace: Option<String>,
     /// Cut a fresh worktree for the new session instead.
@@ -1352,12 +1364,12 @@ pub async fn spawn_from_session(
 
     // The caller's agent as well: a session handing work on hands it to its own
     // kind, which is the one whose skills and habits the prompt was written for.
-    let (mine, agent) = {
+    let agent = {
         let inner = app.inner.read().await;
         inner
             .sessions
             .get(&id)
-            .map(|s| (s.workspace.clone(), s.agent))
+            .map(|s| s.agent)
             .ok_or_else(|| crate::state::no_such_session(id))?
     };
 
@@ -1386,23 +1398,25 @@ pub async fn spawn_from_session(
         }
     }
 
-    // Main can hold one live session and the caller *is* it, so defaulting to the
-    // caller's own workspace made `orch new` impossible from main: every call came
-    // back "main is occupied by session <itself>". An agent asked to hand work off
-    // then has nowhere to put it. So the default is "somewhere this can actually
-    // run": your own tree when you are in a worktree, which is what you mean when
-    // you want a hand with what you are already doing, and a fresh worktree when
-    // you are in main.
+    /* **A fresh worktree unless a workspace is named, and a named one must be
+    free.** The default used to be the caller's own tree, "a hand with what you
+    are doing" — the one route that put two live agents in one worktree. Every
+    other route refuses that (`refuse_if_occupied`), and a restart then resumed
+    only one of the pair (`first_per_workspace`), so the helper vanished with
+    nothing said; both sessions were also credited with every PR on the branch.
+    Main was already a fresh worktree here, because the caller holds it. */
     let name = body
         .name
         .as_deref()
         .map(str::trim)
         .filter(|n| !n.is_empty());
-    let cut = body.worktree || (named.is_none() && mine == MAIN);
+    let cut = named.is_none();
     let child = match named {
-        Some(w) => spawn::spawn_session(&app, w, None, spawn::Source::New(agent)).await?,
-        None if cut => spawn::spawn_worktree_session(&app, name, agent, None).await?,
-        None => spawn::spawn_session(&app, &mine, None, spawn::Source::New(agent)).await?,
+        Some(w) => {
+            refuse_if_occupied(&app, w, None).await?;
+            spawn::spawn_session(&app, w, None, spawn::Source::New(agent)).await?
+        }
+        None => spawn::spawn_worktree_session(&app, name, agent, None).await?,
     };
     {
         let mut inner = app.inner.write().await;
@@ -1779,7 +1793,7 @@ pub async fn resume_external(
             crate::model::short_id(&id)
         );
     }
-    refuse_if_occupied(&app, &workspace).await?;
+    refuse_if_occupied(&app, &workspace, Some(id)).await?;
     let new_id = spawn::spawn_session(&app, &workspace, None, spawn::Source::Resume(id)).await?;
     let now_on = {
         let mut inner = app.inner.write().await;
@@ -1882,7 +1896,7 @@ async fn revive(app: &Arc<AppState>, id: Uuid) -> ApiResult<serde_json::Value> {
     // Resume-into-occupied: the worktree this session lived in may hold a fresh
     // live session now. Refuse before rebuilding anything. The session being revived
     // is archived, so it is never the occupant this finds.
-    refuse_if_occupied(app, &workspace).await?;
+    refuse_if_occupied(app, &workspace, Some(id)).await?;
 
     // A worktree that was torn down is rebuilt before the session goes back into
     // it. `worktree::revive` owns that, next to the archive that recorded it; the
@@ -3690,6 +3704,55 @@ mod tests {
         assert_eq!(
             crate::config::WorkspaceNotes::default().for_main(true),
             None
+        );
+    }
+
+    /// A worktree whose session auto-resume has not reached yet is occupied, the
+    /// way main is: a `+` in the stagger window used to start a second agent there.
+    /// The session being resumed is the one thing that does not occupy its own tree.
+    #[tokio::test]
+    async fn a_session_waiting_to_resume_holds_its_worktree() {
+        use std::sync::atomic::Ordering::SeqCst;
+
+        let (app, _dir) = crate::testutil::app("waitwt");
+        let waiting = Uuid::new_v4();
+        {
+            let mut inner = app.inner.write().await;
+            let mut s = Session::new(
+                waiting,
+                "feat".to_string(),
+                std::path::PathBuf::from("/tmp"),
+                None,
+            );
+            s.set_state(crate::model::State::Exited);
+            inner.sessions.insert(waiting, s);
+        }
+        app.pending_resume
+            .lock()
+            .expect("the pending set")
+            .insert(waiting);
+        app.auto_resuming.store(true, SeqCst);
+
+        assert!(
+            refuse_if_occupied(&app, "feat", None).await.is_err(),
+            "a new session must not land beside one coming back"
+        );
+        assert!(
+            refuse_if_occupied(&app, "feat", Some(waiting))
+                .await
+                .is_ok(),
+            "resuming that session by hand is not a second one"
+        );
+        assert!(
+            refuse_if_occupied(&app, "other", None).await.is_ok(),
+            "another tree is not held by it"
+        );
+
+        // Over once auto-resume is, or a resume that failed would hold the tree.
+        app.auto_resuming.store(false, SeqCst);
+        assert!(
+            refuse_if_occupied(&app, "feat", None).await.is_ok(),
+            "a failed resume does not hold the tree for good"
         );
     }
 }
