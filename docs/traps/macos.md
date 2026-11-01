@@ -213,8 +213,10 @@ preference cannot take effect, the bug would never appear on a runner, and a che
 asserting its absence would guard nothing.
 **So the step now asserts Rosetta first**, and fails without it. The measurement
 above is macos-14's; GitHub retired that image on 2026-11-02, and the jobs moved
-to macos-26, which nobody had measured. A runner image is not a fact that stays
-true, and the step is what says so when it stops being one.
+to macos-26. Its first run (`macos-26-arm64`, 2026-11-01) passed the assertion, so
+Rosetta is installed there too, and the probe read `proc_translated = 0`. A runner
+image is not a fact that stays true, and the step is what says so when it stops
+being one.
 
 The unit test `the_bundle_declares_the_architecture_its_binary_was_built_for`
 asserts the key is present and names this build's own architecture, which is what
