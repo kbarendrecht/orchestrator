@@ -50,7 +50,7 @@ export async function run(t) {
     try {
       return await t.api('POST', `/api/pr/${PR}/fix-pr`)
     } catch (e) {
-      if (/swap is already (running|moving)/.test(String(e.message))) return null
+      if (/a swap is already running/.test(String(e.message))) return null
       throw e
     }
   })
@@ -89,7 +89,7 @@ export async function run(t) {
     try {
       return await t.api('POST', `/api/pr/${OTHER}/open`, { where: 'main' })
     } catch (e) {
-      if (/swap is already (running|moving)/.test(String(e.message))) return null
+      if (/a swap is already running/.test(String(e.message))) return null
       throw e
     }
   })

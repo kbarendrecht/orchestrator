@@ -418,12 +418,14 @@ pub struct Inner {
 /// Proof that the holder has the one lock every move of main's branch takes.
 ///
 /// Only [`AppState::move_main`] makes one. The runtime's movers of main take it by
-/// reference — `carry::move_out`, `carry::move_back`, `spawn::switch_main_to_pr`
-/// and `relocate`'s `undo_swap` — so a new path into any of them without the lock
-/// does not compile. **The git functions underneath are not covered**: they live
-/// in `orchd-base`, below this type, and are called directly only by the swap and
-/// `park_main`, which take the guard themselves. A new caller of those is the one
-/// case this cannot catch. Given back on drop.
+/// reference — `carry::move_out` and `move_out_carrying`, `carry::move_back`,
+/// `carry::switch_main_to_pr` and `relocate`'s `undo_swap` — so a new path into any
+/// of them without the lock does not compile. Every mover lives in `carry` or
+/// `relocate`, so those two files are where to look for the next one. **The git
+/// functions underneath are not covered**: they live in `orchd-base`, below this
+/// type, and are called directly only by the swap and `park_main`, which take the
+/// guard themselves. A new caller of those is the one case this cannot catch.
+/// Given back on drop.
 pub struct MainMove<'a> {
     _held: tokio::sync::MutexGuard<'a, ()>,
 }
@@ -1965,6 +1967,27 @@ impl AppState {
             .try_lock()
             .ok()
             .map(|held| MainMove { _held: held })
+    }
+
+    /// [`AppState::move_main`] for a request: the one refusal every move of main
+    /// says when another holds the lock.
+    ///
+    /// It was four sentences, each written beside its own `try_lock`, and the e2e
+    /// flows that wait out a move match on this wording ("a swap is already
+    /// running"), so it has one home. The watchers that move main on their own —
+    /// a park, a restart — skip rather than refuse, and call `move_main`.
+    ///
+    /// A [`Refusal::Busy`](crate::model::Refusal), so the route answers 409: the
+    /// same request will go through once the move in progress lands.
+    pub fn move_main_or_refuse(&self) -> anyhow::Result<MainMove<'_>> {
+        self.move_main().ok_or_else(|| {
+            crate::model::Refusal::Busy(
+                "a swap is already running; it moves main's checkout, so give it a moment \
+                 and look at the rail before asking again"
+                    .to_string(),
+            )
+            .into()
+        })
     }
 
     /// Who is in `workspace`, by the daemon's one rule.

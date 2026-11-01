@@ -129,12 +129,7 @@ async fn swap_with_main_inner(
     // with its branch back in the worktree. Queueing would run the second one on the
     // strength of what you saw before the first, which is not what you would ask for
     // if you could see the result.
-    let held = app.move_main().ok_or_else(|| {
-        ApiError(anyhow::anyhow!(
-            "a swap is already running; it moves whole checkouts and their \
-             conversations, so give it a moment and look at the rail before asking again"
-        ))
-    })?;
+    let held = app.move_main_or_refuse()?;
     let tree = app
         .workspace_path(&workspace)
         .await
@@ -462,12 +457,7 @@ pub async fn move_out_of_main(
     // reason: two moves of main at once each read "who was on the branch that just
     // left" and each relocate on the strength of it. Nothing in the SPA stops the
     // two buttons being pressed together. Refused rather than queued, like the swap.
-    let held = app.move_main().ok_or_else(|| {
-        ApiError(anyhow::anyhow!(
-            "a swap is already running; it moves main's checkout, so give it a moment \
-             and look at the rail before asking again"
-        ))
-    })?;
+    let held = app.move_main_or_refuse()?;
     let live = {
         let inner = app.inner.read().await;
         let s = inner

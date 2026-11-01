@@ -5,20 +5,22 @@ this file, which churned it from every build; that feature is gone.
 
 ## Next
 
-- **Two deepenings, found by asking which callers must know how a thing works
-  inside.** Each one cost bugs on 2026-11-01, which is the evidence; the vocabulary
-  is "deep module" (much behaviour behind a small interface) and its deletion test.
-  Two more are done: the base ref as a value (`git::Base`) and one answer to
-  where a PR's branch is (`locate::locate_pr`). The rest, in this order, each its
-  own commit:
-  1. **One module for every move of main's branch.** Swap, its undo, move-out,
-     park, open-in-main and the move inside `ensure_pr_worktree` each repeat the
-     same steps: lock, re-read, occupancy, who travels, git, carry, reconcile,
-     undo. Cost four bugs; `MainMove` made one of those steps a compile error.
-  2. **The daemon says which PR-row verbs a press can do.** The SPA copies about
+- **One deepening left, of four found by asking which callers must know how a
+  thing works inside.** Each one cost bugs on 2026-11-01, which is the evidence;
+  the vocabulary is "deep module" (much behaviour behind a small interface) and its
+  deletion test.
+  Three are done: the base ref as a value (`git::Base`), one answer to where a
+  PR's branch is (`locate::locate_pr`), and every move of main in `carry` or
+  `relocate` behind one lock refusal. What is left:
+  1. **The daemon says which PR-row verbs a press can do.** The SPA copies about
      eight daemon rules to grey or hide buttons, and `canPress` had to change in
      step with `triage`. Published per row in the snapshot instead — minding the
      paint-signature trap for any new field.
+  Left over from the third: "is someone in main" is still asked three ways among
+  the movers — `occupancy` (`refuse_if_main_is_busy`), `main_occupant`
+  (`switch_main_to_pr`) and `occupancy` plus a reservation (`park_main`). The
+  swap's `travelling_from` differs on purpose. Merging the three changes what each
+  refuses, so it waits for a reason.
 
 - **Make it run somewhere other than this machine.** The hardcoded assumptions are
   gone: the six stack-specific settings are `#[serde(default)]` values editable in

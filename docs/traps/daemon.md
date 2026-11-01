@@ -553,9 +553,12 @@ fresh instead of resuming it. **A failed spawn puts the record it replaced back*
 "index.lock: File exists" until it stopped. `tools/e2e/fake-claude.mjs` reads a
 `die-on-resume` file (`t.dieOnResume(skip, die)`) so flows 39 and 40 can make a
 resume fail on cue; no real agent can be asked to.
-Parking and the PR routes carry sessions too, through `carry.rs`, which sits below
-`spawn` so the exit watcher can call it without a module cycle. They only ever
-carry stopped sessions, so they need no undo of their own.
+Parking and the PR routes move main's branch too, and they live in `carry.rs`
+beside the steps every move shares — taking the lock, moving out and carrying the
+stopped sessions — which sits below `spawn` so the exit watcher can call it
+without a module cycle. They only ever carry stopped sessions, so they need no
+undo of their own; the swap and the move out of main relocate live ones, and
+those two keep their undo in `relocate.rs`.
 ## The editor's bound is the checkout, not the worktree, and `.git` is the one hole it must not leave.
 
 `resolve_in_workspace` is the containment check behind reading a file, writing a

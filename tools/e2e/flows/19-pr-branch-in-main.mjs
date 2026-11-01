@@ -69,7 +69,7 @@ export async function run(t) {
 
   /* **The park has to let go of main first.** Killing the session above parks
      main, and a park takes the same `swapping` lock a PR flow needs — so this call
-     is refused while it runs, with "a swap is already moving it". Waiting on
+     is refused while it runs, with "a swap is already running". Waiting on
      `occupant == null` is not enough: the occupant goes before the park finishes.
      Retried rather than slept on, which is this suite's standing rule — idleness is
      a condition, never an assumption. It never fired on Linux and failed on the
@@ -78,7 +78,7 @@ export async function run(t) {
     try {
       return await t.api('POST', `/api/pr/${PR}/fix-pr`)
     } catch (e) {
-      if (/swap is already (running|moving)/.test(String(e.message))) return null
+      if (/a swap is already running/.test(String(e.message))) return null
       throw e
     }
   })

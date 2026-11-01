@@ -97,6 +97,9 @@ crates/orchd/         the runtime core: the `orchd` library, what the daemon kno
   model.rs        Workspace / Session / Process, State, ArchiveState
   preview.rs      the file pane's html preview: a sandboxed frame's token and route
   relocate.rs     the swap, the move out of main, and the conversation that travels
+  carry.rs        every other move of main's branch — parking, a PR flow freeing
+                  main, a switch onto a PR — and the steps all moves share
+  locate.rs       where a PR's branch is: someone else's, a worktree, main, nowhere
   restart.rs      respawn sessions in place on the installed agent, each when idle
   review_api.rs   the PR routes that start work, and the file pane's reads and
                   writes
