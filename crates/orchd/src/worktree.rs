@@ -1511,6 +1511,49 @@ mod tests {
         let _ = std::fs::remove_dir_all(main.parent().unwrap());
     }
 
+    /// A session the spawn has recorded but whose pty does not exist yet is in the
+    /// tree, and teardown must not remove the tree from under it.
+    ///
+    /// It used to be invisible here: the check asked for a live pid, and a spawn
+    /// writes `pid: None` first. A dead pid still frees the tree (§8b).
+    #[tokio::test]
+    async fn a_tree_whose_session_is_still_spawning_is_not_torn_down() {
+        let (main, wt, _) = repo_with_a_worktree("spawning");
+        let app = crate::testutil::app_at(&main, r#""upstream_ref":"develop""#);
+        app.register_worktree("spawning", wt.clone(), Some("worktree-old".into()))
+            .await;
+        let id = uuid::Uuid::new_v4();
+        {
+            let mut inner = app.inner.write().await;
+            let mut s = crate::model::Session::new(id, "spawning".into(), wt.clone(), None);
+            s.set_state(crate::model::State::Starting);
+            inner.sessions.insert(id, s);
+        }
+        let no_session = |pf: &Preflight| {
+            pf.checks
+                .iter()
+                .find(|c| c.name == "no live session")
+                .expect("the check exists")
+                .passed
+        };
+        let pf = preflight(&app, "spawning").await.unwrap();
+        assert!(!no_session(&pf), "a session with no pid yet was not seen");
+        assert!(!pf.can_remove);
+
+        // A reaped child's pid: the process is gone, so the tree is free again.
+        let dead = {
+            let mut child = std::process::Command::new("true")
+                .spawn()
+                .expect("true runs");
+            let pid = child.id();
+            child.wait().expect("reaped");
+            pid
+        };
+        app.with_session(id, |s| s.pid = Some(dead)).await;
+        assert!(no_session(&preflight(&app, "spawning").await.unwrap()));
+        let _ = std::fs::remove_dir_all(main.parent().unwrap());
+    }
+
     /// A teardown git refuses leaves the tree standing, so its conversations must
     /// not go on saying it was torn down.
     ///

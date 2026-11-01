@@ -462,3 +462,65 @@ pub async fn rebase_resolve(
     type_user_turn(&app, id, &text).await?;
     Ok(Json(json!({ "told": id })))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A rebase onto a local base has nothing to fetch, so it must not say the fetch
+    /// failed. With no remote that sentence came back on every press, and it reads
+    /// as "your base may be stale" — about a base that cannot be anything else.
+    #[tokio::test]
+    async fn a_rebase_onto_a_local_base_warns_of_nothing() {
+        let dir = crate::testutil::scratch("rebase-local-base");
+        let git = |at: &std::path::Path, args: &[&str]| crate::testutil::git(at, args);
+        git(&dir, &["init", "-q", "-b", "trunk"]);
+        git(
+            &dir,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "a",
+            ],
+        );
+        let wt = dir.join("wt");
+        git(
+            &dir,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "worktree-wt",
+                &wt.to_string_lossy(),
+            ],
+        );
+
+        let app = crate::testutil::app_at(&dir, r#""upstream_ref":"trunk""#);
+        app.inner.write().await.workspaces.insert(
+            "wt".into(),
+            crate::model::Workspace {
+                id: "wt".into(),
+                path: wt,
+                kind: crate::model::WorkspaceKind::Worktree { name: "wt".into() },
+                branches: Default::default(),
+                processes: Vec::new(),
+                occupant: None,
+                tree: Default::default(),
+                banked: None,
+            },
+        );
+        let Ok(Json(got)) = rebase(State(app), Path("wt".into())).await else {
+            panic!("a clean tree on a local base rebases");
+        };
+        assert_eq!(got["rebased"], "wt");
+        assert_eq!(got["warning"], serde_json::Value::Null, "{got}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

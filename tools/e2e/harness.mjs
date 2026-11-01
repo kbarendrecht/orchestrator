@@ -202,6 +202,9 @@ export function deadPid() {
  * @param {boolean} [opts.codex] Put a `codex` beside the `claude`, so the board
  *   has two agents. Off elsewhere: with one agent the SPA offers no choice, and
  *   every other flow is about that board.
+ * @param {boolean} [opts.noRemote] A repo nobody has pushed anywhere: no `origin`,
+ *   and the base is the repo's own `main` (`git::local_base`). The one flow that
+ *   asks is the only end-to-end proof that a checkout with no forge works.
  */
 export async function sandbox({
   delegated = false,
@@ -212,6 +215,7 @@ export async function sandbox({
   autoResume = false,
   processes = [],
   codex = false,
+  noRemote = false,
   // **The level a flow needs, asked for by the flow that needs it.** `warn` is
   // right for the suite — a flow asserts on the API and a chatty daemon is noise
   // in a failure — but `renderer.mjs` reads its answer *out of the log*, and at
@@ -254,9 +258,11 @@ export async function sandbox({
   fs.writeFileSync(path.join(dirs.repo, 'README.md'), '# fixture\n')
   git(dirs.repo, ['add', '-A'])
   git(dirs.repo, ['commit', '-qm', 'base'])
-  git(root, ['clone', '-q', '--bare', dirs.repo, 'origin.git'])
-  git(dirs.repo, ['remote', 'add', 'origin', path.join(root, 'origin.git')])
-  git(dirs.repo, ['fetch', '-q', 'origin'])
+  if (!noRemote) {
+    git(root, ['clone', '-q', '--bare', dirs.repo, 'origin.git'])
+    git(dirs.repo, ['remote', 'add', 'origin', path.join(root, 'origin.git')])
+    git(dirs.repo, ['fetch', '-q', 'origin'])
+  }
 
   // The agent shim. `exec` so the daemon's kill reaches node itself rather than a
   // shell holding it, or the pty would outlive the session.
@@ -293,7 +299,7 @@ export async function sandbox({
     // may care about.
     worktrees_subdir: delegated ? '.claude/worktrees' : '.worktrees',
     upstream_remote: 'origin',
-    upstream_ref: 'origin/main',
+    upstream_ref: noRemote ? 'main' : 'origin/main',
     // Absent unless a flow asked: an unset `repo` leaves the daemon deriving one
     // from the origin remote, which is a local path, so PR polling never starts.
     ...(repo ? { repo } : {}),

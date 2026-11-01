@@ -776,6 +776,50 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// A recent opens with no review, so the write itself has to answer the base for
+    /// a repo with no remote — and must not replace a base somebody already chose.
+    #[test]
+    fn a_recent_with_no_remote_is_based_on_its_own_branch() {
+        let base = tmp("wc-local");
+        let repo = base.join("proj");
+        std::fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init", "-q", "-b", "trunk"]);
+        run_git(
+            &repo,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "a",
+            ],
+        );
+        let cfg = base.join("config.json");
+        let read = || -> serde_json::Value {
+            serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap()
+        };
+
+        write_config_to(&cfg, &repo, &Overrides::default()).unwrap();
+        assert_eq!(read()["upstream_ref"], "trunk");
+
+        // A base already in the file is kept, even on a repo with no remote.
+        std::fs::write(
+            &cfg,
+            format!(
+                r#"{{"main_checkout":{:?},"upstream_ref":"release"}}"#,
+                repo.to_string_lossy()
+            ),
+        )
+        .unwrap();
+        write_config_to(&cfg, &repo, &Overrides::default()).unwrap();
+        assert_eq!(read()["upstream_ref"], "release");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     /// Re-picking a checkout keeps every key the review did not answer, and keeps
     /// the previous file beside it. Building the object from scratch lost them all.
     #[test]
