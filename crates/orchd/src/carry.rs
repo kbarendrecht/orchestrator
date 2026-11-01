@@ -750,7 +750,7 @@ pub(crate) async fn switch_main_to_pr(
     // holds cannot be checked out twice — refused by name here rather than by git.
     let located = locate_pr(app, pr, head_ref).await?;
     match &located.place {
-        PrPlace::Foreign(why) => bail!("#{pr} cannot be opened in this checkout: {why}"),
+        PrPlace::Foreign(why) => bail!("{}", cannot_open_pr(pr, why)),
         PrPlace::Worktree { ws, .. } => {
             bail!("#{pr}'s branch is in the worktree {ws}; open it there, or swap it into main")
         }

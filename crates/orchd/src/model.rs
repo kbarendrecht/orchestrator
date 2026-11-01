@@ -461,6 +461,24 @@ impl Pass {
     pub const FIX_PR: &'static str = "fix-pr";
     /// The pane pass over a PR's review threads, and the rail's default review verb.
     pub const HANDLE_REVIEW: &'static str = "handle-review";
+
+    /// The refusal for a press on a tree this pass is working in.
+    ///
+    /// One sentence for the press (`triage::hand_to_live_session`) and for the PR
+    /// row that previews it (`state::Press`): the row's tooltip and the press's
+    /// toast were the same words written twice, and an edit to one would have had
+    /// the row promise a reason the press then did not give.
+    pub fn holds_tree(command: &str, workspace: &str) -> String {
+        format!("a {command} run is working in {workspace}; wait for it to finish or stop it first")
+    }
+}
+
+/// The refusal for a PR whose head is someone else's branch of that name.
+///
+/// One sentence for every press that refuses it and for the PR row that previews
+/// it, for the reason [`Pass::holds_tree`] is one.
+pub fn cannot_open_pr(pr: u64, why: &str) -> String {
+    format!("#{pr} cannot be opened in this checkout: {why}")
 }
 
 /// An outstanding "may this session reach that folder?" question.

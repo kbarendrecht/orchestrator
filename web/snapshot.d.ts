@@ -254,7 +254,11 @@ workspace: string | null,
  * The live session working on this PR's head ([`Inner::session_on`]), so the
  * row can act as a jump link.
  */
-session: string | null, number: number, title: string, url: string, head_ref: string, 
+session: string | null, 
+/**
+ * What a press on the row's `handle` or `fix` would do. See [`Press`].
+ */
+press: Press, number: number, title: string, url: string, head_ref: string, 
 /**
  * The head branch's repo, `owner/name`, for naming it in a refusal.
  */
@@ -318,6 +322,22 @@ needs_you: boolean,
  * PRs stacked directly on this one.
  */
 children: Array<number>, };
+
+/**
+ * What a press on a PR row's `handle` or `fix` would do, decided here so the page
+ * draws it rather than re-deriving the daemon's rules.
+ *
+ * **The page used to carry a copy of each rule**, `canPress` among them, and it
+ * had to change in step with `triage` every time the hand-off learned something —
+ * a session in main became pressable on 2026-11-01, in two files at once. The
+ * copy also missed one entirely: a PR you may not push to showed both buttons and
+ * refused on the press.
+ *
+ * From the snapshot's own state, so no git: the press itself still locates the
+ * PR afresh (`locate::locate_pr`) and refuses on what it finds, and this is what
+ * the row offers until then.
+ */
+export type Press = { "kind": "open" } | { "kind": "running", session: string, command: string, } | { "kind": "refused", why: string, };
 
 export type ProcKind = { "kind": "managed", command: Array<string>, } | { "kind": "shell", exit_code: number | null, };
 

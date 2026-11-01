@@ -212,7 +212,7 @@ pub(crate) async fn hand_to_live_session(
         and typing a slash command into an unattended run that is rewriting
         this history is how you derail it. Refused by name, like the gate. */
         Some(c) => {
-            bail!("a {c} run is working in {ws}; wait for it to finish or stop it first")
+            bail!("{}", Pass::holds_tree(c, &ws))
         }
         // An ordinary conversation, which is the case the button is for.
         None => {

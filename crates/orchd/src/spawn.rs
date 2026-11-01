@@ -1584,7 +1584,7 @@ pub async fn ensure_pr_worktree_at(
     to that other branch: its review written against your code, its fix pushed
     from your work. Refused by name before any of them runs. */
     let (recorded, on_main) = match &located.place {
-        PrPlace::Foreign(why) => bail!("#{pr} cannot be opened in this checkout: {why}"),
+        PrPlace::Foreign(why) => bail!("{}", cannot_open_pr(pr, why)),
         PrPlace::Worktree { ws, path } if path.is_dir() => return Ok(ws.clone()),
         PrPlace::Worktree { ws, path } => (Some((ws.clone(), path.clone())), false),
         PrPlace::Main => (None, true),

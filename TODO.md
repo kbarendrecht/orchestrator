@@ -5,23 +5,6 @@ this file, which churned it from every build; that feature is gone.
 
 ## Next
 
-- **One deepening left, of four found by asking which callers must know how a
-  thing works inside.** Each one cost bugs on 2026-11-01, which is the evidence;
-  the vocabulary is "deep module" (much behaviour behind a small interface) and its
-  deletion test.
-  Three are done: the base ref as a value (`git::Base`), one answer to where a
-  PR's branch is (`locate::locate_pr`), and every move of main in `carry` or
-  `relocate` behind one lock refusal. What is left:
-  1. **The daemon says which PR-row verbs a press can do.** The SPA copies about
-     eight daemon rules to grey or hide buttons, and `canPress` had to change in
-     step with `triage`. Published per row in the snapshot instead — minding the
-     paint-signature trap for any new field.
-  Left over from the third: "is someone in main" is still asked three ways among
-  the movers — `occupancy` (`refuse_if_main_is_busy`), `main_occupant`
-  (`switch_main_to_pr`) and `occupancy` plus a reservation (`park_main`). The
-  swap's `travelling_from` differs on purpose. Merging the three changes what each
-  refuses, so it waits for a reason.
-
 - **Make it run somewhere other than this machine.** The hardcoded assumptions are
   gone: the six stack-specific settings are `#[serde(default)]` values editable in
   the settings panel, `worktrees_subdir` makes the layout configurable, `docker` and
@@ -263,6 +246,13 @@ this file, which churned it from every build; that feature is gone.
   - **The PR pane could group by session** and show the stack as an indent from
     `base_ref` (option C on the page). Worth it only if the flat list starts to
     hide which PRs belong together.
+
+- **Deferred: "is someone in main" is asked three ways among the movers.**
+  `occupancy` (`carry::refuse_if_main_is_busy`), `main_occupant`
+  (`carry::switch_main_to_pr`), and `occupancy` plus a reservation
+  (`carry::park_main`). The swap's `travelling_from` differs on purpose: it asks
+  who goes along, not who may come in. Merging the three changes what each refuses,
+  so it waits for a reason — a refusal that surprises somebody would be one.
 
 - **Deferred: a checkout with no forge has no way to land work.** A repo with no
   remote is based on main's own branch now (`git::local_base`), so worktrees cut

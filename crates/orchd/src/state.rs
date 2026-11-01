@@ -1727,6 +1727,7 @@ impl AppState {
                         rank: p.rank(),
                         workspace: None,
                         session: None,
+                        press: inner.press_for(p, None),
                     };
                 }
                 let session = inner.session_on(&p.head_ref);
@@ -1740,6 +1741,7 @@ impl AppState {
                     rank: p.rank(),
                     workspace,
                     session,
+                    press: inner.press_for(p, session),
                 }
             })
             .collect();
@@ -2720,6 +2722,87 @@ pub struct PrView {
     /// The live session working on this PR's head ([`Inner::session_on`]), so the
     /// row can act as a jump link.
     pub session: Option<Uuid>,
+    /// What a press on the row's `handle` or `fix` would do. See [`Press`].
+    pub press: Press,
+}
+
+/// What a press on a PR row's `handle` or `fix` would do, decided here so the page
+/// draws it rather than re-deriving the daemon's rules.
+///
+/// **The page used to carry a copy of each rule**, `canPress` among them, and it
+/// had to change in step with `triage` every time the hand-off learned something —
+/// a session in main became pressable on 2026-11-01, in two files at once. The
+/// copy also missed one entirely: a PR you may not push to showed both buttons and
+/// refused on the press.
+///
+/// From the snapshot's own state, so no git: the press itself still locates the
+/// PR afresh (`locate::locate_pr`) and refuses on what it finds, and this is what
+/// the row offers until then.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[cfg_attr(
+    any(test, feature = "test-util"),
+    derive(ts_rs::TS),
+    ts(export, export_to = "snapshot.d.ts")
+)]
+pub enum Press {
+    /// A press starts the job, or hands it to the conversation on the branch.
+    Open,
+    /// A pass is already working on this PR, and the row goes to it: `fix-pr` for
+    /// a fix run, `handle-review` for a review pane.
+    Running {
+        #[cfg_attr(any(test, feature = "test-util"), ts(type = "string"))]
+        session: Uuid,
+        command: String,
+    },
+    /// A press would be refused, and this is the sentence it would be refused with.
+    Refused { why: String },
+}
+
+impl Inner {
+    /// [`Press`] for one PR, given the session [`Inner::session_on`] found on it.
+    ///
+    /// In the order the press asks: a run already going is "go to it", not a
+    /// refusal; then the two things no press can get past, someone else's branch
+    /// and a branch you may not push to; then another pass holding the tree, which
+    /// `triage::hand_to_live_session` refuses by name.
+    pub fn press_for(&self, p: &crate::forge::Pr, session: Option<SessionId>) -> Press {
+        if let Some(PrAutomation::Running { session, .. }) = self.automation.get(p.number) {
+            return Press::Running {
+                session: *session,
+                command: Pass::FIX_PR.to_string(),
+            };
+        }
+        let handling = self.sessions.values().find(|s| {
+            s.state.is_live()
+                && s.pass
+                    .as_ref()
+                    .is_some_and(|pass| pass.pr == p.number && pass.command == Pass::HANDLE_REVIEW)
+        });
+        if let Some(s) = handling {
+            return Press::Running {
+                session: s.id,
+                command: Pass::HANDLE_REVIEW.to_string(),
+            };
+        }
+        if let Some(why) = self.foreign_heads.get(&p.number) {
+            return Press::Refused {
+                why: cannot_open_pr(p.number, why),
+            };
+        }
+        if let Some(why) = p.push_refusal(self.viewer.as_deref().unwrap_or_default()) {
+            return Press::Refused { why };
+        }
+        let other_pass = session
+            .and_then(|id| self.sessions.get(&id))
+            .and_then(|s| s.pass.as_ref().map(|pass| (pass, &s.workspace)));
+        if let Some((pass, ws)) = other_pass {
+            return Press::Refused {
+                why: Pass::holds_tree(&pass.command, ws),
+            };
+        }
+        Press::Open
+    }
 }
 
 /// An ended PR, resolved to a workspace the same way [`PrView`] is.
@@ -3581,6 +3664,59 @@ mod tests {
         assert!(
             app.reserve_main_for_park().await.is_none(),
             "a claim whose session is still being spawned holds main"
+        );
+    }
+
+    /// What a PR row offers, in the order a press asks: a run already going is
+    /// "go to it", then someone else's branch and a branch you may not push to are
+    /// refused, then another pass holding the tree, and only then is it open.
+    #[tokio::test]
+    async fn a_pr_row_offers_what_a_press_would_do() {
+        let app = app().await;
+        let pr = |n: u64, pushable: bool| crate::forge::Pr {
+            head_ref: format!("feature/{n}"),
+            head_repo: Some("acme/repo".into()),
+            head_pushable: Some(pushable),
+            ..crate::testutil::pr(n)
+        };
+        let mut inner = app.inner.write().await;
+        inner.viewer = Some("me".into());
+        assert_eq!(inner.press_for(&pr(1, true), None), Press::Open);
+        assert!(
+            matches!(inner.press_for(&pr(2, false), None), Press::Refused { why } if why.contains("cannot push")),
+            "a branch you may not push to offered a button"
+        );
+        inner
+            .foreign_heads
+            .insert(3, "its head is someone else's".into());
+        assert!(matches!(
+            inner.press_for(&pr(3, true), None),
+            Press::Refused { .. }
+        ));
+
+        // A review pane on #4 is "go to it", whatever else holds the branch.
+        let pane = Uuid::new_v4();
+        let mut s = Session::new(
+            pane,
+            "pr-4".into(),
+            "/tmp".into(),
+            Some(Pass {
+                pr: 4,
+                command: Pass::HANDLE_REVIEW.into(),
+            }),
+        );
+        s.set_state(State::Working);
+        inner.sessions.insert(pane, s);
+        assert_eq!(
+            inner.press_for(&pr(4, true), Some(pane)),
+            Press::Running {
+                session: pane,
+                command: Pass::HANDLE_REVIEW.into()
+            }
+        );
+        // The same pane holding #5's branch is another pass: refused by name.
+        assert!(
+            matches!(inner.press_for(&pr(5, true), Some(pane)), Press::Refused { why } if why.contains("handle-review")),
         );
     }
 

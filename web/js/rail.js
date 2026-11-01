@@ -817,7 +817,8 @@ function prMenu(/** @type {import('../snapshot').PrView} */ p, /** @type {HTMLBu
   return /** @type {[string, string | null, (() => void) | null][]} */ ([
     ['open in main checkout', null, () => openPr(p.number, 'main')],
     ['open in worktree', null, () => openPr(p.number, 'worktree')],
-    ['handle review', null, () => startHandleReview(p.number, btn)],
+    // Greyed where the row offers no press, for the reason the row's chip gives.
+    ['handle review', null, p.press.kind === 'refused' ? null : () => startHandleReview(p.number, btn)],
     ['copy PR number', null, () => { void copyText(String(p.number)).then((ok) => { if (ok) toast(`copied ${p.number}`); }); }],
   ]);
 }
@@ -1036,25 +1037,17 @@ function prRowItems(/** @type {any[]} */ prs) {
   if (!prs.length) {
     return [{ key: 'empty', sig: 'none', build: () => el('div', 'railbtn', 'none open') }];
   }
-  /* Everything a row reads from outside the PR itself is named here: its
-     automation record, which draws the `fixing` chip, and whether its session is
-     the one you are in, which marks the `session` chip. A reused row keeps the
-     closures it was built with, so a signature that missed one would leave a chip
-     pointing at the wrong place. */
+  /* Everything a row reads from outside the PR itself is named here: whether its
+     session is the one you are in, which marks the `session` chip. A reused row
+     keeps the closures it was built with, so a signature that missed one would
+     leave a chip pointing at the wrong place. */
   return prs.slice(0, QUEUE_MAX).map((/** @type {any} */ p) => ({
     key: `pr:${p.number}`,
-    sig: paintSig([p, (snap.automation || {})[p.number], p.session === selected, handling(p)]),
+    /* `press` rides inside `p`, so a run starting or ending repaints the row
+       through `p` alone: it is the daemon's answer to what the row draws. */
+    sig: paintSig([p, p.session === selected]),
     build: () => prRow(p),
   }));
-}
-
-/** The live session handling this PR's review, if one is: a pass started by the
- *  `handle` button. **Read off the session, because a pass has no automation
- *  record**, which is what `fixing` reads, so the button went on saying `handle`
- *  while the pane it started worked. */
-function handling(/** @type {any} */ p) {
-  return (snap.sessions || []).find((/** @type {import('../snapshot').SessionView} */ s) =>
-    s.alive && s.pass?.pr === p.number && s.pass?.command === 'handle-review')?.id ?? null;
 }
 
 /** One PR: what it is, what it wants, and the one chip that moves you. */
@@ -1073,7 +1066,6 @@ function prRow(/** @type {any} */ p) {
     row.appendChild(el('span', 'num', `#${p.number}`));
     row.appendChild(el('span', 'ttl', p.title, p.title));
 
-    const auto = (snap.automation || {})[p.number];
     const needsResolve = p.needs_you;
     const needsFix = inTrouble(p);
 
@@ -1092,38 +1084,31 @@ function prRow(/** @type {any} */ p) {
     // guard table a gate you read rather than one that trips behind you. A run can
     // also arrive here already going, from a review handing on the CI it is not
     // allowed to fix — still something a person set off, by sending the decisions.
-    // The review pass on this PR, if one is running: drawn as `handling`.
-    const handler = needsResolve ? handling(p) : null;
-    if (auto && auto.state === 'running') {
-      const b = prAction('span', 'fix', 'Fixing\u2026', true);
-      b.title = 'Go to the run';
-      b.onclick = (ev) => { ev.preventDefault(); ev.stopPropagation(); setSelected(auto.session); };
+    /* **What a press can do is the daemon's answer** (`state::Press`), not rules
+       copied here. The page used to work it out — the automation record for
+       `fixing`, a session's pass for `handling`, `canPress` for whether a press
+       could do what it says — and `canPress` had to change in step with `triage`
+       whenever the hand-off learned something. It still missed a PR you may not
+       push to: both buttons, then a refusal on the press. */
+    const press = p.press;
+    const running = press.kind === 'running' ? press : null;
+    if (running) {
+      const fixing = running.command === 'fix-pr';
+      const b = prAction('span', fixing ? 'fix' : 'handle', fixing ? 'Fixing\u2026' : 'Handling\u2026', true);
+      b.title = fixing ? 'Go to the run' : 'Go to the session handling the review';
+      b.onclick = (ev) => { ev.preventDefault(); ev.stopPropagation(); setSelected(running.session); };
       row.appendChild(b);
-    } else {
-      /* **Both buttons stay while a session holds the branch**, beside the
-         `session` chip. They used to hide, because the daemon refused both runs
-         then and a button whose only outcome is an error toast is worse than none.
-         It hands the job to that session now (`triage::hand_to_live_session`):
-         `/orchd:handle-review` or `/orchd:fix-pr` typed as your turn, or the
-         refusal said if it is mid-turn or asking you something. */
-      /* **Only where a press can do what it says.** The daemon hands the job to
-         an ordinary conversation on the PR's branch, in a worktree or in main.
-         Beside a pass (a `handle` pane or a `fix-pr` run, whose `pass` stays set)
-         it refuses by name, which was a button whose only outcome was an error
-         toast. */
-      const holder = p.session
-        ? (snap.sessions || []).find((/** @type {import('../snapshot').SessionView} */ s) => s.id === p.session)
-        : null;
-      const canPress = !p.session || (!!holder && !holder.pass);
-      if (handler) {
-        const b = prAction('span', 'handle', 'Handling\u2026', true);
-        b.title = 'Go to the session handling the review';
-        b.onclick = (ev) => { ev.preventDefault(); ev.stopPropagation(); setSelected(handler); };
-        row.appendChild(b);
-      } else if (needsResolve && canPress) {
-        row.appendChild(reviewButtons(p));
-      }
-      if (needsFix && canPress) row.appendChild(actionButton(p, 'fix-pr', 'Fix'));
+    } else if (press.kind === 'open') {
+      if (needsResolve) row.appendChild(reviewButtons(p));
+      if (needsFix) row.appendChild(actionButton(p, 'fix-pr', 'Fix'));
+    } else if (needsResolve || needsFix) {
+      /* No button whose only outcome is an error toast, and not silence either: a
+         chip where the button would be, carrying the sentence the press would have
+         been refused with. On the row itself it was invisible — the title span has
+         a tooltip of its own, and it covers most of the row. */
+      const c = el('span', 'link', 'blocked');
+      c.title = press.why;
+      row.appendChild(c);
     }
 
     /* The row opens the PR; going to its session is the explicit chip, so one does
@@ -1131,14 +1116,11 @@ function prRow(/** @type {any} */ p) {
        because every other chip on this row — `review`, `fix`, `fixing` — is about
        the PR, and this is the only one that moves you somewhere.
 
-       **Not while a run is showing.** `PrView.session` is "a live session in that
-       workspace", and a running `fix-pr` is exactly that, so the row drew two
-       chips onto the same uuid: `fixing`, which says what is happening, and this,
-       which only says that something is. */
-    /* **Not while a run is showing, `fixing` or `handling`.** Each already goes to
-       the session doing it, so a `session` chip beside it was a second button to
-       the same place. */
-    if (p.session && !(auto && auto.state === 'running') && !handler) {
+       **Not while a run is showing, `fixing` or `handling`.** A running pass is
+       exactly "a live session on that branch", so the row drew two chips onto the
+       same uuid: the run's, which says what is happening and already goes there,
+       and this, which only says that something is. */
+    if (p.session && !running) {
       /* Marked when it points at the session you are already in, because pressing
          it then is a no-op and a chip that answers before you press it is better
          than one that answers by doing nothing. `setSelected` is instant and
