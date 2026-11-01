@@ -158,6 +158,9 @@ pub struct AppState {
     /// that had just started. Set by [`AppState::reserve_main_for_park`] in the
     /// same critical section as the check, read by `claim_main` under that lock.
     parking_main: std::sync::atomic::AtomicBool,
+    /// Fired when a park lets go of main, so a claim that arrived during it can go
+    /// on rather than be refused. See `claim_main`.
+    park_done: tokio::sync::Notify,
     /// Held for the length of a reconcile sweep, so two of them cannot overlap.
     ///
     /// One sweep is seven git runs per workspace and there are as many workspaces
@@ -435,6 +438,7 @@ impl Drop for ParkReservation<'_> {
         self.app
             .parking_main
             .store(false, std::sync::atomic::Ordering::SeqCst);
+        self.app.park_done.notify_waiters();
     }
 }
 
@@ -1162,6 +1166,7 @@ impl AppState {
             }),
             swapping: tokio::sync::Mutex::new(()),
             parking_main: std::sync::atomic::AtomicBool::new(false),
+            park_done: tokio::sync::Notify::new(),
             sweeping: tokio::sync::Mutex::new(()),
             cutting: tokio::sync::Mutex::new(()),
             shutting_down: std::sync::atomic::AtomicBool::new(false),
@@ -2063,10 +2068,28 @@ impl AppState {
     /// about exclusivity.
     pub async fn claim_main(&self, session: SessionId) -> Result<()> {
         let several = self.settings().allow_several_in_main;
-        let mut inner = self.inner.write().await;
-        if self.parking_main.load(std::sync::atomic::Ordering::SeqCst) {
-            bail!("main is going back to its base; try again in a moment");
-        }
+        /* **A park in progress is waited out, not refused.** Closing the last
+        session in main and opening another straight away is the ordinary way to
+        start over, and the close is what starts the park — so refusing made that
+        press fail whenever git was slower than the person, which on a CI runner was
+        every time (e2e flow 47). The park is a few git commands; the wait is
+        bounded, and only a park that hangs turns into a refusal.
+        Registered before the flag is read, so a park that ends in between still
+        wakes this, and read under the state lock, which is where the park sets it. */
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+        let mut inner = loop {
+            let done = self.park_done.notified();
+            tokio::pin!(done);
+            done.as_mut().enable();
+            let inner = self.inner.write().await;
+            if !self.parking_main.load(std::sync::atomic::Ordering::SeqCst) {
+                break inner;
+            }
+            drop(inner);
+            if tokio::time::timeout_at(deadline, done).await.is_err() {
+                bail!("main is still going back to its base; try again when it has");
+            }
+        };
         /* **The recorded claim, and then anybody live in main**, the fallback
         `main_occupant` has too. The setting applies on save now, so it can be
         turned off while two sessions share main, and then the claim names only
@@ -3528,22 +3551,30 @@ mod tests {
         );
     }
 
-    /// A park reserves main in the same step as it finds main empty, and every claim
-    /// is refused until it is done. A claim already written, whose session is not
-    /// inserted yet, keeps the park out — the window the park used to switch main in.
+    /// A park reserves main in the same step as it finds main empty, and a claim
+    /// waits until it is done — not refused, because closing the last session in
+    /// main and opening another at once is ordinary. A claim already written, whose
+    /// session is not inserted yet, keeps the park out — the window the park used to
+    /// switch main in.
     #[tokio::test]
     async fn a_park_and_a_claim_cannot_both_have_main() {
         let app = app().await;
         let reserved = app.reserve_main_for_park().await.expect("main is empty");
-        app.claim_main(Uuid::new_v4())
-            .await
-            .expect_err("a claim during the park must wait");
-        drop(reserved);
-
         let claimant = Uuid::new_v4();
-        app.claim_main(claimant)
+        let claim = {
+            let app = app.clone();
+            tokio::spawn(async move { app.claim_main(claimant).await })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            !claim.is_finished(),
+            "a claim during the park must wait for it"
+        );
+        drop(reserved);
+        claim
             .await
-            .expect("the park is over, so main may be claimed");
+            .expect("the claim task ran")
+            .expect("the park is over, so the waiting claim goes through");
         assert!(
             app.reserve_main_for_park().await.is_none(),
             "a claim whose session is still being spawned holds main"
