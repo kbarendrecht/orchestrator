@@ -1336,29 +1336,20 @@ impl AppState {
         self.notify().await;
     }
 
-    /// The workspace already holding this branch, if any.
-    ///
-    /// Read-only: unlike `crate::worktree::ensure_pr_worktree` this never creates
-    /// one, so a gate can be reported without a side effect.
-    ///
-    /// **Here rather than in `api`**: a question about the workspace map is not an
-    /// HTTP question, and reaching up into the handler module for it once made two
-    /// modules import each other.
-    pub async fn workspace_for(&self, head_ref: &str) -> Option<String> {
-        self.holding(head_ref, |_| true).await
-    }
-
     /// The **worktree** holding this branch, if one does.
     ///
     /// Main is never the answer, even when it has this ref checked out: a fix or a
     /// review run sent there would rebase and force-push the one tree every
     /// worktree is cut from.
     ///
-    /// Beside [`Self::workspace_for`] rather than in `spawn`, because the two are
-    /// one query with one word between them, and that word is the whole safety
-    /// rule. Apart, a reader met either one without the other.
+    /// A read of the head poller's cache, so up to two seconds stale. Fine for a
+    /// worktree, which nothing is cut from; main is git's to answer, and
+    /// [`crate::locate::locate_pr`] is where the two are put in order.
     pub async fn worktree_holding(&self, head_ref: &str) -> Option<String> {
-        self.holding(head_ref, |w| !w.is_main()).await
+        self.inner
+            .read()
+            .await
+            .workspace_on(head_ref, |w| !w.is_main())
     }
 
     /// Whether PR `pr`'s head may be taken for the local branch of its name, read
@@ -1397,21 +1388,12 @@ impl AppState {
         head
     }
 
-    /// The one traversal both questions above are: [`Inner::workspace_on`].
-    async fn holding(
-        &self,
-        head_ref: &str,
-        allow: impl Fn(&crate::model::Workspace) -> bool,
-    ) -> Option<String> {
-        self.inner.read().await.workspace_on(head_ref, allow)
-    }
-
     /// Push a worktree's branch, with a lease, against the configured base.
     ///
     /// The base read is a git run too, so it rides the same blocking hop as the
-    /// push. Here for the same reason as [`Self::workspace_for`]: the review's
-    /// posting flow pushes, and it should not have to call a handler module to do
-    /// it.
+    /// push. Here rather than in `api` because a question about the daemon's own
+    /// state is not an HTTP question: the review's posting flow pushes, and it
+    /// should not have to call a handler module to do it.
     pub async fn push_branch(
         &self,
         path: std::path::PathBuf,
@@ -3975,7 +3957,7 @@ mod tests {
     /// **A branch a tree once held is not a branch it holds.**
     ///
     /// Main's branch set only ever grows, so a PR whose head main once visited
-    /// stays in it for good. That used to answer `workspace_for` — the PR row then
+    /// stays in it for good. That used to decide where a PR's branch was — the PR row then
     /// pointed at whoever was in main next — and only one word of one closure kept
     /// it from answering [`AppState::worktree_holding`] too, which would have aimed
     /// a fix or a review run at the checkout every worktree is cut from.
@@ -3991,7 +3973,11 @@ mod tests {
             main.branches.insert("feature/x".to_string());
             main.tree.branch = Some("develop".to_string());
         }
-        assert_eq!(app.workspace_for("feature/x").await, None, "main left it");
+        let held = |app: &Arc<AppState>| {
+            let app = app.clone();
+            async move { app.inner.read().await.workspace_on("feature/x", |_| true) }
+        };
+        assert_eq!(held(&app).await, None, "main left it");
 
         // On it now: main has it, and is still never the worktree for it.
         app.inner
@@ -4002,7 +3988,7 @@ mod tests {
             .expect("main")
             .tree
             .branch = Some("feature/x".to_string());
-        assert_eq!(app.workspace_for("feature/x").await.as_deref(), Some(MAIN));
+        assert_eq!(held(&app).await.as_deref(), Some(MAIN));
         assert_eq!(
             app.worktree_holding("feature/x").await,
             None,

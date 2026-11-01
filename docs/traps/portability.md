@@ -172,7 +172,7 @@ name whose tree was gone. **The repair is to rebuild it where it stood**, not to
 cut a second tree or to prune the record: the session owns that directory,
 because transcripts are keyed by it. A resume already did that
 (`api::revive` → `worktree::revive`); `ensure_pr_worktree` now does it too, via
-`recorded_worktree_for`, which hands back the recorded path precisely so the tree
-can be cut again at it. `worktree_holding` deliberately ignores whether the
+`locate::locate_pr`, whose worktree answer hands back the recorded path precisely
+so the tree can be cut again at it. `worktree_holding` deliberately ignores whether the
 directory exists — a live session whose tree was deleted still holds its branch,
 and `branch_busy` must keep saying so.

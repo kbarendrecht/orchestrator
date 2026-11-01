@@ -135,10 +135,17 @@ pub async fn start(
     // Every rule above still answers first, so a PR you cannot push to is
     // refused before any session is asked to try.
     // Nobody there is `None`, and the run is cut below. Main is asked too, which
-    // `spawn::branch_busy` does not look in: see `hand_to_live_session`.
-    if let Some(id) =
-        crate::triage::hand_to_live_session(app, number, &pr.head_ref, crate::model::Pass::FIX_PR)
-            .await?
+    // `spawn::branch_busy` does not look in: see `hand_to_live_session`. Located
+    // once for the press: the hand-off, the gate and the cut act on one answer.
+    let located = crate::locate::locate_pr(app, number, &pr.head_ref).await?;
+    if let Some(id) = crate::triage::hand_to_live_session(
+        app,
+        &located,
+        number,
+        &pr.head_ref,
+        crate::model::Pass::FIX_PR,
+    )
+    .await?
     {
         app.notify().await;
         return Ok(id);
@@ -150,7 +157,7 @@ pub async fn start(
     This never gated at all. After the press hand-off above, which
     changes no tree: the session there is yours, and its own skill stops on a
     dirty tree. */
-    if let Some(g) = crate::triage::tree_gate(app, &pr.head_ref).await? {
+    if let Some(g) = crate::triage::tree_gate(&located).await? {
         anyhow::bail!("{}", g.say());
     }
 
@@ -177,7 +184,9 @@ pub async fn start(
             );
             true
         });
-    if let Err(e) = crate::spawn::spawn_fix_pr_session(app, number, &pr.head_ref, session).await {
+    if let Err(e) =
+        crate::spawn::spawn_fix_pr_session(app, number, &pr.head_ref, session, &located).await
+    {
         // Nothing started, so nothing may be left claiming to run. Straight back
         // out rather than through `settle`, which would read the PR's checks and
         // write down a verdict for a run that never looked at them.

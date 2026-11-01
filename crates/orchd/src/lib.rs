@@ -29,6 +29,7 @@ pub mod bank;
 pub mod carry;
 pub mod fix_pr;
 pub mod health;
+pub mod locate;
 pub mod managed;
 pub mod model;
 pub mod names;

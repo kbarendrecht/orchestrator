@@ -16,8 +16,9 @@
 use anyhow::{bail, Result};
 use std::sync::Arc;
 
+use crate::locate::{locate_pr, Located, PrPlace};
 use crate::model::*;
-use crate::spawn::ensure_pr_worktree;
+use crate::spawn::ensure_pr_worktree_at;
 use crate::state::AppState;
 
 /// Why a review run cannot start.
@@ -71,7 +72,7 @@ impl Gate {
 /// **It used to be checked twice and shown as a screen**, with `commit…` and
 /// `stash` buttons in front of a review. That went with the overlay; the spawn
 /// refuses with [`Gate::say`] in the toast.
-pub async fn gate(app: &Arc<AppState>, pr: u64, head_ref: &str) -> Result<Option<Gate>> {
+pub async fn gate(app: &Arc<AppState>, pr: u64, located: &Located) -> Result<Option<Gate>> {
     // Only a *running* fix-pr holds the tree. A finished one has let go, so it
     // must not gate.
     let fix_pr_running = matches!(
@@ -81,19 +82,21 @@ pub async fn gate(app: &Arc<AppState>, pr: u64, head_ref: &str) -> Result<Option
     if fix_pr_running {
         return Ok(Some(Gate::FixPrRunning));
     }
-    tree_gate(app, head_ref).await
+    tree_gate(located).await
 }
 
 /// [`gate`] without the fix-pr half, for the fix run itself: its own guard table
 /// refuses a second run, and by the time it asks this its record is not written
 /// yet, so the two halves would only ever disagree about nothing.
 ///
-/// The tree is the one [`crate::spawn::pr_tree`] names: the worktree the flow
-/// would reuse. Main is not gated here, because a flow that finds main on the
-/// branch carries its work out with it by design.
-pub async fn tree_gate(app: &Arc<AppState>, head_ref: &str) -> Result<Option<Gate>> {
-    let Some(at) = crate::spawn::pr_tree(app, head_ref).await? else {
-        return Ok(None);
+/// The tree is the worktree [`crate::locate::locate_pr`] names, when it is still
+/// on disk: the one the flow would reuse. Main is not gated here, because a flow
+/// that finds main on the branch carries its work out with it by design, and
+/// someone else's branch is refused by name where its tree would be cut.
+pub async fn tree_gate(located: &Located) -> Result<Option<Gate>> {
+    let at = match &located.place {
+        PrPlace::Worktree { path, .. } if path.is_dir() => path.clone(),
+        _ => return Ok(None),
     };
     // Both of these read the tree from disk, and `dirty_paths` is a full
     // `git status` — on the monorepo that is a whole-tree scan per worktree, since
@@ -146,29 +149,19 @@ async fn may_push(app: &Arc<AppState>, pr: u64) -> Result<()> {
 /// already has a session open means the same thing for both: ask that session.
 pub(crate) async fn hand_to_live_session(
     app: &Arc<AppState>,
+    located: &Located,
     pr: u64,
     head_ref: &str,
     command: &str,
 ) -> Result<Option<SessionId>> {
-    // The session on a same-named branch of another repository is not working on
-    // this PR, and typing a review of it at that agent would be worse than no
-    // answer. "Nobody is there" sends the caller to the cut, which says why.
-    if app.pr_head(pr).await.refusal.is_some() {
-        return Ok(None);
-    }
-    /* **Main is asked of git, both ways.** `workspace_for` reads `Tree::branch`,
-    which the head poller refreshes every two seconds, while the path that refuses
-    ("a session is still open there") reads main's branch from git. A `git switch`
-    onto the branch followed by a press inside that gap found nobody here and was
-    refused by the other path — e2e flow 19 failed one run in six on it. And the
-    other direction is the one that costs: main switched *off* the branch inside
-    the gap, and a stale "main" typed a fix-pr — rebase and force-push — into the
-    checkout every worktree is cut from, on an unrelated branch. A worktree's
-    answer is taken as it is; nothing is cut from a worktree. */
-    let ws = match app.workspace_for(head_ref).await {
-        Some(ws) if ws != MAIN => ws,
-        _ if crate::spawn::main_is_on(app, head_ref).await? => MAIN.to_string(),
-        _ => return Ok(None),
+    // Someone else's branch of this name is nobody working on this PR, and typing
+    // a review of it at that agent would be worse than no answer: "nobody is
+    // there" sends the caller to the cut, which says why. Main is answered by git,
+    // not the cache — `locate` has the two races that cost.
+    let ws = match &located.place {
+        PrPlace::Worktree { ws, .. } => ws.clone(),
+        PrPlace::Main => MAIN.to_string(),
+        PrPlace::Foreign(_) | PrPlace::Nowhere => return Ok(None),
     };
     /* **The session the PR row names, when it is here.** The row's chip and its
     buttons point at `Inner::session_on` — the newest live session on the branch —
@@ -256,15 +249,15 @@ pub async fn spawn_command_session(
     // force-pushes, so a branch you may not push to is refused by name here rather
     // than by the agent half-way through.
     may_push(app, pr).await?;
-    // If the branch already has a worktree with a live session, take you there
-    // rather than spawning a second one (§8). Only when the branch by that name is
-    // this PR's: otherwise `ensure_pr_worktree` below refuses and says why, and a
-    // same-named tree that is not this PR's is neither handed to nor gated on.
-    let ours = app.pr_head(pr).await.refusal.is_none();
-    if ours {
-        if let Some(id) = hand_to_live_session(app, pr, head_ref, command).await? {
-            return Ok(id);
-        }
+    // If the branch already has a tree with a live session, take you there rather
+    // than spawning a second one (§8). Someone else's branch of the same name is
+    // neither handed to nor gated on — both start from `locate_pr` — and
+    // `ensure_pr_worktree` below refuses it and says why.
+    // Located once for the whole press, so the hand-off, the gate and the cut all
+    // act on the same answer rather than three reads of a branch that may move.
+    let located = locate_pr(app, pr, head_ref).await?;
+    if let Some(id) = hand_to_live_session(app, &located, pr, head_ref, command).await? {
+        return Ok(id);
     }
     /* **The same gates as `fix-pr`**, because the pass writes into that tree: a rebase stopped part-way cannot take a commit, a running `fix-pr`
     is rewriting the same history, and a dirty tree means the first thing this
@@ -274,10 +267,8 @@ pub async fn spawn_command_session(
     on the pane already doing this is not a refusal case. And before
     `ensure_pr_worktree`, so the tree it reuses is asked about before anything
     is written into it rather than after. */
-    if ours {
-        if let Some(g) = gate(app, pr, head_ref).await? {
-            bail!("{}", g.say());
-        }
+    if let Some(g) = gate(app, pr, &located).await? {
+        bail!("{}", g.say());
     }
 
     // Reuse the worktree holding the branch, or pin one to it. `git worktree add`
@@ -294,7 +285,7 @@ pub async fn spawn_command_session(
     // What it claimed to prevent does not happen (transcripts are keyed by session
     // uuid; `spawn_worktree_session` has the whole account), and the real hazard,
     // a resume into a tree cut again at the same path, is `worktree::branch_drift`'s.
-    let name = ensure_pr_worktree(app, pr, head_ref).await?;
+    let name = ensure_pr_worktree_at(app, pr, head_ref, &located).await?;
     start_with_prompt(app, &name, pr, command).await
 }
 
@@ -689,7 +680,8 @@ mod tests {
     async fn a_stale_cache_does_not_hand_a_pr_to_main() {
         let (app, dir, _) = with_main_on_branch("handle-stale", &[None]).await;
         crate::testutil::git(&dir, &["switch", "-q", "trunk"]);
-        let handed = hand_to_live_session(&app, 4, "feature/x", Pass::FIX_PR)
+        let located = locate_pr(&app, 4, "feature/x").await.unwrap();
+        let handed = hand_to_live_session(&app, &located, 4, "feature/x", Pass::FIX_PR)
             .await
             .expect("not an error, just nobody");
         assert_eq!(handed, None, "main left the branch, so it is not asked");
@@ -706,7 +698,8 @@ mod tests {
             command: Pass::FIX_PR.to_string(),
         };
         let (app, dir, ids) = with_main_on_branch("handle-named", &[None, Some(pass)]).await;
-        let handed = hand_to_live_session(&app, 4, "feature/x", Pass::FIX_PR)
+        let located = locate_pr(&app, 4, "feature/x").await.unwrap();
+        let handed = hand_to_live_session(&app, &located, 4, "feature/x", Pass::FIX_PR)
             .await
             .expect("landing on the run already going is not a refusal");
         assert_eq!(

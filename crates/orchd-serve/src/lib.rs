@@ -952,7 +952,7 @@ enum Swept {
 /// **A row whose tree is gone is kept, on purpose.** `claude --worktree` removes
 /// its own tree when its session ends, and a person runs `git worktree remove` by
 /// hand; either way the record is the point the PR flows and `revive` rebuild the
-/// tree *at* (`recorded_worktree_for` says why a second tree elsewhere is worse).
+/// tree *at* (`locate::recorded_tree` says why a second tree elsewhere is worse).
 /// What the row must not do is cost anything meanwhile: measuring it ran seven git
 /// processes into ENOENT and logged a warning per sweep, 68 of them after 34 trees
 /// were removed by hand (#10), and the tally still counted the ghosts.

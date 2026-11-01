@@ -5,21 +5,17 @@ this file, which churned it from every build; that feature is gone.
 
 ## Next
 
-- **Three deepenings, found by asking which callers must know how a thing works
+- **Two deepenings, found by asking which callers must know how a thing works
   inside.** Each one cost bugs on 2026-11-01, which is the evidence; the vocabulary
   is "deep module" (much behaviour behind a small interface) and its deletion test.
-  A fourth, the base ref as a value (`git::Base`), is done. The rest, in this
-  order, each its own commit:
-  1. **One answer to "where is this PR's branch".** Twelve functions across
-     `state`, `spawn` and `triage` each answer part of it, from two sources (the
-     two-second cache and git), in an order every caller must know. One
-     `locate_pr` that says foreign, a worktree, main, or nowhere, and reads git
-     for main itself. Cost both hand-off races.
-  2. **One module for every move of main's branch.** Swap, its undo, move-out,
+  Two more are done: the base ref as a value (`git::Base`) and one answer to
+  where a PR's branch is (`locate::locate_pr`). The rest, in this order, each its
+  own commit:
+  1. **One module for every move of main's branch.** Swap, its undo, move-out,
      park, open-in-main and the move inside `ensure_pr_worktree` each repeat the
      same steps: lock, re-read, occupancy, who travels, git, carry, reconcile,
      undo. Cost four bugs; `MainMove` made one of those steps a compile error.
-  3. **The daemon says which PR-row verbs a press can do.** The SPA copies about
+  2. **The daemon says which PR-row verbs a press can do.** The SPA copies about
      eight daemon rules to grey or hide buttons, and `canPress` had to change in
      step with `triage`. Published per row in the snapshot instead — minding the
      paint-signature trap for any new field.
