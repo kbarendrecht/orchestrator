@@ -5,6 +5,31 @@ this file, which churned it from every build; that feature is gone.
 
 ## Next
 
+- **Four deepenings, found by asking which callers must know how a thing works
+  inside.** Each one cost bugs on 2026-11-01, which is the evidence; the vocabulary
+  is "deep module" (much behaviour behind a small interface) and its deletion test.
+  Done in this order, each its own commit:
+  1. **The base ref as a value, not a string.** Seventeen git functions take it as
+     `&str` meaning either a ref to measure against or a branch to check out, and
+     three places split it into remote and branch, each by its own rule
+     (`Config::parse`, `git::split_upstream`, the first-run write). Parsed once
+     into a `Base` that knows how to fetch itself, what to check out and whether it
+     is local. Cost three bugs: a slash read as a remote, `is_local_base`
+     disagreeing with `local_base`, a local base going stale silently.
+  2. **One answer to "where is this PR's branch".** Twelve functions across
+     `state`, `spawn` and `triage` each answer part of it, from two sources (the
+     two-second cache and git), in an order every caller must know. One
+     `locate_pr` that says foreign, a worktree, main, or nowhere, and reads git
+     for main itself. Cost both hand-off races.
+  3. **One module for every move of main's branch.** Swap, its undo, move-out,
+     park, open-in-main and the move inside `ensure_pr_worktree` each repeat the
+     same steps: lock, re-read, occupancy, who travels, git, carry, reconcile,
+     undo. Cost four bugs; `MainMove` made one of those steps a compile error.
+  4. **The daemon says which PR-row verbs a press can do.** The SPA copies about
+     eight daemon rules to grey or hide buttons, and `canPress` had to change in
+     step with `triage`. Published per row in the snapshot instead — minding the
+     paint-signature trap for any new field.
+
 - **Make it run somewhere other than this machine.** The hardcoded assumptions are
   gone: the six stack-specific settings are `#[serde(default)]` values editable in
   the settings panel, `worktrees_subdir` makes the layout configurable, `docker` and
