@@ -247,13 +247,6 @@ this file, which churned it from every build; that feature is gone.
     `base_ref` (option C on the page). Worth it only if the flat list starts to
     hide which PRs belong together.
 
-- **Deferred: "is someone in main" is asked three ways among the movers.**
-  `occupancy` (`carry::refuse_if_main_is_busy`), `main_occupant`
-  (`carry::switch_main_to_pr`), and `occupancy` plus a reservation
-  (`carry::park_main`). The swap's `travelling_from` differs on purpose: it asks
-  who goes along, not who may come in. Merging the three changes what each refuses,
-  so it waits for a reason — a refusal that surprises somebody would be one.
-
 - **Deferred: a checkout with no forge has no way to land work.** A repo with no
   remote is based on main's own branch now (`git::local_base`), so worktrees cut
   and diff the way they do anywhere. What it lacks is the step a merged PR is

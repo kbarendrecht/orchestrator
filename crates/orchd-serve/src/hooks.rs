@@ -1512,7 +1512,7 @@ mod tests {
             );
         }
         assert_eq!(
-            app.main_occupant().await,
+            app.main_in_use_now().await,
             Some(id),
             "nor hand main's claim back"
         );
@@ -1674,7 +1674,7 @@ mod tests {
             );
             drop(inner);
             assert_eq!(
-                app.main_occupant().await,
+                app.main_in_use_now().await,
                 Some(id),
                 "`{reason}` must not hand main's claim back"
             );
@@ -1705,7 +1705,7 @@ mod tests {
                 "a real ending still ends it"
             );
         }
-        assert_eq!(app.main_occupant().await, None, "and releases main");
+        assert_eq!(app.main_in_use_now().await, None, "and releases main");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

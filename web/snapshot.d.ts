@@ -696,7 +696,8 @@ occupant: string | null,
 /**
  * Who holds main, by the rule the daemon refuses on ([`AppState::main_holder`]):
  * the live claimant, else the oldest live session in main, else one auto-resume
- * is about to bring back. `None` on every other workspace. The "+ main" button
+ * is about to bring back, else one still starting. `None` on every other
+ * workspace. The "+ main" button
  * reads this, because a page that decided from `occupant` offered a session
  * the daemon then refused.
  */

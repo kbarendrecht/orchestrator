@@ -623,14 +623,18 @@ async fn spawn_session_claimed(
     // refusal costs no worktree and no pty. The claim is *given back* here rather
     // than in the body, because everything below this line is fallible — the env
     // source, the transcript read, `claude` itself — and a claim left behind by a
-    // spawn that never happened names a session that does not exist. Every reader
-    // live-filters the occupant and so recovers, which is why this was invisible;
-    // it is closed at the one place that knows the spawn failed.
-    if workspace == MAIN {
-        app.claim_main(id).await?;
-    }
+    // spawn that never happened names a session that does not exist; it is closed
+    // at the one place that knows the spawn failed. The guard the claim hands back
+    // marks the session as starting in main (`state::StartingInMain`) until the
+    // spawn returns: by then it is live in the list, or it failed and the claim is
+    // given back below.
+    let _starting = if workspace == MAIN {
+        Some(app.claim_main(id).await?)
+    } else {
+        None
+    };
     let out = spawn_session_with_id(app, workspace, pass, source, id).await;
-    if out.is_err() && workspace == MAIN {
+    if out.is_err() && _starting.is_some() {
         app.release_main(id).await;
     }
     out

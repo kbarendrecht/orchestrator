@@ -483,7 +483,7 @@ pub(crate) async fn free_pr_branch(
 /// flow for it was impossible until you went and stashed by hand. They are carried
 /// now; see [`free_pr_branch`].
 async fn refuse_if_main_is_busy(app: &Arc<AppState>, pr: u64, head_ref: &str) -> Result<()> {
-    if app.occupancy(MAIN).await.is_empty() {
+    if app.main_in_use_now().await.is_none() {
         return Ok(());
     }
     bail!(
@@ -521,7 +521,7 @@ pub(crate) async fn park_main(app: &Arc<AppState>) {
     }
     // Nor while auto-resume is still bringing a session back into main: it expects
     // the branch it left on, the same reason a shutdown does not park.
-    if !app.occupancy(MAIN).await.is_empty() {
+    if app.main_in_use_now().await.is_some() {
         return;
     }
     /* **This moves main's branch, and possibly a worktree's, so it is a swap.**
@@ -756,10 +756,9 @@ pub(crate) async fn switch_main_to_pr(
         }
         PrPlace::Main | PrPlace::Nowhere => {}
     }
-    // The canonical live-filtered read, not the bare `occupant`: a stale occupant
-    // (session gone, `release_main` not yet run) must not block moving the checkout
-    // when `claim_main` would already let a new session in.
-    if let Some(held) = app.main_occupant().await {
+    // The one question every move of main asks (`AppState::main_in_use`): a live
+    // session, one auto-resume is bringing back, or one claimed and still starting.
+    if let Some(held) = app.main_in_use_now().await {
         bail!(
             "a session already holds main ({}); end it before moving the checkout",
             crate::model::short_id(&held)

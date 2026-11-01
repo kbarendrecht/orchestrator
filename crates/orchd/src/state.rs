@@ -161,6 +161,10 @@ pub struct AppState {
     /// Fired when a park lets go of main, so a claim that arrived during it can go
     /// on rather than be refused. See `claim_main`.
     park_done: tokio::sync::Notify,
+    /// Sessions that have claimed main and are still starting: between the claim
+    /// and the record their spawn inserts, which is the time `mise env` takes.
+    /// Held by [`StartingInMain`], which `claim_main` hands back.
+    starting_in_main: std::sync::Mutex<HashSet<SessionId>>,
     /// Held for the length of a reconcile sweep, so two of them cannot overlap.
     ///
     /// One sweep is seven git runs per workspace and there are as many workspaces
@@ -428,6 +432,37 @@ pub struct Inner {
 /// Given back on drop.
 pub struct MainMove<'a> {
     _held: tokio::sync::MutexGuard<'a, ()>,
+}
+
+/// A session that has claimed main and is still starting, until its spawn returns.
+///
+/// **Marked, not inferred.** "Claimed, with no record yet" was the first reading
+/// of this, and it missed a resume: a resume keeps its id, so the stopped record
+/// is still there while it starts, and the window stayed open for exactly the
+/// sessions most likely to come back into main. A guard the claim hands back is
+/// the one thing that knows a start is in progress, and dropping it — the spawn
+/// returning, failed or not — is the one thing that ends it.
+pub struct StartingInMain<'a> {
+    app: &'a AppState,
+    session: SessionId,
+}
+
+impl std::fmt::Debug for StartingInMain<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("StartingInMain")
+            .field(&self.session)
+            .finish()
+    }
+}
+
+impl Drop for StartingInMain<'_> {
+    fn drop(&mut self) {
+        self.app
+            .starting_in_main
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.session);
+    }
 }
 
 /// Main reserved for a park. See [`AppState::reserve_main_for_park`].
@@ -1169,6 +1204,7 @@ impl AppState {
             swapping: tokio::sync::Mutex::new(()),
             parking_main: std::sync::atomic::AtomicBool::new(false),
             park_done: tokio::sync::Notify::new(),
+            starting_in_main: std::sync::Mutex::new(HashSet::new()),
             sweeping: tokio::sync::Mutex::new(()),
             cutting: tokio::sync::Mutex::new(()),
             shutting_down: std::sync::atomic::AtomicBool::new(false),
@@ -1898,35 +1934,24 @@ impl AppState {
     // Main occupancy
     // -----------------------------------------------------------------------
 
-    /// Who holds main, if anyone still live.
+    /// Who holds main, for the page: the snapshot's `held_by`.
     ///
-    /// The canonical read of "is main occupied": `occupant` is hand-maintained and
-    /// `release_main` can lag a session's death, so a *live* filter is the
-    /// difference between the truth and a stale name. Read-only callers ask through
-    /// here; `claim_main` repeats the same live filter inline because it must check
-    /// and set under one write lock. What must never recur is a caller trusting the
-    /// bare field — `switch_main_to_pr` did, and gave the opposite answer to
-    /// `claim_main` for the same "is anyone in main" question.
-    pub async fn main_occupant(&self) -> Option<SessionId> {
-        let inner = self.inner.read().await;
-        self.main_holder(&inner)
-    }
-
-    /// [`AppState::main_occupant`], for a caller already holding the state — the
-    /// snapshot, which hands the page this answer rather than the bare claim.
+    /// The live claimant when there is one, else [`AppState::main_in_use`], which a
+    /// move of main's branch asks directly. Never the bare `occupant` field:
+    /// `release_main` can lag a session's death, and `switch_main_to_pr` once
+    /// trusted the field and gave the opposite answer to `claim_main` for the same
+    /// question.
     pub fn main_holder(&self, inner: &Inner) -> Option<SessionId> {
         let recorded = inner
             .workspaces
             .get(MAIN)
             .and_then(|w| w.occupant)
             .filter(|id| inner.sessions.get(id).is_some_and(occupies));
-        // With `allow_several_in_main` there can be a live session in main that the
-        // single `occupant` field does not name, and every caller here is asking
-        // "may I move this checkout" rather than "who is the holder". Answering
-        // with the recorded one alone would let a swap pull the tree out from under
-        // the others. Deterministic — oldest first — so the message names the same
-        // session twice running.
-        recorded.or_else(|| self.occupancy_in(inner, MAIN).holder())
+        // The recorded claimant is named first, because it is the one the page has
+        // drawn in main; anybody else in main — with `allow_several_in_main` a
+        // live session the single field does not name, one coming back, one still
+        // starting — is `main_in_use`'s answer.
+        recorded.or_else(|| self.main_in_use(inner))
     }
 
     /// Auto-resume's intent for this session is over: it has been spawned or has
@@ -1948,17 +1973,45 @@ impl AppState {
     /// spawn inserts the record.
     pub async fn reserve_main_for_park(&self) -> Option<ParkReservation<'_>> {
         let inner = self.inner.write().await;
-        let claimed_not_yet_spawned = inner
-            .workspaces
-            .get(MAIN)
-            .and_then(|w| w.occupant)
-            .is_some_and(|id| !inner.sessions.contains_key(&id));
-        if claimed_not_yet_spawned || !self.occupancy_in(&inner, MAIN).is_empty() {
+        if self.main_in_use(&inner).is_some() {
             return None;
         }
         self.parking_main
             .store(true, std::sync::atomic::Ordering::SeqCst);
         Some(ParkReservation { app: self })
+    }
+
+    /// Who is in main, or about to be: the one question every move of main's branch
+    /// asks before it moves anything.
+    ///
+    /// [`AppState::occupancy`] of main, **and a session still starting there**
+    /// ([`StartingInMain`]). A spawn into main claims first and is live only once
+    /// its environment is built — `mise env`, a few hundred milliseconds — and
+    /// only the park counted that window. A press of `handle` or "open in main"
+    /// inside it moved main's branch under an agent that was starting, which is the
+    /// bug the park's reservation was written for, still open on the other two.
+    pub fn main_in_use(&self, inner: &Inner) -> Option<SessionId> {
+        self.main_in_use_except(inner, None)
+    }
+
+    /// [`AppState::main_in_use`], not counting `except`: what `claim_main` asks,
+    /// since a session never holds main against its own claim or resume.
+    fn main_in_use_except(&self, inner: &Inner, except: Option<SessionId>) -> Option<SessionId> {
+        let occupancy = self.occupancy_in(inner, MAIN);
+        let other = |id: &SessionId| Some(*id) != except;
+        occupancy
+            .live
+            .iter()
+            .copied()
+            .find(other)
+            .or(occupancy.waiting.filter(other))
+            .or_else(|| self.starting_main(except))
+    }
+
+    /// [`AppState::main_in_use`], for a caller not already holding the state.
+    pub async fn main_in_use_now(&self) -> Option<SessionId> {
+        let inner = self.inner.read().await;
+        self.main_in_use(&inner)
     }
 
     /// Take the lock for moving main's branch, or `None` while another move holds
@@ -2071,7 +2124,7 @@ impl AppState {
     /// claim is still recorded, because everything else keyed on it — the swap's
     /// hand-back, `reclaim_main`, the rail's label — is about the tree rather than
     /// about exclusivity.
-    pub async fn claim_main(&self, session: SessionId) -> Result<()> {
+    pub async fn claim_main(&self, session: SessionId) -> Result<StartingInMain<'_>> {
         let several = self.settings().allow_several_in_main;
         /* **A park in progress is waited out, not refused.** Closing the last
         session in main and opening another straight away is the ordinary way to
@@ -2096,22 +2149,18 @@ impl AppState {
             }
         };
         /* **The recorded claim, and then anybody live in main**, the fallback
-        `main_occupant` has too. The setting applies on save now, so it can be
+        `main_holder` has too. The setting applies on save now, so it can be
         turned off while two sessions share main, and then the claim names only
         the last one to take it. When that one exits the slot reads empty while
         the other is still working, and a third came in with the setting off. The
         swap is not refused by this: it moves the outgoing session out before the
         incoming one claims, and a resume claims under its own id. */
-        let occupancy = self.occupancy_in(&inner, MAIN);
         let held = inner
             .workspaces
             .get(MAIN)
             .and_then(|w| w.occupant)
-            .filter(|id| inner.sessions.get(id).is_some_and(occupies))
-            .or_else(|| occupancy.live.iter().copied().find(|id| *id != session))
-            // A session auto-resume has not reached yet holds main too, except
-            // against its own resume.
-            .or_else(|| occupancy.waiting.filter(|id| *id != session));
+            .filter(|id| *id != session && inner.sessions.get(id).is_some_and(occupies))
+            .or_else(|| self.main_in_use_except(&inner, Some(session)));
         if let Some(holder) = held {
             if holder != session && !several {
                 bail!("main is occupied by session {holder}");
@@ -2120,7 +2169,25 @@ impl AppState {
         if let Some(w) = inner.workspaces.get_mut(MAIN) {
             w.occupant = Some(session);
         }
-        Ok(())
+        // Marked under the same lock as the claim, so nothing can see one without
+        // the other.
+        self.starting_in_main
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(session);
+        Ok(StartingInMain { app: self, session })
+    }
+
+    /// A session that has claimed main and is still starting, other than `except`.
+    /// Lowest id first, so a refusal names the same one twice running.
+    fn starting_main(&self, except: Option<SessionId>) -> Option<SessionId> {
+        self.starting_in_main
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .copied()
+            .filter(|id| Some(*id) != except)
+            .min()
     }
 
     /// Take main's claim again, for a session that already holds it, if it has been
@@ -2861,7 +2928,8 @@ pub struct WorkspaceView {
     pub occupant: Option<Uuid>,
     /// Who holds main, by the rule the daemon refuses on ([`AppState::main_holder`]):
     /// the live claimant, else the oldest live session in main, else one auto-resume
-    /// is about to bring back. `None` on every other workspace. The "+ main" button
+    /// is about to bring back, else one still starting. `None` on every other
+    /// workspace. The "+ main" button
     /// reads this, because a page that decided from `occupant` offered a session
     /// the daemon then refused.
     pub held_by: Option<Uuid>,
@@ -3260,7 +3328,7 @@ mod tests {
             .insert(waiting);
         app.auto_resuming.store(true, SeqCst);
 
-        assert_eq!(app.main_occupant().await, Some(waiting));
+        assert_eq!(app.main_in_use_now().await, Some(waiting));
         app.claim_main(Uuid::new_v4())
             .await
             .expect_err("a new session must not take main from one coming back");
@@ -3271,7 +3339,7 @@ mod tests {
 
         app.auto_resuming.store(false, SeqCst);
         assert_eq!(
-            app.main_occupant().await,
+            app.main_in_use_now().await,
             None,
             "auto-resume is done, so main is free"
         );
@@ -3497,7 +3565,7 @@ mod tests {
     }
 
     /// What must *not* be relaxed. `switch_main_to_pr` and the swap ask
-    /// `main_occupant` before moving the checkout, and with several sessions the
+    /// `main_in_use` before moving the checkout, and with several sessions the
     /// single `occupant` field can name none of the live ones — a released claim
     /// with somebody still working there would have read as an empty main.
     #[tokio::test]
@@ -3519,7 +3587,7 @@ mod tests {
         assert_eq!(shared.inner.read().await.workspaces[MAIN].occupant, None);
 
         assert_eq!(
-            shared.main_occupant().await,
+            shared.main_in_use_now().await,
             Some(one),
             "somebody is still working in main, so the checkout must not move"
         );
@@ -3573,7 +3641,7 @@ mod tests {
             }
         }
         assert_eq!(
-            app.main_occupant().await,
+            app.main_in_use_now().await,
             None,
             "a dead occupant does not hold main"
         );
@@ -3637,6 +3705,50 @@ mod tests {
         );
     }
 
+    /// Main is in use while a session in it is live, being resumed, or claimed and
+    /// still starting — the window where only the park used to look, and `handle`
+    /// or "open in main" could move main's branch under an agent coming up.
+    #[tokio::test]
+    async fn main_is_in_use_from_the_claim_not_from_the_insert() {
+        let app = app().await;
+        assert_eq!(app.main_in_use_now().await, None);
+
+        let starting = Uuid::new_v4();
+        let start = app.claim_main(starting).await.expect("main is free");
+        assert_eq!(
+            app.main_in_use_now().await,
+            Some(starting),
+            "a claimed session still building its environment holds main"
+        );
+        app.claim_main(Uuid::new_v4())
+            .await
+            .expect_err("a second claim must not overwrite one still starting");
+        drop(start);
+        app.release_main(starting).await;
+        assert_eq!(
+            app.main_in_use_now().await,
+            None,
+            "a finished start holds nothing"
+        );
+
+        // A resume keeps its id, so the stopped record is there while it starts —
+        // the case reading "no record yet" as "starting" missed.
+        let back = Uuid::new_v4();
+        {
+            let mut inner = app.inner.write().await;
+            let mut s = Session::new(back, MAIN.to_string(), "/tmp".into(), None);
+            s.set_state(State::Exited);
+            inner.sessions.insert(back, s);
+        }
+        let resuming = app.claim_main(back).await.expect("main is free");
+        assert_eq!(app.main_in_use_now().await, Some(back));
+        drop(resuming);
+        app.release_main(back).await;
+
+        let live = live_in_main(&app).await;
+        assert_eq!(app.main_in_use_now().await, Some(live));
+    }
+
     /// A park reserves main in the same step as it finds main empty, and a claim
     /// waits until it is done — not refused, because closing the last session in
     /// main and opening another at once is ordinary. A claim already written, whose
@@ -3649,7 +3761,7 @@ mod tests {
         let claimant = Uuid::new_v4();
         let claim = {
             let app = app.clone();
-            tokio::spawn(async move { app.claim_main(claimant).await })
+            tokio::spawn(async move { app.claim_main(claimant).await.map(drop) })
         };
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         assert!(
@@ -3661,10 +3773,12 @@ mod tests {
             .await
             .expect("the claim task ran")
             .expect("the park is over, so the waiting claim goes through");
+        let start = app.claim_main(claimant).await.expect("its own claim again");
         assert!(
             app.reserve_main_for_park().await.is_none(),
             "a claim whose session is still being spawned holds main"
         );
+        drop(start);
     }
 
     /// What a PR row offers, in the order a press asks: a run already going is
@@ -3759,7 +3873,7 @@ mod tests {
             Some(live),
             "unclaimed, and live"
         );
-        assert_eq!(held(app.snapshot().await), app.main_occupant().await);
+        assert_eq!(held(app.snapshot().await), app.main_in_use_now().await);
     }
 
     #[tokio::test]
