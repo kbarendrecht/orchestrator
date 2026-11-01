@@ -646,6 +646,61 @@ fn a_checkout_with_no_remote_is_based_on_its_own_branch() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A local base never has a slash, because every reader takes the part before it
+/// as a remote; it is local only while the repo has no remote at all; and one that
+/// outgrew that is named, with the remote ref it should be.
+#[test]
+fn a_local_base_has_no_slash_and_no_remote() {
+    let dir = std::env::temp_dir().join(format!(
+        "orchd-localslash-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let repo = dir.join("repo");
+    git(&dir, &["init", "-q", "-b", "main", "repo"]).unwrap();
+    git(&repo, &["config", "user.email", "t@t"]).unwrap();
+    git(&repo, &["config", "user.name", "t"]).unwrap();
+    git(&repo, &["commit", "-q", "--allow-empty", "-m", "a"]).unwrap();
+    git(&repo, &["switch", "-q", "-c", "release/2.0"]).unwrap();
+
+    // On a slash branch, the base is `main` rather than `release` + `2.0`.
+    assert_eq!(local_base(&repo).as_deref(), Some("main"));
+    assert!(!is_local_base(&repo, "release/2.0"));
+    // And with only slash branches there is no local base to give.
+    git(&repo, &["branch", "-q", "-m", "main", "team/main"]).unwrap();
+    assert_eq!(local_base(&repo), None);
+    git(&repo, &["branch", "-q", "-m", "team/main", "main"]).unwrap();
+    assert_eq!(outgrown_local_base(&repo, "main"), None, "no remote yet");
+
+    // One remote, not `origin`: a bare base is a misconfiguration, not local, so
+    // the fetch must go on failing out loud.
+    git(
+        &repo,
+        &["remote", "add", "upstream", "git@github.com:acme/thing.git"],
+    )
+    .unwrap();
+    assert!(!is_local_base(&repo, "main"));
+    assert!(fetch_upstream(&repo, "main").is_err());
+    assert_eq!(
+        outgrown_local_base(&repo, "main").as_deref(),
+        Some("upstream/main")
+    );
+    // `origin` is preferred when there is one.
+    git(
+        &repo,
+        &["remote", "add", "origin", "git@github.com:you/thing.git"],
+    )
+    .unwrap();
+    assert_eq!(
+        outgrown_local_base(&repo, "main").as_deref(),
+        Some("origin/main")
+    );
+    assert_eq!(outgrown_local_base(&repo, "origin/main"), None);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A WIP that will not re-apply is a warning on a swap that happened, never an
 /// error instead of it.
 ///

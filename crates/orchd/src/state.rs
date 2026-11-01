@@ -149,6 +149,15 @@ pub struct AppState {
     /// branch now asks for the [`MainMove`] this hands out, so forgetting the lock
     /// is a compile error rather than a race found later.
     swapping: tokio::sync::Mutex<()>,
+    /// Main is going back to its base, and nobody may claim it until it is there.
+    ///
+    /// **The move lock alone could not say so.** `park_main` decides main is
+    /// empty, takes [`AppState::move_main`] and then runs git for a while; a
+    /// session pressed into main in that window claims it through `claim_main`,
+    /// which never took the move lock — so the park switched main under an agent
+    /// that had just started. Set by [`AppState::reserve_main_for_park`] in the
+    /// same critical section as the check, read by `claim_main` under that lock.
+    parking_main: std::sync::atomic::AtomicBool,
     /// Held for the length of a reconcile sweep, so two of them cannot overlap.
     ///
     /// One sweep is seven git runs per workspace and there are as many workspaces
@@ -403,24 +412,30 @@ pub struct Inner {
     pub external: Vec<crate::store::ExternalConversation>,
 }
 
-/// Releases a lock taken with [`AppState::try_claim`] when it goes out of scope.
-///
-/// A guard rather than a release at each exit, because the work these protect has
-/// several `?` between the claim and the finish and every one of them would
-/// otherwise leak the lock — which, for a once-per-PR lock, means the button never
-/// works again until a restart.
-///
-/// The one guard for every named lock. `api.rs` carried a second copy of this for
-/// the post lock, and both released through a spawned task; see
-/// [`AppState::locks_held`] for why the release is synchronous now.
 /// Proof that the holder has the one lock every move of main's branch takes.
 ///
-/// Only [`AppState::move_main`] makes one, and the functions that move the branch
-/// take it by reference, so a path that moves main without the lock does not
-/// compile. Held for as long as the move — and, where a session then claims main,
-/// until that claim — and given back on drop.
+/// Only [`AppState::move_main`] makes one. The runtime's movers of main take it by
+/// reference — `carry::move_out`, `carry::move_back`, `spawn::switch_main_to_pr`
+/// and `relocate`'s `undo_swap` — so a new path into any of them without the lock
+/// does not compile. **The git functions underneath are not covered**: they live
+/// in `orchd-base`, below this type, and are called directly only by the swap and
+/// `park_main`, which take the guard themselves. A new caller of those is the one
+/// case this cannot catch. Given back on drop.
 pub struct MainMove<'a> {
     _held: tokio::sync::MutexGuard<'a, ()>,
+}
+
+/// Main reserved for a park. See [`AppState::reserve_main_for_park`].
+pub struct ParkReservation<'a> {
+    app: &'a AppState,
+}
+
+impl Drop for ParkReservation<'_> {
+    fn drop(&mut self) {
+        self.app
+            .parking_main
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 /// Who is in a workspace. See [`AppState::occupancy`].
@@ -456,6 +471,16 @@ pub fn occupies(s: &Session) -> bool {
     s.state.is_live() && s.pid.is_none_or(pid_alive)
 }
 
+/// Releases a lock taken with [`AppState::try_claim`] when it goes out of scope.
+///
+/// A guard rather than a release at each exit, because the work these protect has
+/// several `?` between the claim and the finish and every one of them would
+/// otherwise leak the lock — which, for a once-per-PR lock, means the button never
+/// works again until a restart.
+///
+/// The one guard for every named lock. `api.rs` carried a second copy of this for
+/// the post lock, and both released through a spawned task; see
+/// [`AppState::locks_held`] for why the release is synchronous now.
 pub struct Claim {
     app: Arc<AppState>,
     lock: String,
@@ -1136,6 +1161,7 @@ impl AppState {
                 external: Vec::new(),
             }),
             swapping: tokio::sync::Mutex::new(()),
+            parking_main: std::sync::atomic::AtomicBool::new(false),
             sweeping: tokio::sync::Mutex::new(()),
             cutting: tokio::sync::Mutex::new(()),
             shutting_down: std::sync::atomic::AtomicBool::new(false),
@@ -1924,6 +1950,28 @@ impl AppState {
             .remove(&id);
     }
 
+    /// Reserve main for `park_main`: `None` when anybody is in it, else a guard that
+    /// keeps every `claim_main` out until it drops.
+    ///
+    /// Asked under the state lock, so the check and the reservation are one step
+    /// against `claim_main`, which reads the flag under the same lock. A claim
+    /// whose session is not inserted yet counts: the claim is written before the
+    /// spawn inserts the record.
+    pub async fn reserve_main_for_park(&self) -> Option<ParkReservation<'_>> {
+        let inner = self.inner.write().await;
+        let claimed_not_yet_spawned = inner
+            .workspaces
+            .get(MAIN)
+            .and_then(|w| w.occupant)
+            .is_some_and(|id| !inner.sessions.contains_key(&id));
+        if claimed_not_yet_spawned || !self.occupancy_in(&inner, MAIN).is_empty() {
+            return None;
+        }
+        self.parking_main
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        Some(ParkReservation { app: self })
+    }
+
     /// Take the lock for moving main's branch, or `None` while another move holds
     /// it. Refused rather than queued at every caller: a second move would run on
     /// the strength of what was read before the first.
@@ -2016,6 +2064,9 @@ impl AppState {
     pub async fn claim_main(&self, session: SessionId) -> Result<()> {
         let several = self.settings().allow_several_in_main;
         let mut inner = self.inner.write().await;
+        if self.parking_main.load(std::sync::atomic::Ordering::SeqCst) {
+            bail!("main is going back to its base; try again in a moment");
+        }
         /* **The recorded claim, and then anybody live in main**, the fallback
         `main_occupant` has too. The setting applies on save now, so it can be
         turned off while two sessions share main, and then the claim names only
@@ -3474,6 +3525,28 @@ mod tests {
         assert!(
             app.occupancy("c").await.is_empty(),
             "a resume that never came holds nothing once auto-resume is over"
+        );
+    }
+
+    /// A park reserves main in the same step as it finds main empty, and every claim
+    /// is refused until it is done. A claim already written, whose session is not
+    /// inserted yet, keeps the park out — the window the park used to switch main in.
+    #[tokio::test]
+    async fn a_park_and_a_claim_cannot_both_have_main() {
+        let app = app().await;
+        let reserved = app.reserve_main_for_park().await.expect("main is empty");
+        app.claim_main(Uuid::new_v4())
+            .await
+            .expect_err("a claim during the park must wait");
+        drop(reserved);
+
+        let claimant = Uuid::new_v4();
+        app.claim_main(claimant)
+            .await
+            .expect("the park is over, so main may be claimed");
+        assert!(
+            app.reserve_main_for_park().await.is_none(),
+            "a claim whose session is still being spawned holds main"
         );
     }
 

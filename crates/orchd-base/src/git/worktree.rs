@@ -750,26 +750,80 @@ pub fn detect_base(main: &Path) -> Option<(String, String)> {
 /// ever run a session in main. A local branch is a base like any other: worktrees
 /// branch from it, diffs measure against it, and [`fetch_upstream`] skips it.
 ///
+/// **Never a name with a slash in it.** Every reader of `upstream_ref` takes the
+/// part before the first `/` as a remote ([`split_upstream`], `Config::parse`,
+/// the first-run write), so `release/2.0` became remote `release`, branch `2.0`,
+/// and parking main then switched to a branch that does not exist. So the
+/// checked-out branch is taken only when it has no slash; otherwise `main`, then
+/// `master`, then any branch without one.
+///
 /// `None` when there is any remote — that repo has a base somewhere else, and a
-/// guess here would hide it — and on a branch with no commit yet, which nothing
-/// can branch from either.
+/// guess here would hide it — and when no branch without a slash has a commit.
 pub fn local_base(main: &Path) -> Option<String> {
-    let remotes = git(main, &["remote"]).ok()?;
-    if !remotes.trim().is_empty() {
+    if has_any_remote(main)? {
         return None;
     }
-    let branch = current_branch(main).ok()?;
-    is_local_base(main, &branch).then_some(branch)
+    let current = current_branch(main).ok();
+    let others = git(
+        main,
+        &["for-each-ref", "--format=%(refname:short)", "refs/heads/"],
+    )
+    .unwrap_or_default();
+    current
+        .into_iter()
+        .chain(["main".to_string(), "master".to_string()])
+        .chain(others.lines().map(|l| l.trim().to_string()))
+        .find(|b| !b.is_empty() && !b.contains('/') && is_local_base(main, b))
+}
+
+/// A base written as a local branch on a checkout that has since gained a remote,
+/// and the remote ref it should name instead.
+///
+/// **The one way a local base goes wrong quietly.** The first run of a repo with
+/// no remote writes a bare `trunk`. Add `origin` later and [`is_local_base`] says
+/// no, so the fetch updates `origin/trunk` — while every diff, behind count and
+/// rebase still resolves `trunk`, the local branch nobody updates. Nothing failed,
+/// so nothing said so. Named rather than rewritten: which remote is the base is
+/// the person's answer, and `upstream_ref` is read at start.
+pub fn outgrown_local_base(main: &Path, upstream_ref: &str) -> Option<String> {
+    if upstream_ref.contains('/') || has_any_remote(main) != Some(true) {
+        return None;
+    }
+    git(
+        main,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{upstream_ref}"),
+        ],
+    )
+    .ok()?;
+    let remotes = git(main, &["remote"]).ok()?;
+    let remote = remotes
+        .lines()
+        .map(str::trim)
+        .find(|r| *r == "origin")
+        .or_else(|| remotes.lines().map(str::trim).find(|r| !r.is_empty()))?;
+    Some(format!("{remote}/{upstream_ref}"))
+}
+
+/// Whether the repo has any remote; `None` when git could not say.
+fn has_any_remote(main: &Path) -> Option<bool> {
+    Some(!git(main, &["remote"]).ok()?.trim().is_empty())
 }
 
 /// Whether `upstream_ref` names a branch of this checkout rather than a remote's.
 ///
-/// A bare `main` reads as `origin/main` to [`split_upstream`], which is right
-/// while there is an origin; so it is local only when that remote is absent and
-/// the branch exists.
+/// **The same rule as [`local_base`]: no remote at all.** It used to ask only
+/// whether the remote [`split_upstream`] reads out of the ref exists, so a bare
+/// `develop` on a repo whose one remote is `upstream` counted as local, the fetch
+/// was skipped, and the "upstream fetch failed" that named the mistake was gone.
+/// A repo with a remote measures against the remote; a bare name there is a
+/// misconfiguration the failing fetch should go on reporting.
 pub fn is_local_base(main: &Path, upstream_ref: &str) -> bool {
-    let (remote, _) = split_upstream(upstream_ref);
-    !has_remote(main, remote)
+    !upstream_ref.contains('/')
+        && has_any_remote(main) == Some(false)
         && git(
             main,
             &[

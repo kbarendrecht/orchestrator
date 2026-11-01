@@ -400,15 +400,41 @@ fn normalize_worktrees_subdir(sub: &Path) -> Option<PathBuf> {
 
 /// Replace only `main_checkout` in a config file's raw JSON, leaving every other
 /// key — and a slim `{ main_checkout }` shape — untouched.
-fn rewrite_main_checkout(path: &Path, raw: &str, main: &Path) -> Result<()> {
-    let mut v: serde_json::Value = serde_json::from_str(raw)?;
+/// A checkout with no remote, from before it had a base of its own.
+///
+/// `default_for` and the first-run write pick a local base now, but a config
+/// written earlier still says `origin/HEAD` (or nothing, which parses to it), and
+/// on a repo with no remote at all that cannot resolve — every worktree cut failed
+/// and every fetch logged a failure, upgrade or not. Repaired on disk like
+/// `main_checkout`, one key.
+///
+/// **Only the default, because only the default is nobody's choice.** A base the
+/// review or a person wrote — `origin/trunk` on a repo whose remote is not added
+/// yet — is an answer somebody gave, and rewriting it on start replaced that
+/// answer with a guess; `host_open_screen` caught exactly that.
+fn adopt_local_base(path: &Path, cfg: &mut Config) {
+    if cfg.upstream_ref != default_upstream() {
+        return;
+    }
+    let Some(base) = orchd_base::git::local_base(&cfg.main_checkout) else {
+        return;
+    };
+    tracing::info!(was = %cfg.upstream_ref, %base, "no remote, so a local base");
+    if let Err(e) = rewrite_key(path, "upstream_ref", &base) {
+        tracing::warn!("could not record the base in {}: {e:#}", path.display());
+    }
+    cfg.upstream_ref = base;
+}
+
+fn rewrite_key(path: &Path, key: &str, value: &str) -> Result<()> {
+    // Read again rather than handed the caller's copy: two repairs can run on one
+    // load, and the second must not write back a file without the first.
+    let raw = std::fs::read_to_string(path)?;
+    let mut v: serde_json::Value = serde_json::from_str(&raw)?;
     let obj = v
         .as_object_mut()
         .context("config.json is not a JSON object")?;
-    obj.insert(
-        "main_checkout".into(),
-        serde_json::Value::String(main.to_string_lossy().into_owned()),
-    );
+    obj.insert(key.into(), serde_json::Value::String(value.into()));
     orchd_base::atomic::write(path, (serde_json::to_string_pretty(&v)? + "\n").as_bytes())
 }
 
@@ -576,7 +602,7 @@ impl Settings {
     }
 
     /// Persist these into `config.json`, touching only their own keys — the same
-    /// reparse-the-raw-file reason as [`rewrite_main_checkout`], so a slim
+    /// reparse-the-raw-file reason as [`rewrite_key`], so a slim
     /// `{ main_checkout }` config stays slim. This writes the file only; the
     /// running daemon takes the new values in `api::set_config`.
     pub fn write(&self) -> Result<()> {
@@ -1215,7 +1241,7 @@ impl Config {
                     // Rewrite only `main_checkout` in the *raw* JSON, not the
                     // parsed Config — re-serializing the whole thing would expand
                     // a slim `{ main_checkout }` file back to every field.
-                    if let Err(e) = rewrite_main_checkout(&path, &raw, &main) {
+                    if let Err(e) = rewrite_key(&path, "main_checkout", &main.to_string_lossy()) {
                         tracing::warn!(
                             "could not record the new checkout in {}: {e:#}",
                             path.display()
@@ -1223,6 +1249,7 @@ impl Config {
                     }
                 }
             }
+            adopt_local_base(&path, &mut cfg);
             return Ok(cfg);
         }
 
@@ -1763,6 +1790,75 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A config from before local bases, on a repo with no remote, is repaired on
+    /// disk; one with a remote, or a base already local, is not touched.
+    #[test]
+    fn an_old_config_with_no_remote_gets_a_local_base() {
+        let dir = std::env::temp_dir().join(format!(
+            "orchd-adopt-local-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let repo = dir.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .expect("git runs")
+        };
+        git(&["init", "-q", "-b", "trunk", "."]);
+        git(&[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "a",
+        ]);
+        let file = dir.join("config.json");
+        let slim = format!(
+            r#"{{"main_checkout":{:?},"port":8080}}"#,
+            repo.to_string_lossy()
+        );
+        std::fs::write(&file, &slim).unwrap();
+
+        let mut cfg = Config::parse(&slim).unwrap();
+        assert_eq!(
+            cfg.upstream_ref, "origin/HEAD",
+            "the premise: the old default"
+        );
+        adopt_local_base(&file, &mut cfg);
+        assert_eq!(cfg.upstream_ref, "trunk");
+        let on_disk: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!(on_disk["upstream_ref"], "trunk");
+        assert_eq!(on_disk["port"], 8080, "the rest of a slim file is kept");
+
+        // A base somebody wrote is theirs, even one that cannot resolve yet.
+        let chosen = format!(
+            r#"{{"main_checkout":{:?},"upstream_ref":"origin/trunk"}}"#,
+            repo.to_string_lossy()
+        );
+        std::fs::write(&file, &chosen).unwrap();
+        let mut cfg = Config::parse(&chosen).unwrap();
+        adopt_local_base(&file, &mut cfg);
+        assert_eq!(cfg.upstream_ref, "origin/trunk");
+
+        // With a remote the base is the remote's, broken or not: not ours to pick.
+        git(&["remote", "add", "origin", "git@github.com:you/thing.git"]);
+        std::fs::write(&file, &slim).unwrap();
+        let mut cfg = Config::parse(&slim).unwrap();
+        adopt_local_base(&file, &mut cfg);
+        assert_eq!(cfg.upstream_ref, "origin/HEAD");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_first_run_with_no_remote_is_based_on_the_checked_out_branch() {
         let dir = std::env::temp_dir().join(format!(
@@ -1884,8 +1980,7 @@ mod tests {
         )
         .expect("wrote the slim config");
 
-        let raw = std::fs::read_to_string(&file).expect("read");
-        rewrite_main_checkout(&file, &raw, Path::new("/new/place")).expect("rewrote");
+        rewrite_key(&file, "main_checkout", "/new/place").expect("rewrote");
 
         let after: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&file).expect("read back"))

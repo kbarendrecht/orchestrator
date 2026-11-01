@@ -1525,14 +1525,26 @@ fn auto_resume(
             // Where the record is now, not where it was at boot: a swap or a move
             // in the stagger window carries a waiting session as a record, and it
             // has to come back where its branch went.
-            let workspace = app
-                .inner
-                .read()
-                .await
-                .sessions
-                .get(&r.id)
-                .map(|s| s.workspace.clone())
-                .unwrap_or_else(|| r.workspace.clone());
+            let (workspace, already) = {
+                let inner = app.inner.read().await;
+                let now = inner.sessions.get(&r.id);
+                (
+                    now.map(|s| s.workspace.clone())
+                        .unwrap_or_else(|| r.workspace.clone()),
+                    now.is_some_and(|s| s.state.is_live()),
+                )
+            };
+            /* **Resumed by hand in the stagger, so not again.** A person may resume
+            a session this loop has not reached — `refuse_if_occupied` lets exactly
+            that one through — and spawning it a second time replaced the live
+            record and its pty: the first agent orphaned, two of them on one
+            conversation. Live is the answer; the spawn already took it out of
+            `pending_resume`. */
+            if already {
+                tracing::info!(session = %r.id, "not auto-resumed: already resumed by hand");
+                app.resume_settled(r.id);
+                continue;
+            }
             // Its recorded pass, not `None`: a resumed fix run is still the run
             // the guard table counts.
             match spawn::spawn_session(

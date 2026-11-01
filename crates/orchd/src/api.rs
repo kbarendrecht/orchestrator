@@ -1329,14 +1329,13 @@ pub struct SpawnBody {
     /// means a fresh worktree: one session per tree holds here as everywhere.
     #[serde(default)]
     pub workspace: Option<String>,
-    /// Cut a fresh worktree for the new session instead.
+    /// Ask for a fresh worktree, which is what an unnamed spawn gets anyway.
     ///
-    /// A separate field rather than "create `workspace` if it is missing", because
-    /// the two are different acts and only one of them should tolerate a typo: an
-    /// unknown `workspace` must stay an error, or `--workspace dependabot-api`
-    /// misspelt silently becomes a whole new checkout. This is the shape the CLI
-    /// could not express at all, which is what made "spawn two independent fixers"
-    /// impossible — both landed in the caller's own tree, sharing one git index.
+    /// **Accepted, and redundant since the default changed.** It used to switch
+    /// the spawn from the caller's own tree to a new one; now every spawn without
+    /// a `workspace` cuts a tree, so this only ever refuses being sent beside a
+    /// `workspace` ("not both"). Kept because `orch new --worktree` sends it and a
+    /// script written against the old shape should not start failing.
     #[serde(default)]
     pub worktree: bool,
     /// What to call that worktree. Absent means the daemon names it.

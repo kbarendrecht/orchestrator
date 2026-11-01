@@ -206,7 +206,7 @@ async fn swap_with_main_inner(
     // send it straight back.
     let (_, mut outgoing_records) = to_carry(&app, MAIN, &main_was).await;
     let (on_branch, incoming_records) = to_carry(&app, &workspace, &tree_was).await;
-    let outgoing = app.live_sessions_in(MAIN).await;
+    let outgoing = travelling_from(&app, MAIN).await;
     let several = app.settings().allow_several_in_main;
     let incoming = match pick_incoming(&app, &workspace, &on_branch, pressed, several).await {
         Ok(ids) => ids,
@@ -501,7 +501,7 @@ pub async fn move_out_of_main(
     swap, so a reconcile in between cannot change the answer. The pressed session
     goes first when it is live, because it is the one the response describes. */
     let travelling: Vec<(SessionId, crate::model::State)> = {
-        let mut ids = app.live_sessions_in(MAIN).await;
+        let mut ids = travelling_from(&app, MAIN).await;
         if live {
             ids.retain(|s| *s != id);
             ids.insert(0, id);
@@ -539,7 +539,7 @@ pub async fn move_out_of_main(
             Err(e) => e,
         };
         let why = format!("{e:#}");
-        let back = crate::carry::move_back(&app, &out).await;
+        let back = crate::carry::move_back(&app, &held, &out).await;
         /* Home is wherever the branch is now: main when the move came back, the new
         tree when it could not. Newest arrival first and the failed one last, the
         swap's order. An empty session whose fresh start failed has no record left —
@@ -806,6 +806,27 @@ async fn undo_swap(
     }
 }
 
+/// Every session in a workspace whose state is live, oldest first: what a move of
+/// that tree's branch takes along.
+///
+/// **Not [`AppState::occupancy`], and the difference is the point.** Occupancy
+/// leaves out a live state over a dead process, which is right for "may somebody
+/// else come in". It is wrong for "who goes with the branch": `to_carry` files
+/// live-state sessions only in its live half, so a session whose agent died before
+/// its exit watcher ran was carried as neither, and stayed in main on a branch that
+/// had gone to the worktree — the stranding the swap exists to prevent.
+async fn travelling_from(app: &Arc<AppState>, workspace: &str) -> Vec<SessionId> {
+    let inner = app.inner.read().await;
+    let mut live: Vec<_> = inner
+        .sessions
+        .values()
+        .filter(|s| s.workspace == workspace && s.state.is_live())
+        .map(|s| (s.created_at, s.id))
+        .collect();
+    live.sort();
+    live.into_iter().map(|(_, id)| id).collect()
+}
+
 /// Which of the worktree's live sessions go into main.
 ///
 /// The one you pressed swap on, and nobody else: main holds one session, so a
@@ -939,6 +960,35 @@ mod tests {
             "but not as a spare: {:#}",
             err.0
         );
+    }
+
+    /// A live state over a dead process does not occupy main, and still travels
+    /// with main's branch: a move that left it behind stranded its conversation on
+    /// a branch that had gone to the worktree.
+    #[tokio::test]
+    async fn a_session_whose_agent_died_still_travels_with_the_branch() {
+        let (app, _dir) = crate::testutil::app("travel-dead");
+        let dead = {
+            let mut child = std::process::Command::new("true")
+                .spawn()
+                .expect("true runs");
+            let pid = child.id();
+            child.wait().expect("reaped");
+            pid
+        };
+        let id = Uuid::new_v4();
+        {
+            let mut inner = app.inner.write().await;
+            let mut s = crate::model::Session::new(id, MAIN.into(), "/tmp".into(), None);
+            s.set_state(crate::model::State::Working);
+            s.pid = Some(dead);
+            inner.sessions.insert(id, s);
+        }
+        assert!(
+            app.occupancy(MAIN).await.is_empty(),
+            "the premise: not an occupant"
+        );
+        assert_eq!(travelling_from(&app, MAIN).await, vec![id]);
     }
 
     /// With no remote the base is main's own branch, and a swap would hand that

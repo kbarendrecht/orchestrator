@@ -156,19 +156,39 @@ pub(crate) async fn hand_to_live_session(
     if app.pr_head(pr).await.refusal.is_some() {
         return Ok(None);
     }
-    /* **Main is asked of git, as the refusal asks it.** `workspace_for` reads
-    `Tree::branch`, which the head poller refreshes every two seconds; the path
-    that refuses ("a session is still open there") reads main's branch from git.
-    A `git switch` in main followed by a press inside that gap found nobody here
-    and was then refused by the other path — the one session that should have
-    been asked. Measured: e2e flow 19 failed one run in six on exactly this. */
+    /* **Main is asked of git, both ways.** `workspace_for` reads `Tree::branch`,
+    which the head poller refreshes every two seconds, while the path that refuses
+    ("a session is still open there") reads main's branch from git. A `git switch`
+    onto the branch followed by a press inside that gap found nobody here and was
+    refused by the other path — e2e flow 19 failed one run in six on it. And the
+    other direction is the one that costs: main switched *off* the branch inside
+    the gap, and a stale "main" typed a fix-pr — rebase and force-push — into the
+    checkout every worktree is cut from, on an unrelated branch. A worktree's
+    answer is taken as it is; nothing is cut from a worktree. */
     let ws = match app.workspace_for(head_ref).await {
-        Some(ws) => ws,
-        None if crate::spawn::main_is_on(app, head_ref).await? => MAIN.to_string(),
-        None => return Ok(None),
+        Some(ws) if ws != MAIN => ws,
+        _ if crate::spawn::main_is_on(app, head_ref).await? => MAIN.to_string(),
+        _ => return Ok(None),
     };
+    /* **The session the PR row names, when it is here.** The row's chip and its
+    buttons point at `Inner::session_on` — the newest live session on the branch —
+    and this took the oldest in the tree. With sharing on in main they differ, and
+    the press typed into a session the row never offered, often one mid-turn. A
+    session still being spawned has no pty to type into, so one that has a process
+    is preferred over it. */
     let live = app.live_sessions_in(&ws).await;
-    let Some(id) = live.first() else {
+    let named = app.inner.read().await.session_on(head_ref);
+    let with_process = {
+        let inner = app.inner.read().await;
+        live.iter()
+            .copied()
+            .find(|id| inner.sessions.get(id).is_some_and(|s| s.pid.is_some()))
+    };
+    let Some(id) = named
+        .filter(|n| live.contains(n))
+        .or(with_process)
+        .or_else(|| live.first().copied())
+    else {
         return Ok(None);
     };
     /* **Landing on it is half the press, and it used to be all of it.** This
@@ -186,14 +206,14 @@ pub(crate) async fn hand_to_live_session(
         let inner = app.inner.read().await;
         let s = inner
             .sessions
-            .get(id)
-            .ok_or_else(|| crate::state::no_such_session(*id))?;
+            .get(&id)
+            .ok_or_else(|| crate::state::no_such_session(id))?;
         (s.pass.as_ref().map(|p| p.command.clone()), s.agent)
     };
     match run.as_deref() {
         // Already doing this, so the press is "show me" and nothing else.
         // Typing it again would queue a second pass over the same threads.
-        Some(c) if c == command => Ok(Some(*id)),
+        Some(c) if c == command => Ok(Some(id)),
         /* Another run owns the tree. `gate` refuses a live `fix-pr` for
         this reason and never sees it, because the branch above wins first —
         and typing a slash command into an unattended run that is rewriting
@@ -203,18 +223,18 @@ pub(crate) async fn hand_to_live_session(
         }
         // An ordinary conversation, which is the case the button is for.
         None => {
-            app.type_user_turn(*id, &agent.skill_line(command, &pr.to_string()))
+            app.type_user_turn(id, &agent.skill_line(command, &pr.to_string()))
                 .await?;
             /* Working from the moment it is typed, not from when Claude Code's
             prompt hook says so. A double press otherwise typed the command twice:
             the button re-enables in milliseconds, and the session was still at
             its prompt as far as `type_user_turn` could tell. Now the second press
             is refused as mid-turn, and `UserPromptSubmit` agrees a moment later. */
-            if let Some(s) = app.inner.write().await.sessions.get_mut(id) {
+            if let Some(s) = app.inner.write().await.sessions.get_mut(&id) {
                 s.set_state(crate::model::State::Working);
             }
             app.notify().await;
-            Ok(Some(*id))
+            Ok(Some(id))
         }
     }
 }
@@ -567,21 +587,53 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A session in main on the PR's branch is asked too, by both verbs.
+    /// Main as a real checkout on `feature/x`, holding one live session per `passes`
+    /// entry, oldest first; nothing else holds the branch.
     ///
-    /// "Open in main" makes exactly this, and main was left out of the hand-off: the
-    /// row hid `handle` and `fix`, and the daemon refused both with "close that
-    /// session" — on the one PR you had open. Reaching `type_user_turn`'s refusal
-    /// is proof the typing was attempted, as in the test above.
-    #[tokio::test]
-    async fn a_session_in_main_on_the_branch_is_asked_too() {
-        let (app, dir, worktree_session) = with_live_session("handle-main", None).await;
-        let in_main = uuid::Uuid::new_v4();
+    /// Real, because the hand-off asks git which branch main is on: the cached
+    /// `Tree::branch` is up to two seconds stale in either direction.
+    async fn with_main_on_branch(
+        tag: &str,
+        passes: &[Option<Pass>],
+    ) -> (
+        Arc<crate::state::AppState>,
+        std::path::PathBuf,
+        Vec<uuid::Uuid>,
+    ) {
+        let (app, dir, worktree_session) = with_live_session(tag, None).await;
+        let git = |args: &[&str]| crate::testutil::git(&dir, args);
+        git(&["init", "-q", "-b", "trunk"]);
+        git(&[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "a",
+        ]);
+        git(&["switch", "-q", "-c", "feature/x"]);
+        let mut ids = Vec::new();
         {
             let mut inner = app.inner.write().await;
-            // The PR's branch is in main, and nowhere else.
             inner.workspaces.remove("pr-4");
             inner.sessions.remove(&worktree_session);
+            let now = std::time::SystemTime::now();
+            for (i, pass) in passes.iter().enumerate() {
+                let id = uuid::Uuid::new_v4();
+                let mut s = Session::new(id, MAIN.into(), dir.clone(), pass.clone());
+                s.set_state(State::YourTurn {
+                    since: now,
+                    reason: crate::model::TurnReason::TurnComplete,
+                });
+                s.pid = Some(std::process::id());
+                s.branch = Some("feature/x".into());
+                s.created_at = now + std::time::Duration::from_secs(i as u64);
+                inner.sessions.insert(id, s);
+                ids.push(id);
+            }
             inner.workspaces.insert(
                 MAIN.into(),
                 crate::model::Workspace {
@@ -590,7 +642,7 @@ mod tests {
                     kind: crate::model::WorkspaceKind::Main,
                     branches: ["feature/x".to_string()].into_iter().collect(),
                     processes: Vec::new(),
-                    occupant: Some(in_main),
+                    occupant: ids.first().copied(),
                     tree: crate::model::Tree {
                         branch: Some("feature/x".into()),
                         ..Default::default()
@@ -598,14 +650,19 @@ mod tests {
                     banked: None,
                 },
             );
-            let mut s = Session::new(in_main, MAIN.into(), dir.clone(), None);
-            s.set_state(State::YourTurn {
-                since: std::time::SystemTime::now(),
-                reason: crate::model::TurnReason::TurnComplete,
-            });
-            s.pid = Some(std::process::id());
-            inner.sessions.insert(in_main, s);
         }
+        (app, dir, ids)
+    }
+
+    /// A session in main on the PR's branch is asked too, by both verbs.
+    ///
+    /// "Open in main" makes exactly this, and main was left out of the hand-off: the
+    /// row hid `handle` and `fix`, and the daemon refused both with "close that
+    /// session" — on the one PR you had open. Reaching `type_user_turn`'s refusal
+    /// is proof the typing was attempted, as in the test above.
+    #[tokio::test]
+    async fn a_session_in_main_on_the_branch_is_asked_too() {
+        let (app, dir, _) = with_main_on_branch("handle-main", &[None]).await;
         let pane = spawn_command_session(&app, 4, "feature/x", Pass::HANDLE_REVIEW).await;
         let fix = crate::fix_pr::start(&app, 4).await;
         for (what, out) in [("handle", pane), ("fix", fix)] {
@@ -621,6 +678,41 @@ mod tests {
         assert!(
             app.inner.read().await.automation.get(4).is_none(),
             "a hand-off starts no run, so it records none"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The cache still says main is on the branch, git says it has left: nobody is
+    /// asked. Trusting the cache typed a fix-pr — a rebase and a force-push — into
+    /// main on an unrelated branch.
+    #[tokio::test]
+    async fn a_stale_cache_does_not_hand_a_pr_to_main() {
+        let (app, dir, _) = with_main_on_branch("handle-stale", &[None]).await;
+        crate::testutil::git(&dir, &["switch", "-q", "trunk"]);
+        let handed = hand_to_live_session(&app, 4, "feature/x", Pass::FIX_PR)
+            .await
+            .expect("not an error, just nobody");
+        assert_eq!(handed, None, "main left the branch, so it is not asked");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// With several sessions in main, the press goes to the one the PR row names —
+    /// the newest on the branch — not the oldest in the tree. Shown by giving only
+    /// the newest the pass being pressed: landing on it needs no typing.
+    #[tokio::test]
+    async fn the_hand_off_asks_the_session_the_row_names() {
+        let pass = Pass {
+            pr: 4,
+            command: Pass::FIX_PR.to_string(),
+        };
+        let (app, dir, ids) = with_main_on_branch("handle-named", &[None, Some(pass)]).await;
+        let handed = hand_to_live_session(&app, 4, "feature/x", Pass::FIX_PR)
+            .await
+            .expect("landing on the run already going is not a refusal");
+        assert_eq!(
+            handed,
+            Some(ids[1]),
+            "went to the oldest instead of the named one"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

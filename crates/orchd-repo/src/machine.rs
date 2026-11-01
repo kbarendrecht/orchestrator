@@ -339,6 +339,21 @@ pub fn check(cfg: &Config, tracker_server: Option<&str>) -> Vec<Warning> {
         });
     }
 
+    if let Some(should) =
+        orchd_base::git::outgrown_local_base(&cfg.main_checkout, &cfg.upstream_ref)
+    {
+        out.push(Warning {
+            what: format!(
+                "the base is the local branch `{}`, but this checkout has a remote now",
+                cfg.upstream_ref
+            ),
+            cost: format!(
+                "diffs, behind counts and rebases measure against the local branch, not \
+                 the remote; set Upstream ref to `{should}` in the Git settings"
+            ),
+        });
+    }
+
     // A checkout that is not a work tree measures nothing, and says so only in a
     // reconcile warning per poll. Seen for real: a `git filter-repo` run left
     // `core.bare = true` behind, and the panes went stale with no error in the app.

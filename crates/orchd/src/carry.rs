@@ -128,7 +128,11 @@ pub(crate) async fn move_out(
 ///
 /// The repo's worktree hooks already ran and cannot be taken back; everything they
 /// made is inside the tree, which is removed.
-pub(crate) async fn move_back(app: &Arc<AppState>, out: &MovedOut) -> anyhow::Result<()> {
+pub(crate) async fn move_back(
+    app: &Arc<AppState>,
+    _held: &crate::state::MainMove<'_>,
+    out: &MovedOut,
+) -> anyhow::Result<()> {
     let main = app.cfg.main_checkout.clone();
     let (path, git) = (
         out.path.clone(),

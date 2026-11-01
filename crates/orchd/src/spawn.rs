@@ -1654,6 +1654,12 @@ async fn park_main(app: &Arc<AppState>) {
         tracing::info!("main stays where it is: a swap is moving it");
         return;
     };
+    // Asked again now that the lock is held, and reserved in the same step: the
+    // check above is a cheap early out, and a session could claim main between it
+    // and here. Held to the end of the park.
+    let Some(_reserved) = app.reserve_main_for_park().await else {
+        return;
+    };
     let path = app.cfg.main_checkout.clone();
     let base_ref = app.cfg.upstream_ref.clone();
     let exclude = app.cfg.worktrees_subdir_str();
