@@ -48,13 +48,13 @@ pub(crate) async fn move_out(
     at: Option<(&str, &std::path::Path)>,
 ) -> anyhow::Result<MovedOut> {
     let main = app.cfg.main_checkout.clone();
-    let base_ref = app.cfg.upstream_ref.clone();
+    let base_ref = app.cfg.base();
     let (branch, base_now) = crate::proc::run_blocking("reading main's branch", {
         let (main, base_ref) = (main.clone(), base_ref.clone());
         move || {
             anyhow::Ok((
                 crate::git::current_branch(&main)?,
-                crate::git::base_checkout_branch(&main, &base_ref),
+                base_ref.checkout_branch(&main),
             ))
         }
     })
@@ -82,7 +82,7 @@ pub(crate) async fn move_out(
         let (main, path, new_branch) = (main.clone(), path.clone(), new_branch.clone());
         let exclude = app.cfg.worktrees_subdir_str();
         crate::proc::run_blocking("moving main's branch out", move || {
-            let base = crate::git::base_checkout_branch(&main, &base_ref).ok_or_else(|| {
+            let base = base_ref.checkout_branch(&main).ok_or_else(|| {
                 anyhow::anyhow!(
                     "no base branch to put main back on — {base_ref} has not been fetched"
                 )

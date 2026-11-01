@@ -81,9 +81,9 @@ pub fn resolve_base(
             // remote in `upstream_ref`, not a remote called `upstream`: on a repo
             // whose real remote is `origin` the hardcoded name resolved nothing and
             // the review diff failed with "could not resolve the PR base".
-            let remote = upstream
-                .split_once('/')
-                .map_or("origin", |(remote, _)| remote);
+            // A local base has no remote; `origin` is the one place a PR base can be.
+            let parsed = orchd_base::git::Base::parse(upstream);
+            let remote = parsed.remote().unwrap_or("origin");
             let candidates = [format!("{remote}/{r}"), r.to_string()];
             for c in &candidates {
                 if let Ok(out) = git(cwd, &["merge-base", c, "HEAD"]) {

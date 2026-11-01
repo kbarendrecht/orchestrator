@@ -1296,7 +1296,7 @@ impl Config {
                 default_worktrees_subdir()
             }
         };
-        // The base fetch (`git::fetch_upstream`) splits its remote out of
+        // The base fetch (`git::Base::fetch`) takes its remote out of
         // `upstream_ref`, while repo detection reads `upstream_remote`. If they
         // name different remotes the merge-base and the resolved repo drift apart,
         // and the symptom is PRs polled from the wrong repository — not an error,
@@ -1308,7 +1308,7 @@ impl Config {
         // and merely omitting the half it should not have to repeat. Warning there
         // would nag about a config that is not wrong, and honouring `origin` would
         // silently poll the fork.
-        if let Some((ref_remote, _)) = cfg.upstream_ref.split_once('/') {
+        if let Some(ref_remote) = cfg.base().remote() {
             if ref_remote != cfg.upstream_remote {
                 tracing::info!(
                     "upstream_ref {:?} names remote {:?}; using that rather than \
@@ -1385,6 +1385,12 @@ impl Config {
         let raw = serde_json::Value::Object(obj).to_string();
         // Cannot fail: every key written here is known-valid.
         Self::parse(&raw).expect("the default config is valid")
+    }
+
+    /// The configured base, parsed. The one reading of `upstream_ref`: see
+    /// [`orchd_base::git::Base`] for why it is not split anywhere else.
+    pub fn base(&self) -> orchd_base::git::Base {
+        orchd_base::git::Base::parse(&self.upstream_ref)
     }
 
     pub fn worktrees_dir(&self) -> PathBuf {

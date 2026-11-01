@@ -142,11 +142,9 @@ pub async fn rebase(
     // checks above. This is a *network* round trip, measured at ~1.5s on the
     // monorepo.
     let warning = {
-        let (main, upstream) = (app.cfg.main_checkout.clone(), app.cfg.upstream_ref.clone());
-        let fetched = crate::proc::run_blocking("the upstream fetch", move || {
-            crate::git::fetch_upstream(&main, &upstream)
-        })
-        .await;
+        let (main, base) = (app.cfg.main_checkout.clone(), app.cfg.base());
+        let fetched =
+            crate::proc::run_blocking("the upstream fetch", move || base.fetch(&main)).await;
         match fetched {
             Ok(Ok(_)) => None,
             // A panic in the fetch reads the same way here as a failed fetch: the

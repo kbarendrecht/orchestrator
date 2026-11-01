@@ -339,9 +339,7 @@ pub fn check(cfg: &Config, tracker_server: Option<&str>) -> Vec<Warning> {
         });
     }
 
-    if let Some(should) =
-        orchd_base::git::outgrown_local_base(&cfg.main_checkout, &cfg.upstream_ref)
-    {
+    if let Some(should) = cfg.base().outgrown(&cfg.main_checkout) {
         out.push(Warning {
             what: format!(
                 "the base is the local branch `{}`, but this checkout has a remote now",

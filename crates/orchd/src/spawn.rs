@@ -1661,7 +1661,7 @@ async fn park_main(app: &Arc<AppState>) {
         return;
     };
     let path = app.cfg.main_checkout.clone();
-    let base_ref = app.cfg.upstream_ref.clone();
+    let base_ref = app.cfg.base();
     let exclude = app.cfg.worktrees_subdir_str();
 
     /* **The base has to be free, and main is the only checkout that may hold it.**
@@ -1689,7 +1689,7 @@ async fn park_main(app: &Arc<AppState>) {
     let plan = {
         let (at, base_ref, exclude) = (path.clone(), base_ref.clone(), exclude.clone());
         tokio::task::spawn_blocking(move || {
-            let base = crate::git::base_checkout_branch(&at, &base_ref)?;
+            let base = base_ref.checkout_branch(&at)?;
             // Already there: nothing to park and nothing to clear the way for.
             let branch = crate::git::current_branch(&at).ok()?;
             if branch == base {
@@ -2041,11 +2041,11 @@ pub async fn switch_main_to_pr(
     branch moves into a tree of its own first, as a park would have moved it, and
     main is on base when the switch below runs. Base itself is not work and stays. */
     let (on, base) = {
-        let (at, base_ref) = (path.clone(), app.cfg.upstream_ref.clone());
+        let (at, base_ref) = (path.clone(), app.cfg.base());
         crate::proc::run_blocking("reading main's branch", move || {
             (
                 crate::git::current_branch(&at).ok(),
-                crate::git::base_checkout_branch(&at, &base_ref),
+                base_ref.checkout_branch(&at),
             )
         })
         .await?

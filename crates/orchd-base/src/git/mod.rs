@@ -26,6 +26,7 @@
 //! code, which is what moved.
 
 mod bank;
+mod base;
 mod exec;
 mod refs;
 mod review;
@@ -34,6 +35,7 @@ mod unpushed;
 mod worktree;
 
 pub use bank::*;
+pub use base::*;
 pub use exec::*;
 pub use refs::*;
 pub use review::*;

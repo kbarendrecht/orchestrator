@@ -166,17 +166,12 @@ pub(super) fn stale_lock_pid(main: &Path, path: &Path) -> Option<u32> {
 /// remote to ask, so both fall through to the resolve check alone — which is what
 /// lets a caller skip the fetch entirely by resolving `base` to a sha first.
 pub(super) fn freshen_base(main: &Path, base: &str) -> Result<()> {
-    if let Some((remote, branch)) = base.split_once('/') {
-        if has_remote(main, remote)
-            && git_net_ok(
-                main,
-                &["fetch", "--quiet", remote, branch],
-                "the base fetch",
-            )
-            .is_err()
-        {
-            tracing::warn!("could not fetch {base}; using the last-known copy");
-        }
+    // Through `Base::fetch`, the one fetch rule: it also records `<remote>/HEAD`,
+    // which a plain `git fetch origin HEAD` here did not. Only when the part before
+    // the slash is a remote — a local branch can have a slash in its name too.
+    let parsed = Base::parse(base);
+    if parsed.remote().is_some_and(|r| has_remote(main, r)) && parsed.fetch(main).is_err() {
+        tracing::warn!("could not fetch {base}; using the last-known copy");
     }
     // A base that does not resolve would otherwise cut from HEAD silently, which
     // is a different branch than the caller asked for.
@@ -629,76 +624,6 @@ pub(super) fn conflicted_files(cwd: &Path) -> Result<Vec<String>> {
     Ok(out.lines().map(|l| l.to_string()).collect())
 }
 
-/// Refresh the base ref the context bar measures against, from config rather
-/// than a hardcoded `upstream develop`.
-///
-/// `upstream_ref` is `remote/branch` (e.g. `upstream/develop`, `origin/HEAD`).
-/// A concrete branch is fetched by name — one branch, cheap, the common case.
-///
-/// **`HEAD` is not a branch you can fetch.** It is a symref under
-/// `refs/remotes/<remote>/` that only `git clone` and `git remote set-head`
-/// write — a plain `git fetch <remote>` does *not* create or refresh it, so on a
-/// checkout whose remote was added by hand `origin/HEAD` never resolves and
-/// every consumer (merge-base, divergence, rebase, the prompts' `{{UPSTREAM}}`)
-/// silently fails. So the `HEAD` arm asks the remote what its default branch is,
-/// records it in the symref, and then fetches that one branch by name — correct
-/// on a fresh checkout and no more expensive than the named case.
-///
-/// **A local base has nothing to fetch**, and is not an error: a checkout with no
-/// remote is measured against one of its own branches ([`local_base`]), and
-/// failing here put "upstream fetch failed" on every boot, sweep and rebase.
-pub fn fetch_upstream(main: &Path, upstream_ref: &str) -> Result<()> {
-    if is_local_base(main, upstream_ref) {
-        return Ok(());
-    }
-    let (remote, branch) = split_upstream(upstream_ref);
-    if !branch.eq_ignore_ascii_case("HEAD") {
-        // Through `git_net_ok` like the two `HEAD` arms below, not `git`: this is
-        // the arm a configured `upstream_ref` takes, on the boot path, and an
-        // https remote without a credential helper prompted on `/dev/tty` here
-        // while the window never opened.
-        git_net_ok(
-            main,
-            &upstream_fetch_argv(upstream_ref),
-            "the upstream fetch",
-        )?;
-        return Ok(());
-    }
-    // Steady state: the symref is already recorded, so fetch just the branch it
-    // names — no dearer than the named case. If that fetch fails the recorded
-    // branch is gone (renamed or deleted upstream), so fall through and re-record.
-    if let Some(b) = default_branch(main, remote) {
-        if git_net_ok(
-            main,
-            &["fetch", remote, &b, "--no-tags"],
-            "the upstream fetch",
-        )
-        .is_ok()
-        {
-            return Ok(());
-        }
-        tracing::debug!("{remote}/HEAD named {b}, which no longer fetches; re-recording");
-    }
-    // Bootstrap: `git remote set-head -a` picks from the remote-tracking refs, so
-    // they have to exist first — which is why this fetches the whole remote
-    // before recording. Only the first poll on a checkout pays for it.
-    git_net_ok(main, &["fetch", remote, "--no-tags"], "the bootstrap fetch")?;
-    if let Err(e) = git(main, &["remote", "set-head", remote, "-a"]) {
-        // Not fatal: the refs are fetched, only the symref is missing, and the
-        // caller's merge-base will report the real problem.
-        tracing::debug!("could not record {remote}/HEAD: {e:#}");
-    }
-    Ok(())
-}
-
-/// `remote/branch`, defaulting the remote to `origin` for a bare branch name.
-/// `split_once` keeps a nested branch like `origin/release/2026` intact.
-pub(super) fn split_upstream(upstream_ref: &str) -> (&str, &str) {
-    upstream_ref
-        .split_once('/')
-        .unwrap_or(("origin", upstream_ref))
-}
-
 /// The branch `<remote>/HEAD` points at, as a plain name (`main`), or `None`
 /// when the symref does not exist.
 pub(super) fn default_branch(main: &Path, remote: &str) -> Option<String> {
@@ -737,124 +662,9 @@ pub fn detect_base(main: &Path) -> Option<(String, String)> {
     }
     // `upstream/HEAD` only resolves once that remote has been fetched, so fall
     // back to the symbolic form rather than guessing a branch name.
-    // `fetch_upstream` refreshes the symref either way.
+    // `Base::fetch` refreshes the symref either way.
     let branch = default_branch(main, "upstream").unwrap_or_else(|| "HEAD".to_string());
     Some((format!("upstream/{branch}"), "upstream".to_string()))
-}
-
-/// The base for a checkout with no remote at all: the branch main has checked out.
-///
-/// The other half of [`detect_base`], for a repo nobody has pushed anywhere. The
-/// default `origin/HEAD` cannot resolve there, so without this every worktree cut
-/// failed with "base ref origin/HEAD does not resolve" and the checkout could only
-/// ever run a session in main. A local branch is a base like any other: worktrees
-/// branch from it, diffs measure against it, and [`fetch_upstream`] skips it.
-///
-/// **Never a name with a slash in it.** Every reader of `upstream_ref` takes the
-/// part before the first `/` as a remote ([`split_upstream`], `Config::parse`,
-/// the first-run write), so `release/2.0` became remote `release`, branch `2.0`,
-/// and parking main then switched to a branch that does not exist. So the
-/// checked-out branch is taken only when it has no slash; otherwise `main`, then
-/// `master`, then any branch without one.
-///
-/// `None` when there is any remote — that repo has a base somewhere else, and a
-/// guess here would hide it — and when no branch without a slash has a commit.
-pub fn local_base(main: &Path) -> Option<String> {
-    if has_any_remote(main)? {
-        return None;
-    }
-    let current = current_branch(main).ok();
-    let others = git(
-        main,
-        &["for-each-ref", "--format=%(refname:short)", "refs/heads/"],
-    )
-    .unwrap_or_default();
-    current
-        .into_iter()
-        .chain(["main".to_string(), "master".to_string()])
-        .chain(others.lines().map(|l| l.trim().to_string()))
-        .find(|b| !b.is_empty() && !b.contains('/') && is_local_base(main, b))
-}
-
-/// A base written as a local branch on a checkout that has since gained a remote,
-/// and the remote ref it should name instead.
-///
-/// **The one way a local base goes wrong quietly.** The first run of a repo with
-/// no remote writes a bare `trunk`. Add `origin` later and [`is_local_base`] says
-/// no, so the fetch updates `origin/trunk` — while every diff, behind count and
-/// rebase still resolves `trunk`, the local branch nobody updates. Nothing failed,
-/// so nothing said so. Named rather than rewritten: which remote is the base is
-/// the person's answer, and `upstream_ref` is read at start.
-pub fn outgrown_local_base(main: &Path, upstream_ref: &str) -> Option<String> {
-    if upstream_ref.contains('/') || has_any_remote(main) != Some(true) {
-        return None;
-    }
-    git(
-        main,
-        &[
-            "rev-parse",
-            "--verify",
-            "--quiet",
-            &format!("refs/heads/{upstream_ref}"),
-        ],
-    )
-    .ok()?;
-    let remotes = git(main, &["remote"]).ok()?;
-    let remote = remotes
-        .lines()
-        .map(str::trim)
-        .find(|r| *r == "origin")
-        .or_else(|| remotes.lines().map(str::trim).find(|r| !r.is_empty()))?;
-    Some(format!("{remote}/{upstream_ref}"))
-}
-
-/// Whether the repo has any remote; `None` when git could not say.
-fn has_any_remote(main: &Path) -> Option<bool> {
-    Some(!git(main, &["remote"]).ok()?.trim().is_empty())
-}
-
-/// Whether `upstream_ref` names a branch of this checkout rather than a remote's.
-///
-/// **The same rule as [`local_base`]: no remote at all.** It used to ask only
-/// whether the remote [`split_upstream`] reads out of the ref exists, so a bare
-/// `develop` on a repo whose one remote is `upstream` counted as local, the fetch
-/// was skipped, and the "upstream fetch failed" that named the mistake was gone.
-/// A repo with a remote measures against the remote; a bare name there is a
-/// misconfiguration the failing fetch should go on reporting.
-pub fn is_local_base(main: &Path, upstream_ref: &str) -> bool {
-    !upstream_ref.contains('/')
-        && has_any_remote(main) == Some(false)
-        && git(
-            main,
-            &[
-                "rev-parse",
-                "--verify",
-                "--quiet",
-                &format!("refs/heads/{upstream_ref}"),
-            ],
-        )
-        .is_ok()
-}
-
-/// The local branch to check out for `upstream_ref`, resolving a `HEAD` symref.
-///
-/// `git switch HEAD` fails outright — "a branch is expected" — so a base ref of
-/// `origin/HEAD`, which is the default, needs the name behind the symref before
-/// it can be checked out. That needs the repo, which is why it takes one.
-///
-/// There used to be a pure-string sibling (`base_branch`) that answered `HEAD` for
-/// the default `origin/HEAD` — a name nobody can check out. It had four tests and
-/// no callers, so what it really offered was a way to reach for the wrong one.
-///
-/// `None` when the symref has never been recorded, which happens on a checkout
-/// whose remote was added by hand and not yet fetched. Callers treat that as
-/// "cannot", not as an error: [`fetch_upstream`] records it on the next poll.
-pub fn base_checkout_branch(main: &Path, upstream_ref: &str) -> Option<String> {
-    let (remote, branch) = split_upstream(upstream_ref);
-    if branch.eq_ignore_ascii_case("HEAD") {
-        return default_branch(main, remote);
-    }
-    Some(branch.to_string())
 }
 
 /// The remote-tracking branches (`<remote>/<branch>`), for the first-run base-branch

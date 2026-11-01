@@ -355,7 +355,7 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
         // with `protect_base` off; the guard then enforces the other rules alone.
         let base = cfg
             .protect_base
-            .then(|| git::base_checkout_branch(&cfg.main_checkout, &cfg.upstream_ref))
+            .then(|| cfg.base().checkout_branch(&cfg.main_checkout))
             .flatten();
         hooks::write_settings(
             cfg.port,
@@ -402,7 +402,7 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
 
     // Keep the base ref fresh or the merge-base the context bar shows drifts
     // (§5). Offline is not fatal — the last-known ref still resolves.
-    if let Err(e) = git::fetch_upstream(&app.cfg.main_checkout, &app.cfg.upstream_ref) {
+    if let Err(e) = app.cfg.base().fetch(&app.cfg.main_checkout) {
         tracing::warn!("upstream fetch failed, using last-known ref: {e:#}");
     }
     // The one phase here that is a network round trip, so it is the one whose
@@ -1186,8 +1186,8 @@ fn start_sweeper(app: Arc<AppState>) {
             // The upstream fetch first (§5): the merge-base and the behind count
             // are both answered from that ref.
             let main = app.cfg.main_checkout.clone();
-            let base = app.cfg.upstream_ref.clone();
-            let _ = tokio::task::spawn_blocking(move || git::fetch_upstream(&main, &base)).await;
+            let base = app.cfg.base();
+            let _ = tokio::task::spawn_blocking(move || base.fetch(&main)).await;
             reconcile_all(&app, Scope::Live).await;
             // After the fetch, because "behind the base" is the question this
             // answers and the fetch is what makes the answer current.

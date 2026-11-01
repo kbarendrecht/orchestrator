@@ -176,13 +176,12 @@ async fn swap_with_main_inner(
     so the race the paragraph above closes stays closed. */
     let _ = app.reconcile(MAIN).await;
     let _ = app.reconcile(&workspace).await;
-    let (m0, t0, base) = (main.clone(), tree.clone(), app.cfg.upstream_ref.clone());
-    let (main_was, tree_was, local_base) =
-        tokio::task::spawn_blocking(move || -> anyhow::Result<(String, String, bool)> {
+    let (m0, t0) = (main.clone(), tree.clone());
+    let (main_was, tree_was) =
+        tokio::task::spawn_blocking(move || -> anyhow::Result<(String, String)> {
             Ok((
                 crate::git::current_branch(&m0)?,
                 crate::git::current_branch(&t0)?,
-                crate::git::is_local_base(&m0, &base),
             ))
         })
         .await
@@ -193,7 +192,7 @@ async fn swap_with_main_inner(
     pane emptied on every commit and behind/ahead read 0/0 for good. With a remote
     base the exchange hands out a local branch that only tracks it, which is why
     the swap is otherwise allowed to take main off base. */
-    if local_base && main_was == app.cfg.upstream_ref {
+    if matches!(app.cfg.base(), crate::git::Base::Local { branch } if branch == main_was) {
         refuse!(
             "main is on {main_was}, the base every worktree is measured against, and no \
              worktree may hold it; merge {tree_was} into it from main instead"

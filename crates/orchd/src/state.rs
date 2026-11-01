@@ -1419,14 +1419,12 @@ impl AppState {
     ) -> anyhow::Result<()> {
         let (main, upstream, protect) = (
             self.cfg.main_checkout.clone(),
-            self.cfg.upstream_ref.clone(),
+            self.cfg.base(),
             self.cfg.protect_base,
         );
         crate::proc::run_blocking("the push", move || {
             // Off, the base is no different from any branch, as in the hook.
-            let base = protect
-                .then(|| crate::git::base_checkout_branch(&main, &upstream))
-                .flatten();
+            let base = protect.then(|| upstream.checkout_branch(&main)).flatten();
             crate::git::push_with_lease(&path, &branch, base.as_deref())
         })
         .await?

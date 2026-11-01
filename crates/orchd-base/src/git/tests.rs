@@ -632,9 +632,11 @@ fn a_checkout_with_no_remote_is_based_on_its_own_branch() {
     git(&repo, &["add", "-A"]).unwrap();
     git(&repo, &["commit", "-qm", "a"]).unwrap();
     assert_eq!(local_base(&repo).as_deref(), Some("trunk"));
-    fetch_upstream(&repo, "trunk").expect("a local base has nothing to fetch");
+    Base::parse("trunk")
+        .fetch(&repo)
+        .expect("a local base has nothing to fetch");
     // A remote ref is still a remote ref: a missing remote is the real failure.
-    assert!(fetch_upstream(&repo, "origin/trunk").is_err());
+    assert!(Base::parse("origin/trunk").fetch(&repo).is_err());
 
     // Any remote means the base is somewhere else, and this has no opinion.
     git(
@@ -667,24 +669,35 @@ fn a_local_base_has_no_slash_and_no_remote() {
 
     // On a slash branch, the base is `main` rather than `release` + `2.0`.
     assert_eq!(local_base(&repo).as_deref(), Some("main"));
-    assert!(!is_local_base(&repo, "release/2.0"));
+    assert!(
+        !Base::parse("release/2.0").is_local(),
+        "a slash names a remote"
+    );
     // And with only slash branches there is no local base to give.
     git(&repo, &["branch", "-q", "-m", "main", "team/main"]).unwrap();
     assert_eq!(local_base(&repo), None);
     git(&repo, &["branch", "-q", "-m", "team/main", "main"]).unwrap();
-    assert_eq!(outgrown_local_base(&repo, "main"), None, "no remote yet");
+    assert_eq!(Base::parse("main").outgrown(&repo), None, "no remote yet");
 
-    // One remote, not `origin`: a bare base is a misconfiguration, not local, so
-    // the fetch must go on failing out loud.
+    // One remote, not `origin`. A bare base is still local — the string's shape is
+    // the whole rule — so nothing is fetched for it, and `outgrown` is what names
+    // the mistake, once at start rather than as a failed fetch every five minutes.
     git(
         &repo,
         &["remote", "add", "upstream", "git@github.com:acme/thing.git"],
     )
     .unwrap();
-    assert!(!is_local_base(&repo, "main"));
-    assert!(fetch_upstream(&repo, "main").is_err());
+    assert!(Base::parse("main").is_local());
+    Base::parse("main")
+        .fetch(&repo)
+        .expect("a local base has nothing to fetch, remote or not");
+    // Named even when no such local branch exists: then it resolves to nothing.
     assert_eq!(
-        outgrown_local_base(&repo, "main").as_deref(),
+        Base::parse("develop").outgrown(&repo).as_deref(),
+        Some("upstream/develop")
+    );
+    assert_eq!(
+        Base::parse("main").outgrown(&repo).as_deref(),
         Some("upstream/main")
     );
     // `origin` is preferred when there is one.
@@ -694,10 +707,10 @@ fn a_local_base_has_no_slash_and_no_remote() {
     )
     .unwrap();
     assert_eq!(
-        outgrown_local_base(&repo, "main").as_deref(),
+        Base::parse("main").outgrown(&repo).as_deref(),
         Some("origin/main")
     );
-    assert_eq!(outgrown_local_base(&repo, "origin/main"), None);
+    assert_eq!(Base::parse("origin/main").outgrown(&repo), None);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1471,7 +1484,7 @@ fn a_head_base_resolves_to_a_real_branch_before_anyone_checks_it_out() {
     .unwrap();
 
     // Unresolvable until the symref exists, which is "cannot" rather than a name.
-    assert_eq!(base_checkout_branch(&repo, "origin/HEAD"), None);
+    assert_eq!(Base::parse("origin/HEAD").checkout_branch(&repo), None);
 
     git(
         &repo,
@@ -1483,13 +1496,15 @@ fn a_head_base_resolves_to_a_real_branch_before_anyone_checks_it_out() {
     )
     .unwrap();
     assert_eq!(
-        base_checkout_branch(&repo, "origin/HEAD").as_deref(),
+        Base::parse("origin/HEAD").checkout_branch(&repo).as_deref(),
         Some("main")
     );
 
     // A named base needs no repo lookup and passes straight through.
     assert_eq!(
-        base_checkout_branch(&repo, "upstream/develop").as_deref(),
+        Base::parse("upstream/develop")
+            .checkout_branch(&repo)
+            .as_deref(),
         Some("develop")
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -1535,9 +1550,9 @@ fn both_a_fork_and_a_plain_layout_answer_merge_base_and_divergence() {
     git(&work, &["push", "-q", "origin", "main"]).unwrap();
 
     // --- plain layout: one remote, base is its own default branch ---
-    // `fetch_upstream` is what records the symref; without it `origin/HEAD`
+    // `Base::fetch` is what records the symref; without it `origin/HEAD`
     // does not resolve, which is the trap it was written for.
-    fetch_upstream(&work, "origin/HEAD").expect("fetch");
+    Base::parse("origin/HEAD").fetch(&work).expect("fetch");
     git(&work, &["checkout", "-q", "-b", "feature/x"]).unwrap();
     std::fs::write(work.join("a.txt"), "mine\n").unwrap();
     git(&work, &["commit", "-qam", "mine"]).unwrap();
@@ -1566,7 +1581,9 @@ fn both_a_fork_and_a_plain_layout_answer_merge_base_and_divergence() {
     )
     .unwrap();
     git(&work, &["push", "-q", "upstream", "main:develop"]).unwrap();
-    fetch_upstream(&work, "upstream/develop").expect("fetch the named base");
+    Base::parse("upstream/develop")
+        .fetch(&work)
+        .expect("fetch the named base");
 
     assert_eq!(
         merge_base(&work, "upstream/develop").expect("merge-base against a branch"),
@@ -1587,9 +1604,13 @@ fn both_a_fork_and_a_plain_layout_answer_merge_base_and_divergence() {
         Some(("upstream/HEAD".to_string(), "upstream".to_string()))
     );
     // And it resolves, once something records the symref.
-    fetch_upstream(&work, "upstream/HEAD").expect("the HEAD arm records it");
+    Base::parse("upstream/HEAD")
+        .fetch(&work)
+        .expect("the HEAD arm records it");
     assert_eq!(
-        base_checkout_branch(&work, "upstream/HEAD").as_deref(),
+        Base::parse("upstream/HEAD")
+            .checkout_branch(&work)
+            .as_deref(),
         Some("develop")
     );
     assert_eq!(
@@ -1626,22 +1647,26 @@ fn both_a_fork_and_a_plain_layout_answer_merge_base_and_divergence() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The base's one reading: a slash names a remote and keeps the rest as the
+/// branch, slashes included; a bare name is a branch of this checkout; and the
+/// string the config holds comes back unchanged.
 #[test]
-fn upstream_fetch_argv_is_config_driven_not_hardcoded() {
-    // A fork workflow fetches one named branch (as before).
+fn a_base_is_read_by_its_shape_alone() {
+    for (raw, remote, local) in [
+        ("upstream/develop", Some("upstream"), false),
+        ("origin/release/2026", Some("origin"), false),
+        ("origin/HEAD", Some("origin"), false),
+        ("main", None, true),
+    ] {
+        let base = Base::parse(raw);
+        assert_eq!(base.remote(), remote, "{raw}");
+        assert_eq!(base.is_local(), local, "{raw}");
+        assert_eq!(base.to_string(), raw, "{raw} round-trips");
+    }
+    // One branch by name, nested names intact, never the tags.
     assert_eq!(
-        upstream_fetch_argv("upstream/develop"),
-        vec!["fetch", "upstream", "develop", "--no-tags"]
-    );
-    // A nested branch name stays intact.
-    assert_eq!(
-        upstream_fetch_argv("origin/release/2026"),
-        vec!["fetch", "origin", "release/2026", "--no-tags"]
-    );
-    // A bare ref assumes origin.
-    assert_eq!(
-        upstream_fetch_argv("main"),
-        vec!["fetch", "origin", "main", "--no-tags"]
+        fetch_argv("origin", "release/2026"),
+        ["fetch", "origin", "release/2026", "--no-tags"]
     );
 }
 
@@ -1686,12 +1711,12 @@ fn a_head_base_ref_is_recorded_and_then_resolves() {
     )
     .unwrap();
 
-    fetch_upstream(&hand, "origin/HEAD").expect("the fetch");
+    Base::parse("origin/HEAD").fetch(&hand).expect("the fetch");
     assert_eq!(default_branch(&hand, "origin").as_deref(), Some("main"));
     // The whole point: the ref every consumer resolves against now exists.
     assert!(
         git(&hand, &["rev-parse", "--verify", "origin/HEAD"]).is_ok(),
-        "origin/HEAD must resolve after fetch_upstream"
+        "origin/HEAD must resolve after Base::fetch"
     );
 }
 

@@ -264,9 +264,3 @@ pub fn park_on_base(cwd: &Path, base: &str, exclude: Option<&str>) -> Result<Opt
     switch_branch(cwd, base)?;
     Ok(Some(on))
 }
-
-/// Split out so the named-branch rule is testable without a network fetch.
-pub(super) fn upstream_fetch_argv(upstream_ref: &str) -> Vec<&str> {
-    let (remote, branch) = split_upstream(upstream_ref);
-    vec!["fetch", remote, branch, "--no-tags"]
-}

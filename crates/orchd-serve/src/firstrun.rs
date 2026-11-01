@@ -298,9 +298,13 @@ pub fn detect(path: &Path) -> Detected {
         .map(|(b, _)| b.clone())
         .filter(|b| base_branches.contains(b))
         .or_else(|| {
-            orchd::git::base_checkout_branch(path, &format!("{prefix}HEAD"))
-                .map(|b| format!("{prefix}{b}"))
-                .filter(|b| base_branches.contains(b))
+            orchd::git::Base::Remote {
+                remote: remote.to_string(),
+                branch: "HEAD".to_string(),
+            }
+            .checkout_branch(path)
+            .map(|b| format!("{prefix}{b}"))
+            .filter(|b| base_branches.contains(b))
         })
         .or_else(|| {
             base_branches
@@ -418,7 +422,7 @@ fn write_config_to(file: &Path, path: &Path, ov: &Overrides) -> Result<()> {
     if let Some(base) = ov.base_branch.as_deref().filter(|s| !s.is_empty()) {
         obj.insert("upstream_ref".into(), json!(base));
         // `<remote>/<branch>` — the remote is what the push guard and the fetch use.
-        if let Some((remote, _)) = base.split_once('/') {
+        if let Some(remote) = orchd::git::Base::parse(base).remote() {
             obj.insert("upstream_remote".into(), json!(remote));
         }
     } else if !obj.contains_key("upstream_ref") {
