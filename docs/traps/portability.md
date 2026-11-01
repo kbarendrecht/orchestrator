@@ -142,7 +142,7 @@ aarch64-apple-darwin -p orchd` works and is worth running after touching
 anything platform-shaped. `-p orchestrator-desktop` does *not*:
 `objc2-exception-helper` compiles Objective-C and needs a real macOS SDK, so it
 fails in `cc-rs` on Linux for reasons that say nothing about your code. That
-half is only answered by `check.yml` on the macos-14 runner.
+half is only answered by `check.yml` on the macOS runner.
 
 ## A mise install path is version-pinned, so never write one into a file that outlives the process.
 mise installs each version in its own directory and

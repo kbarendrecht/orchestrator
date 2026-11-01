@@ -37,7 +37,7 @@ jobs:
       matrix:
         include:
           - os: ubuntu-22.04
-          - os: macos-14
+          - os: macos-26
     steps:
       # Pinned by hash, like `release.yml` and `health.yml`: a tag is a moving
       # target that a third party can repoint at other code, and these actions
@@ -300,7 +300,10 @@ jobs:
       # because a `workflow_dispatch` probe measured that macos-14 has Rosetta
       # installed and reproduces the bug exactly: the same bundle without the key
       # reports `translated=1` and `uname=x86_64`. `docs/traps/macos.md` carries
-      # both numbers.
+      # both numbers. **On a runner without Rosetta this step passes whatever the
+      # plist says**, because nothing can launch translated — so it first asserts
+      # Rosetta is there, and fails rather than guard nothing. That was added when
+      # macos-14 was retired and the job moved to an image nobody had measured.
       #
       # The app's own plist, paired with a probe executable rather than the app
       # itself: LaunchServices reads the architecture out of the plist, and the
@@ -315,6 +318,10 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           set -eu
+          arch -x86_64 /usr/bin/true || {
+            echo "::error::no Rosetta on this runner, so a translated launch cannot happen and this step would prove nothing — see docs/traps/macos.md"
+            exit 1
+          }
           # The bundle copies all three binaries in, because the app resolves
           # `orchd` beside itself — so it refuses to write one until they exist.
           cargo build -p orchd-serve --bins

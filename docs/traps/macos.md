@@ -211,11 +211,15 @@ installed there**: `oahd` is running and `arch -x86_64 /usr/bin/true` succeeds o
 macos-14 (14.8.9). That was the open question — with no Rosetta an x86_64
 preference cannot take effect, the bug would never appear on a runner, and a check
 asserting its absence would guard nothing.
+**So the step now asserts Rosetta first**, and fails without it. The measurement
+above is macos-14's; GitHub retired that image on 2026-11-02, and the jobs moved
+to macos-26, which nobody had measured. A runner image is not a fact that stays
+true, and the step is what says so when it stops being one.
 
 The unit test `the_bundle_declares_the_architecture_its_binary_was_built_for`
 asserts the key is present and names this build's own architecture, which is what
 can be checked without a Mac. **The effect has its own gate now**, in `check.yml`
-on macos-14: `--install-desktop-entry` writes the real bundle, its plist is paired
+on the macOS runner: `--install-desktop-entry` writes the real bundle, its plist is paired
 with a probe executable — LaunchServices reads the plist, and the executable is
 `/bin/sh` either way, so the substitution changes nothing it looks at — and the
 step fails unless `sysctl.proc_translated` comes back `0`. One `open`, no window,
@@ -254,7 +258,7 @@ decisions, and conflating them is what left the release unopenable.
 signs `Orchestrator.app` before it packs the `.dmg` around it.
 
 Two gates, because the key can be lost in two ways. `release.yml` runs the real
-`codesign --verify --deep --strict` on macos-14, before the bundle is driven and
+`codesign --verify --deep --strict` on the macOS runner, before the bundle is driven and
 long before it is packed — that is the check the user's machine runs. And
 `check-ship` asserts the key is declared at all, which is worth having separately
 because it runs on Linux on every push rather than once per tag.

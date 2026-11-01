@@ -44,7 +44,7 @@ jobs:
         include:
           - os: ubuntu-22.04
             bundles: deb
-          - os: macos-14
+          - os: macos-26
             bundles: app
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45

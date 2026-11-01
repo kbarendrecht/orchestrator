@@ -719,7 +719,7 @@ try {
      `TOP_ROW` in `desktop/src/main.rs`: macOS centres the traffic lights in a 28pt
      band of its own, so putting them on this row's centre line needs the row's
      height in Rust (#29). Nothing in a browser can see the lights — that half is
-     `app-check` on macos-14 — so what is asserted here is the half a browser *can*
+     `app-check` on the macOS runner — so what is asserted here is the half a browser *can*
      see, which is the number the other half is derived from. */
   const topRow = await page.evaluate(
     () => getComputedStyle(document.querySelector('.app')).gridTemplateRows.split(' ')[0])

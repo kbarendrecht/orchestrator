@@ -35,7 +35,7 @@ nobody noticed — the two simulations disagreed and only one of them was ever
 wrong.
 
 Found by asking a plainer question: **do the tests that press keys ever run on a
-Mac?** They do not. The matrix is `ubuntu-22.04` and `macos-14`, but every
+Mac?** They do not. The matrix is a Linux and a macOS runner, but every
 keyboard-driving step is `if: runner.os == 'Linux'`; what runs on the Mac is the
 30 e2e flows, which drive the HTTP API and press nothing, and `app-check`, which
 presses nothing either. So `appMod`'s ⌘ branch — the keyboard map, the
@@ -52,7 +52,7 @@ accepts; they go through a `chord()` helper now. `Ctrl+←/→` deliberately doe
 
 **What it still cannot answer** is what only a Mac can: whether ⌘ reaches
 WKWebView, and that `Ctrl`-click there is a right-click rather than a modifier
-click. That would need `page.mjs` on `macos-14` with a browser, which the job does
+click. That would need `page.mjs` on the macOS runner with a browser, which the job does
 not set up today.
 
 ## The ask box folds, and never dismisses, because the agent is still blocked.

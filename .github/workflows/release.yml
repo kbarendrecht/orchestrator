@@ -43,12 +43,12 @@ jobs:
             # because it cannot give the whole app — no link handler, no upgrade
             # from inside — and it cost ~55s and 79 MB a release for that.
             bundles: deb
-          # macos-14 is the Apple Silicon runner, so the host target is
+          # macos-26 is an Apple Silicon runner, so the host target is
           # aarch64-apple-darwin and no `--target` is needed. Intel Macs are not
           # built for: every Mac sold since 2020 is arm64, and a second runner
           # doubles macOS minutes for machines nobody here has. Tauri uses the
           # system WKWebView, so unlike Linux there are no libraries to install.
-          - os: macos-14
+          - os: macos-26
             slug: aarch64-macos
             # **Developer ID signed and notarized here, ad hoc everywhere else.**
             # `signingIdentity` in tauri.conf.json stays `-`, which is what
@@ -465,7 +465,7 @@ jobs:
       # Both, always: a broken `.deb` says nothing about the `.dmg`.
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, macos-14]
+        os: [ubuntu-22.04, macos-26]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     # To draft the release when it does not work. The repository's own token, for

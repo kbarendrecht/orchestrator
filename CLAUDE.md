@@ -85,7 +85,7 @@ re-litigates them from the doctrine alone:
   lint can see.
 - **Anything only a Mac can check** — and this is smaller than it was. *Running* the
   app is a tool now: `mise run app-check` opens a checkout in the built binary, makes
-  a session and restarts it, on macos-14 in `check` and against the bundle in
+  a session and restarts it, on the macOS runner in `check` and against the bundle in
   `release`. That was written after #16 and #17 shipped a week apart, both invisible
   to every gate here, because none of them ran the thing. What is left to a written
   rule is what the *pixels* look like: the renderer, the window chrome and the
