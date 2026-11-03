@@ -85,4 +85,11 @@ export async function run(t) {
   })
   assert.deepEqual(shape.folds.map((f) => [f.line, f.last, f.kind]), [[1, 2, 'imports'], [3, 4, 'code']])
   assert.deepEqual(shape.symbols.map((s) => s.name), ['c'])
+
+  // And the jump: the regex matches the interface member too, the parse drops it.
+  fs.writeFileSync(path.join(tree, 'props.ts'),
+    'interface P {\n  onChange: (v: string) => void;\n}\nconst onChange = (v: string) => {};\n')
+  const def = await t.api('GET', `/api/def?workspace=${encodeURIComponent(workspace)}`
+    + '&path=props.ts&symbol=onChange')
+  assert.deepEqual(def.hits.map((h) => [h.path, h.line]), [['props.ts', 4]], 'one declaration, so one jump')
 }

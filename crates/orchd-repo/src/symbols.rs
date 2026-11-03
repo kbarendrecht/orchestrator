@@ -14,12 +14,18 @@
 //! `CLAUDE.md` that a default may only depend on what the daemon already needs.
 //! Worth revisiting if this proves annoying; not worth leading with.
 //!
+//! **A parse checks the regex, where there is a grammar.** [`crate::structure`]
+//! links tree-sitter in-process, which is none of the costs above, and it is used
+//! here only to drop a hit that is not a declaration; [`confirmed`] says why it
+//! can never leave the answer empty.
+//!
 //! **The table is here rather than in the page** for the reason the rest of the
 //! gates exist: a table in Rust has a test per language beside it, and a table in
 //! JavaScript would have had none. It is also why the language is derived from the
 //! *clicked file's* extension — a symbol has no language of its own.
 
 use anyhow::Result;
+use std::collections::HashMap;
 use std::path::Path;
 
 use crate::search::{search, Matches, Query};
@@ -74,6 +80,13 @@ const C: Shapes = Shapes(&[
     r"^[\w\s\*&:<>,~]*\b{}\s*\([^;]*\)\s*(const\s*)?(noexcept\s*)?\{",
 ]);
 
+/// PHP. Modifiers in any order before `function`, and the by-reference `&` some
+/// older code returns with.
+const PHP: Shapes = Shapes(&[
+    r"^\s*((abstract|final|readonly)\s+)*(class|interface|trait|enum)\s+{}\b",
+    r"^\s*((public|protected|private|static|abstract|final)\s+)*function\s+&?{}\s*\(",
+]);
+
 const RUBY: Shapes = Shapes(&[r"^\s*(def|class|module)\s+(self\.)?{}\b"]);
 
 const SHELL: Shapes = Shapes(&[r"^\s*(function\s+)?{}\s*\(\s*\)", r"^\s*function\s+{}\b"]);
@@ -89,6 +102,7 @@ fn shapes_for(path: &Path) -> Option<Shapes> {
         "go" => GO,
         "java" | "kt" | "kts" | "scala" | "groovy" | "cs" => JVM,
         "c" | "h" | "cc" | "cpp" | "cxx" | "hpp" | "hh" | "m" | "mm" => C,
+        "php" => PHP,
         "rb" | "rake" => RUBY,
         "sh" | "bash" | "zsh" => SHELL,
         _ => return None,
@@ -143,7 +157,7 @@ pub fn definitions(
         .map(|t| format!("(?:{})", t.replace("{}", &quoted)))
         .collect::<Vec<_>>()
         .join("|");
-    search(
+    let found = search(
         root,
         exclude,
         &Query {
@@ -152,7 +166,47 @@ pub fn definitions(
             exact_case: true,
             ..Default::default()
         },
-    )
+    )?;
+    Ok(confirmed(root, symbol, found))
+}
+
+/// The hits a parse agrees are declarations, read with [`crate::structure`].
+///
+/// **It may only narrow, never empty.** A regex shape matches what merely looks
+/// like a definition — `onChange: (v) => void` in a TypeScript interface is a
+/// type member — and a parse can tell, which is what turns a list into a jump.
+/// But the query is a second table that can miss a form the shapes catch, so a
+/// parse that rejects every hit is a parse that is wrong, and the regex answer
+/// stands. A file in a language with no grammar keeps its hits: it was not asked.
+fn confirmed(root: &Path, symbol: &str, found: Matches) -> Matches {
+    // One hit is kept either way, so it is not worth a read and a parse.
+    if found.hits.len() < 2 {
+        return found;
+    }
+    let mut verdicts: HashMap<String, Option<Vec<u32>>> = HashMap::new();
+    let kept: Vec<_> = found
+        .hits
+        .iter()
+        .filter(|h| {
+            let lines = verdicts.entry(h.path.clone()).or_insert_with(|| {
+                // Asked first, so a `.java` hit is not read from disk for nothing.
+                if !crate::structure::knows(Path::new(&h.path)) {
+                    return None;
+                }
+                let text = std::fs::read_to_string(root.join(&h.path)).ok()?;
+                crate::structure::declared_on(Path::new(&h.path), &text, symbol)
+            });
+            lines.as_ref().is_none_or(|l| l.contains(&h.line))
+        })
+        .cloned()
+        .collect();
+    if kept.is_empty() {
+        return found;
+    }
+    Matches {
+        hits: kept,
+        truncated: found.truncated,
+    }
 }
 
 #[cfg(test)]
@@ -243,6 +297,54 @@ mod tests {
                 "{junk:?} must not be asked about"
             );
         }
+    }
+
+    /// PHP, the monorepo's language, which had no shapes and so never jumped.
+    #[test]
+    fn php_methods_and_classes_are_found() {
+        let dir = orchd_base::testutil::scratch_repo("symbols-php");
+        fs::write(
+            dir.join("a.php"),
+            "<?php\n$o->total();\nfinal class Order\n{\n    public static function total(): int { return 1; }\n}\n",
+        )
+        .unwrap();
+        assert_eq!(at(&dir, "a.php", "total"), vec![("a.php".into(), 5)]);
+        assert_eq!(at(&dir, "a.php", "Order"), vec![("a.php".into(), 3)]);
+    }
+
+    /// **The parse is what turns this list into a jump.** The regex matches the
+    /// interface member, which only looks like an arrow function; the parse knows
+    /// it is a type, and one hit is left.
+    #[test]
+    fn a_type_member_that_looks_like_a_definition_is_dropped() {
+        let dir = orchd_base::testutil::scratch_repo("symbols-ts");
+        fs::write(
+            dir.join("a.ts"),
+            "interface P {\n  onChange: (v: string) => void;\n}\nconst onChange = (v: string) => {};\n",
+        )
+        .unwrap();
+        assert_eq!(at(&dir, "a.ts", "onChange"), vec![("a.ts".into(), 4)]);
+    }
+
+    /// A parse that rejects every hit is the parse being wrong, so the regex
+    /// answer stands. `confirmed` is driven directly here, with a hit no query
+    /// describes.
+    #[test]
+    fn a_parse_that_rejects_everything_leaves_the_regex_answer() {
+        let dir = orchd_base::testutil::scratch_repo("symbols-none");
+        fs::write(dir.join("a.rs"), "let thing = 1;\n").unwrap();
+        let hit = crate::search::Hit {
+            path: "a.rs".into(),
+            line: 1,
+            col: 0,
+            len: 5,
+            text: "let thing = 1;".into(),
+        };
+        let found = Matches {
+            hits: vec![hit.clone()],
+            truncated: false,
+        };
+        assert_eq!(confirmed(&dir, "thing", found).hits, vec![hit]);
     }
 
     /// Several definitions of one name is the common case in a trait or an
