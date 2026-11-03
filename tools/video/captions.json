@@ -1,0 +1,11 @@
+{
+  "projects": { "text": "Several projects. Several agents. One window." },
+  "new": { "text": "Each session gets its own worktree." },
+  "work": { "text": "Agents keep working while you look away." },
+  "path": { "text": "Click a path the agent printed." },
+  "diff": { "text": "See what changed. Edit it in place.", "at": "bottom" },
+  "pr": { "text": "One press hands the review to an agent." },
+  "reviews": { "text": "Who is waiting on you, longest first." },
+  "theme": { "text": "Three themes, or your own colours." },
+  "revive": { "text": "Kill the daemon. Every session comes back." }
+}

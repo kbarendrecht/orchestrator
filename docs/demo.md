@@ -226,3 +226,60 @@ Two things it depends on:
 - **The host restarts a dead child once**, and only clears that budget after the
   child has lived for `HEALTHY_UPTIME` (60 s). A second kill inside a minute leaves
   the checkout down, and the take records an empty rail.
+
+## The README video
+
+[`tools/video/run.mjs`](../tools/video/run.mjs) records one video in place of the
+GIFs: ten scenes in one take, from the desktop app's splash to a daemon killed and
+every session back. It uses [Argo](https://github.com/shreyaskarnik/argo), which
+drives the page with Playwright and adds the camera moves, and lays the captions
+from [`tools/video/captions.json`](../tools/video/captions.json) over the export.
+
+```
+mise run video -- --port <host page port>          # target/video/orchd.mp4
+mise run video -- --port <port> --captions-only    # reword, no new take
+```
+
+**Its own install, in `tools/video/`.** Argo needs Playwright 1.59 or newer, and
+`tools/` pins 1.49.1 to the WebKit build on disk; one `node_modules` cannot hold
+both. The task also carries `conda:ffmpeg`, because Argo passes `-fps_mode`, which
+ffmpeg 4.4 — Ubuntu 22.04's — refuses. A `PATH` prefix does not do it: under
+`mise run`, `/usr/bin` wins.
+
+**A host with two checkouts**, in this order: the fixture clone first, a clone of
+this repository second. The first is the one with the PR, the review queue and the
+daemon that is killed; the second is where the new session is cut, and the task
+typed into it is about `web/js/theme.js`. Read the port out of the host's
+`orchd.log`, as above.
+
+```
+./target/debug/orchd --host ~/development/orchd-demo/inventory-api \
+                            ~/development/orchd-demo/orchestrator
+```
+
+What the take needs before it rolls:
+
+- **The clone of this repository cannot push.** Its `origin` is the real one, and
+  every agent on camera works in it: `git remote set-url --push origin
+  no-push-from-demo-clone` once. Pull it to current `main` too, so nothing an agent
+  shows is older than the tree.
+- **Sessions in both checkouts that have taken a turn.** Three in the first, each
+  with a small edit, and one of them ending on a reply that names
+  `src/inventory.js:<line>` — the path scene clicks it (`--path-text` to change
+  it). Two in the second. `POST /api/session/<id>/tell` seeds one without a page.
+- **Nothing extra from the last take.** Each take adds a session in the second
+  checkout and a `handle-review` run in the first; stop both, or the rail grows a
+  row per take and the review run carries on against the fixture PR.
+- **A minute between takes.** The take kills the first checkout's daemon, and the
+  host restarts a dead child once per `HEALTHY_UPTIME`.
+- `--codex` cuts the new session as Codex. It needs Codex signed in on this
+  machine and on the host's `PATH`; the agent menu exists only with two agents.
+
+**Two things in the page are changed, and both are the recording machine's.**
+WebGL is hidden from the page, so the terminal is drawn by xterm's DOM renderer —
+how the Linux app draws it — and the path scene can find the text. And the
+agent-upgrade bar is hidden: it says this machine's Claude Code is behind, and it
+covered the diff toolbar. The review queue is the demo data described above.
+
+**A README cannot play a video committed to the repository.** Drag the MP4 into an
+edit of `README.md` on github.com once, and use the link GitHub gives back.

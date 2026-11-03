@@ -211,6 +211,29 @@ depends = ["deps"]
 dir = "{{config_root}}"
 run = "node tools/demo.mjs"
 
+# The README video, recorded by Argo against a running `--host` with two
+# checkouts — `docs/demo.md` says which. Its own install, because Argo needs a
+# Playwright newer than the one `tools/` pins to its WebKit build. Drives real
+# agents, so it costs tokens and is not part of any gate.
+#
+#   mise run video -- --port <host page port>          # target/video/orchd.mp4
+#   mise run video -- --port <port> --captions-only    # reword, no new take
+[tasks.video-deps]
+description = "Install the video recorder's dependencies (tools/video/node_modules)"
+dir = "{{config_root}}/tools/video"
+sources = ["package.json", "package-lock.json"]
+outputs = ["node_modules/.package-lock.json"]
+run = ["npm install --no-audit --no-fund", "npx playwright install chromium"]
+
+[tasks.video]
+description = "Record the README video against a running host with two checkouts"
+depends = ["video-deps"]
+# Argo's stitcher passes `-fps_mode`, which needs ffmpeg 5.1; Ubuntu 22.04 ships
+# 4.4. Carried by the task, not `[tools]`, because nothing else here needs it.
+tools = { "conda:ffmpeg" = "9.0.2" }
+dir = "{{config_root}}/tools/video"
+run = "node run.mjs"
+
 # Build a throwaway PR with review threads whose last word is not yours, which is
 # the one precondition the resolve flow cannot be verified without. Creates a
 # private GitHub repo and a daemon config dir under ~/.cache; see docs/fixture-pr.md.

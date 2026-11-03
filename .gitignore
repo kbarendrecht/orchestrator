@@ -11,3 +11,8 @@ target/
 .claude/settings.local.json
 # Pages the research and plan skills write into the repo they run in.
 .plan/
+# The video recorder's working files: Argo's per-take scratch, its exports, and
+# Playwright's results. The finished video goes to target/video/.
+tools/video/.argo/
+tools/video/videos/
+tools/video/test-results/

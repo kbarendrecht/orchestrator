@@ -1,0 +1,12 @@
+[
+  { "scene": "start" },
+  { "scene": "projects" },
+  { "scene": "new" },
+  { "scene": "work" },
+  { "scene": "path" },
+  { "scene": "diff" },
+  { "scene": "pr" },
+  { "scene": "reviews" },
+  { "scene": "theme" },
+  { "scene": "revive" }
+]
