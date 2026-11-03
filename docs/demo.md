@@ -1,23 +1,28 @@
 # Recording the README's demos
 
-[`tools/demo.mjs`](../tools/demo.mjs) records every GIF in the README:
+The README carries one video, recorded by
+[`tools/video/run.mjs`](../tools/video/run.mjs); [the last
+section](#the-readme-video) is how. It replaced eight GIFs, and
+[`tools/demo.mjs`](../tools/demo.mjs), which recorded them, still records one
+feature per clip:
 
-- [`demo.gif`](demo.gif) — three agents over **one** repository, swapped between,
+- the default take — three agents over **one** repository, swapped between,
   then asked a question live.
-- [`demo-repos.gif`](demo-repos.gif) — **two** repositories in one window
-  (`--multi`), each with its own sessions, changed files and PRs.
-- [`demo-panes.gif`](demo-panes.gif) — the PR pane and the review queue
-  (`--panes`), cropped to the band that holds both.
-- [`demo-revive.gif`](demo-revive.gif) — the diff viewer, then the checkout's
-  daemon killed and every session coming back (`--revive`).
-- [`demo-diff.gif`](demo-diff.gif) — one changed file read as a diff, split, then
-  made editable in place (`--diff`).
-- [`demo-find.gif`](demo-find.gif) — a workspace searched, the hits narrowing per
-  keystroke, one opened as its own file pane (`--find`).
-- [`demo-skill.gif`](demo-skill.gif) — the skills the daemon ships, listed by
-  Claude Code's own menu inside a session (`--skill`).
-- [`demo-procs.gif`](demo-procs.gif) — a managed process in the drawer, restarted
-  on camera so its own output decides the health dot (`--procs`).
+- `--multi` — **two** repositories in one window, each with its own sessions,
+  changed files and PRs.
+- `--panes` — the PR pane and the review queue, cropped to the band that holds
+  both.
+- `--revive` — the diff viewer, then the checkout's daemon killed and every
+  session coming back.
+- `--diff` — one changed file read as a diff, split, then made editable in place.
+- `--find` — a workspace searched, the hits narrowing per keystroke, one opened as
+  its own file pane.
+- `--skill` — the skills the daemon ships, listed by Claude Code's own menu
+  inside a session.
+- `--procs` — a managed process in the drawer, restarted on camera so its own
+  output decides the health dot.
+
+The video's setup builds on the one below, which the GIFs needed first.
 
 The script's own header carries the mistakes that cost a take each. This is the
 setup it assumes, and every step below is here because skipping it produced a GIF
@@ -64,7 +69,7 @@ the key is the repository, and a worktree's repository is the one it was cut fro
 
 ## The daemon
 
-One checkout, for `demo.gif`:
+One checkout, for the default take:
 
 ```
 export ORCHD_CONFIG_DIR=~/.cache/orchd-solo/config
@@ -73,7 +78,7 @@ cargo build -p orchd-serve --bins
 ./target/debug/orchd --main ~/development/orchd-demo/inventory-api
 ```
 
-Two, for `demo-repos.gif` — this is `--host`, the same mode the app runs in, and it
+Two, for `--multi` — this is `--host`, the same mode the app runs in, and it
 prints nothing: read the port out of `$ORCHD_CONFIG_DIR/orchd.log`, and each
 child's port and token out of `/api/host/checkouts`.
 
@@ -118,7 +123,7 @@ Two things to get right before recording:
 
 ```
 mise run demo                                    # one repository
-mise run demo -- --multi --out docs/demo-repos.gif   # two
+mise run demo -- --multi --out target/demo-repos.gif   # two
 ```
 
 Seeding and recording split apart when there are several checkouts, because each
@@ -127,7 +132,7 @@ repository needs prompts about its own code:
 ```
 node tools/demo.mjs --port $PORT --seed-only --checkout inventory-api --seeds 'a|b'
 node tools/demo.mjs --port $PORT --seed-only --checkout orchestrator  --seeds 'c|d'
-node tools/demo.mjs --port $PORT --no-seed --multi --out docs/demo-repos.gif
+node tools/demo.mjs --port $PORT --no-seed --multi --out target/demo-repos.gif
 ```
 
 It prints the size. Over about 8 MB is too much for a README, and `--scale 900` or
@@ -190,7 +195,7 @@ in the recording checkout's config is what fills it. The review queue needs
 `reviews_command`, below. A take with either one empty has to be recorded again,
 so check both before rolling.
 
-**The exception is the second checkout in `demo-repos.gif`.** It is a clone of
+**The exception is the second checkout in `--multi`.** It is a clone of
 this repository, which commits straight to `main` and therefore has no open PRs
 and no review requests — so its PR pane reads `none open` and its queue reads
 `Nothing waiting on you`. Both are true of that checkout, and the alternative

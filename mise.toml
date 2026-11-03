@@ -197,16 +197,17 @@ depends = ["deps"]
 dir = "{{config_root}}"
 run = "node tools/paint-check.mjs"
 
-# The README's demo GIF, recorded against a *running* daemon on a prepared
-# checkout — `docs/demo.md` says which, and why it cannot be the e2e sandbox.
-# Drives a real `claude`, so it costs tokens and is not part of any gate.
+# One feature as a GIF, recorded against a *running* daemon on a prepared
+# checkout — `docs/demo.md` says which, and why it cannot be the e2e sandbox. The
+# README carries the video below instead. Drives a real `claude`, so it costs
+# tokens and is not part of any gate.
 #
-#   mise run demo                                        # one repository
-#   mise run demo -- --multi  --out docs/demo-repos.gif   # two, side by side
-#   mise run demo -- --panes  --out docs/demo-panes.gif   # the PR and review panes
-#   mise run demo -- --revive --out docs/demo-revive.gif  # diff, then a daemon kill
+#   mise run demo                                          # one repository
+#   mise run demo -- --multi  --out target/demo-repos.gif   # two, side by side
+#   mise run demo -- --panes  --out target/demo-panes.gif   # the PR and review panes
+#   mise run demo -- --revive --out target/demo-revive.gif  # diff, then a daemon kill
 [tasks.demo]
-description = "Record the README's demo GIF against a running daemon"
+description = "Record one feature as a GIF against a running daemon"
 depends = ["deps"]
 dir = "{{config_root}}"
 run = "node tools/demo.mjs"

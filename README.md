@@ -3,8 +3,6 @@
   <img alt="orchestrator" src="docs/logo-light.svg" width="280">
 </picture>
 
-# orchestrator
-
 **An agentic development environment (ADE), from prompt to commit to PR to review.**
 Every session gets its own worktree and terminal, and keeps running when you close
 the app. When checks fail, one press has an agent fix them, push, and watch CI
@@ -17,7 +15,7 @@ every reply for your go.
 [![licence](https://img.shields.io/badge/licence-AGPL--3.0--only-blue)](LICENSE)
 ![platforms](https://img.shields.io/badge/platforms-macOS%20%C2%B7%20Linux-lightgrey)
 
-![orchestrator](docs/demo.gif)
+![orchestrator: two projects in one window, a split diff, the PR pane and the review queue](docs/orchd.png)
 
 A Rust daemon and a small vanilla-JS web app, shipped as one desktop application
 and runnable headless in a browser tab. It hosts
@@ -31,35 +29,35 @@ one window. It is not itself an agent.
 
 ## What it does
 
-Each row is real: the agents are the ones you run, the diffs are what they wrote.
-[`docs/demo.md`](docs/demo.md) says how the recordings are made.
+The recording is one take: the agents are the ones you run, and the diffs are
+what they wrote. [`docs/demo.md`](docs/demo.md) says how it is made.
 
-<table>
-<tr>
-<td><b>01 &middot; The PR pane and the review queue &mdash; see who is waiting on whom.</b> Your open PRs, each with the threads still owed a reply and the checks that are red. Below them, other people's PRs ranked by how long somebody has waited: a request to you by name is amber, a request to your team is grey, and draft, conflicting and failing rows sink below a fold. The queue rows are demo data &mdash; <a href="docs/demo.md">why</a>.</td>
-<td><img src="docs/demo-panes.gif" alt="the PR pane and the review queue"></td>
-</tr>
-<tr>
-<td><b>02 &middot; Skills &mdash; one press hands the PR to an agent.</b> The skills ship with the app and reach every session. <code>handle</code> on a PR row starts <code>handle-review</code>: one agent reads the threads, applies what is right, asks you about the rest, and drafts the replies. <code>fix</code> starts <code>fix-pr</code>, which takes a red PR green and never comments. <a href="#the-review-loop">What each one refuses</a> is the half worth reading.</td>
-<td><img src="docs/demo-skill.gif" alt="the skills a session is given"></td>
-</tr>
-<tr>
-<td><b>03 &middot; Git aware &mdash; see what changed before you answer for it.</b> Two panes watch the working tree: changed files with git's own verbs, and a word-level diff against the merge-base that you can edit in.</td>
-<td><img src="docs/demo-diff.gif" alt="the diff viewer"></td>
-</tr>
-<tr>
-<td><b>04 &middot; Sessions &mdash; several projects, several agents, and nothing dies with the window.</b> Open more than one checkout in the same window; the panes follow the row you click. Each session gets its own git worktree and its own terminal. The daemon owns every pty, so closing the window loses nothing.</td>
-<td><img src="docs/demo-repos.gif" alt="two checkouts in one window"><img src="docs/demo-revive.gif" alt="sessions surviving a daemon restart"></td>
-</tr>
-<tr>
-<td><b>05 &middot; Read and edit &mdash; find it, open it, change it.</b> Search a workspace with ripgrep's engine, and open a hit in its own file pane. Modifier-click a path or a symbol to go there. The pane is editable, and the agent is told when you change a file under it.</td>
-<td><img src="docs/demo-find.gif" alt="find in a workspace, and the file viewer"></td>
-</tr>
-<tr>
-<td><b>06 &middot; Processes &mdash; a terminal and a build watcher, beside the agents.</b> <code>+</code> in the drawer opens a shell in the workspace. Declared processes &mdash; a build watcher, a container stack &mdash; run beside it, and their health folds into the rail next to the session that broke it.</td>
-<td><img src="docs/demo-procs.gif" alt="a managed process in the drawer"></td>
-</tr>
-</table>
+- **The PR pane and the review queue: see who is waiting on whom.** Your open
+  PRs, each with the threads still owed a reply and the checks that are red.
+  Below them, other people's PRs ranked by how long somebody has waited: a
+  request to you by name is amber, a request to your team is grey, and draft,
+  conflicting and failing rows sink below a fold. The queue rows in the
+  recording are demo data ([why](docs/demo.md)).
+- **Skills: one press hands the PR to an agent.** The skills ship with the app
+  and reach every session. `handle` on a PR row starts `handle-review`: one agent
+  reads the threads, applies what is right, asks you about the rest, and drafts
+  the replies. `fix` starts `fix-pr`, which takes a red PR green and never
+  comments. [What each one refuses](#the-review-loop) is the half worth reading.
+- **Git aware: see what changed before you answer for it.** Two panes watch the
+  working tree: changed files with git's own verbs, and a word-level diff
+  against the merge-base that you can edit in.
+- **Sessions: several projects, several agents, and nothing dies with the
+  window.** Open more than one checkout in the same window; the panes follow the
+  row you click. Each session gets its own git worktree and its own terminal.
+  The daemon owns every pty, so closing the window loses nothing.
+- **Read and edit: find it, open it, change it.** Search a workspace with
+  ripgrep's engine, and open a hit in its own file pane. Click a path an agent
+  printed, or modifier-click a symbol, to go there. The pane is editable, and the
+  agent is told when you change a file under it.
+- **Processes: a terminal and a build watcher, beside the agents.** `+` in the
+  drawer opens a shell in the workspace. Declared processes (a build watcher, a
+  container stack) run beside it, and their health folds into the rail next to
+  the session that broke it.
 
 ## The review loop
 

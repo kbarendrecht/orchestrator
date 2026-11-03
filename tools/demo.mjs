@@ -1,10 +1,11 @@
-// Record the README's demo GIF, headlessly, against a real daemon.
+// Record one feature as a GIF, headlessly, against a real daemon. The README
+// carries the video `tools/video/run.mjs` records instead.
 //
 // The same trick `shot.mjs` uses: the UI is served over plain HTTP, so a normal
 // browser can drive it with no display and no tauri-driver. This adds a camera.
 //
-//   mise run demo                            # docs/demo.gif, 1100px wide
-//   mise run demo -- --out docs/review.gif   # somewhere else
+//   mise run demo                            # target/demo.gif, 1100px wide
+//   mise run demo -- --out target/review.gif # somewhere else
 //   mise run demo -- --keep-video            # keep the webm ffmpeg read
 //
 // **It drives a real `claude`, on purpose.** A GIF of the fake agent from
@@ -37,7 +38,7 @@ const flag = (name, fallback) => {
 const has = (name) => args.includes(name);
 
 const port = flag('--port', process.env.ORCHD_PORT || '7777');
-const out = flag('--out', 'docs/demo.gif');
+const out = flag('--out', 'target/demo.gif');
 const width = Number(flag('--width', '1440'));
 const height = Number(flag('--height', '900'));
 // What the GIF is scaled to. GitHub lays a README image out at about 880 CSS
