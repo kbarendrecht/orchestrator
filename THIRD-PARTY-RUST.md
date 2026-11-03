@@ -1948,7 +1948,7 @@ Used by [json-patch 3.0.1](https://github.com/idubrov/json-patch)
 
 ## Apache License 2.0
 
-Used by [crc32fast 1.5.0](https://github.com/srijs/rust-crc32fast), [foreign-types-macros 0.2.4](https://github.com/sfackler/foreign-types), [foreign-types-shared 0.3.1](https://github.com/sfackler/foreign-types), [foreign-types 0.5.0](https://github.com/sfackler/foreign-types), [serde_spanned 0.6.9](https://github.com/toml-rs/toml), [serde_spanned 1.1.1](https://github.com/toml-rs/toml), [toml 0.8.2](https://github.com/toml-rs/toml), [toml 0.9.12+spec-1.1.0](https://github.com/toml-rs/toml), [toml 1.1.4+spec-1.1.0](https://github.com/toml-rs/toml), [toml_datetime 0.7.5+spec-1.1.0](https://github.com/toml-rs/toml), [toml_datetime 1.1.1+spec-1.1.0](https://github.com/toml-rs/toml), [toml_edit 0.19.15](https://github.com/toml-rs/toml), [toml_edit 0.20.2](https://github.com/toml-rs/toml), [toml_parser 1.1.3+spec-1.1.0](https://github.com/toml-rs/toml), [toml_writer 1.1.2+spec-1.1.0](https://github.com/toml-rs/toml)
+Used by [crc32fast 1.5.0](https://github.com/srijs/rust-crc32fast), [foreign-types-macros 0.2.4](https://github.com/sfackler/foreign-types), [foreign-types-shared 0.3.1](https://github.com/sfackler/foreign-types), [foreign-types 0.5.0](https://github.com/sfackler/foreign-types), [serde_spanned 0.6.9](https://github.com/toml-rs/toml), [serde_spanned 1.1.1](https://github.com/toml-rs/toml), [streaming-iterator 0.1.9](https://github.com/sfackler/streaming-iterator), [toml 0.8.2](https://github.com/toml-rs/toml), [toml 0.9.12+spec-1.1.0](https://github.com/toml-rs/toml), [toml 1.1.4+spec-1.1.0](https://github.com/toml-rs/toml), [toml_datetime 0.7.5+spec-1.1.0](https://github.com/toml-rs/toml), [toml_datetime 1.1.1+spec-1.1.0](https://github.com/toml-rs/toml), [toml_edit 0.19.15](https://github.com/toml-rs/toml), [toml_edit 0.20.2](https://github.com/toml-rs/toml), [toml_parser 1.1.3+spec-1.1.0](https://github.com/toml-rs/toml), [toml_writer 1.1.2+spec-1.1.0](https://github.com/toml-rs/toml)
 
 ```
                                  Apache License
@@ -8023,7 +8023,7 @@ developed by Chen Jiaju, licensed under the MIT License and the Apache License 2
 
 ## MIT License
 
-Used by [block2 0.6.2](https://github.com/madsmtm/objc2), [brotli-decompressor 5.0.3](https://github.com/dropbox/rust-brotli-decompressor), [dlopen2 0.8.2](https://github.com/OpenByteDev/dlopen2), [dlopen2_derive 0.4.3](https://github.com/OpenByteDev/dlopen2), [dpi 0.1.2](https://github.com/rust-windowing/winit), [objc2-encode 4.1.0](https://github.com/madsmtm/objc2), [objc2-foundation 0.3.2](https://github.com/madsmtm/objc2), [objc2 0.6.4](https://github.com/madsmtm/objc2), [serial 0.4.0](https://github.com/dcuddeback/serial-rs), [ts-rs-macros 12.0.1](https://github.com/Aleph-Alpha/ts-rs), [ts-rs 12.0.1](https://github.com/Aleph-Alpha/ts-rs)
+Used by [block2 0.6.2](https://github.com/madsmtm/objc2), [brotli-decompressor 5.0.3](https://github.com/dropbox/rust-brotli-decompressor), [dlopen2 0.8.2](https://github.com/OpenByteDev/dlopen2), [dlopen2_derive 0.4.3](https://github.com/OpenByteDev/dlopen2), [dpi 0.1.2](https://github.com/rust-windowing/winit), [objc2-encode 4.1.0](https://github.com/madsmtm/objc2), [objc2-foundation 0.3.2](https://github.com/madsmtm/objc2), [objc2 0.6.4](https://github.com/madsmtm/objc2), [serial 0.4.0](https://github.com/dcuddeback/serial-rs), [tree-sitter-typescript 0.23.2](https://github.com/tree-sitter/tree-sitter-typescript), [ts-rs-macros 12.0.1](https://github.com/Aleph-Alpha/ts-rs), [ts-rs 12.0.1](https://github.com/Aleph-Alpha/ts-rs)
 
 ```
 MIT License
@@ -8280,6 +8280,35 @@ SOFTWARE.
 
 ## MIT License
 
+Used by [tree-sitter-go 0.25.0](https://github.com/tree-sitter/tree-sitter-go), [tree-sitter-javascript 0.25.0](https://github.com/tree-sitter/tree-sitter-javascript)
+
+```
+The MIT License (MIT)
+
+Copyright (c) 2014 Max Brunsfeld
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+```
+
+## MIT License
+
 Used by [phf 0.13.1](https://github.com/rust-phf/rust-phf), [phf_codegen 0.13.1](https://github.com/rust-phf/rust-phf), [phf_generator 0.13.1](https://github.com/rust-phf/rust-phf), [phf_macros 0.13.1](https://github.com/rust-phf/rust-phf), [phf_shared 0.13.1](https://github.com/rust-phf/rust-phf)
 
 ```
@@ -8456,6 +8485,35 @@ SOFTWARE.
 
 ## MIT License
 
+Used by [tree-sitter-python 0.25.0](https://github.com/tree-sitter/tree-sitter-python)
+
+```
+The MIT License (MIT)
+
+Copyright (c) 2016 Max Brunsfeld
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+```
+
+## MIT License
+
 Used by [same-file 1.0.6](https://github.com/BurntSushi/same-file)
 
 ```
@@ -8485,12 +8543,100 @@ THE SOFTWARE.
 
 ## MIT License
 
+Used by [tree-sitter-php 0.25.1](https://github.com/tree-sitter/tree-sitter-php)
+
+```
+The MIT License (MIT)
+
+Copyright (c) 2017 Josh Vera, GitHub
+Copyright (c) 2019 Max Brunsfeld, Amaan Qureshi, Christian Frøystad, Caleb White
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+```
+
+## MIT License
+
+Used by [tree-sitter-rust 0.24.2](https://github.com/tree-sitter/tree-sitter-rust)
+
+```
+The MIT License (MIT)
+
+Copyright (c) 2017 Maxim Sokolov
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+```
+
+## MIT License
+
 Used by [embed-resource 3.0.11](https://github.com/nabijaczleweli/rust-embed-resource)
 
 ```
 The MIT License (MIT)
 
 Copyright (c) 2017 nabijaczleweli
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+```
+
+## MIT License
+
+Used by [tree-sitter-language 0.1.9](https://github.com/tree-sitter/tree-sitter), [tree-sitter 0.27.1](https://github.com/tree-sitter/tree-sitter)
+
+```
+The MIT License (MIT)
+
+Copyright (c) 2018 Max Brunsfeld
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

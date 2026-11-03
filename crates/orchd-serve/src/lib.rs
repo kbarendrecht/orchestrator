@@ -702,6 +702,7 @@ fn daemon_router(app: Arc<AppState>) -> Router {
         .route("/api/archive/search", get(api::search_archive))
         .route("/api/paths", get(api::paths))
         .route("/api/def", get(api::definitions))
+        .route("/api/structure", post(api::structure))
         .route("/api/file", get(review_api::read_file))
         .route("/api/file", post(review_api::write_file))
         .route("/api/session", post(api::new_session))

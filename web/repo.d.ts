@@ -37,6 +37,21 @@ export type EndedPr = { number: number, title: string, url: string, head_ref: st
 export type FileDiff = { path: string, hunks: Array<Hunk>, binary: boolean, truncated: boolean, };
 
 /**
+ * One foldable range. `line` stays on screen with a marker; `line + 1 ..= last`
+ * is what folding it hides. Both are 1-based.
+ *
+ * **A closing bracket on its own line is not hidden**, so a folded block reads
+ * `fn run() {` · `}` the way every editor draws it, rather than a header that
+ * seems to run into the next declaration.
+ */
+export type Fold = { line: number, last: number, kind: FoldKind, };
+
+/**
+ * What a fold hides, which is what decides whether it starts closed.
+ */
+export type FoldKind = "imports" | "comment" | "code";
+
+/**
  * Which code-hosting platform the repo lives on. The read/write seam is
  * `crate::forge`; adding a platform is a new arm here plus a new `Forge` impl,
  * not a change to any caller.
@@ -253,6 +268,23 @@ export type RowKind = "context" | "del" | "add";
  * [`Tracker`]).
  */
 export type StoryLink = { prefix: string, url: string, };
+
+/**
+ * A file's folds and its outline. Both empty for a language this does not know.
+ */
+export type Structure = { folds: Array<Fold>, symbols: Array<Symbol>, };
+
+/**
+ * One declaration, for the outline and for the scope lines that stay at the top
+ * of the viewer. `line ..= end` is its whole extent, 1-based, and `depth` is how
+ * many other symbols contain it.
+ */
+export type Symbol = { name: string, 
+/**
+ * A short word for what it is, `fn`, `class`, `impl`: what the outline draws
+ * beside the name.
+ */
+kind: string, line: number, end: number, depth: number, };
 
 /**
  * Where the daemon's GitHub token came from.

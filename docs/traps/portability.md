@@ -144,6 +144,14 @@ anything platform-shaped. `-p orchestrator-desktop` does *not*:
 fails in `cc-rs` on Linux for reasons that say nothing about your code. That
 half is only answered by `check.yml` on the macOS runner.
 
+**And since the tree-sitter grammars, `-p orchd` needs a C compiler for the
+target too.** `orchd-repo` links them for `crates/orchd-repo/src/structure.rs`, and each is C built by
+`cc-rs`, so the check fails in their build scripts on a Linux box whose `cc` is
+gcc: measured, `cc: error: unrecognized command-line option '-arch'`. Point
+`CC_aarch64_apple_darwin` at a cross compiler (`zig cc -target aarch64-macos`,
+or a clang with a macOS SDK) to get it back; `check.yml` builds on the macOS
+runner itself and never needed one.
+
 ## A mise install path is version-pinned, so never write one into a file that outlives the process.
 mise installs each version in its own directory and
 removes the old one on upgrade, while `current_exe` resolves symlinks and so

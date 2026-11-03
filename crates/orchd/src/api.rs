@@ -2389,6 +2389,29 @@ pub async fn definitions(
     ))
 }
 
+/// A file's text, sent by the page that already holds it.
+#[derive(Deserialize)]
+pub struct StructureBody {
+    /// Names the language, by its extension. Nothing is read from it.
+    pub path: String,
+    pub text: String,
+}
+
+/// The folds and the outline of the text the viewer has on screen.
+///
+/// **The text comes with the request** rather than being read again here: the
+/// page fetched it a moment ago, and it may be a scratchpad file no workspace
+/// holds. So this needs no workspace and touches no disk.
+pub async fn structure(Json(body): Json<StructureBody>) -> ApiResult<crate::structure::Structure> {
+    // Off the runtime: a parse of a large file is milliseconds of CPU.
+    Ok(Json(
+        crate::proc::run_blocking("reading a file's structure", move || {
+            crate::structure::structure(std::path::Path::new(&body.path), &body.text)
+        })
+        .await?,
+    ))
+}
+
 #[derive(Deserialize)]
 pub struct PathsQuery {
     pub workspace: String,

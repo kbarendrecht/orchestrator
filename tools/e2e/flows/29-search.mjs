@@ -77,4 +77,12 @@ export async function run(t) {
 
   // An unknown workspace is refused rather than answered from somewhere.
   await assert.rejects(() => find(t, 'no-such-workspace'), /unknown workspace/)
+
+  /* The viewer's structure, which takes the text in the body: registered, and
+     answering with the import run the viewer folds before anybody asks. */
+  const shape = await t.api('POST', '/api/structure', {
+    path: 'a.ts', text: "import { a } from './a';\nimport { b } from './b';\nexport function c() {\n  return 1;\n}\n",
+  })
+  assert.deepEqual(shape.folds.map((f) => [f.line, f.last, f.kind]), [[1, 2, 'imports'], [3, 4, 'code']])
+  assert.deepEqual(shape.symbols.map((s) => s.name), ['c'])
 }
