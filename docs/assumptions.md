@@ -249,6 +249,12 @@ current tool. `update::tool_installed_at` reads the name back from `mise ls`.
 *Kind:* mise's behaviour. *Breaks:* silently. The agent is never offered an
 upgrade.
 
+**33. Shortcut's `/api/v3/member` names the workspace as `workspace2.url_slug`.**
+`story::shortcut_link` builds the default story link from it, when the tracker is
+Shortcut and Settings has none. Measured against the scienta workspace.
+*Kind:* Shortcut's API. *Breaks:* quietly. `sc-` refs stay plain text, and the boot
+log says why at info.
+
 ## What this repo happens to do, and another will not
 
 Named separately because these look structural and are not: worktrees under

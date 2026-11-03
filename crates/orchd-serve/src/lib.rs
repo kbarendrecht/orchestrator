@@ -523,6 +523,34 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
     // The tracker's boot line asks the env source for the main checkout, which
     // is a bounded child process of somebody else's tool.
     phases.mark("stores");
+    /* **A Shortcut tracker implies its story link**, once the API names the
+    workspace (`story.rs`). Spawned, because it is a network call and a ref that
+    stays plain text for a second costs nothing; only when Settings has none. */
+    if let Some(tracker) = app.cfg.tracker.clone().filter(orchd::story::is_shortcut) {
+        if app.story_link().is_none() {
+            let app = app.clone();
+            tokio::spawn(async move {
+                let (source, main) = (app.cfg.env_source, app.cfg.main_checkout.clone());
+                let var = tracker
+                    .token_env
+                    .unwrap_or_else(|| "SHORTCUT_API_TOKEN".into());
+                let found =
+                    orchd::proc::run_blocking("finding the Shortcut workspace", move || {
+                        let checkout = env_source::read(source, &main);
+                        orchd::story::shortcut_link(&config::resolve_token(&checkout, &var)?)
+                    })
+                    .await;
+                match found {
+                    Ok(Ok(link)) => {
+                        tracing::info!("story refs: {}", link.url);
+                        let _ = app.story_default.set(link);
+                        app.notify().await;
+                    }
+                    Ok(Err(e)) | Err(e) => tracing::info!("story refs: none from Shortcut, {e:#}"),
+                }
+            });
+        }
+    }
     /* **The sweep is spawned, not awaited, and that is the whole of the startup
     fix.** It was seven git runs per workspace, one workspace after another,
     with the window shut for all of it: 6294ms of a 7836ms start over 64

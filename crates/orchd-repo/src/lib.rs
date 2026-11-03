@@ -23,6 +23,7 @@ pub mod patch;
 pub mod reviews;
 pub mod search;
 pub mod skills;
+pub mod story;
 pub mod structure;
 pub mod symbols;
 

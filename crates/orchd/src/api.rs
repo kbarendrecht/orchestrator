@@ -2978,7 +2978,7 @@ pub async fn open_ref(
     Json(body): Json<OpenRef>,
 ) -> ApiResult<serde_json::Value> {
     let r = body.reference.trim();
-    let story = app.settings().story_link;
+    let story = app.story_link();
     let forge = url_forge(&app)?;
     let Some(url) = crate::forge::ref_url(r, &forge, story.as_ref()) else {
         refuse!("{r} is not a ref this checkout links: #<number>, or a story ref set in Settings > Tracker");

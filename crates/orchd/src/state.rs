@@ -99,6 +99,9 @@ pub struct AppState {
     /// across an await.
     settings: std::sync::RwLock<crate::config::Settings>,
     pub repos: Repos,
+    /// The story link the tracker implies, set once at boot when it can be
+    /// found ([`crate::story`]). [`AppState::story_link`] reads it after Settings.
+    pub story_default: std::sync::OnceLock<crate::config::StoryLink>,
     /// Random per-start token embedded in the served SPA and required on the
     /// WebSocket and every mutating endpoint (§12).
     pub token: String,
@@ -978,6 +981,18 @@ impl<T> std::ops::Deref for Durable<T> {
 impl AppState {
     /// The settings as last saved. A copy, so the lock is never held past the
     /// line that reads it.
+    /// The story link a ref opens through: the one set in Settings, else the one
+    /// the tracker implies. `None` leaves a ref as plain text.
+    pub fn story_link(&self) -> Option<crate::config::StoryLink> {
+        self.settings
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .story_link
+            .clone()
+            .filter(|s| s.usable())
+            .or_else(|| self.story_default.get().cloned())
+    }
+
     pub fn settings(&self) -> crate::config::Settings {
         self.settings
             .read()
@@ -1165,6 +1180,7 @@ impl AppState {
             cfg,
             repos,
             token,
+            story_default: std::sync::OnceLock::new(),
             locks_held: std::sync::Mutex::new(HashSet::new()),
             persist_pending: std::sync::atomic::AtomicBool::new(false),
             persist_writing: tokio::sync::Mutex::new(()),
@@ -1817,14 +1833,7 @@ impl AppState {
 
         Snapshot {
             tracker_server: self.cfg.tracker.as_ref().map(|t| t.mcp_server.clone()),
-            story_prefix: self
-                .settings
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .story_link
-                .as_ref()
-                .filter(|s| s.usable())
-                .map(|s| s.prefix.trim().to_string()),
+            story_prefix: self.story_link().map(|s| s.prefix.trim().to_string()),
             spare: inner.spare.ids.clone(),
             workspaces,
             sessions,
