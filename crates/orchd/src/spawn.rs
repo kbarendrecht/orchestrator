@@ -2012,6 +2012,17 @@ pub fn worktree_name_of(path: &Path, worktrees_dir: &Path) -> Option<String> {
         .map(|c| c.as_os_str().to_string_lossy().into_owned())
 }
 
+/// The worktree `path` is in, as its name and its root.
+///
+/// **The root, because a path inside a worktree is not one** (#55). A hook's cwd
+/// is wherever the shell was, and registering `<tree>/tests/mcp` as the workspace
+/// sent every diff and every new session into that folder.
+pub fn worktree_of(path: &Path, worktrees_dir: &Path) -> Option<(String, PathBuf)> {
+    let name = worktree_name_of(path, worktrees_dir)?;
+    let root = worktrees_dir.join(&name);
+    Some((name, root))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3302,5 +3313,10 @@ mod tests {
         let p = PathBuf::from("/repo/.claude/worktrees/invoice/src/Foo.php");
         assert_eq!(worktree_name_of(&p, &dir), Some("invoice".to_string()));
         assert_eq!(worktree_name_of(&PathBuf::from("/repo/src"), &dir), None);
+        assert_eq!(
+            worktree_of(&p, &dir),
+            Some(("invoice".to_string(), dir.join("invoice"))),
+            "a path inside the tree gives the tree's root"
+        );
     }
 }

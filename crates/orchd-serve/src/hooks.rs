@@ -342,21 +342,8 @@ pub async fn session_start(
     // record below rather than in a write of its own.
     let mut adopted: Option<String> = None;
     match &cwd {
-        Some(path) => match orchd::spawn::worktree_name_of(path, &app.cfg.worktrees_dir()) {
-            Some(name) => {
-                // Off the runtime. A hook has about a second to answer and this is
-                // a child process — a worker parked here is one fewer serving the
-                // board, on a path every session start goes through.
-                let at = path.clone();
-                let branch =
-                    orchd::proc::run_blocking("reading the worktree's branch", move || {
-                        orchd::git::current_branch(&at).ok()
-                    })
-                    .await
-                    .unwrap_or(None);
-                app.register_worktree(&name, path.clone(), branch).await;
-                adopted = Some(name);
-            }
+        Some(path) => match adopt_worktree(&app, path).await {
+            Some(name) => adopted = Some(name),
             // Not a warning unless it matters: every session in main reports a
             // cwd outside the worktrees dir, and that is the ordinary case.
             None if pending => tracing::warn!(
@@ -556,6 +543,23 @@ fn read_from(path: &Path, offset: u64) -> std::io::Result<Vec<u8>> {
     let mut buf = Vec::new();
     f.read_to_end(&mut buf)?;
     Ok(buf)
+}
+
+/// Register the worktree `path` is in, by its root, and say its name. `None`
+/// when `path` is not under the worktrees dir.
+async fn adopt_worktree(app: &Arc<AppState>, path: &Path) -> Option<String> {
+    let (name, root) = orchd::spawn::worktree_of(path, &app.cfg.worktrees_dir())?;
+    // Off the runtime. A hook has about a second to answer and this is a child
+    // process — a worker parked here is one fewer serving the board, on a path
+    // every session start goes through.
+    let at = root.clone();
+    let branch = orchd::proc::run_blocking("reading the worktree's branch", move || {
+        orchd::git::current_branch(&at).ok()
+    })
+    .await
+    .unwrap_or(None);
+    app.register_worktree(&name, root, branch).await;
+    Some(name)
 }
 
 pub async fn post_tool_use(
