@@ -1049,7 +1049,7 @@ Term.onPathClick(({ checkout, target, path, line, last, ev }) => {
   const state = snapshotOf(checkout) ?? snap;
   const where = ptyRoot(state, target);
   if (!where) return;
-  const at = locate(state, where, path);
+  const at = locate(state, where, path, checkout);
   const scratch = scratchpadOf(state, target, path);
   const openScratch = () => scratch
     && void FileView.openScratch(scratch.workspace, scratch.session, scratch.abs, checkoutAt(checkout));
@@ -1092,10 +1092,17 @@ Term.onPathCheck(({ checkout, target, paths }) => {
       ? fetch(FileView.scratchUrl(at.base, scratch.session, scratch.abs), { method: 'HEAD' })
         .then((r) => r.ok, () => false)
       : Promise.resolve(false));
-    const hit = locate(state, where, path);
-    if (!hit) return inScratch();
-    // A workspace file by that name wins over the scratchpad shorthand.
-    return FileView.known(at, hit.workspace, hit.rel).then((k) => k || inScratch());
+    /* A path through a link out of the checkout is named by the list, so with
+       no list in yet it waits for one. */
+    const found = locate(state, where, path, checkout) ?? (path.startsWith('/')
+      ? FileView.listed(at, where.workspace, 2_000)
+        .then(() => locate(state, where, path, checkout), () => null)
+      : null);
+    return Promise.resolve(found).then((hit) => {
+      if (!hit) return inScratch();
+      // A workspace file by that name wins over the scratchpad shorthand.
+      return FileView.known(at, hit.workspace, hit.rel).then((k) => k || inScratch());
+    });
   }));
 });
 
@@ -1106,7 +1113,7 @@ Term.onPathHover(({ checkout, target, path }) => {
   const state = snapshotOf(checkout) ?? snap;
   const where = ptyRoot(state, target);
   if (!where) return null;
-  const hit = locate(state, where, path);
+  const hit = locate(state, where, path, checkout);
   return (hit && FileView.hoverFor(checkout, hit.workspace, hit.rel))
     ?? scratchpadOf(state, target, path)?.abs ?? null;
 });
@@ -1122,7 +1129,7 @@ Term.onPathMenu(({ checkout, target, path, line, last, ev }) => {
   const state = snapshotOf(checkout) ?? snap;
   const where = ptyRoot(state, target);
   if (!where) return;
-  const hit = locate(state, where, path);
+  const hit = locate(state, where, path, checkout);
   if (!hit) {
     // The scratchpad image the click opens has the same two items here.
     const scratch = scratchpadOf(state, target, path);
@@ -1220,14 +1227,20 @@ function ptyRoot(state, target) {
  *  in main rather than being refused. The deepest root wins, since worktrees can
  *  sit inside main.
  *
+ *  **Last, the pty's own workspace's links out of the checkout**: a `.plan` that
+ *  leads to a plans folder outside the repo gets that folder's path printed, and
+ *  [`FileView.throughLink`] names it as `.plan/…` again, from the list the
+ *  underline asked for. The daemon reads through such a link (`resolve_to_read`).
+ *
  *  The `..` walk is not ceremony: `src/../../../etc/passwd` starts with the root
  *  as a string and leaves it as a path, and a check that compares before
  *  resolving is a check that reads the wrong file.
  *
  *  @param {any} state the snapshot of the checkout that terminal belongs to
  *  @param {{ workspace: string, root: string, cwd: string }} where
- *  @param {string} path */
-function locate(state, where, path) {
+ *  @param {string} path
+ *  @param {string} checkout the terminal's own checkout, by path */
+function locate(state, where, path, checkout) {
   const abs = resolvePath(path.startsWith('/') ? path : `${where.cwd}/${path}`);
   const under = (/** @type {string} */ dir) => {
     const root = resolvePath(dir.startsWith('/') ? dir : `/${dir}`);
@@ -1241,7 +1254,9 @@ function locate(state, where, path) {
     const rel = under(w.path);
     if (rel && (!best || rel.length < best.rel.length)) best = { workspace: w.id, rel };
   }
-  return best;
+  if (best) return best;
+  const linked = FileView.throughLink(checkout, where.workspace, abs);
+  return linked ? { workspace: where.workspace, rel: linked } : null;
 }
 
 /** The file an agent printed from its own Claude Code scratchpad, if that is

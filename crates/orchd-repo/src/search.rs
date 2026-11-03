@@ -164,6 +164,52 @@ pub struct Paths {
     /// listed on its own, with [`paths_under`], or searched by naming it in the
     /// path filter. Empty for a list that is itself one of those.
     pub left_out: Vec<String>,
+    /// The links at the root that lead out of the workspace, and where to. Empty
+    /// for a list of one folder.
+    pub links: Vec<Link>,
+}
+
+/// A folder at the root that is a link out of the workspace.
+///
+/// **An agent writing through one prints where it leads**, not the link, so the
+/// page needs this to name the file the way the workspace does. A checkout whose
+/// `.plan` links to a plans folder outside the repo printed paths no workspace
+/// held, and none of them could be clicked.
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(
+    any(test, feature = "test-util"),
+    derive(ts_rs::TS),
+    ts(export, export_to = "repo.d.ts")
+)]
+pub struct Link {
+    /// The link's name at the root.
+    pub name: String,
+    /// Where it leads, resolved.
+    pub target: String,
+}
+
+/// The links at `root` that resolve to a folder outside it. One `read_dir` of the
+/// root, so nothing deeper: a link out is put at the top by whoever set it up.
+fn links_out(root: &Path) -> Vec<Link> {
+    let Ok(top) = std::fs::canonicalize(root) else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut out: Vec<Link> = entries
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_symlink()))
+        .filter_map(|e| {
+            let to = std::fs::canonicalize(e.path()).ok()?;
+            (to.is_dir() && !to.starts_with(&top)).then(|| Link {
+                name: e.file_name().to_string_lossy().into_owned(),
+                target: to.to_string_lossy().replace('\\', "/"),
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
 }
 
 /// `web/` means everything under `web`, which as a glob is `web/**`.
@@ -911,6 +957,7 @@ pub fn paths(root: &Path, exclude: Option<&str>) -> Result<Paths> {
         paths: out,
         truncated,
         left_out: left_out(root, exclude),
+        links: links_out(root),
     })
 }
 
@@ -948,6 +995,7 @@ pub fn paths_under(root: &Path, exclude: Option<&str>, under: &str) -> Result<Pa
         paths: out,
         truncated,
         left_out: Vec::new(),
+        links: Vec::new(),
     })
 }
 
@@ -985,6 +1033,7 @@ fn paths_in(root: &Path, exclude: Option<&str>, under: &str) -> Result<Paths> {
         paths: out,
         truncated,
         left_out: Vec::new(),
+        links: Vec::new(),
     })
 }
 
@@ -1486,6 +1535,16 @@ mod tests {
         fs::write(tree.join(".gitignore"), ".plan\n").unwrap();
         let listed = paths(&tree, None).unwrap();
         assert_eq!(listed.left_out, vec![".plan"], "a big link is named too");
+        let leads: Vec<(&str, std::path::PathBuf)> = listed
+            .links
+            .iter()
+            .map(|l| (l.name.as_str(), std::path::PathBuf::from(&l.target)))
+            .collect();
+        assert_eq!(
+            leads,
+            vec![(".plan", fs::canonicalize(main.join(".plan")).unwrap())],
+            "and where it leads, so a printed target can be named through it"
+        );
         let under = paths_under(&tree, None, ".plan").unwrap();
         assert!(
             under.paths.contains(&".plan/plan.md".to_string()),

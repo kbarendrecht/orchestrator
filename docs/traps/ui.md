@@ -232,7 +232,10 @@ string and leaves it as a path. **Outside the pty's workspace is not yet outside
 the checkout**, though: a worktree that links a directory back to main (scienta's
 `.plan`) gets main's absolute path printed by an agent writing through the link,
 so the other workspaces are tried next and the file opens in main. That was a
-colleague's refusal of a file the finder could see.
+colleague's refusal of a file the finder could see. **A link out of the checkout
+is the last try**: a `.plan` that leads to a plans folder outside the repo gets
+that folder's path printed, so `/api/paths` names the root's links that leave it
+and the page reads the path back as `.plan/…`.
 
 **The right-click menu is the app's, and it has to stop the event.** A path is the
 one thing in a terminal with more than one obvious answer, so "open the folder"

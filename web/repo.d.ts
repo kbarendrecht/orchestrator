@@ -87,6 +87,24 @@ export type Hunk = { old_start: number, new_start: number, header: string,
 gap_before: number, rows: Array<Row>, };
 
 /**
+ * A folder at the root that is a link out of the workspace.
+ *
+ * **An agent writing through one prints where it leads**, not the link, so the
+ * page needs this to name the file the way the workspace does. A checkout whose
+ * `.plan` links to a plans folder outside the repo printed paths no workspace
+ * held, and none of them could be clicked.
+ */
+export type Link = { 
+/**
+ * The link's name at the root.
+ */
+name: string, 
+/**
+ * Where it leads, resolved.
+ */
+target: string, };
+
+/**
  * What a search answers. `truncated` is what makes the footer honest.
  */
 export type Matches = { hits: Array<Hit>, truncated: boolean, };
@@ -100,7 +118,12 @@ export type Paths = { paths: Array<string>, truncated: boolean,
  * listed on its own, with [`paths_under`], or searched by naming it in the
  * path filter. Empty for a list that is itself one of those.
  */
-left_out: Array<string>, };
+left_out: Array<string>, 
+/**
+ * The links at the root that lead out of the workspace, and where to. Empty
+ * for a list of one folder.
+ */
+links: Array<Link>, };
 
 export type Pr = { number: number, title: string, url: string, head_ref: string, 
 /**

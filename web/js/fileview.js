@@ -369,6 +369,7 @@ const HOVER_TTL = 2_000;
  *  in them costs two walks a second at this, not one per line. */
 const MISS_TTL = 500;
 /** @typedef {{ at: number | null, got?: string[], leftOut?: string[],
+ *               links?: { name: string, target: string }[],
  *               list: Promise<{ paths: string[], truncated: boolean, leftOut: string[] }> }} Listed */
 /** `at` is when the answer landed, and `null` while it is still on its way, so a
  *  slow walk is joined rather than started twice. `got` is the same answer once it
@@ -430,6 +431,20 @@ export function hoverFor(checkout, ws, path) {
   return got ? hoverText(matching(got, path), folders(got, path).map((f) => f.folder)) : null;
 }
 
+/** `abs` named through one of the workspace's links out of the checkout, from the
+ *  list that has landed, or `null`. **An agent writing through `.plan` prints
+ *  where the link leads**, and no workspace holds that path.
+ *
+ *  @param {string} checkout the terminal's own checkout, by path
+ *  @param {string} ws
+ *  @param {string} abs an absolute path, its `..` already resolved */
+export function throughLink(checkout, ws, abs) {
+  for (const { name, target } of hovered.get(`${checkout}\0${ws}\0`)?.links ?? []) {
+    if (abs.startsWith(`${target}/`)) return `${name}/${abs.slice(target.length + 1)}`;
+  }
+  return null;
+}
+
 /** The hover's file list that would hold `path`, if one has landed. */
 function hoveredList(/** @type {string} */ checkout, /** @type {string} */ ws, /** @type {string} */ path) {
   const whole = hovered.get(`${checkout}\0${ws}\0`);
@@ -461,6 +476,7 @@ export function listed(at, ws, ttl, under = '') {
       /** @type {string[]} */
       const leftOut = a.left_out ?? [];
       made.leftOut = leftOut;
+      made.links = a.links ?? [];
       return { paths, truncated: !!a.truncated, leftOut };
     });
   hovered.set(key, made);
