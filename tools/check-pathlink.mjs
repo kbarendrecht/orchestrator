@@ -12,7 +12,7 @@
 // half of every sentence Claude Code writes, and an affordance that is wrong four
 // times out of five is one people learn to ignore.
 
-import { continues, folders, hoverText, level, linksIn, matching, pathsIn } from '../web/js/pathlink.js'
+import { branchy, continues, folders, hoverText, level, linksIn, matching, pathsIn } from '../web/js/pathlink.js'
 
 let failed = false
 const check = (ok, what) => {
@@ -182,6 +182,17 @@ check(refs('misc-12 sc- sc-12x') === '', 'nor a prefix glued to a word, a bare p
 check(refs('sc-54841', null) === '', 'a story ref is plain text until a story link is set')
 check(refs('https://github.com/a/b/pull/3#issue-9') === '', 'a # inside a URL is the URL\'s')
 check(link('#36356') === 'ref:#36356', 'and a ref is one link')
+
+/* Shas. Candidates only, git decides; the refusals keep numbers, words, colours
+   and UUID pieces from being asked about at all. */
+const shas = (text) => linksIn(text).filter((h) => h.kind === 'git').map((h) => h.name).join(' ')
+check(shas('see dd7f04da118, and c624391.') === 'dd7f04da118 c624391', 'a short sha and a longer one')
+check(shas('1234567 deadbeef #c624391 x-c624391 a/c624391') === '', 'not a number, a word, a colour or glued on')
+check(shas('6f1c2b9e-1d2a-4c3b-9e8f-0a1b2c3d4e5f') === '', 'nor a UUID\'s pieces')
+check(shas('https://github.com/a/b/commit/c624391') === '', 'a sha inside a URL is the URL\'s')
+check(branchy({ path: 'origin/story-54595-ai-page-context', line: 0 }), 'a remote branch may be asked about')
+check(!branchy({ path: 'src/a.js', line: 12 }) && !branchy({ path: '/implement', line: 0 }),
+  'a path with a line, or a slash command, is not')
 
 // --- and how Claude Code breaks a long one over two rows ----------------------
 

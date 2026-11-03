@@ -2493,3 +2493,33 @@ fn untracked_files_are_carried_and_conflicts_are_named() {
     let _ = std::fs::remove_dir_all(&from);
     let _ = std::fs::remove_dir_all(&to);
 }
+
+/// A name out of a terminal is a commit or a branch only when git has it, and
+/// a name shaped like an option never reaches git.
+#[test]
+fn a_printed_name_is_what_git_says_it_is() {
+    let repo = crate::testutil::scratch_repo("git-named");
+    let sha = head_sha(&repo).unwrap();
+    git(
+        &repo,
+        &["update-ref", "refs/remotes/origin/story-1-x", "HEAD"],
+    )
+    .unwrap();
+    git(&repo, &["tag", "v1"]).unwrap();
+    assert_eq!(named(&repo, &sha[..11]), Some(Named::Commit));
+    assert_eq!(named(&repo, "dd7f04da118"), None, "hex git does not have");
+    assert_eq!(
+        named(&repo, "origin/story-1-x"),
+        Some(Named::Remote {
+            remote: "origin".into(),
+            branch: "story-1-x".into()
+        })
+    );
+    assert_eq!(named(&repo, "main"), Some(Named::Local("main".into())));
+    assert_eq!(named(&repo, "v1"), None, "a tag is not a branch");
+    assert_eq!(named(&repo, "document.modelContext"), None);
+    for refused in ["--all", "HEAD@{1}", "a..b", "x y", ""] {
+        assert_eq!(named(&repo, refused), None, "{refused}");
+    }
+    let _ = std::fs::remove_dir_all(&repo);
+}

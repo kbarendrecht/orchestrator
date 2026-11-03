@@ -86,6 +86,11 @@ pub trait Forge: Send + Sync + Clone + 'static {
     /// reason [`Forge::blob_url`] is.
     fn commit_url(&self, sha: &str) -> String;
 
+    /// A browser URL for one branch, for a branch name an agent printed. The
+    /// caller hands a name [`orchd_base::git::named`] resolved, which needs no
+    /// escaping.
+    fn tree_url(&self, branch: &str) -> String;
+
     /// A browser URL for `#n`, an issue or a PR. One URL for both: a ref in
     /// prose does not say which, and GitHub forwards an issue number that is a PR
     /// to the PR.
@@ -172,6 +177,11 @@ impl Forge for ForgeImpl {
     fn commit_url(&self, sha: &str) -> String {
         match self {
             ForgeImpl::GitHub(f) => f.commit_url(sha),
+        }
+    }
+    fn tree_url(&self, branch: &str) -> String {
+        match self {
+            ForgeImpl::GitHub(f) => f.tree_url(branch),
         }
     }
     fn issue_url(&self, n: u64) -> String {

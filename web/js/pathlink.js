@@ -196,14 +196,15 @@ function trimTail(/** @type {string} */ run) {
  *  URL around it does not underline at all.
  *
  *  Refs come last and give way to both: `#3` inside `…/pull/3#issuecomment` is
- *  the URL's, and a path never has a `#` to lose.
+ *  the URL's, and a path never has a `#` to lose. A sha gives way to all three.
  *
  *  @param {string} text
  *  @param {{ story?: string | null }} [opts] the story ref prefix, see [`refsIn`]
  *  @returns {({ kind: 'path', start: number, end: number, path: string, line: number,
  *               last: number, col: number }
  *           | { kind: 'url', start: number, end: number, url: string, bare?: boolean }
- *           | { kind: 'ref', start: number, end: number, ref: string })[]}
+ *           | { kind: 'ref', start: number, end: number, ref: string }
+ *           | { kind: 'git', start: number, end: number, name: string, sha: boolean })[]}
  */
 export function linksIn(text, opts = {}) {
   /** @typedef {{ start: number, end: number }} Span */
@@ -211,8 +212,34 @@ export function linksIn(text, opts = {}) {
     !taken.some((u) => p.start < u.end && u.start < p.end);
   const urls = urlsIn(text);
   const taken = [...urls, ...pathsIn(text).filter(free(urls))];
-  return [...taken, ...refsIn(text, opts.story).filter(free(taken))].sort((a, b) => a.start - b.start);
+  const all = [...taken, ...refsIn(text, opts.story).filter(free(taken))];
+  return [...all, ...shasIn(text).filter(free(all))].sort((a, b) => a.start - b.start);
 }
+
+/** The commit shas in `text`, as candidates: git decides, through the caller.
+ *
+ *  **A letter and a digit both**, because `1234567` is a number and `deadbeef` is
+ *  a word, and neither is worth a question to git. Not glued to a word, a path,
+ *  a `#` or a `-`, so a colour, a hash in a URL and a UUID's pieces stay text.
+ *
+ *  @param {string} text
+ *  @returns {{ kind: 'git', start: number, end: number, name: string, sha: boolean }[]} */
+export function shasIn(text) {
+  /** @type {{ kind: 'git', start: number, end: number, name: string, sha: boolean }[]} */
+  const out = [];
+  for (const m of text.matchAll(/(?<![\w./#-])[0-9a-f]{7,40}(?![\w-])/g)) {
+    if (!/\d/.test(m[0]) || !/[a-f]/.test(m[0])) continue;
+    const start = m.index ?? 0;
+    out.push({ kind: 'git', start, end: start + m[0].length, name: m[0], sha: true });
+  }
+  return out;
+}
+
+/** Whether a path the file list refused may still be a branch, `origin/x`: a
+ *  slash, no line suffix, and only what a plain branch name holds.
+ *
+ *  @param {{ path: string, line: number }} h */
+export const branchy = (h) => !h.line && /^[A-Za-z0-9_-][A-Za-z0-9._-]*\/[A-Za-z0-9._/-]*[A-Za-z0-9_-]$/.test(h.path);
 
 /** The refs in `text`: `#36356`, and `sc-54841` when `story` is the prefix a
  *  story link is set up for.

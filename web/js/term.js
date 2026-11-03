@@ -5,7 +5,7 @@
 import { $, CHECKOUTS, CHROME, IS_MAC, callOn, copyText, el, mark, note, openMenu, reason, reportBoot, selected, snapshotOf, terms, termKey, toast, typingElsewhere, uiScale, wheelScale } from './core.js';
 import { fontStack, theme } from './theme.js';
 import { termColours } from './palette.js';
-import { continues, linksIn } from './pathlink.js';
+import { branchy, continues, linksIn } from './pathlink.js';
 
 
 /** A client that watches without reshaping what it watches.
@@ -192,6 +192,48 @@ function openRef(/** @type {import('./core.js').Target} */ checkout, /** @type {
   callOn(checkout, '/api/open/ref', { ref }).catch((e) => note(reason(e)));
 }
 
+/** Open a sha on the forge, or a branch at its PR or on its remote. The daemon
+ *  resolves both against git (`/api/open/commit`, `/api/open/branch`). Aimed at
+ *  this pane's checkout for the reason [`openUrl`] is.
+ *
+ *  @param {import('./core.js').Target} checkout
+ *  @param {{ name: string, sha: boolean }} h */
+function openGit(checkout, h) {
+  const done = h.sha
+    ? callOn(checkout, '/api/open/commit', { sha: h.name })
+    : callOn(checkout, '/api/open/branch', { name: h.name });
+  done.catch((e) => note(reason(e)));
+}
+
+/** Which names git knows in `checkout`, for their underline. **Kept ten
+ *  seconds**, because a sweep of the mouse asks every row it crosses, and a sha
+ *  or a branch does not come and go the way a file an agent writes does. A
+ *  failure is an answer of no, and not kept.
+ *
+ *  @param {import('./core.js').Target} checkout
+ *  @param {string[]} names
+ *  @returns {Promise<boolean[]>} */
+function gitKnown(checkout, names) {
+  const now = Date.now();
+  const key = (/** @type {string} */ n) => `${checkout.path}\0${n}`;
+  const fresh = (/** @type {string} */ n) => {
+    const got = gitSeen.get(key(n));
+    return got && now - got.at <= GIT_TTL ? got : null;
+  };
+  const ask = [...new Set(names.filter((n) => !fresh(n)))];
+  const asked = ask.length
+    ? callOn(checkout, '/api/git/known', { names: ask }).then((/** @type {boolean[]} */ ok) => {
+      // A long session prints a lot of shas, and an old answer is cheap to ask again.
+      if (gitSeen.size > 2_000) gitSeen.clear();
+      ask.forEach((n, i) => gitSeen.set(key(n), { at: now, ok: !!ok[i] }));
+    }, () => {})
+    : Promise.resolve();
+  return asked.then(() => names.map((n) => !!fresh(n)?.ok));
+}
+const GIT_TTL = 10_000;
+/** @type {Map<string, { at: number, ok: boolean }>} */
+const gitSeen = new Map();
+
 /** Offer the paths and URLs in a row as links.
  *
  *  **A plain click follows them, and the underline follows the pointer**, which is
@@ -242,7 +284,7 @@ function linkPaths(term, checkout, target) {
       /** @param {ReturnType<typeof linksIn>} hits */
       const answer = (hits) => {
         const links = hits.map((h) => ({
-          text: h.kind === 'url' ? h.url : h.kind === 'ref' ? h.ref : h.path,
+          text: h.kind === 'url' ? h.url : h.kind === 'ref' ? h.ref : h.kind === 'git' ? h.name : h.path,
           // `end` is the last cell rather than one past it, which is xterm's own
           // convention — read from the OSC-8 provider in the vendored build.
           range: { start: cell(h.start, map, from), end: cell(h.end - 1, map, from) },
@@ -257,6 +299,7 @@ function linkPaths(term, checkout, target) {
             ev.preventDefault();
             if (h.kind === 'url') { openUrl(checkout, h.url); return; }
             if (h.kind === 'ref') { openRef(checkout, h.ref); return; }
+            if (h.kind === 'git') { openGit(checkout, h); return; }
             pathClick?.({
               checkout: checkout.path, target, path: h.path, line: h.line, last: h.last, col: h.col, ev,
             });
@@ -275,20 +318,32 @@ function linkPaths(term, checkout, target) {
       /* A bare host is asked about as a file too, and a file of that name wins:
          `notes.io` in the workspace is the file, not a website. */
       const asked = hits.filter((h) => h.kind === 'path' || (h.kind === 'url' && h.bare && pathClick));
-      if (!asked.length || !pathCheck) return answer(hits);
+      /* **Then git, for what is left**: a sha, and a slash name the file list
+         refused, which may be `origin/x`. Each is a link only where git has it. */
+      const viaGit = (/** @type {typeof hits} */ list) => {
+        const names = list.filter((h) => h.kind === 'git');
+        if (!names.length) return answer(list);
+        void gitKnown(checkout, names.map((h) => h.name)).then((known) => {
+          if (ask === newest) answer(list.filter((h) => h.kind !== 'git' || known[names.indexOf(h)]));
+        });
+      };
+      if (!asked.length || !pathCheck) return viaGit(hits);
       const named = (/** @type {typeof hits[number]} */ h) => (h.kind === 'path' ? h.path : text.slice(h.start, h.end));
       void pathCheck({ checkout: checkout.path, target, paths: asked.map(named) })
         .then((ok) => {
           if (ask !== newest) return;
-          answer(hits.flatMap((h) => {
+          viaGit(hits.flatMap((h) => {
             const i = asked.indexOf(h);
             if (i < 0) return [h];
-            if (h.kind === 'path') return ok[i] ? [h] : [];
+            if (h.kind === 'path') {
+              if (ok[i]) return [h];
+              return branchy(h) ? [{ kind: /** @type {const} */ ('git'), start: h.start, end: h.end, name: h.path, sha: false }] : [];
+            }
             return ok[i] ? [{ kind: /** @type {const} */ ('path'), start: h.start, end: h.end, path: named(h), line: 0, last: 0, col: 0 }] : [h];
           }));
         }, () => {
           // No list to ask is no promise to make: the URLs and refs still stand.
-          if (ask === newest) answer(hits.filter((h) => h.kind !== 'path'));
+          if (ask === newest) viaGit(hits.filter((h) => h.kind !== 'path'));
         });
     },
   });
@@ -454,6 +509,15 @@ function openTerm(checkout, target, parent) {
       openMenu(e, [
         [`Open ${ref}`, null, () => openRef(checkout, ref)],
         [`Copy ${ref}`, null, () => void copyText(ref).then((ok) => { if (ok) toast(`copied ${ref}`); })],
+      ]);
+      return;
+    }
+    if (found.kind === 'git') {
+      e.stopPropagation();
+      const { name } = found;
+      openMenu(e, [
+        [`Open ${name}`, null, () => openGit(checkout, found)],
+        [`Copy ${name}`, null, () => void copyText(name).then((ok) => { if (ok) toast(`copied ${name}`); })],
       ]);
       return;
     }

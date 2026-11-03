@@ -300,3 +300,61 @@ pub fn repo_of_url(url: &str) -> Option<String> {
     let owner = parts.next().filter(|s| !s.is_empty())?;
     Some(format!("{owner}/{name}").to_ascii_lowercase())
 }
+
+/// What a name an agent printed is to git: a commit, or a branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Named {
+    Commit,
+    /// A remote-tracking branch, `origin/feature`, split at its remote.
+    Remote {
+        remote: String,
+        branch: String,
+    },
+    /// A branch of this repo's own.
+    Local(String),
+}
+
+/// `name` as git knows it in `cwd`, or `None`.
+///
+/// **A shape check before any git**, because the name is text out of a
+/// terminal: a leading `-` would be an option, and only the characters a sha
+/// or a plain branch name uses get through. A hex run is a commit only if git
+/// has it, so a colour or a hash in prose is not one; anything else is a branch
+/// only if it resolves to one, so a tag is not.
+pub fn named(cwd: &Path, name: &str) -> Option<Named> {
+    let plain = (1..=200).contains(&name.len())
+        && !name.starts_with(['-', '/', '.'])
+        && !name.ends_with(['/', '.'])
+        && !name.contains("..")
+        && !name.contains("//")
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'/' | b'-'));
+    if !plain {
+        return None;
+    }
+    if (7..=40).contains(&name.len()) && name.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return git_ok(cwd, &["cat-file", "-e", &format!("{name}^{{commit}}")])
+            .then_some(Named::Commit);
+    }
+    let full = git(
+        cwd,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "--symbolic-full-name",
+            name,
+        ],
+    )
+    .ok()?;
+    let full = full.trim();
+    if let Some(local) = full.strip_prefix("refs/heads/") {
+        return Some(Named::Local(local.to_string()));
+    }
+    let (remote, branch) = full.strip_prefix("refs/remotes/")?.split_once('/')?;
+    Some(Named::Remote {
+        remote: remote.to_string(),
+        branch: branch.to_string(),
+    })
+}

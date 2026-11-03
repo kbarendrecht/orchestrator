@@ -11,6 +11,7 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
+import { git } from '../harness.mjs'
 
 export const name = 'search a workspace, and only that workspace'
 
@@ -92,4 +93,10 @@ export async function run(t) {
   const def = await t.api('GET', `/api/def?workspace=${encodeURIComponent(workspace)}`
     + '&path=props.ts&symbol=onChange')
   assert.deepEqual(def.hits.map((h) => [h.path, h.line]), [['props.ts', 4]], 'one declaration, so one jump')
+
+  /* A sha or a branch in a terminal is a link only where git has it: registered,
+     and answering per name. */
+  const head = git(t.repo, ['rev-parse', 'HEAD']).trim()
+  const known = await t.api('POST', '/api/git/known', { names: [head.slice(0, 10), 'main', 'origin/no-such', 'c0ffee1'] })
+  assert.deepEqual(known, [true, true, false, false], 'git answers for its own names')
 }

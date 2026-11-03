@@ -2873,6 +2873,96 @@ pub async fn open_commit(
 }
 
 #[derive(Deserialize)]
+pub struct GitNames {
+    pub names: Vec<String>,
+}
+
+/// Which of the names in a terminal row git knows, for their underline: a sha
+/// or a branch is a link only where a click would find it.
+///
+/// One `git` per name, so a row is asked about a few at a time and never more
+/// than [`NAMES_PER_ASK`].
+pub async fn git_known(
+    State(app): State<Arc<AppState>>,
+    Json(body): Json<GitNames>,
+) -> ApiResult<Vec<bool>> {
+    let main = app.cfg.main_checkout.clone();
+    let names: Vec<String> = body.names.into_iter().take(NAMES_PER_ASK).collect();
+    Ok(Json(
+        crate::proc::run_blocking("asking git about printed names", move || {
+            names
+                .iter()
+                .map(|n| crate::git::named(&main, n).is_some())
+                .collect::<Vec<_>>()
+        })
+        .await?,
+    ))
+}
+
+/// The most names [`git_known`] answers for at once.
+const NAMES_PER_ASK: usize = 16;
+
+#[derive(Deserialize)]
+pub struct OpenBranch {
+    pub name: String,
+}
+
+/// Open a branch an agent printed: its PR when it has one, else the branch on
+/// the remote it names.
+///
+/// **The PR first, because that is what a branch in prose is usually about.**
+/// `origin/x` is the fork's copy and opens there; a local branch opens on the
+/// fork when there is one, since that is where branches are pushed.
+pub async fn open_branch(
+    State(app): State<Arc<AppState>>,
+    Json(body): Json<OpenBranch>,
+) -> ApiResult<serde_json::Value> {
+    let main = app.cfg.main_checkout.clone();
+    let name = body.name.trim().to_string();
+    let asked = name.clone();
+    let (named, remote_repo) = crate::proc::run_blocking("resolving a branch", move || {
+        let named = crate::git::named(&main, &name);
+        let repo = match &named {
+            Some(crate::git::Named::Remote { remote, .. }) => {
+                crate::forge::remote_url(&main, remote)
+                    .and_then(|u| crate::forge::repo_from_remote(&u))
+            }
+            _ => None,
+        };
+        (named, repo)
+    })
+    .await?;
+    let (branch, repo) = match named {
+        Some(crate::git::Named::Remote { branch, .. }) => (branch, remote_repo),
+        Some(crate::git::Named::Local(branch)) => {
+            let fork = app.repos.fork.as_deref().and_then(|r| r.split_once('/'));
+            (branch, fork.map(|(o, n)| (o.to_string(), n.to_string())))
+        }
+        _ => refuse!("{asked} is not a branch here"),
+    };
+    let pr = {
+        let inner = app.inner.read().await;
+        inner
+            .prs
+            .iter()
+            .map(|p| (&p.head_ref, &p.url))
+            .chain(inner.prs_ended.iter().map(|p| (&p.head_ref, &p.url)))
+            .find(|(head, _)| **head == branch)
+            .map(|(_, url)| url.clone())
+    };
+    let url = match (pr, repo) {
+        (Some(url), _) => url,
+        (None, Some((owner, name))) => {
+            crate::forge::ForgeImpl::for_kind(app.cfg.forge, owner, name, String::new())
+                .tree_url(&branch)
+        }
+        (None, None) => url_forge(&app)?.tree_url(&branch),
+    };
+    open_detached(&url).await?;
+    Ok(Json(json!({ "opened": url })))
+}
+
+#[derive(Deserialize)]
 pub struct OpenRef {
     #[serde(rename = "ref")]
     pub reference: String,
