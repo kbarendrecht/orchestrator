@@ -6,9 +6,44 @@ use std::path::{Path, PathBuf};
 /// loading it into a browser buffer helps nobody.
 const MAX_EDIT_BYTES: u64 = 2 * 1024 * 1024;
 
+/// Whether a file on disk uses CRLF, and the conversions either side of the page.
+///
+/// **A textarea cannot hold a `\r`.** HTML's value sanitization replaces every
+/// CRLF with LF, so `ta.value = content` in `web/js/editor.js` and the read of
+/// that value at save time are not the same string: one edited line came back as
+/// a whole file converted to LF, and the changed-files pane, the diff and the
+/// agent's next read all saw every line change. The browser will not be talked
+/// out of this, so the daemon holds the line ending instead — the page only ever
+/// sees LF, and [`write()`] puts back what the file on disk already used.
+///
+/// The rule is *any* CRLF rather than a count, because `web/js/revert.js` decides
+/// it that way over the same file and two rules that disagree would send one file
+/// back two ways. `diff.rs` already drops the `\r` (`str::lines`), so LF in the
+/// page is what every other pane shows.
+///
+/// A lone `\r` is not handled: it is not a line ending to git or to this diff,
+/// and the textarea eats it either way.
+mod eol {
+    pub fn is_crlf(bytes: &[u8]) -> bool {
+        bytes.windows(2).any(|w| w == b"\r\n")
+    }
+
+    pub fn to_lf(text: &str) -> String {
+        text.replace("\r\n", "\n")
+    }
+
+    /// LF to CRLF, over text normalized first so a caller that sent CRLF — an
+    /// agent driving the route by hand — cannot produce `\r\r\n`.
+    pub fn to_crlf(text: &str) -> String {
+        to_lf(text).replace('\n', "\r\n")
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct FileContents {
     pub path: String,
+    /// The file's text with LF line endings, whatever the file on disk uses.
+    /// The `eol` module below says why the daemon holds the line ending.
     pub content: String,
     /// Content hash, not mtime. A checkout or a `git stash` can restore an
     /// identical file with a new mtime, and that is not a conflict.
@@ -296,9 +331,12 @@ pub fn read(workspace_root: &Path, rel: &str, checkout: &Path) -> Result<FileCon
         .map_err(|_| anyhow::anyhow!("{rel} is not UTF-8, so it is not editable here"))?;
     Ok(FileContents {
         path: rel.to_string(),
+        // The version is the bytes on disk, before the line endings are dropped:
+        // it is compared against a fresh read of the file in `write`, never
+        // against what the page holds.
         version: version_of(content.as_bytes()),
         bytes: md.len(),
-        content,
+        content: eol::to_lf(&content),
         read_only,
     })
 }
@@ -345,13 +383,21 @@ pub fn write(
         });
     }
 
+    // Put the file's own line endings back. The page is handed LF by `read` and
+    // a textarea cannot give any other kind back, so the file on disk is the only
+    // thing that still knows. See [`eol`].
+    let text = if eol::is_crlf(&current) {
+        eol::to_crlf(content)
+    } else {
+        content.to_string()
+    };
+
     // Write-and-rename, so a crash mid-write cannot truncate a source file.
     let tmp = path.with_extension(format!(
         "{}.orchd-tmp",
         path.extension().and_then(|e| e.to_str()).unwrap_or("")
     ));
-    std::fs::write(&tmp, content.as_bytes())
-        .with_context(|| format!("writing {}", tmp.display()))?;
+    std::fs::write(&tmp, text.as_bytes()).with_context(|| format!("writing {}", tmp.display()))?;
     // Preserve the original mode; the temp file is created with a default one.
     if let Ok(md) = std::fs::metadata(&path) {
         let _ = std::fs::set_permissions(&tmp, md.permissions());
@@ -359,7 +405,11 @@ pub fn write(
     std::fs::rename(&tmp, &path).with_context(|| format!("replacing {}", path.display()))?;
 
     Ok(WriteOutcome::Written {
-        version: version_of(content.as_bytes()),
+        // The bytes that landed, not the text that arrived. The page sends this
+        // back as `expected` on its next save, and that is compared against a
+        // read of the file — so on a CRLF file a hash of the LF form would make
+        // every second save a conflict.
+        version: version_of(text.as_bytes()),
     })
 }
 
@@ -437,6 +487,82 @@ mod tests {
             "two\n"
         );
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// **One edited line must not rewrite every line.** The page cannot keep a
+    /// `\r`: a textarea's value sanitization drops it, so a CRLF file opened and
+    /// saved came back wholly converted, and the diff said so. See [`eol`].
+    #[test]
+    fn a_crlf_file_is_still_crlf_after_a_save() {
+        let d = scratch("crlf");
+        let at = d.join("src/a.txt");
+        std::fs::write(&at, "one\r\ntwo\r\nthree\r\n").unwrap();
+
+        // The page is handed LF, which is what every other pane shows: `diff.rs`
+        // reads lines with `str::lines`, which drops the `\r` too.
+        let f = read(&d, "src/a.txt", &d).unwrap();
+        assert_eq!(f.content, "one\ntwo\nthree\n");
+
+        // It edits one line and sends back what a textarea holds.
+        let out = write(&d, "src/a.txt", "one\nTWO\nthree\n", &f.version, &d).unwrap();
+        let WriteOutcome::Written { version } = out else {
+            panic!("expected Written, got {out:?}")
+        };
+        assert_eq!(
+            std::fs::read_to_string(&at).unwrap(),
+            "one\r\nTWO\r\nthree\r\n",
+            "the other two lines must be untouched on disk"
+        );
+
+        // And the version it was told is the bytes that landed, or the next save
+        // of the same buffer is a conflict against a file nobody else touched.
+        assert_eq!(version, read(&d, "src/a.txt", &d).unwrap().version);
+        let again = write(&d, "src/a.txt", "one\nTWO\nTHREE\n", &version, &d).unwrap();
+        assert!(matches!(again, WriteOutcome::Written { .. }), "{again:?}");
+        assert_eq!(
+            std::fs::read_to_string(&at).unwrap(),
+            "one\r\nTWO\r\nTHREE\r\n"
+        );
+
+        // A caller that sends CRLF itself — an agent driving the route by hand —
+        // gets the same file rather than `\r\r\n`.
+        write(&d, "src/a.txt", "a\r\nb\r\n", &again_version(&again), &d).unwrap();
+        assert_eq!(std::fs::read_to_string(&at).unwrap(), "a\r\nb\r\n");
+
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// The common file is untouched by any of it: LF in, LF out, and a file with
+    /// no line break at all is not given one.
+    #[test]
+    fn an_lf_file_stays_lf() {
+        let d = scratch("lf");
+        let at = d.join("src/a.txt");
+        std::fs::write(&at, "one\ntwo\n").unwrap();
+        let f = read(&d, "src/a.txt", &d).unwrap();
+        write(&d, "src/a.txt", "one\nTWO\n", &f.version, &d).unwrap();
+        assert_eq!(std::fs::read_to_string(&at).unwrap(), "one\nTWO\n");
+
+        std::fs::write(&at, "no break").unwrap();
+        let g = read(&d, "src/a.txt", &d).unwrap();
+        assert_eq!(g.content, "no break");
+        write(&d, "src/a.txt", "still none", &g.version, &d).unwrap();
+        assert_eq!(std::fs::read_to_string(&at).unwrap(), "still none");
+
+        // A new file has no line endings of its own, so it gets the page's.
+        write(&d, "src/new.txt", "fresh\n", &version_of(b""), &d).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(d.join("src/new.txt")).unwrap(),
+            "fresh\n"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    fn again_version(out: &WriteOutcome) -> String {
+        match out {
+            WriteOutcome::Written { version } => version.clone(),
+            other => panic!("expected Written, got {other:?}"),
+        }
     }
 
     #[test]
