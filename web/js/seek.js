@@ -92,7 +92,7 @@ export function matches(text, query, how) {
 
 /** Which line `at` is on, as an index into `starts`. Binary search: a 20,000 line
  *  file with 2,000 hits is 40M comparisons walked and 28,000 halved. */
-function lineOf(/** @type {number[]} */ starts, /** @type {number} */ at) {
+export function lineOf(/** @type {number[]} */ starts, /** @type {number} */ at) {
   let lo = 0;
   let hi = starts.length - 1;
   while (lo < hi) {

@@ -18,6 +18,8 @@ import { activeCheckout, appMod, call, copyText, el, FORGE_LABEL, get, openMenu,
 import { byteRange, charRanges, hlTokens, langFor, paintRanges } from './source.js';
 import { parse } from './markdown.js';
 import { refsIn } from './pathlink.js';
+import { indentUnit } from './editkeys.js';
+import { lineOf } from './seek.js';
 
 /** Rows drawn around the line, and how close to the edge the viewport gets
  *  before the band moves. */
@@ -30,6 +32,11 @@ const HUGE = 512 * 1024;
 /** Files shown as a picture rather than as lines: what the daemon's image route
  *  serves, so the two cannot disagree about which files are pictures. */
 export const IMAGE = /\.(png|jpe?g|gif|webp|avif|svg|ico|bmp)$/i;
+/** Scope lines kept at the top at most. Past three they are a second header
+ *  taking the pane, and the breadcrumbs name the rest. */
+const STICKY = 3;
+/** The width a tab is drawn at: the browser's default, which `.fnsrc` keeps. */
+const TAB = 8;
 
 /**
  * @typedef {{ line: number, last?: number, col: number, len: number }} Spot
@@ -74,8 +81,11 @@ function age(/** @type {number} */ secs) {
  *  already resolved against the page's own directory: a pane that can open files
  *  passes it, and without one those links do nothing.
  *
+ *  `crumbs` is where the scope the pane is scrolled to is named, `Order › total`,
+ *  and a click on it lists the file's outline. A pane without one passes nothing.
+ *
  *  @param {{ mount: HTMLElement, path?: HTMLElement | null, where?: HTMLElement | null,
- *            onFile?: (rel: string, line: number) => void }} on
+ *            crumbs?: HTMLElement | null, onFile?: (rel: string, line: number) => void }} on
  */
 export function create(on) {
   /** `mode` is which of the two pictures is mounted. It exists because the band
@@ -107,6 +117,131 @@ export function create(on) {
   let changed = [];
   /** @type {number[]} */
   let hits = [];
+
+  /** The file's folds and outline, from the daemon's parse, and each fold by the
+   *  line its marker is on. Empty for a language it has no grammar for, which
+   *  draws the file as it always was. */
+  /** @type {import('../repo').Structure} */
+  let shape = { folds: [], symbols: [] };
+  /** @type {Map<number, import('../repo').Fold>} */
+  let foldAt = new Map();
+  /** The marker lines of the folds that are closed. */
+  /** @type {Set<number>} */
+  let closed = new Set();
+  /** **Which file lines are rows**, 0-based and in order, while anything is
+   *  folded; null when every line is one. Everything the band measures — its
+   *  start, the spacers, the scroll — is in rows, so a fold is just fewer of them
+   *  and the scrollbar stays honest. */
+  /** @type {number[] | null} */
+  let shown = null;
+  /** Each line's indent in columns, a blank line taking the smaller of its
+   *  neighbours' so a guide runs through it, and the file's indent step. */
+  /** @type {number[]} */
+  let indents = [];
+  let step = 2;
+
+  const rowCount = () => (shown ? shown.length : view.file?.lines.length ?? 0);
+  /** The file line, 0-based, drawn as row `r`. */
+  const lineAt = (/** @type {number} */ r) => (shown ? shown[r] ?? 0 : r);
+  /** The row a file line is drawn on, or the row of the fold hiding it. */
+  const rowOf = (/** @type {number} */ i) => (shown ? lineOf(shown, i) : i);
+  /** Recount the rows after a fold opened or closed. */
+  function refold() {
+    const total = view.file?.lines.length ?? 0;
+    if (!closed.size || !total) {
+      shown = null;
+      return;
+    }
+    const hide = new Uint8Array(total);
+    for (const n of closed) {
+      const f = foldAt.get(n);
+      // `line + 1 ..= last`, 1-based, is `line ..< last` 0-based.
+      if (f) hide.fill(1, f.line, Math.min(f.last, total));
+    }
+    shown = [];
+    for (let i = 0; i < total; i++) if (!hide[i]) shown.push(i);
+  }
+  /** Open every fold hiding any of lines `lo ..= hi`, so a jump never lands
+   *  inside one. */
+  function reveal(/** @type {number} */ lo, /** @type {number} */ hi) {
+    let opened = false;
+    for (const m of closed) {
+      const f = foldAt.get(m);
+      if (f && f.line < hi && f.last >= lo) {
+        closed.delete(m);
+        opened = true;
+      }
+    }
+    if (opened) refold();
+  }
+
+  /** The symbols whose extent holds line `n` and starts above it, outermost
+   *  first: what the sticky lines and the breadcrumbs both name. */
+  const scopesAt = (/** @type {number} */ n) => shape.symbols.filter((s) => s.line < n && s.end >= n);
+
+  /** Ask the daemon how the loaded file is built, and fold its imports. */
+  async function askStructure() {
+    const file = view.file;
+    if (!file || file.plain) return;
+    /** @type {import('../repo').Structure} */
+    let answer;
+    try {
+      answer = await call('/api/structure', { path: file.path, text: file.lines.join('\n') });
+    } catch (e) {
+      // No structure is the viewer it always was; nothing to say about it.
+      return;
+    }
+    if (view.file !== file) return;
+    shape = answer;
+    foldAt = new Map(answer.folds.map((f) => [f.line, f]));
+    /* **Imports start folded**: the top of nearly every file, and the part
+       nobody opened it to read. Not the run the line you were sent to is in —
+       an agent pointing at an import is pointing at the import. */
+    const at = view.spot?.line ?? 0;
+    const upTo = Math.max(at, view.spot?.last ?? 0);
+    for (const f of answer.folds) {
+      if (f.kind === 'imports' && !(upTo > f.line && at <= f.last)) closed.add(f.line);
+    }
+    /* **The line at the top stays at the top.** The answer lands after the file
+       is drawn, and a caller may have scrolled since — the file pane's back
+       button puts you where you were — so this must not jump to the spot. */
+    if (view.mode !== 'source' || !view.spot || !view.rowH || held()) return refold();
+    const into = on.mount.scrollTop % view.rowH;
+    const top = lineAt(Math.floor(on.mount.scrollTop / view.rowH));
+    refold();
+    const r = rowOf(top);
+    band(Math.max(0, r - Math.floor(BAND / 3)), view.spot);
+    on.mount.scrollTop = r * view.rowH + into;
+  }
+
+  /** Each line's indent, in columns, for the guides. */
+  function measureIndents(/** @type {string[]} */ lines) {
+    const out = lines.map((l) => {
+      if (!l.trim()) return -1;
+      let col = 0;
+      for (const c of l) {
+        if (c === ' ') col++;
+        else if (c === '\t') col += TAB - (col % TAB);
+        else break;
+      }
+      return col;
+    });
+    // A blank line runs the guide through at the smaller of the indents around
+    // it, so a gap inside a block does not break the line down its side.
+    let before = 0;
+    const back = [];
+    for (let i = out.length - 1, after = 0; i >= 0; i--) {
+      const v = out[i] ?? -1;
+      if (v >= 0) after = v;
+      back[i] = after;
+    }
+    for (let i = 0; i < out.length; i++) {
+      const v = out[i] ?? -1;
+      if (v >= 0) before = v;
+      else out[i] = Math.min(before, back[i] ?? 0);
+    }
+    return out;
+  }
 
   /** The uncommitted changes in the file on screen, for the ruler. */
   async function askChanges() {
@@ -191,6 +326,14 @@ export function create(on) {
     blameAsked = new Set();
     changed = [];
     hits = [];
+    shape = { folds: [], symbols: [] };
+    foldAt = new Map();
+    closed = new Set();
+    shown = null;
+    scopesKey = '';
+    indents = plain ? [] : measureIndents(view.file.lines);
+    const unit = plain ? '' : indentUnit(content);
+    step = unit === '\t' ? TAB : unit.length || 2;
   }
 
   /** Swap the ruler alone when its marks arrive. **Not the band**: a rebuilt
@@ -198,7 +341,7 @@ export function create(on) {
    *  marks landing a moment after a right-click took the menu away with them. */
   function redrawRuler() {
     const old = on.mount.querySelector(':scope > .ruler');
-    if (old && view.file && view.mode === 'source') old.replaceWith(ruler(view.file.lines.length));
+    if (old && view.file && view.mode === 'source') old.replaceWith(ruler(rowCount()));
   }
 
   /** A strip beside the scrollbar with the changes and the hits on it, each a
@@ -212,7 +355,9 @@ export function create(on) {
     if (!total || !h) return strip;
     const mark = (/** @type {number} */ line, /** @type {string} */ cls, /** @type {string} */ tip) => {
       const m = el('i', `rm ${cls}`);
-      m.style.top = `${((line - 1) / total) * 100}%`;
+      // By row, not by line: the scrollbar is rows, and a mark has to sit where
+      // the thumb goes to reach it. A line in a fold marks the fold.
+      m.style.top = `${(rowOf(line - 1) / total) * 100}%`;
       m.title = tip;
       m.onclick = () => paint({ line, col: 0, len: 0 });
       strip.appendChild(m);
@@ -313,6 +458,9 @@ export function create(on) {
     items.push(['copy path', null, copy(path)]);
     if (n) items.push(['copy path:line', null, copy(`${path}:${n}`)]);
     if (view.mode === 'source') items.push([blameOn ? 'hide blame' : 'show blame', null, toggleBlame]);
+    if (view.mode === 'source' && foldAt.size) {
+      items.push(closed.size ? ['unfold all', null, () => foldAll(false)] : ['fold all', null, () => foldAll(true)]);
+    }
     // The commit behind the line, from the blame column only: it is the column's
     // answer, and on the code it read as a fact about the code. A line nobody has
     // committed has no commit to open.
@@ -334,8 +482,8 @@ export function create(on) {
     if (!view.file || !view.rowH || !view.spot) return;
     const first = Math.floor(on.mount.scrollTop / view.rowH);
     const last = Math.ceil((on.mount.scrollTop + on.mount.clientHeight) / view.rowH);
-    if (first >= view.from + MARGIN && last <= view.to - MARGIN) return;
-    if (view.from === 0 && last <= view.to - MARGIN) return;
+    // A band that moves draws the scopes itself.
+    if (last <= view.to - MARGIN && (view.from === 0 || first >= view.from + MARGIN)) return drawScopes();
     const keep = on.mount.scrollTop;
     band(Math.max(0, first - Math.floor(BAND / 3)), view.spot);
     on.mount.scrollTop = keep;
@@ -352,67 +500,177 @@ export function create(on) {
   function band(from, spot) {
     const file = view.file;
     if (!file || held()) return;
-    const total = file.lines.length;
+    const total = rowCount();
     const to = Math.min(total, from + BAND);
     view.from = from;
     view.to = to;
 
     const rows = el('div', 'fnrows' + (blameOn ? ' blamed' : ''));
-    if (blameOn && !blame.has(from + 1)) void askBlame(from, to);
-    for (let i = from; i < to; i++) {
-      const text = file.lines[i] ?? '';
-      /* A range lights every row in it. `overlay.service.ts:124-129` is what an
-         agent writes when it means a block, and marking only the first line would
-         answer a question nobody asked. */
-      const n = i + 1;
-      const lit = n === spot.line || (!!spot.last && n > spot.line && n <= spot.last);
-      const row = el('div', 'fnrow' + (lit ? ' on' : ''));
-      // Drawn, not written: a `user-select:none` gutter is still taken by a
-      // selection that crosses it, so the numbers would ride along into every
-      // copied snippet. Generated content is not in the document to be taken.
-      if (blameOn) {
-        /* Drawn like the number, so a copied snippet does not carry it. Only
-           the first line of a run from one commit is labelled: the same name
-           down forty lines is noise, and the gap is what shows where it ends. */
-        const b = blame.get(n);
-        const g = el('b', 'blame');
-        if (b) {
-          const prev = blame.get(n - 1);
-          const who = b.commit ? (b.author.split(' ')[0] || '?') : 'you';
-          if (i === from || prev?.commit !== b.commit) g.dataset.b = b.commit ? `${who} · ${age(b.time)}` : who;
-          g.title = b.commit
-            ? `${b.commit} ${b.author}, ${new Date(b.time * 1000).toLocaleDateString()}\n${b.summary}`
-            : 'not committed yet';
-        }
-        row.appendChild(g);
-      }
-      const num = el('i');
-      num.dataset.n = String(n);
-      row.appendChild(num);
-      const body = el('s');
-      const ranges = hlTokens(text, file.lang);
-      if (n === spot.line && spot.len) {
-        // The match, marked through the same range machinery the word-diff paints
-        // with. Byte offsets from Rust, so they are converted rather than assumed.
-        const [span] = charRanges(text, [[spot.col, spot.col + spot.len]]);
-        if (span) ranges.push({ ...span, cls: 'find' });
-        ranges.sort((a, b) => a.s - b.s || a.e - b.e);
-      }
-      paintRanges(body, text || ' ', dedupe(ranges));
-      row.appendChild(body);
+    rows.style.setProperty('--iu', `${step}ch`);
+    const firstLine = lineAt(from);
+    const lastLine = to > from ? lineAt(to - 1) + 1 : firstLine;
+    if (blameOn && !blame.has(firstLine + 1)) void askBlame(firstLine, lastLine);
+    for (let r = from; r < to; r++) {
+      const row = drawRow(lineAt(r), spot, r === from ? -1 : lineAt(r - 1));
       rows.appendChild(row);
     }
 
     const top = el('div', 'fnpad');
     const bot = el('div', 'fnpad');
-    on.mount.replaceChildren(ruler(total), top, rows, bot);
+    const stuck = el('div', 'fnstick');
+    on.mount.replaceChildren(ruler(total), stuck, top, rows, bot);
     if (!view.rowH) {
       const one = rows.firstElementChild;
       view.rowH = one ? one.getBoundingClientRect().height : 0;
     }
     top.style.height = `${from * view.rowH}px`;
     bot.style.height = `${Math.max(0, total - to) * view.rowH}px`;
+    drawScopes();
   }
+
+  /** One line as a row: blame, number, fold marker, code.
+   *
+   *  `above` is the file line drawn in the row above, which a blame run is
+   *  compared with — not `i - 1`, which a closed fold may hide. -1 where there is
+   *  no row above, and a run is then labelled even when it began higher up.
+   *
+   *  @param {number} i the file line, 0-based
+   *  @param {Spot} spot
+   *  @param {number} above */
+  function drawRow(i, spot, above) {
+    const file = /** @type {Loaded} */ (view.file);
+    const text = file.lines[i] ?? '';
+    /* A range lights every row in it. `overlay.service.ts:124-129` is what an
+       agent writes when it means a block, and marking only the first line would
+       answer a question nobody asked. */
+    const n = i + 1;
+    const lit = n === spot.line || (!!spot.last && n > spot.line && n <= spot.last);
+    const fold = foldAt.get(n);
+    const row = el('div', 'fnrow' + (lit ? ' on' : '') + (fold ? ' fh' : '') + (closed.has(n) ? ' folded' : ''));
+    // Drawn, not written: a `user-select:none` gutter is still taken by a
+    // selection that crosses it, so the numbers would ride along into every
+    // copied snippet. Generated content is not in the document to be taken.
+    if (blameOn) {
+      /* Drawn like the number, so a copied snippet does not carry it. Only
+         the first line of a run from one commit is labelled: the same name
+         down forty lines is noise, and the gap is what shows where it ends. */
+      const b = blame.get(n);
+      const g = el('b', 'blame');
+      if (b) {
+        // The row drawn above, which is not `n - 1` when a fold sits between.
+        const prev = above < 0 ? undefined : blame.get(above + 1);
+        const who = b.commit ? (b.author.split(' ')[0] || '?') : 'you';
+        if (above < 0 || prev?.commit !== b.commit) g.dataset.b = b.commit ? `${who} · ${age(b.time)}` : who;
+        g.title = b.commit
+          ? `${b.commit} ${b.author}, ${new Date(b.time * 1000).toLocaleDateString()}\n${b.summary}`
+          : 'not committed yet';
+      }
+      row.appendChild(g);
+    }
+    const num = el('i');
+    num.dataset.n = String(n);
+    if (fold) num.title = closed.has(n) ? `unfold ${fold.last - fold.line} lines` : `fold ${fold.last - fold.line} lines`;
+    row.appendChild(num);
+    const body = el('s');
+    // What a closed fold hides, drawn after the line rather than written into it,
+    // so a copy of the rows does not carry it either.
+    if (fold && closed.has(n)) body.dataset.more = `+${fold.last - fold.line}`;
+    // The indent guides: a repeating line every step, as wide as the indent. A
+    // background rather than elements, so it costs no DOM.
+    const ind = indents[i] ?? 0;
+    if (ind > 0) body.style.setProperty('--ind', `${ind}ch`);
+    const ranges = hlTokens(text, file.lang);
+    if (n === spot.line && spot.len) {
+      // The match, marked through the same range machinery the word-diff paints
+      // with. Byte offsets from Rust, so they are converted rather than assumed.
+      const [span] = charRanges(text, [[spot.col, spot.col + spot.len]]);
+      if (span) ranges.push({ ...span, cls: 'find' });
+      ranges.sort((a, b) => a.s - b.s || a.e - b.e);
+    }
+    paintRanges(body, text || ' ', dedupe(ranges));
+    row.appendChild(body);
+    return row;
+  }
+
+  /** The scope lines pinned at the top, and the breadcrumbs, for where the pane
+   *  is scrolled to. Rebuilt on every scroll, which is cheap: a handful of rows
+   *  and a filter over the outline. */
+  let scopesKey = '';
+  function drawScopes() {
+    const file = view.file;
+    const stuck = on.mount.querySelector(':scope > .fnstick');
+    if (!file || !view.rowH) return;
+    const first = Math.floor(on.mount.scrollTop / view.rowH);
+    /* Asked twice, because the pinned rows cover the lines under them: the
+       scopes of the top line say how many rows to pin, and the line below those
+       rows is the one whose scopes they must name. */
+    const covered = scopesAt(lineAt(first) + 1).length;
+    const below = lineAt(Math.min(first + Math.min(covered, STICKY), Math.max(0, rowCount() - 1))) + 1;
+    const scopes = scopesAt(below);
+    /* **Nothing is touched when the scopes have not changed**, which is nearly
+       every scroll event: the band exists so that a scroll inside it costs no
+       DOM, and rebuilding three rows per event would undo that. A rebuilt band
+       has a fresh, empty sticky box, which is what the second half asks. */
+    const key = `${scopes.map((s) => s.line).join()}|${blameOn}|${shape.symbols.length}`;
+    if (key === scopesKey && stuck?.childElementCount === (scopes.length ? 1 : 0)) return;
+    scopesKey = key;
+    if (stuck) {
+      const box = el('div', 'fnrows' + (blameOn ? ' blamed' : ''));
+      box.style.setProperty('--iu', `${step}ch`);
+      // The innermost, when there are more: which method you are in is the
+      // question, and the breadcrumbs carry the rest.
+      for (const s of scopes.slice(-STICKY)) {
+        const row = drawRow(s.line - 1, { line: 0, col: 0, len: 0 }, -1);
+        row.classList.add('stuck');
+        row.onclick = () => paint({ line: s.line, col: 0, len: 0 });
+        box.appendChild(row);
+      }
+      stuck.replaceChildren(...(scopes.length ? [box] : []));
+    }
+    if (on.crumbs) {
+      on.crumbs.textContent = scopes.length ? scopes.map((s) => s.name).join(' › ') : 'outline';
+      on.crumbs.hidden = !shape.symbols.length;
+    }
+  }
+
+  /** Breadcrumbs belong to lines, so a page, a picture or nothing has none. */
+  const noCrumbs = () => {
+    if (on.crumbs) on.crumbs.hidden = true;
+  };
+
+  /** Open or close the fold whose marker is on line `n`, keeping that line
+   *  where it is on screen: nothing above it moves, so the scroll does not. */
+  function toggle(/** @type {number} */ n) {
+    if (!foldAt.has(n) || !view.spot) return;
+    if (closed.has(n)) closed.delete(n);
+    else closed.add(n);
+    refold();
+    const keep = on.mount.scrollTop;
+    band(Math.min(view.from, Math.max(0, rowCount() - 1)), view.spot);
+    on.mount.scrollTop = keep;
+  }
+
+  /** Close every fold, or open every one. */
+  function foldAll(/** @type {boolean} */ shut) {
+    closed = shut ? new Set(foldAt.keys()) : new Set();
+    refold();
+    if (view.spot) paint(view.spot);
+  }
+
+  /* A click on a fold's marker toggles it. On the number rather than the code,
+     so a click meant to select text never folds anything. */
+  on.mount.addEventListener('click', (ev) => {
+    const num = /** @type {HTMLElement | null} */ (/** @type {HTMLElement} */ (ev.target).closest?.('.fnrow.fh:not(.stuck) > i'));
+    if (num?.dataset.n) toggle(Number(num.dataset.n));
+  });
+
+  /* The breadcrumbs open the outline, each symbol a jump, indented by depth. */
+  on.crumbs?.addEventListener('click', (ev) => {
+    if (!shape.symbols.length) return;
+    openMenu(ev, shape.symbols.slice(0, 400).map((s) => [
+      `${'  '.repeat(s.depth)}${s.name}  ${s.kind}`, null, () => paint({ line: s.line, col: 0, len: 0 }),
+    ]));
+  });
 
   /** Draw the loaded file around `spot`, and say where that is.
    *
@@ -435,7 +693,10 @@ export function create(on) {
        that was never a line at all — a byte count, a pid, a timestamp. */
     const last = Math.max(1, total);
     const at = Math.min(Math.max(spot.line, 1), last);
-    band(Math.max(0, Math.min(at - 1 - Math.floor(BAND / 2), Math.max(0, last - BAND))), spot);
+    // A jump into a fold opens it: the line you were sent to is never hidden.
+    reveal(at, Math.max(at, Math.min(spot.last || at, last)));
+    const rows = Math.max(1, rowCount());
+    band(Math.max(0, Math.min(rowOf(at - 1) - Math.floor(BAND / 2), Math.max(0, rows - BAND))), spot);
     // The line, in the middle of the viewport rather than at its edge.
     on.mount.querySelector('.fnrow.on')?.scrollIntoView({ block: 'center' });
   }
@@ -445,6 +706,7 @@ export function create(on) {
     const file = view.file;
     if (!file) return;
     view.mode = 'markdown';
+    noCrumbs();
     if (on.path) on.path.textContent = file.path;
     if (on.where) on.where.textContent = `${file.lines.length} lines · rendered`;
     const page = el('div', 'md');
@@ -465,6 +727,7 @@ export function create(on) {
     if (!file || !view.ws) return;
     const mine = view.seq;
     view.mode = 'preview';
+    noCrumbs();
     if (on.path) on.path.textContent = file.path;
     if (on.where) on.where.textContent = 'preview · scripts on';
     let token;
@@ -508,6 +771,7 @@ export function create(on) {
     view.file = null;
     view.spot = null;
     view.mode = 'image';
+    noCrumbs();
     if (on.path) on.path.textContent = path;
     if (on.where) on.where.textContent = 'image';
     const img = /** @type {HTMLImageElement} */ (el('img', 'fvimage'));
@@ -556,6 +820,7 @@ export function create(on) {
       view.readOnly = false;
       load(label, content);
       paint({ line: 1, last: 0, col: 0, len: 0 });
+      void askStructure();
     },
 
     /** Whether a picture is on screen, which has no source to edit. */
@@ -578,8 +843,8 @@ export function create(on) {
      *  lines are on screen. */
     middleLine: () => {
       if (!view.file || view.mode !== 'source' || !view.rowH) return null;
-      const n = Math.floor((on.mount.scrollTop + on.mount.clientHeight / 2) / view.rowH) + 1;
-      return Math.min(Math.max(1, n), view.file.lines.length);
+      const r = Math.floor((on.mount.scrollTop + on.mount.clientHeight / 2) / view.rowH);
+      return lineAt(Math.min(Math.max(0, r), Math.max(0, rowCount() - 1))) + 1;
     },
 
     /** The lines a search hit in the file on screen, for the ruler. */
@@ -645,6 +910,7 @@ export function create(on) {
           if (mine !== view.seq) return false;
           view.file = null;
           view.readOnly = false;
+          noCrumbs();
           if (on.path) on.path.textContent = path;
           on.mount.replaceChildren(el('div', 'fnsay', reason(e)));
           return false;
@@ -654,6 +920,7 @@ export function create(on) {
         view.readOnly = answer.read_only === true;
         load(path, String(answer.content ?? ''));
         void askChanges();
+        void askStructure();
       }
       paint(spot);
       return true;
@@ -672,6 +939,7 @@ export function create(on) {
       view.spot = null;
       if (on.path) on.path.textContent = '';
       if (on.where) on.where.textContent = '';
+      noCrumbs();
       on.mount.replaceChildren();
     },
 

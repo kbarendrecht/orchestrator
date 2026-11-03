@@ -224,6 +224,8 @@
         <div class="rowsplit" id="fnsplit" role="separator" aria-orientation="horizontal"
              title="Drag to resize · double-click to reset"></div>
         <span class="ov-path" id="fnpath"></span>
+        <!-- The scope the file is scrolled to; a click lists the outline. -->
+        <button class="ov-crumbs" id="fncrumbs" hidden></button>
         <span class="ov-count" id="fnwhere"></span>
         <!-- The same file, on its own, where it gets the whole window and the
              markdown mode. The index above is for finding; this is for reading. -->
@@ -247,6 +249,7 @@
              the file it goes back to, and hidden when there is none. -->
         <button class="head-btn" id="fvback" hidden></button>
         <span class="ov-path" id="fvpath"></span>
+        <button class="ov-crumbs" id="fvcrumbs" hidden></button>
         <span class="ov-count" id="fvwhere"></span>
         <!-- Only on a file this can render, and it names what you would get
              rather than what you are looking at. -->

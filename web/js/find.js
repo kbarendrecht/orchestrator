@@ -34,7 +34,7 @@ const DEBOUNCE = 120;
  *  picture lives in `viewer.js` and this is one of its two callers. */
 let view = null;
 const viewer = () => {
-  view ??= Viewer.create({ mount: $('fnsrc'), path: $('fnpath'), where: $('fnwhere') });
+  view ??= Viewer.create({ mount: $('fnsrc'), path: $('fnpath'), where: $('fnwhere'), crumbs: $('fncrumbs') });
   return view;
 };
 /** Paths offered at once in `names` mode. The ranking is the useful part; a

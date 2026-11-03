@@ -54,7 +54,7 @@ const state = {
 let view = null;
 const viewer = () => {
   view ??= Viewer.create({
-    mount: $('fvsrc'), path: $('fvpath'), where: $('fvwhere'),
+    mount: $('fvsrc'), path: $('fvpath'), where: $('fvwhere'), crumbs: $('fvcrumbs'),
     onFile: (rel, line) => void follow(rel, line),
   });
   return view;

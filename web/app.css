@@ -1818,6 +1818,14 @@ button.settings-co:hover{color:var(--text);background:var(--hover)}
 }
 .ov-path{font-family:var(--mono);font-size:calc(11.5px * var(--fs));white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ov-path span{color:var(--faint-solid)}
+/* Where in the file the pane is: `Order › total`, and the outline on a click.
+   Shrinks to an ellipsis before the path does. */
+.ov-crumbs{
+  flex:0 1000 auto;min-width:0;padding:1px 6px;border-radius:var(--r);
+  font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.ov-crumbs:hover{color:var(--text);background:var(--raised)}
 /* The buttons are a fixed set, and with key caps on them they outgrew a narrow
    overlay: the path was squeezed to `READ…` while the count beside it kept every
    word. So the nav may shrink, the count gives way inside it, and the path keeps
@@ -2612,6 +2620,30 @@ select.opfield,input.opfield{appearance:none}
 .fnrow b.blame[data-b]{cursor:pointer;transition:color .12s}
 .fnrow b.blame[data-b]:hover{color:var(--text)}
 .fnrow.on{background:#1B1A14;box-shadow:inset 2px 0 0 var(--attn)}
+/* Indent guides: a hairline every indent step, as wide as the line's indent and
+   offset by the code's own padding, so the first sits under column zero. A
+   background, so a thousand rows cost no extra element. */
+.fnrow s{
+  background-image:repeating-linear-gradient(to right,var(--line) 0 1px,transparent 1px var(--iu,2ch));
+  background-repeat:no-repeat;background-position:12px 0;background-size:var(--ind,0px) 100%;
+}
+/* A fold's marker sits in the number's padding, so the numbers do not move when
+   a file gains folds. Faint until it is folded, which is the state worth seeing. */
+.fnrow i{position:relative}
+.fnrow.fh:not(.stuck) > i{cursor:pointer}
+.fnrow.fh > i::after{content:'\25BE';position:absolute;right:2px;color:var(--line);transition:color .12s}
+.fnrow.fh > i:hover::after{color:var(--text)}
+.fnrow.fh.folded > i::after{content:'\25B8';color:var(--faint-solid)}
+.fnrow.folded > s::after{
+  content:'\22EF  ' attr(data-more);margin-left:10px;padding:0 6px;border-radius:var(--r);
+  background:var(--raised);color:var(--faint-solid);font-family:var(--mono);
+}
+/* The scopes the top line is inside, pinned over the rows. No height of its own,
+   so pinning a line never moves the band under it. */
+.fnstick{position:sticky;top:0;z-index:2;height:0}
+.fnstick > .fnrows{background:var(--bg);box-shadow:0 1px 0 var(--line)}
+.fnrow.stuck{cursor:pointer}
+.fnrow.stuck:hover{background:var(--raised)}
 /* The match itself, in the diff's own word-highlight shape so a marked span
    means one thing everywhere in this app. */
 .tok-find{background:#3A2C12;color:var(--attn);border-radius:2px}
