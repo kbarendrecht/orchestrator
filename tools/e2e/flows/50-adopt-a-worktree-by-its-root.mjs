@@ -1,5 +1,5 @@
 // A worktree the daemon did not cut is adopted by its root, whatever folder the
-// hook that reports it was sent from (#55).
+// hook that reports it was sent from, and when `EnterWorktree` enters it (#55).
 //
 // A session in main ran `git worktree add` itself and then worked in a subfolder.
 // The `SessionStart` that compaction sent came from `<tree>/tests/mcp`, and that
@@ -29,4 +29,16 @@ export async function run(t) {
   await until('the tree to be a workspace', async () => !!(await t.workspace('by-hand')))
   const ws = await t.workspace('by-hand')
   assert.equal(fs.realpathSync(ws.path), fs.realpathSync(tree), 'and its path is the root')
+
+  /* And a tree entered with `EnterWorktree`, which fires no `SessionStart`: the
+     tool's own answer names it, and the session moves with it. */
+  const entered = t.worktreePath('entered')
+  git(t.repo, ['worktree', 'add', '-q', '-b', 'entered', entered])
+  await t.api('POST', '/hooks/post-tool-use', {
+    session_id: session, hook_event_name: 'PostToolUse', tool_name: 'EnterWorktree',
+    tool_input: { path: entered }, tool_response: { worktreePath: entered, worktreeBranch: 'entered' },
+    cwd: entered,
+  })
+  await until('the entered tree to be a workspace', async () => !!(await t.workspace('entered')))
+  await until('the session to move into it', async () => (await t.session(session))?.workspace === 'entered')
 }

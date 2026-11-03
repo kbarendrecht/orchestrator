@@ -43,6 +43,10 @@ pub struct HookPayload {
     pub agent_id: Option<String>,
     #[serde(default)]
     pub tool_input: Option<serde_json::Value>,
+    /// What the tool answered. Read for `EnterWorktree`, whose answer names the
+    /// tree it entered ([`entered_worktree`]).
+    #[serde(default)]
+    pub tool_response: Option<serde_json::Value>,
     #[serde(default)]
     pub message: Option<String>,
     #[serde(default)]
@@ -545,6 +549,23 @@ fn read_from(path: &Path, offset: u64) -> std::io::Result<Vec<u8>> {
     Ok(buf)
 }
 
+/// The tree an `EnterWorktree` call entered, resolved: `worktreePath` from its
+/// answer, else the `path` it was given. `None` for any other tool.
+fn entered_worktree(payload: &HookPayload) -> Option<PathBuf> {
+    if payload.tool_name.as_deref() != Some("EnterWorktree") {
+        return None;
+    }
+    let field = |v: &Option<serde_json::Value>, key: &str| {
+        v.as_ref()
+            .and_then(|v| v.get(key))
+            .and_then(|v| v.as_str())
+            .map(PathBuf::from)
+    };
+    field(&payload.tool_response, "worktreePath")
+        .or_else(|| field(&payload.tool_input, "path"))
+        .map(|p| resolved(&p))
+}
+
 /// Register the worktree `path` is in, by its root, and say its name. `None`
 /// when `path` is not under the worktrees dir.
 async fn adopt_worktree(app: &Arc<AppState>, path: &Path) -> Option<String> {
@@ -576,6 +597,22 @@ pub async fn post_tool_use(
         .and_then(|v| v.get("file_path"))
         .and_then(|v| v.as_str())
         .map(PathBuf::from);
+
+    /* **`EnterWorktree` fires no `SessionStart`, so a tree it entered is adopted
+    here** (#55). It was adopted only at boot, or by the next `SessionStart`
+    from inside it, so a session that cut a tree with plain git and entered it
+    got "unknown workspace" for it until a restart. The session moves with it,
+    as `session_start` moves one that reports a cwd inside a tree. */
+    if let Some(entered) = entered_worktree(&payload) {
+        if let Some(name) = adopt_worktree(&app, &entered).await {
+            app.with_session(id, |s| {
+                s.workspace = name;
+                s.cwd = entered;
+            })
+            .await;
+            app.notify().await;
+        }
+    }
 
     // A tool with no `file_path` is usually `Bash`, which is exactly the tool that
     // moves files the daemon cannot predict: a build, a codegen, a `git restore`.
