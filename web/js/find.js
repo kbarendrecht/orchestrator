@@ -244,8 +244,8 @@ async function search() {
       const inside = dir ? await loadUnder(dir) : [];
       if (mine !== state.seq) return;
       state.hits = rank([...(state.paths ?? []), ...inside], q).map((path) => ({ path, line: 1, col: 0, len: 0 }));
-      /* **The daemon's own flag, not `false`.** `MAX_PATHS` is 20,000 and this
-         repo lists 19,043 of them, so the cap is reachable — and past it the
+      /* **The daemon's own flag, not `false`.** `MAX_PATHS` is 50,000 and this
+         repo lists 20,462 of them, so the cap is reachable — and past it the
          footer said nothing while the list was quietly short. Worse, a path click
          then toasts "no such file in this workspace" about a file that plainly
          exists, blaming the workspace for the cap. */

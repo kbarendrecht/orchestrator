@@ -56,7 +56,11 @@ pub const MAX_PER_FILE: usize = 20;
 pub const MAX_TOTAL: usize = 400;
 /// Paths returned by [`paths`]. The page matches them itself, so the list is
 /// fetched once per workspace rather than per keystroke.
-pub const MAX_PATHS: usize = 20_000;
+///
+/// **It was 20,000, and scienta crossed it at 20,462.** A cut list answers yes to
+/// every path a terminal asks about, so `document.modelContext` underlined. The
+/// list is about 80 bytes a file, so this is 4 MB at the cap.
+pub const MAX_PATHS: usize = 50_000;
 
 /// A flag that survives `#[serde(flatten)]` in a query string.
 ///
@@ -201,7 +205,7 @@ const IGNORED_CANDIDATES: usize = 2_000;
 /// `.idea` is 16, while `.playwright-mcp` is 524, `var` 22,656, `vendor` 30,749
 /// and `node_modules` 143,465. Notes are tens of files and output starts in the
 /// hundreds, so the line is drawn between them — and it is drawn low on purpose,
-/// because `MAX_PATHS` is 20,000 and this repo already lists 19,043. A generous
+/// because this repo already lists 20,462 files against `MAX_PATHS`. A generous
 /// cap does not merely add noise, it truncates the list and loses real files.
 const IGNORED_CAP: usize = 200;
 

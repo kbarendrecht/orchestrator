@@ -385,7 +385,7 @@ const hovered = new Map();
  *  walks fresh, in [`candidates`].
  *
  *  **A list that was cut short says yes to everything.** `/api/paths` stops at
- *  20,000 and the monorepo is 19,043, so the day it crosses, a miss means "not in
+ *  50,000 and the monorepo is 20,462, so the day it crosses, a miss means "not in
  *  the part that fit" rather than "not there", and a missing underline is worse
  *  than one that answers "no such file".
  *
