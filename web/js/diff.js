@@ -600,7 +600,8 @@ function commitsOf(/** @type {import('../snapshot').WorkspaceView} */ w) {
  *           file: import('../repo').FileDiff | null, split: boolean,
  *           cursor: number, pendingCursor: 'first' | 'last' | null, context: number,
  *           anchors?: HTMLElement[], loading?: boolean, lines: string[] | null,
- *           reveal: Map<number, { top: number, bottom: number }>, gone?: string | null }}
+ *           reveal: Map<number, { top: number, bottom: number }>, gone?: string | null,
+ *           imports: import('../repo').Fold[], openImports: Set<number> }}
  */
 const diffState = {
   open: false,
@@ -631,6 +632,12 @@ const diffState = {
   /** Per fold, how many lines are shown from its top and its bottom. Keyed on
    *  the hunk the fold sits above, and `hunks.length` for the one after the last. */
   reveal: new Map(),
+  /* The file's import runs, from the daemon's parse of `lines`, and the hunks
+     inside one that were opened anyway. A hunk that only moves imports is drawn
+     as one line: an agent's diff is full of them, and they are the part nobody
+     reviews. */
+  imports: [],
+  openImports: new Set(),
 };
 
 /* **Three questions, and the header is a menu between them** (#47). `Changes` is
@@ -930,6 +937,23 @@ function renderDiff() {
       drawGap(hi, prev.o + 1, prev.n + 1, h.gap_before);
     }
 
+    if (importsOnly(h) && !diffState.openImports.has(hi)) {
+      let added = 0;
+      let gone = 0;
+      for (const r of h.rows) {
+        if (r.kind === 'add') added++;
+        else if (r.kind === 'del') gone++;
+      }
+      const bar = el('div', 'fold', `⋯ imports changed, +${added} −${gone}, click to show`);
+      bar.title = 'Only imports change here';
+      bar.onclick = () => {
+        diffState.openImports.add(hi);
+        renderDiff();
+      };
+      body.appendChild(bar);
+      continue;
+    }
+
     // The hunk's section heading — git's text after the second @@, the function
     // or class the change sits in — pinned so it stays in view while you scroll a
     // long hunk, the way the review overlay's hunk header already does. Empty for
@@ -1083,6 +1107,7 @@ function goTo(/** @type {number} */ line) {
   if (!row && diffState.lines && diffState.file) {
     for (let i = 0; i <= diffState.file.hunks.length; i++) {
       diffState.reveal.set(i, { top: Number.MAX_SAFE_INTEGER, bottom: 0 });
+      diffState.openImports.add(i);
     }
     renderDiff();
     row = find();
@@ -1173,6 +1198,8 @@ async function loadFile(/** @type {string} */ path) {
   // by leaving the previous file's hunks on screen.
   const slow = setTimeout(() => { diffState.loading = true; renderDiff(); }, 150);
   diffState.reveal = new Map();
+  diffState.imports = [];
+  diffState.openImports = new Set();
   try {
     let live;
     [diffState.file, live] = await Promise.all([
@@ -1193,6 +1220,50 @@ async function loadFile(/** @type {string} */ path) {
   diffState.loading = false;
   renderDiff();
   renderFiles();
+  void askImports(path);
+}
+
+/** Ask where the loaded file's imports are, and redraw if a hunk only touches
+ *  them. After the diff is on screen, so the parse never delays it. */
+/** The size `structure.rs` stops parsing at, its `HUGE`. */
+const STRUCTURE_MAX = 512 * 1024;
+
+async function askImports(/** @type {string} */ path) {
+  const lines = diffState.lines;
+  if (!lines || !diffState.file?.hunks.length) return;
+  const text = lines.join('\n');
+  // The daemon parses nothing past this, so sending it would buy an empty answer.
+  if (text.length > STRUCTURE_MAX) return;
+  /** @type {import('../repo').Structure} */
+  let s;
+  try {
+    s = await call('/api/structure', { path, text });
+  } catch (e) {
+    return; // No structure: every hunk is drawn, as it always was.
+  }
+  if (diffState.path !== path || diffState.lines !== lines) return;
+  diffState.imports = s.folds.filter((f) => f.kind === 'imports');
+  if (diffState.file?.hunks.some(importsOnly)) renderDiff();
+}
+
+/** Whether every change in a hunk lands inside one import run of the file as it
+ *  is now. A deletion is placed where its lines went, which is the line after
+ *  the new side's last one. */
+function importsOnly(/** @type {import('../repo').Hunk} */ h) {
+  const runs = diffState.imports;
+  if (!runs.length) return false;
+  let n = h.new_start - 1;
+  let changes = 0;
+  for (const r of h.rows) {
+    if (r.kind === 'context') {
+      n = r.new ?? n;
+      continue;
+    }
+    const at = r.kind === 'add' ? (n = r.new ?? n + 1) : n + 1;
+    if (!runs.some((f) => at >= f.line && at <= f.last)) return false;
+    changes++;
+  }
+  return changes > 0;
 }
 
 async function openDiff(/** @type {string} */ path) {
@@ -1288,6 +1359,11 @@ function openEditor() {
         // The folds draw from these, so they follow the write too.
         diffState.lines = linesOf(live?.content);
         diffState.reveal = new Map();
+        // The import runs were read from the text before the write, and a hunk
+        // index now names a different hunk: both are asked again.
+        diffState.imports = [];
+        diffState.openImports = new Set();
+        void askImports(diffState.path ?? '');
       } catch (e) {
         /* the editor is still the source of truth on screen */
       }
