@@ -365,13 +365,29 @@ impl Forge for GitHubForge {
 const PAGE: u32 = 50;
 
 fn query_for(owner: &str, name: &str) -> String {
-    // Search filters to your own open PRs server-side, which is one query
-    // rather than paging the whole open set and discarding most of it.
+    /* Search filters to your open PRs server-side, which is one query rather
+    than paging the whole open set and discarding most of it. **Yours is two
+    searches**, because a PR assigned to you is yours too (#54) and the search
+    has no OR between two qualifiers. Aliased into one request, and the second
+    leaves out what the first already has. */
+    let nodes = pr_nodes();
     format!(
         r#"{{
   viewer {{ login }}
   search(query: "repo:{owner}/{name} is:pr is:open author:@me", type: ISSUE, first: {PAGE}) {{
-    nodes {{
+    {nodes}
+  }}
+  assigned: search(query: "repo:{owner}/{name} is:pr is:open assignee:@me -author:@me", type: ISSUE, first: {PAGE}) {{
+    {nodes}
+  }}
+}}"#
+    )
+}
+
+/// What [`query_for`] reads off each PR, once for both searches.
+fn pr_nodes() -> String {
+    format!(
+        r#"nodes {{
       ... on PullRequest {{
         number
         title
@@ -389,13 +405,11 @@ fn query_for(owner: &str, name: &str) -> String {
         }}
         latestOpinionatedReviews(first: 20) {{ nodes {{ state author {{ login }} submittedAt }} }}
       }}
-    }}
-  }}
-}}"#
+    }}"#
     )
 }
 
-/// The open PRs you authored, plus your own login.
+/// The open PRs you authored or are assigned, plus your own login.
 ///
 /// The query has always asked for `viewer { login }` and thrown it away. It is
 /// wanted: the vendored prompts take it as `{{LOGIN}}` to spot threads you
@@ -408,11 +422,7 @@ pub fn poll(token: &str, owner: &str, name: &str) -> Result<(String, Vec<Pr>)> {
         .and_then(|s| s.as_str())
         .unwrap_or_default()
         .to_string();
-    let nodes = v
-        .pointer("/data/search/nodes")
-        .and_then(|n| n.as_array())
-        .cloned()
-        .unwrap_or_default();
+    let nodes = search_nodes(&v);
 
     let mut prs: Vec<Pr> = Vec::with_capacity(nodes.len());
     for n in &nodes {
@@ -442,6 +452,31 @@ pub fn poll(token: &str, owner: &str, name: &str) -> Result<(String, Vec<Pr>)> {
     }
     link_stacks(&mut prs);
     Ok((viewer, prs))
+}
+
+/// Both searches' PRs, authored first. `-author:@me` already keeps the second
+/// from repeating the first; the number check holds that if a PR changes hands
+/// between the two halves of one request.
+fn search_nodes(v: &Value) -> Vec<Value> {
+    let mut out: Vec<Value> = Vec::new();
+    for at in ["/data/search/nodes", "/data/assigned/nodes"] {
+        for n in v
+            .pointer(at)
+            .and_then(|n| n.as_array())
+            .into_iter()
+            .flatten()
+        {
+            let number = n.get("number").and_then(|x| x.as_u64());
+            if number.is_none()
+                || !out
+                    .iter()
+                    .any(|o| o.get("number").and_then(|x| x.as_u64()) == number)
+            {
+                out.push(n.clone());
+            }
+        }
+    }
+    out
 }
 
 /// What became of one PR: merged, closed, or still open.
@@ -1396,6 +1431,21 @@ mod tests {
         let v = accept(partial).expect("errors beside data are usable");
         let nodes = v.pointer("/data/search/nodes").unwrap().as_array().unwrap();
         assert_eq!(parse_pr(&nodes[0], "me").unwrap().number, 7);
+    }
+
+    /// A PR assigned to you is listed beside the ones you wrote, once (#54).
+    #[test]
+    fn assigned_prs_join_authored_ones_without_repeating() {
+        let v = serde_json::json!({ "data": {
+            "search": { "nodes": [ { "number": 1 }, { "number": 2 } ] },
+            "assigned": { "nodes": [ { "number": 2 }, { "number": 3 } ] },
+        } });
+        let got: Vec<u64> = search_nodes(&v)
+            .iter()
+            .filter_map(|n| n["number"].as_u64())
+            .collect();
+        assert_eq!(got, vec![1, 2, 3]);
+        assert!(query_for("o", "n").contains("assignee:@me -author:@me"));
     }
 
     /// GitHub's cursor is opaque, so a quote in it must not break the document.
