@@ -67,6 +67,21 @@ pub fn run_bounded(cwd: &Path, timeout_secs: u64, argv: &[String], label: &str) 
     run_bounded_with_input(cwd, timeout_secs, argv, label, None, &[], None)
 }
 
+/// Set once the daemon is going, and read by every bounded wait as a deadline.
+static STOPPING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// End every bounded command still running, through the same escalation a
+/// deadline gets, and every one started after this at once.
+///
+/// **A daemon does not exit while one is running**, because the runtime's drop
+/// waits for each `spawn_blocking` task and these are run on them. The review poll
+/// waits up to `review_timeout_seconds`, four minutes by default, so a daemon whose
+/// host had gone sat there that long after logging its shutdown, holding a
+/// `mise run reviews` nobody would read.
+pub fn stop_bounded() {
+    STOPPING.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
 /// A place for a bounded command's output to go **while it runs**, a line at a
 /// time.
 ///
@@ -269,7 +284,8 @@ pub fn run_bounded_with_input(
         {
             break status;
         }
-        if Instant::now() >= deadline {
+        let stopping = STOPPING.load(std::sync::atomic::Ordering::SeqCst);
+        if stopping || Instant::now() >= deadline {
             // SIGTERM first, and a second to act on it. Git removes its `.lock`
             // files on SIGTERM and not on SIGKILL, and network git now runs under
             // this deadline: a fetch killed outright left `packed-refs.lock`
@@ -293,6 +309,9 @@ pub fn run_bounded_with_input(
             // What it said before it was stopped, because "timed out" alone is the
             // least useful line a log can carry about a stuck command.
             let stderr = err_thread.join().unwrap_or_default();
+            if stopping {
+                bail!("{label} stopped, the daemon is shutting down");
+            }
             bail!(
                 "{label} timed out after {timeout_secs}s ({})",
                 stderr_tail(&stderr)

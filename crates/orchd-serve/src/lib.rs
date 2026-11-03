@@ -174,6 +174,9 @@ impl Server {
         // client, so killing the pty alone leaves it in the container — which is
         // how five of them stacked up.
         self.stop_declared_processes().await;
+        // After those, which are bounded commands themselves. Anything bounded still
+        // in flight is a poll nobody will read, and the exit would wait for it.
+        orchd::proc::stop_bounded();
 
         // The handles, out from under the lock: the escalation below awaits, and
         // holding the write lock across it would park every hook and snapshot for
