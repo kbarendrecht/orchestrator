@@ -229,7 +229,7 @@ failed — `/etc/hosts` is a real file and not this workspace's, and a viewer sa
 "no such file" would name the wrong fault. The `..` segments are resolved *before*
 that comparison, because `src/../../../etc/passwd` starts with the root as a
 string and leaves it as a path. **Outside the pty's workspace is not yet outside
-the checkout**, though: a worktree that links a directory back to main (scienta's
+the checkout**, though: a worktree that links a directory back to main (the monorepo's
 `.plan`) gets main's absolute path printed by an agent writing through the link,
 so the other workspaces are tried next and the file opens in main. That was a
 colleague's refusal of a file the finder could see. **A link out of the checkout

@@ -148,7 +148,7 @@ function sorted(/** @type {Folder} */ f) {
  *  row there carries and a folder that holds one says so with a dot. **Every
  *  changed path is put in, not only what the walk listed**, so a dot always leads
  *  to its file: a deleted one is not on disk, and a monorepo past `MAX_PATHS`
- *  (scienta's 20,438) is cut off partway, which left `projects/ai/tests` dotted
+ *  (20,438 files) is cut off partway, which left `projects/ai/tests` dotted
  *  with its changed folders missing. A deleted file shows struck through.
  *
  *  `pick` is what a file row does, opening the file pane when not given; the

@@ -251,7 +251,7 @@ upgrade.
 
 **33. Shortcut's `/api/v3/member` names the workspace as `workspace2.url_slug`.**
 `story::shortcut_link` builds the default story link from it, when the tracker is
-Shortcut and Settings has none. Measured against the scienta workspace.
+Shortcut and Settings has none. Measured against the monorepo's workspace.
 *Kind:* Shortcut's API. *Breaks:* quietly. `sc-` refs stay plain text, and the boot
 log says why at info.
 

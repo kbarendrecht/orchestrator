@@ -568,7 +568,7 @@ with no check at all, while a PR that commits `notes.md -> ~/.ssh/id_rsa` needs
 only a reviewer who clicks the file link.
 
 **It used to bound at the worktree, and that made an ordinary layout unopenable**
-(#34). A repo whose worktrees link a directory back to main — scienta's
+(#34). A repo whose worktrees link a directory back to main — the monorepo's
 `.plan -> ../../../.plan`, and the daemon itself gives a worktree its untracked
 files that way — got `<path> resolves outside the workspace` on every file under
 it. The escape hatch was `shared_worktree_paths`, a list of directory *names*

@@ -57,7 +57,7 @@ pub const MAX_TOTAL: usize = 400;
 /// Paths returned by [`paths`]. The page matches them itself, so the list is
 /// fetched once per workspace rather than per keystroke.
 ///
-/// **It was 20,000, and scienta crossed it at 20,462.** A cut list answers yes to
+/// **It was 20,000, and the monorepo crossed it at 20,462.** A cut list answers yes to
 /// every path a terminal asks about, so `document.modelContext` underlined. The
 /// list is about 80 bytes a file, so this is 4 MB at the cap.
 pub const MAX_PATHS: usize = 50_000;
@@ -423,7 +423,7 @@ fn loose_ignored(root: &Path, exclude: Option<&str>) -> LooseIgnored {
             its root: 730,000 files past `MAX_PATHS`, a truncated list, and every
             word that looked like a file name drawn as a link.
             **Weighed, not dropped.** A small linked folder is what this list is
-            for: scienta links `.plan` into every worktree, 36 files, and dropping
+            for: the monorepo links `.plan` into every worktree, 36 files, and dropping
             every link lost it from search and from the terminal's links. So a
             linked folder stays when it fits under `IGNORED_CAP`, the same weight
             `small_ignored_dirs` puts on a real one, and only a big one goes. */
@@ -968,7 +968,7 @@ pub fn paths(root: &Path, exclude: Option<&str>) -> Result<Paths> {
 /// - **One [`left_out`] named**, checked against that list rather than resolved,
 ///   and walked with the ignore rules off, since the folder is ignored as a whole.
 /// - **Any other folder in the tree**, for a list [`paths`] cut off at its cap: a
-///   tree past it (scienta's 20,438 files) showed a folder with half its contents.
+///   tree past it (the monorepo's 20,438 files) showed a folder with half its contents.
 ///   Walked with the whole walk's own rules, so it lists nothing that walk would
 ///   not, and refused unless it is a relative path that stays inside `root` once
 ///   its links are resolved.
@@ -1407,7 +1407,7 @@ mod tests {
         let _ = fs::remove_dir_all(&shared);
 
         // A small linked folder is what the loose list is for, and stays: the
-        // shape of scienta's `.plan`, linked into every worktree.
+        // shape of the monorepo's `.plan`, linked into every worktree.
         // Its own repository: the ignored-path answer is remembered per folder for
         // half a minute, so asking `dir` again would read the answer from above.
         let small = orchd_base::testutil::scratch_repo("search-linked-small");

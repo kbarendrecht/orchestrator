@@ -738,7 +738,7 @@ function showPreviews() {
    build, a pass and a failure, a warning, a tool line in bold with a dim tail, and
    the bright half of the palette, which the swatch's dots never showed. */
 const DEMO = [
-  '\x1b[?25l\x1b[2m~/scienta\x1b[0m \x1b[35mfeature/kanban-pane\x1b[0m $ cargo test relocate',
+  '\x1b[?25l\x1b[2m~/orchestrator\x1b[0m \x1b[35mfeature/kanban-pane\x1b[0m $ cargo test relocate',
   '   \x1b[1;32mCompiling\x1b[0m orchd v2026.9.30',
   'test relocate::a_pass_travels_with_its_branch ... \x1b[32mok\x1b[0m',
   'test relocate::a_swap_that_cannot_finish ... \x1b[1;31mFAILED\x1b[0m',

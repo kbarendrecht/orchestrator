@@ -167,7 +167,7 @@ check(link('this link: doi-janky.infosiftr.net') === 'url:https://doi-janky.info
 check(link('see github.com/a/b/pull/3.') === 'url:https://github.com/a/b/pull/3',
   'with its path, and without the full stop')
 check(link('README.md') === 'path:README.md', 'a file whose extension is a TLD stays a file')
-check(link('mail kars@woodwing.com') !== 'url:https://woodwing.com', 'an email address is not a host')
+check(link('mail someone@example.org') !== 'url:https://example.org', 'an email address is not a host')
 check(link('site.com.bak') !== 'url:https://site.com', 'nor the start of a longer name')
 check(link('https://example.com/a') === 'url:https://example.com/a', 'a URL with a scheme is still one link')
 

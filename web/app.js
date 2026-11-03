@@ -1222,7 +1222,7 @@ function ptyRoot(state, target) {
  *  to that workspace's root, or `null` when no workspace in the checkout holds it.
  *
  *  The pty's own workspace answers first. **Then any other**, because a worktree
- *  can link a directory back to main (scienta's `.plan`), and an agent writing
+ *  can link a directory back to main (the monorepo's `.plan`), and an agent writing
  *  through that link prints main's absolute path. That is main's file, so it opens
  *  in main rather than being refused. The deepest root wins, since worktrees can
  *  sit inside main.

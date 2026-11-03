@@ -83,9 +83,9 @@ mod tests {
 
     #[test]
     fn a_workspace_name_becomes_a_usable_link_and_nothing_else_does() {
-        let link = link_for("scienta").unwrap();
+        let link = link_for("acme").unwrap();
         assert!(link.usable());
-        assert_eq!(link.url, "https://app.shortcut.com/scienta/story/{id}");
+        assert_eq!(link.url, "https://app.shortcut.com/acme/story/{id}");
         for bad in ["", "a/b", "x?y", "Up"] {
             assert!(link_for(bad).is_err(), "{bad}");
         }

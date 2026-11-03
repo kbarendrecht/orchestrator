@@ -565,13 +565,13 @@ mod tests {
     fn only_the_sessions_own_scratchpad_is_readable() {
         let id = uuid::Uuid::parse_str("f8452082-4dc5-4a96-836f-02f7ee3a2250").unwrap();
         let other = uuid::Uuid::parse_str("2b0cf0c7-dc0a-4dac-832d-ee69ac9b0478").unwrap();
-        let cwd = Path::new("/home/k/dev/scienta/.claude/worktrees/story-53860");
+        let cwd = Path::new("/home/k/dev/monorepo/.claude/worktrees/story-53860");
         let tmp = [
             std::path::PathBuf::from("/var/tmp-elsewhere"),
             std::path::PathBuf::from("/tmp"),
         ];
         let tmp = tmp.as_slice();
-        let slug = "-home-k-dev-scienta--claude-worktrees-story-53860";
+        let slug = "-home-k-dev-monorepo--claude-worktrees-story-53860";
         let at = |s: &str| std::path::PathBuf::from(s);
         let mine = format!("/tmp/claude-1000/{slug}/{id}/scratchpad/kanban.png");
         assert!(
