@@ -168,8 +168,20 @@ pub(crate) fn send(port: u16, token: &str, url: &str) -> Result<()> {
 /// token in [`TOKEN_FILE`]. The port is the caller's to pass, as for [`forward`],
 /// so this module names nothing in `host`. With no app running there is nothing
 /// to open it in, and the answer says so rather than starting one behind the shell.
+///
+/// **The token is the host's, and a session's shell is not the host's.** A
+/// hosted child runs with `ORCHD_CONFIG_DIR` set to `<root>/checkouts/<key>`,
+/// and every session and drawer terminal inherits it, so the plain
+/// [`token_path`] there names a file the host never writes. The root is two up.
 pub fn open_project(port: u16, path: &str) -> Result<()> {
-    let token = std::fs::read_to_string(token_path()?)
+    let own = token_path()?;
+    let hosted = own
+        .parent()
+        .filter(|d| d.parent().and_then(|p| p.file_name()) == Some("checkouts".as_ref()))
+        .and_then(|d| d.parent()?.parent())
+        .map(|root| root.join(TOKEN_FILE));
+    let token = std::fs::read_to_string(&own)
+        .or_else(|e| hosted.map_or(Err(e), std::fs::read_to_string))
         .context("the app is not running; start it, then run this again")?;
     post(
         port,
@@ -199,7 +211,12 @@ pub(crate) fn post(port: u16, token: &str, route: &str, body: &serde_json::Value
     stream.read_to_string(&mut answer)?;
     let status = answer.split_whitespace().nth(1).unwrap_or("");
     if status != "200" {
-        bail!("{}", answer.lines().last().unwrap_or(""));
+        // A refusal's body is `{"error": …}`, and the sentence is what gets printed.
+        let last = answer.lines().last().unwrap_or("");
+        let said = serde_json::from_str::<serde_json::Value>(last)
+            .ok()
+            .and_then(|v| v.get("error")?.as_str().map(str::to_string));
+        bail!("{}", said.as_deref().unwrap_or(last));
     }
     Ok(())
 }

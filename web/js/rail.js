@@ -384,7 +384,9 @@ async function closeCheckout(c) {
  *  @param {import('./core.js').Target} c */
 async function renameCheckout(c) {
   const name = await promptBox('Name this project', { value: c.name, placeholder: 'the folder name', ok: 'Rename' });
-  if (name === null) return;
+  /* Unchanged is not a rename: storing it would pin a computed name like `w/app`,
+     which then outlives the collision it was only long because of. */
+  if (name === null || name.trim() === c.name) return;
   try {
     await callHost('/api/host/checkout/label', { path: c.path, name });
   } catch (e) {

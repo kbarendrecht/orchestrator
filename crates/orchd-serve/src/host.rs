@@ -353,19 +353,14 @@ impl Host {
         sweep_checkout_dirs(checkouts);
     }
 
-    /// Put the rows in the order a person dragged them into, and remember it.
-    ///
-    /// **Server-side, not in the browser.** The host already owns the set and the
-    /// order it opens them in, so keeping the order anywhere else would be a
-    /// second answer to one question — and the app and a browser tab would
-    /// disagree about a rail they are both looking at. `host.json` is the same
-    /// file that decides what opens at all.
-    ///
-    /// Paths it does not name keep their relative order, at the end: a reorder
-    /// racing an `add` must not drop the checkout that just arrived.
     /// Rename a checkout or give it a colour. `name` empty and `band` 0 each go
     /// back to the computed answer. Written to the host file, then applied to the
     /// open set and announced, so the rail redraws with it.
+    ///
+    /// **The labels lock is held across the write**, so a rename and a recolour
+    /// sent close together cannot each start from the label before the other and
+    /// store it back without the other's half. Released before `checkouts` is
+    /// taken, which is the order `name_the_set`'s callers take the two in.
     ///
     /// Blocking file IO: called through `run_blocking`.
     pub fn label_checkout(
@@ -374,26 +369,24 @@ impl Host {
         name: Option<&str>,
         band: Option<u8>,
     ) -> anyhow::Result<()> {
-        let mut label = locked(&self.labels).get(path).cloned().unwrap_or_default();
-        if let Some(name) = name {
-            let name = name.trim();
-            label.name = (!name.is_empty()).then(|| name.to_string());
-        }
-        if let Some(band) = band {
-            anyhow::ensure!(band <= 4, "a band is 1 to 4, or 0 for the automatic one");
-            label.band = (band > 0).then_some(band);
-        }
-        let key = path.to_string();
-        let stored = label.clone();
-        update_host_file(|file| {
-            if stored == Label::default() {
-                file.labels.remove(&key);
-            } else {
-                file.labels.insert(key.clone(), stored.clone());
-            }
-        })?;
         {
             let mut labels = locked(&self.labels);
+            let mut label = labels.get(path).cloned().unwrap_or_default();
+            if let Some(name) = name {
+                let name = name.trim();
+                label.name = (!name.is_empty()).then(|| name.to_string());
+            }
+            if let Some(band) = band {
+                anyhow::ensure!(band <= 4, "a band is 1 to 4, or 0 for the automatic one");
+                label.band = (band > 0).then_some(band);
+            }
+            update_host_file(|file| {
+                if label == Label::default() {
+                    file.labels.remove(path);
+                } else {
+                    file.labels.insert(path.to_string(), label.clone());
+                }
+            })?;
             if label == Label::default() {
                 labels.remove(path);
             } else {
@@ -407,6 +400,16 @@ impl Host {
         Ok(())
     }
 
+    /// Put the rows in the order a person dragged them into, and remember it.
+    ///
+    /// **Server-side, not in the browser.** The host already owns the set and the
+    /// order it opens them in, so keeping the order anywhere else would be a
+    /// second answer to one question — and the app and a browser tab would
+    /// disagree about a rail they are both looking at. `host.json` is the same
+    /// file that decides what opens at all.
+    ///
+    /// Paths it does not name keep their relative order, at the end: a reorder
+    /// racing an `add` must not drop the checkout that just arrived.
     pub fn order_checkouts(&self, order: &[PathBuf]) {
         self.reorder(order);
         self.remember();
@@ -2051,21 +2054,31 @@ async fn pick(State(host): State<Arc<Host>>) -> Response {
 }
 
 /// Is this folder a checkout the host could open? The open screen asks per
-/// keystroke, so it stays the cheap half: one `canonicalize` and one `.git` test.
+/// keystroke, so it stays the cheap half: a `canonicalize` and a `.git` test, and
+/// the same again for a folder without git. Off the runtime all the same.
 async fn validate(Json(body): Json<CheckoutPath>) -> Response {
-    match crate::firstrun::validate(Path::new(&body.path)) {
-        Ok(info) => Json(json!({ "ok": true, "git": true, "name": info.name, "path": info.path }))
-            .into_response(),
-        // A folder that only lacks git is a question, not a refusal: the page asks
-        // whether to make it a git project (`git_init`).
-        Err(message) => match crate::firstrun::plain_folder(Path::new(&body.path)) {
-            Some(path) => Json(json!({
-                "ok": true, "git": false, "name": crate::firstrun::name_of(&path),
-                "path": path.to_string_lossy(),
-            }))
-            .into_response(),
-            None => refusal(&message),
-        },
+    let path = PathBuf::from(&body.path);
+    let answer = orchd::proc::run_blocking("validating a checkout", move || {
+        match crate::firstrun::validate(&path) {
+            Ok(info) => {
+                Ok(json!({ "ok": true, "git": true, "name": info.name, "path": info.path }))
+            }
+            // A folder that only lacks git is a question, not a refusal: the page
+            // asks whether to make it a git project (`git_init`).
+            Err(message) => match crate::firstrun::plain_folder(&path) {
+                Some(path) => Ok(json!({
+                    "ok": true, "git": false, "name": crate::firstrun::name_of(&path),
+                    "path": path.to_string_lossy(),
+                })),
+                None => Err(message),
+            },
+        }
+    })
+    .await;
+    match answer {
+        Ok(Ok(v)) => Json(v).into_response(),
+        Ok(Err(message)) => refusal(&message),
+        Err(e) => refusal(&format!("{e:#}")),
     }
 }
 

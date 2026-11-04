@@ -1378,13 +1378,25 @@ function drawMap() {
   map.hidden = !anchors.length || body.classList.contains('editing') || !total;
   if (map.hidden) return;
   const tall = map.clientHeight;
+  /* One pass over the rows rather than a query per block, and no
+     `Math.min(...rows)`: JavaScriptCore caps a call at 65536 arguments, and a new
+     file that long is one block. */
+  /** @type {Map<number, { top: number, bottom: number, add: boolean, del: boolean }>} */
+  const spans = new Map();
+  for (const r of /** @type {NodeListOf<HTMLElement>} */ (body.querySelectorAll('[data-blk]'))) {
+    const b = Number(r.dataset.blk);
+    const s = spans.get(b) ?? { top: Infinity, bottom: -Infinity, add: false, del: false };
+    s.top = Math.min(s.top, r.offsetTop);
+    s.bottom = Math.max(s.bottom, r.offsetTop + r.offsetHeight);
+    s.add ||= r.classList.contains('add');
+    s.del ||= r.classList.contains('del');
+    spans.set(b, s);
+  }
   for (let b = 0; b < anchors.length; b++) {
-    const rows = /** @type {HTMLElement[]} */ ([...body.querySelectorAll(`[data-blk="${b}"]`)]);
-    if (!rows.length) continue;
-    const top = Math.min(...rows.map((r) => r.offsetTop));
-    const bottom = Math.max(...rows.map((r) => r.offsetTop + r.offsetHeight));
-    const add = rows.some((r) => r.classList.contains('add'));
-    const del = rows.some((r) => r.classList.contains('del'));
+    const s = spans.get(b);
+    // A placeholder keeps the ticks indexed by block, which `markCursor` relies on.
+    if (!s) { map.appendChild(el('span', null)); continue; }
+    const { top, bottom, add, del } = s;
     const tick = el('button', 'tick' + (add && del ? ' mix' : add ? ' add' : ' del'));
     tick.style.top = `${(top / total) * 100}%`;
     tick.style.height = `${Math.max(3, ((bottom - top) / total) * tall)}px`;

@@ -169,9 +169,18 @@ pub fn git_init(path: &Path) -> std::result::Result<PathBuf, String> {
     };
     let run = |args: &[&str]| orchd::git::git(&path, args).map_err(|e| format!("{e:#}"));
     run(&["init", "-q"])?;
-    run(&["add", "-A"])?;
-    run(&["commit", "-q", "--allow-empty", "-m", "initial commit"])
-        .map_err(|e| format!("git made the repository but could not commit: {e}"))?;
+    /* **Undone when it does not finish.** A `.git` with no commit is no longer a
+    plain folder, so the question would never be asked again, and `validate`
+    would let a repository with no `HEAD` open. The `.git` is ours to remove:
+    `plain_folder` just said there was none. */
+    let made = run(&["add", "-A"]).and_then(|_| {
+        run(&["commit", "-q", "--allow-empty", "-m", "initial commit"])
+            .map_err(|e| format!("git could not make the first commit: {e}"))
+    });
+    if let Err(e) = made {
+        let _ = std::fs::remove_dir_all(path.join(".git"));
+        return Err(e);
+    }
     Ok(path)
 }
 
@@ -546,7 +555,11 @@ mod tests {
         /* A machine with no git identity cannot commit, and then the answer has to
         say so rather than leave a half-made project looking finished. */
         if let Err(e) = git_init(&dir) {
-            assert!(e.contains("could not commit"), "{e}");
+            assert!(e.contains("could not make the first commit"), "{e}");
+            assert!(
+                plain_folder(&dir).is_some(),
+                "and the half-made .git is gone"
+            );
             let _ = std::fs::remove_dir_all(&dir);
             return;
         }
