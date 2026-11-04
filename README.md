@@ -15,7 +15,7 @@ every reply for your go.
 [![licence](https://img.shields.io/badge/licence-AGPL--3.0--only-blue)](LICENSE)
 ![platforms](https://img.shields.io/badge/platforms-macOS%20%C2%B7%20Linux-lightgrey)
 
-![orchestrator: two projects in one window, a split diff, the PR pane and the review queue](docs/orchd.png)
+https://github.com/user-attachments/assets/618ec22f-d196-4a87-ac29-83e518897016
 
 A Rust daemon and a small vanilla-JS web app, shipped as one desktop application
 and runnable headless in a browser tab. It hosts
@@ -29,7 +29,7 @@ one window. It is not itself an agent.
 
 ## What it does
 
-The recording is one take: the agents are the ones you run, and the diffs are
+The video is one take: the agents are the ones you run, and the diffs are
 what they wrote. [`docs/demo.md`](docs/demo.md) says how it is made.
 
 - **The PR pane and the review queue: see who is waiting on whom.** Your open
