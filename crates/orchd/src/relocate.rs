@@ -370,12 +370,12 @@ async fn swap_with_main_inner(
     // The relocated ones are running, so they are told the same thing the records
     // are. Set after the resume, because `spawn_session` rebuilds the record under
     // the same id and would overwrite a notice left on the session it replaced.
-    for (moved, branch, from, to, into_main) in [
-        (&into_worktree, &swapped.worktree_now, &main, &tree, false),
-        (&into_main, &swapped.main_now, &tree, &main, true),
+    for (moved, branch, from, to) in [
+        (&into_worktree, &swapped.worktree_now, &main, &tree),
+        (&into_main, &swapped.main_now, &tree, &main),
     ] {
         for moved in moved.iter() {
-            let notice = arrival_notice(&app, branch, from, to, into_main);
+            let notice = arrival_notice(branch, from, to);
             let mut inner = app.inner.write().await;
             if let Some(s) = inner.sessions.get_mut(&moved.id) {
                 s.arrival_notice = Some(notice);
@@ -583,7 +583,7 @@ pub async fn move_out_of_main(
     // Told the same thing the swap tells a carried conversation: the cwd moved under
     // it, and a session Claude Code has isolated somewhere else has to re-anchor.
     for (_, now) in &landed {
-        let notice = arrival_notice(&app, &moved.branch, &main, path, false);
+        let notice = arrival_notice(&moved.branch, &main, path);
         let mut inner = app.inner.write().await;
         if let Some(s) = inner.sessions.get_mut(&now.id) {
             s.arrival_notice = Some(notice);
@@ -1305,18 +1305,12 @@ mod tests {
 
     /// Moving the record is only half of it: the conversation comes back believing
     /// it is in the tree it was reading all along, so it is told once, at the next
-    /// prompt, and the project's own note about the destination rides along.
+    /// prompt.
     #[tokio::test]
     async fn a_carried_conversation_is_told_where_it_now_is() {
         use crate::model::{Session, MAIN};
 
-        // The note is the half only the project knows. orchd supplies the facts
-        // about the move; this sentence is the repo's business and comes from its
-        // own config.
-        let (app, dir) = crate::testutil::app_with(
-            "carry-notice",
-            r#""workspace_notes":{"main":"the dev stack only runs here"}"#,
-        );
+        let (app, dir) = crate::testutil::app_with("carry-notice", "");
 
         let id = Uuid::new_v4();
         {
@@ -1352,10 +1346,6 @@ mod tests {
         assert!(
             notice.contains(&dir.join("wt").display().to_string()),
             "where it was reading before: {notice}"
-        );
-        assert!(
-            notice.contains("the dev stack only runs here"),
-            "and what the project says main is for: {notice}"
         );
     }
 }

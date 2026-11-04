@@ -259,43 +259,6 @@ this file, which churned it from every build; that feature is gone.
   skill a session in main runs. Built when a no-forge checkout is actually used,
   not before.
 
-- **Deferred: setup can fail and say nothing.** `worktree_init` and
-  `worktree_setup` are non-fatal, the second runs even after the first failed, and
-  `env_source` failures are silent by design — a degraded session beats a lost one,
-  and that stays. What is missing is the *report*: a session whose setup did not
-  finish then misbehaves with nothing on screen to explain it. `get-bb/bb` splits
-  the two (`docs/environment-provisioning.md`): creation failure is terminal and
-  loud, setup failure leaves a usable workspace and is shown as retryable, with no
-  automatic retry ladder. That split is the part worth copying — the policy, not
-  the state machine.
-
-  **Demoted again on 2026-10-16, because no checkout reaches this path.** It was
-  promoted on the `hdiutil -quiet` release-gate failure, which has the same shape
-  but is another subsystem. Measured against the two live checkouts:
-  `worktree_init` and `worktree_setup` are empty in both. The monorepo cuts
-  through its own `WorktreeCreate`, which fails the create loudly, and does its
-  setup in a link hook on Claude Code's `SessionStart` — a hook the daemon never
-  sees, so a report built here would not catch that failure either. The trigger
-  this entry waits for — a session traced back to a setup step that failed
-  quietly — has still not fired.
-
-  The earlier note here, that nothing surfaces a setup failure at all, was wrong.
-  A loud cut does: `run_worktree_hook` calls `create_failed`, and the starting
-  overlay turns `failed` (`renderStarting` in `web/app.js`). The real gap is
-  narrower, and it is three things:
-  - The mark lives on `CreateRun`, so it goes when the overlay goes — the moment
-    the session boots, which is before anybody has read it.
-  - A spare is cut with `Board::Quiet`, so its hooks failing reach only
-    `orchd.log`, and claiming the spare carries nothing forward.
-  - `spare::refresh` re-runs `worktree_setup` through `relink`, also quietly.
-
-  The shape when it becomes real: a `setup_failed` on the workspace record (the
-  step, the exit code and the stderr tail), set by quiet and loud runs alike and
-  cleared by the next successful one; the rail row and the context bar saying so;
-  and one route that re-runs `run_worktree_hooks` for that workspace, by hand
-  only. It becomes real when a checkout configures `worktree_setup`, or when a
-  repo's setup moves from `SessionStart` into the daemon.
-
 - **Deferred: a restart of the daemon does not have to kill the terminals.**
   `mise run app-check` asserts that a session survives a restart, and it survives
   by being *resumed* — the pty dies with the daemon, `spawn::Carried` rebuilds the

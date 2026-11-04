@@ -416,7 +416,7 @@ pub struct SelectedProcess {
 /// **Merged into the file that is there, never written over it.** This runs on
 /// every open — a fresh checkout, a recent, a switch — and it used to build the
 /// object from scratch, so a checkout that had moved was re-picked and every
-/// hand-tuned key (`reviews_command`, `worktree_setup`, `main_processes`, the notes)
+/// hand-tuned key (`reviews_command`, `main_processes`, the tracker)
 /// was gone with no copy kept. Only the keys the review answered change; the
 /// previous file is kept beside it as `config.json.bak`.
 ///
@@ -891,7 +891,7 @@ mod tests {
         std::fs::create_dir_all(&repo).unwrap();
         git_repo(&repo);
         let cfg = base.join("config.json");
-        let old = r#"{"main_checkout":"/somewhere/else","worktree_setup":["mise","trust"],"repo":"acme/thing"}"#;
+        let old = r#"{"main_checkout":"/somewhere/else","reviews_command":["mise","run","reviews"],"repo":"acme/thing"}"#;
         std::fs::write(&cfg, old).unwrap();
 
         write_config_to(&cfg, &repo, &Overrides::default()).unwrap();
@@ -899,7 +899,10 @@ mod tests {
         let v: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
         assert_eq!(v["main_checkout"], repo.to_string_lossy().as_ref());
-        assert_eq!(v["worktree_setup"], serde_json::json!(["mise", "trust"]));
+        assert_eq!(
+            v["reviews_command"],
+            serde_json::json!(["mise", "run", "reviews"])
+        );
         assert_eq!(
             v["repo"], "acme/thing",
             "a key the review did not answer is left alone"

@@ -158,8 +158,9 @@ guarded.
 
 **19. `WorktreeCreate` *is* the creation, not a setup hook, and a daemon-cut tree
 never fires one.** The post-create seam is `SessionStart`, which does fire.
-*Kind:* contract. *Breaks:* setup silently skipped for daemon-cut trees, which is
-what `worktree_init` and `worktree_setup` exist to stand in for.
+*Kind:* contract. *Breaks:* setup silently skipped for a tree the daemon makes
+outside the repo's hook, a resume's rebuild or main's branch moved out, unless the
+repo's setup hangs off `SessionStart`.
 
 **20. Claude Code pins worktree isolation in the transcript, and the last
 `worktree-state` record wins.** `store::clear_worktree_pin` appends what Claude

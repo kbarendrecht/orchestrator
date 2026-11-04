@@ -159,57 +159,6 @@ pub struct Config {
     /// What a story ref printed in a terminal or a note links to. See [`StoryLink`].
     #[serde(default)]
     pub story_link: Option<StoryLink>,
-    /// Shadows the repo's `worktree-create` hook: **make the tree usable.**
-    ///
-    /// First of the two, run with cwd set to the new worktree, before
-    /// [`Self::worktree_setup`]. This is the half about the tree *as a checkout* —
-    /// basing it on a freshly fetched upstream, configuring triangular push,
-    /// whatever the repo does to a branch before anyone works on it.
-    ///
-    /// See [`Self::worktree_setup`] for why there are two of these and when they
-    /// run at all.
-    #[serde(default)]
-    pub worktree_init: Vec<String>,
-    /// Shadows the repo's `worktree-link` hook: **put the shared files in place.**
-    ///
-    /// Second of the two, same cwd. This is the half about what the tree *needs
-    /// beside the code* — symlinks back to main, a rules-dedup file, generated
-    /// config. It runs even if `worktree_init` failed, because the two answer
-    /// different questions and a tree that is merely un-based is still worth
-    /// linking.
-    ///
-    /// # Why two
-    ///
-    /// `spawn::create_worktree` runs the repo's own `WorktreeCreate` where
-    /// it cuts a tree, so a repo that keeps its setup there is already served — and
-    /// pointing these at the same scripts runs them twice. What they cover is a tree
-    /// that reaches a session without that hook: one rebuilt at its old path by a
-    /// resume, and one main's branch moved into. The case this was written for wrote
-    /// a file that stops the repo's rules double-loading, and the daemon-cut trees
-    /// were missing it.
-    ///
-    /// One command had to cover both concerns, which meant a repo with two hooks
-    /// needed a wrapper script to fan back out. Two settings mirror the two hooks,
-    /// so each points straight at the script that already exists.
-    ///
-    /// Empty by default: a plain checkout needs neither.
-    #[serde(default)]
-    pub worktree_setup: Vec<String>,
-
-    /// What to tell an agent whose conversation has just been moved into a
-    /// workspace, keyed by the kind of workspace it landed in.
-    ///
-    /// The daemon says the factual half itself: which branch moved, which directory
-    /// this session is in now, and where it was before. This is the half only the
-    /// project knows: that main is where the dev stack and the managed processes
-    /// run, say, so work that needs them has to happen there. orchd has no business
-    /// knowing that about any particular repo, so it is a string the repo supplies
-    /// rather than a rule the daemon carries.
-    ///
-    /// Empty by default, which is a note that simply is not added.
-    #[serde(default)]
-    pub workspace_notes: WorkspaceNotes,
-
     /// Remove the worktree of a conversation this many days old. `0` never does.
     ///
     /// **The tree, never the conversation.** The row stays in the rail and stays
@@ -250,11 +199,6 @@ pub struct Config {
     /// checkout the host runs — 216 MB on the monorepo, where dependencies are
     /// symlinked rather than installed. A repo that copies its dependencies
     /// instead pays far more, which is the case this setting exists to turn off.
-    ///
-    /// Also turn it off for a repo whose `worktree_setup` is not idempotent or not
-    /// cheap: the pool re-runs that hook on the idle spare to answer the one kind
-    /// of staleness git cannot see, a dependency that appeared in main after the
-    /// cut.
     ///
     /// Above 1 is accepted and deliberately not recommended. The second spare only
     /// pays when two sessions are cut within one poll interval of each other, and
@@ -438,31 +382,6 @@ fn rewrite_key(path: &Path, key: &str, value: &str) -> Result<()> {
     orchd_base::atomic::write(path, (serde_json::to_string_pretty(&v)? + "\n").as_bytes())
 }
 
-/// Per-workspace-kind notes handed to an arriving agent. See
-/// [`Config::workspace_notes`].
-///
-/// Two kinds rather than a map keyed by workspace id, because the thing worth
-/// saying is true of *being in main* rather than of any particular worktree, and a
-/// worktree's id is generated per tree.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct WorkspaceNotes {
-    #[serde(default)]
-    pub main: Option<String>,
-    #[serde(default)]
-    pub worktree: Option<String>,
-}
-
-impl WorkspaceNotes {
-    /// The note for a destination, or `None` when the project said nothing about it.
-    pub fn for_main(&self, is_main: bool) -> Option<&str> {
-        if is_main {
-            self.main.as_deref()
-        } else {
-            self.worktree.as_deref()
-        }
-    }
-}
-
 /// The subset of [`Config`] the settings panel reads and writes.
 ///
 /// A distinct struct so the editable surface is explicit: a POST from the panel
@@ -488,19 +407,6 @@ pub struct Settings {
     /// so switching away and back does not lose what you typed.
     pub reviews_rules: QueueRules,
     pub main_processes: Vec<ManagedSpec>,
-    /// The two halves of making a cut worktree usable, in the order they run.
-    ///
-    /// Both here because a *new* repo has to say them and neither could be said
-    /// without hand-editing `config.json` — which is a file most people never learn
-    /// they have. They stay two fields rather than one: `worktree_init` is about
-    /// the tree as a checkout and `worktree_setup` about what it needs beside the
-    /// code, and the second runs even when the first failed.
-    pub worktree_init: Vec<String>,
-    pub worktree_setup: Vec<String>,
-    /// What an arriving agent is told about where it landed, per workspace kind.
-    ///
-    /// The other thing only the project knows, and the other one that had no field.
-    pub workspace_notes: WorkspaceNotes,
     pub worktree_retention_days: u32,
     pub allow_several_in_main: bool,
     /// Defaulted on, so a save from a page that predates it keeps the guard.
@@ -554,9 +460,6 @@ impl Settings {
             reviews_source: cfg.reviews_source(),
             reviews_rules: cfg.reviews_rules.clone(),
             main_processes: cfg.main_processes.clone(),
-            worktree_init: cfg.worktree_init.clone(),
-            worktree_setup: cfg.worktree_setup.clone(),
-            workspace_notes: cfg.workspace_notes.clone(),
             worktree_retention_days: cfg.worktree_retention_days,
             allow_several_in_main: cfg.allow_several_in_main,
             protect_base: cfg.protect_base,
@@ -912,8 +815,8 @@ pub enum EnvSourceKind {
 ///
 /// **A typo in a config key is silent, and that is the whole of the problem.**
 /// serde drops an unknown field without a word, which is what lets a file with a
-/// stale key keep loading — and it is also what makes `worktrees_setup` for
-/// `worktree_setup` read as "the daemon ignored my setting", with nothing to tell
+/// stale key keep loading — and it is also what makes `upstream_rfe` for
+/// `upstream_ref` read as "the daemon ignored my setting", with nothing to tell
 /// a typo from a feature that does not work. The caller warns. It must not refuse:
 /// the promise on [`Config::parse`] is that an old file still loads, and a config
 /// the daemon rejects costs you the daemon.
@@ -1929,12 +1832,6 @@ mod tests {
             reviews_source: ReviewsSource::Command,
             reviews_rules: QueueRules::default(),
             main_processes: vec![],
-            worktree_init: vec!["git".into(), "fetch".into()],
-            worktree_setup: vec![".claude/hooks/worktree-setup".into()],
-            workspace_notes: WorkspaceNotes {
-                main: Some("the dev stack runs here".into()),
-                worktree: None,
-            },
             worktree_retention_days: 60,
             allow_several_in_main: false,
             protect_base: true,
@@ -1956,16 +1853,6 @@ mod tests {
         assert_eq!(cfg.upstream_ref, "origin/main");
         assert_eq!(cfg.reviews_command, vec!["gh", "pr"]);
         assert!(cfg.main_processes.is_empty());
-        assert_eq!(cfg.worktree_setup, vec![".claude/hooks/worktree-setup"]);
-        assert_eq!(cfg.worktree_init, vec!["git", "fetch"]);
-        // A note is a whole sentence the project wrote, so it round-trips as one —
-        // and the half nobody set stays unset rather than becoming an empty string
-        // the arriving agent would be handed.
-        assert_eq!(
-            cfg.workspace_notes.for_main(true),
-            Some("the dev stack runs here")
-        );
-        assert_eq!(cfg.workspace_notes.for_main(false), None);
     }
 
     /// **A moved checkout is recorded by rewriting one key, not the file.**
@@ -2010,7 +1897,7 @@ mod tests {
         let saved: Settings = serde_json::from_str(
             r#"{"default_language":"English","upstream_ref":"origin/main","upstream_remote":"origin",
                 "reviews_command":[],"reviews_source":"default","reviews_rules":{},"main_processes":[],
-                "worktree_init":[],"worktree_setup":[],"workspace_notes":{},"worktree_retention_days":60,
+                "worktree_retention_days":60,
                 "allow_several_in_main":false,"default_agent":null}"#,
         )
         .expect("a save from a page that predates the setting still parses");
@@ -2030,9 +1917,6 @@ mod tests {
             reviews_source: ReviewsSource::Default,
             reviews_rules: QueueRules::default(),
             main_processes: vec![],
-            worktree_init: vec![],
-            worktree_setup: vec![],
-            workspace_notes: WorkspaceNotes::default(),
             worktree_retention_days: 60,
             allow_several_in_main: false,
             protect_base: true,
@@ -2186,11 +2070,11 @@ mod tests {
         };
         // The shape this exists for: one letter out, and serde says nothing.
         assert_eq!(
-            keys(r#"{"main_checkout":"/repo","worktrees_setup":"echo hi"}"#),
-            vec!["worktrees_setup".to_string()]
+            keys(r#"{"main_checkout":"/repo","upstream_rfe":"origin/main"}"#),
+            vec!["upstream_rfe".to_string()]
         );
         // The real spelling, and every other key the file may carry, stays quiet.
-        assert!(keys(r#"{"main_checkout":"/repo","worktree_setup":["echo hi"]}"#).is_empty());
+        assert!(keys(r#"{"main_checkout":"/repo","upstream_ref":"origin/main"}"#).is_empty());
         assert!(keys(r#"{"main_checkout":"/repo","env_source":"none","port":7777}"#).is_empty());
         // `host_origin` is `#[serde(skip)]`, so the file cannot set it — being told
         // so is right, and it is the half a hand-written list would have got wrong.

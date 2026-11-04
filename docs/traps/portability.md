@@ -48,7 +48,7 @@ named. `proc::run_bounded` enforces the deadline in Rust instead — one
 bounded-exec primitive (own process group; at the deadline SIGTERM the group,
 a second's grace, then SIGKILL, because git removes its `.lock` files on TERM
 and not on KILL; pipes drained on threads; the timeout error carries the stderr
-tail), used by the review queue, `worktree_setup`, `mise` queries and every
+tail), used by the review queue, `mise` queries and every
 network git call. Every other
 command the daemon spawns is POSIX (`git`, `curl`, `gh`, `ps`, `which`, `kill`) —
 keep it that way, and check `command -v` before reaching for a GNU flag.
@@ -84,16 +84,12 @@ session spent believing the opposite: three daemon-cut PR worktrees all had
 `remote.pushDefault`, the shared `.plan` and every symlink, because the monorepo
 hangs its `worktree-link` there. Do not "fix" a gap here without checking which
 event the repo in front of you actually uses.
-`worktree_init` and `worktree_setup` remain for a repo that puts real setup inside
-`WorktreeCreate`, where a daemon-cut tree would genuinely miss it:
-`spawn::run_worktree_hooks` runs both in each daemon-cut worktree, before the
-session, non-fatal. They mirror the monorepo's two hooks — `worktree-create` bases
-the tree, `worktree-link` puts the shared files in place — so a repo with two
-scripts needs no wrapper to fan back out. Order is fixed and the second runs even
-if the first failed, because an un-based tree is still worth linking.
-A relative script path resolves against `main_checkout`; cwd is the worktree.
+There used to be two settings, `worktree_init` and `worktree_setup`, that ran
+scripts in each daemon-cut tree on top. No checkout ever set them, so they went:
+a repo's setup lives in its own `WorktreeCreate`, which the daemon runs when it
+cuts, or on `SessionStart`, which fires anyway.
 **There is no `claude --worktree` arm any more** — the daemon cuts every tree, so
-every tree runs this. See the entry below on the isolation pin for why that arm
+every tree goes through the repo's own hook. See the entry below on the isolation pin for why that arm
 went.
 The matching teardown event is `WorktreeRemove`, which the daemon also does not
 fire; `git::worktree_remove` does its own thing.

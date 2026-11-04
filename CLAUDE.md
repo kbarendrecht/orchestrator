@@ -219,8 +219,8 @@ everywhere it was tried and means nothing elsewhere: a code path reached only by
 layout nobody else has, or a guard reasoning about a hook the next repo puts on a
 different event. Where a behaviour depends on the repo rather than on the daemon,
 say so where it is written, and make the daemon degrade rather than insist.
-`worktree_setup` and `reviews_command` are both that shape, configured per repo
-with a sensible default and no opinion at all when they are unset. **The review
+`reviews_command` is that shape, configured per repo with a sensible default and
+no opinion at all when it is unset. **The review
 queue's default is the daemon's own now, and that is the lesson rather than a
 detail**: it was a `node` script the daemon ejected, which could not be a default,
 because a launcher-started daemon's PATH is not a shell's and the node it found

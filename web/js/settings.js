@@ -74,11 +74,9 @@ function pickProject(/** @type {string} */ path) {
   void loadConfigInto(true);
 }
 
-/** The three text boxes that stand for an argv, and the config key each carries. */
+/** The text boxes that stand for an argv, and the config key each carries. */
 const ARGV_FIELDS = /** @type {const} */ ([
   ['setreviews', 'reviews_command'],
-  ['setwtinit', 'worktree_init'],
-  ['setwtsetup', 'worktree_setup'],
 ]);
 
 /** What each of those was when the pane last read the config, before joining.
@@ -263,9 +261,9 @@ async function loadConfigInto(force = false) {
      holding `["sh", "-c", "git fetch && git rebase upstream/develop"]` shows here
      as one line, and `argv()` below would split it back into nine words — so
      opening the pane to change the retention days and pressing Save silently
-     rewrote a working hook into `sh -c git` with the rest as positional arguments,
-     and `run_worktree_hook` is non-fatal, so nothing said so. `argvOf` sends the
-     original back whenever the text has not been touched. */
+     rewrote a working command into `sh -c git` with the rest as positional
+     arguments, and nothing said so. `argvOf` sends the original back whenever the
+     text has not been touched. */
   for (const [id, key] of ARGV_FIELDS) {
     const was = cfg[key] || [];
     loadedArgv.set(id, was);
@@ -289,13 +287,6 @@ async function loadConfigInto(force = false) {
   ctl('setrvnoblocked').checked = !!filter.hide_blocked;
   showReviewSource();
 
-  /* A note is prose, so it is read and written whole — `null` is the project
-     saying nothing, and the box has to show that as empty rather than as the word
-     "null". The write below turns an empty box back into `null` for the same
-     reason: an empty string is a note, and an arriving agent would be handed it. */
-  const notes = cfg.workspace_notes || {};
-  ctl('setnotemain').value = notes.main || '';
-  ctl('setnotetree').value = notes.worktree || '';
   // Numbers go in as numbers: `value = 0` on a number input renders "0", which is
   // the setting being off said out loud, where '' would read as unset.
   ctl('setretain').value = String(cfg.worktree_retention_days ?? 0);
@@ -490,12 +481,6 @@ function draftBody() {
       skip_labels: list(ctl('setrvskip').value),
       asked_of_me: ctl('setrvplaceme').value,
       asked_of_team: ctl('setrvplaceteam').value,
-    },
-    worktree_init: argvOf('setwtinit'),
-    worktree_setup: argvOf('setwtsetup'),
-    workspace_notes: {
-      main: ctl('setnotemain').value.trim() || null,
-      worktree: ctl('setnotetree').value.trim() || null,
     },
     // A blank box means "keep forever" rather than NaN, and a negative number is
     // not a shorter retention.

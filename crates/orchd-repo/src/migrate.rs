@@ -149,7 +149,15 @@ fn tracker_name_to_object(obj: &mut Map<String, Value>) -> bool {
 /// teaches people to skip the one line meant to catch a typo.
 ///
 /// `story_timeout_seconds` was the overlay review's story filer's ceiling.
-const RETIRED_KEYS: &[&str] = &["story_timeout_seconds"];
+/// `worktree_init`, `worktree_setup` and `workspace_notes` were per-repo worktree
+/// scripts and move notes that no checkout set; the settings pane wrote them back
+/// empty on every save.
+const RETIRED_KEYS: &[&str] = &[
+    "story_timeout_seconds",
+    "worktree_init",
+    "worktree_setup",
+    "workspace_notes",
+];
 
 fn drop_retired_keys(obj: &mut Map<String, Value>) -> bool {
     let mut changed = false;
@@ -243,12 +251,14 @@ mod tests {
         let path = dir.join("config.json");
         std::fs::write(
             &path,
-            r#"{"main_checkout":"/repo","port":9001,"story_timeout_seconds":300}"#,
+            r#"{"main_checkout":"/repo","port":9001,"story_timeout_seconds":300,"worktree_init":[],"worktree_setup":[],"workspace_notes":{"main":null}}"#,
         )
         .unwrap();
         config_file(&path);
         let obj: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert!(obj.get("story_timeout_seconds").is_none());
+        for key in RETIRED_KEYS {
+            assert!(obj.get(*key).is_none(), "{key} survived");
+        }
         assert_eq!(obj["port"], 9001);
         let _ = std::fs::remove_dir_all(&dir);
     }

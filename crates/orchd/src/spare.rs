@@ -10,9 +10,8 @@
 //! of the wait" — and this is the other half.
 //!
 //! **What a spare is.** An ordinary workspace with no session. It is cut by the
-//! same [`create_worktree`](crate::worktree::create_worktree), put through the
-//! same [`run_worktree_hooks`](crate::worktree::run_worktree_hooks) and
-//! registered by the same `register_worktree`. Nothing here describes a worktree
+//! same [`create_worktree`](crate::worktree::create_worktree) and registered by
+//! the same `register_worktree`. Nothing here describes a worktree
 //! a second time, and nothing downstream has to learn a new kind of one.
 //!
 //! **Why it can keep its own name.** The daemon generates workspace names itself
@@ -220,8 +219,6 @@ async fn cut_one(app: &Arc<AppState>) -> bool {
             return false;
         }
     };
-    crate::worktree::run_worktree_hooks(app, &made, Board::Quiet).await;
-
     app.register_worktree(&name, made.clone(), Some(branch))
         .await;
     {
@@ -280,13 +277,9 @@ pub async fn refresh(app: &Arc<AppState>) {
             discard(app, &id, Stale::Missing).await;
             continue;
         };
-        match verdict(app, &id, &path).await {
-            Some(why) => discard(app, &id, why).await,
-            // Current by every measure the daemon has. Re-run the repo's own setup
-            // hook anyway: it is the only thing that answers a dependency added to
-            // main since the cut, it is idempotent by contract, and nothing is
-            // waiting on it.
-            None => crate::worktree::relink(app, &path).await,
+        // A spare current by every measure the daemon has stays as it is.
+        if let Some(why) = verdict(app, &id, &path).await {
+            discard(app, &id, why).await;
         }
     }
 

@@ -304,8 +304,8 @@ a cut against **84ms** for a claim, and the whole HTTP create drops from about 5
 to about 260ms. `create_worktree` had already written
 down half of that — "the repo's own `WorktreeCreate` is usually the whole of the
 wait".
-**A spare is deliberately an ordinary workspace**, cut by `create_worktree`,
-hooked by `run_worktree_hooks` and registered by `register_worktree`, because the
+**A spare is deliberately an ordinary workspace**, cut by `create_worktree` and
+registered by `register_worktree`, because the
 alternative is a second kind of worktree that every reader of `inner.workspaces`
 would have to learn. The cost of that choice is that four existing behaviours can
 see it, and each had to be answered:

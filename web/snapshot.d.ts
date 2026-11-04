@@ -35,8 +35,7 @@ export type BankedView = { files: number, at: string, };
  * What a worktree cut is doing, while it does it.
  *
  * **Cutting a tree is other people's scripts, and they are the slow part.** The
- * repo's `WorktreeCreate` fetches, checks out 18k files and warms git; the
- * configured `worktree_init` and `worktree_setup` run on top. The board said
+ * repo's `WorktreeCreate` fetches, checks out 18k files and warms git. The board said
  * `creating a worktree` for all of it, so ten seconds of real work looked
  * identical to a button that had done nothing.
  *

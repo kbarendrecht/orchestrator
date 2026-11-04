@@ -191,8 +191,8 @@ default, `direnv` beside it, `none` to turn it off), per spawn, in the session's
 own cwd. Two things it will not do: it never fails a spawn (a missing variable is
 degraded, a refused spawn is lost), and it cannot trust a config for you — mise
 refuses an untrusted `mise.toml`, a fresh worktree is a fresh path, and the only
-sign is one warning in the log. Put `mise trust` in `worktree_setup` if that
-bites.
+sign is one warning in the log. Run `mise trust` in the repo's own
+`WorktreeCreate` hook if that bites.
 
 
 ## A transcript search that reads what a tool printed answers for every conversation.

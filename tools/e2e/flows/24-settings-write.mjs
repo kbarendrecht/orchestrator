@@ -43,12 +43,6 @@ export async function run(t) {
       skip_labels: ['no-review'],
     },
     main_processes: [],
-    worktree_init: ['git', 'fetch', '--prune'],
-    worktree_setup: [],
-    /* A note is prose the project wrote, so it is one string rather than an argv —
-       and the half nobody set has to stay `null`. An empty string is a note, and
-       `workspace_notes.for_main` would hand it to an arriving agent as one. */
-    workspace_notes: { main: 'The dev stack runs here.', worktree: null },
     worktree_retention_days: 21,
     allow_several_in_main: true,
   }
@@ -60,8 +54,6 @@ export async function run(t) {
   assert.equal(after.worktree_retention_days, 21)
   assert.equal(after.allow_several_in_main, true)
   assert.equal(after.default_language, 'English')
-  assert.deepEqual(after.worktree_init, ['git', 'fetch', '--prune'])
-  assert.deepEqual(after.workspace_notes, { main: 'The dev stack runs here.', worktree: null })
   /* **The queue's rules survive the round trip, nested and all.** They are the one
      setting with a struct inside a struct, and a merge that flattened or dropped a
      level would leave a queue configured in the pane and unfiltered in the daemon —

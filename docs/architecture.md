@@ -27,8 +27,8 @@ where a session's state comes from. [README.md](../README.md) is what it does;
   invocation, and runs each one only when it is trusted by hash (`codex.rs`).
 - **Worktrees.** The daemon makes the tree, at whatever layout your repo uses: it
   asks your repo's `WorktreeCreate` hook first and adopts what that hook made, cuts
-  its own with `git worktree add` when the hook declines, then runs `worktree_init`
-  and `worktree_setup`, then starts a session *in* the tree. It used to hand the cut
+  its own with `git worktree add` when the hook declines, then starts a session
+  *in* the tree. It used to hand the cut
   to `claude --worktree` at Claude Code's own layout, which pinned that session into
   worktree isolation — and that pin refuses writes as well as git, so a scratch dir
   shared into the tree by symlink could not be written from either side of the link.
@@ -105,8 +105,8 @@ crates/orchd/         the runtime core: the `orchd` library, what the daemon kno
                   writes
   state.rs        the daemon's owned state, snapshots, reconcile, durable writes
   store.rs        session record persistence, orphan reaping
-  spawn.rs        session / worktree / process spawning, and worktree_setup
-  worktree.rs     cutting a tree and the hooks that finish it; teardown preflight,
+  spawn.rs        session / worktree / process spawning
+  worktree.rs     cutting a tree through the repo's own hook; teardown preflight,
                   archive, revive, removal
   spare.rs        the pool of one: a worktree cut before anybody asks for one
   triage.rs       the handle-review spawn, and the gates a worktree must pass

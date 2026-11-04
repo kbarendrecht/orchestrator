@@ -19,7 +19,6 @@ back to `config.json`; changes take effect on restart.
 | `tracker` | `none` | the tracker's MCP server, which every session the daemon spawns is allowed, so `handle-review` can file a story for a point that is fair but out of scope. Its token is **not** a config key — set `ORCHD_TRACKER_TOKEN` in the daemon's environment, or let `env_source` read the checkout's own. It also needs the repo to declare a matching **MCP server** — see below. |
 | `env_source` | `mise` | which tool is asked what a session's own directory exports — `mise`, `direnv`, or `none`. Config file only, not in the settings panel. See below. |
 | `default_language` | `English` | the language the agent *writes* replies in when the thread does not settle it. Prompts and code stay English regardless. |
-| `worktree_init` / `worktree_setup` | *(empty)* | two commands run in every worktree the daemon cuts itself. See below. |
 | `worktree_retention_days` | `60` | remove the worktree of a conversation not worked in for this many days, hourly, and one that no conversation points at at all. Age is the transcript's last write, not the session's start, so a conversation you kept open for weeks is not old the day after you stop; an orphaned tree is dated by its own directory. **The tree, never the row**: the session stays in the rail and a resume rebuilds the tree, so this reclaims disk rather than losing work, and it removes nothing the teardown preflight would refuse — a dirty tree, an unpushed commit, a live session or a running process all keep it. `0` turns it off. It exists because `claude --worktree` removes its own tree when its session ends and never gets to: the daemon owns the pty and kills it. |
 
 The table above is the set most repos touch. The rest are operational, and most
@@ -40,7 +39,6 @@ repos leave them at the default:
 | `default_agent` | unset | what a plain `+` starts when Claude Code and Codex are both installed: `"claude"`, `"codex"`, or unset for the one picked last. One that is not on PATH falls back to the last pick. Editable in the settings panel. |
 | `auto_resume` | `true` | relaunch sessions that were live when the daemon last went down, with `--resume`, so a crash costs the scrollback rather than the conversation. |
 | `forge` | `github` | which forge the repo lives on. Only GitHub is implemented, and the key is the seam a second one would be added behind — not a config switch that would turn one on. `crates/orchd-repo/src/forge/mod.rs` lists the four things that sit outside the trait and would have to move first. |
-| `workspace_notes` | *(empty)* | what to tell an agent whose conversation was just moved into a workspace, keyed by the kind it landed in. The daemon states the factual half (which branch, which directory); this is the half only the repo knows. |
 
 An **unknown key is named and then ignored** — a misspelling does not error, it
 just leaves the default in force, and the daemon says which key it did not know
@@ -149,7 +147,8 @@ and fails in its own words.
 Every failure is silent by design: no tool, no config, unreadable output, and the
 session starts with what it had. An **untrusted** `mise.toml` is the one case that
 logs a warning, because the variables exist and the session is not getting them —
-a fresh worktree is a new path, so `mise trust` belongs in `worktree_setup`. Set
+a fresh worktree is a new path, so `mise trust` belongs in your repo's
+`WorktreeCreate` hook. Set
 `env_source` to `none` if the daemon already has everything.
 
 ## Worktree hooks
@@ -159,22 +158,10 @@ relocated layouts. It runs your repo's own hooks around that.
 
 **Creating.** Your repo's `WorktreeCreate` hook is asked first and the daemon
 adopts the tree it printed, then puts that tree on the branch it needs; every way
-that can decline falls through to the daemon cutting its own. Then these two run,
-in order, with cwd set to the new worktree:
-
-| Setting | For |
-| --- | --- |
-| `worktree_init` | the tree *as a checkout*: basing it on a fresh upstream, triangular push |
-| `worktree_setup` | what it needs *beside* the code: symlinks back to main, generated config |
-
-Both stand in for what your repo does at `WorktreeCreate`. Two rather than one so a
-repo that splits that work points each setting straight at the script it already
-has. Nothing here stands in for `SessionStart`, which fires for a daemon-cut tree by
-itself, so whatever your repo hangs off that event still runs.
-
-Both are non-fatal and the second runs even if the first failed: a tree that is
-merely un-based is still worth linking. A relative script path resolves against the
-main checkout, not the worktree, since the worktree may not carry it yet.
+that can decline falls through to the daemon cutting its own. The daemon runs no
+setup scripts of its own on top. Nothing stands in for `SessionStart` either,
+which fires for a daemon-cut tree by itself, so whatever your repo hangs off that
+event still runs.
 
 **Removing.** Teardown runs your repo's `WorktreeRemove` hooks, then `git worktree
 remove` and `git worktree prune`, which no-op when the hook already did the job.

@@ -3806,23 +3806,6 @@ mod tests {
         assert!(!host_allowed("127.0.0.1", 7777));
     }
 
-    /// The daemon says the facts; the repo says what its own checkouts mean. A note
-    /// is attached to the destination it was written about and nowhere else, which
-    /// is what keeps "the dev stack only runs in main" out of orchd.
-    #[test]
-    fn a_project_note_reaches_only_the_workspace_kind_it_was_written_for() {
-        let notes = crate::config::WorkspaceNotes {
-            main: Some("the stack runs here".into()),
-            worktree: None,
-        };
-        assert_eq!(notes.for_main(true), Some("the stack runs here"));
-        assert_eq!(notes.for_main(false), None);
-        assert_eq!(
-            crate::config::WorkspaceNotes::default().for_main(true),
-            None
-        );
-    }
-
     /// A worktree whose session auto-resume has not reached yet is occupied, the
     /// way main is: a `+` in the stagger window used to start a second agent there.
     /// The session being resumed is the one thing that does not occupy its own tree.

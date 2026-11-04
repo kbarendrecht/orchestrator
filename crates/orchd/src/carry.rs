@@ -106,9 +106,7 @@ pub(crate) async fn move_out(
         .await??
     };
 
-    // Cut by the daemon, so the repo's WorktreeCreate never fired for it (§ the
-    // worktree_setup rule) — the same reason `ensure_pr_worktree` runs these.
-    crate::worktree::run_worktree_hooks(app, &path, board).await;
+    crate::worktree::finish_cut(app, board).await;
     app.register_worktree(&name, path.clone(), Some(git.branch.clone()))
         .await;
     // Main gave the branch away, and `reconcile` only adds: left in, main would go
@@ -283,22 +281,13 @@ pub(crate) async fn to_carry(
 
 /// What an agent is told when its conversation has been moved.
 ///
-/// Two halves on purpose. The factual one the daemon can always say: which branch
-/// you are on, where it is now, where you were reading before. The second is
-/// `workspace_notes`, which is the only part that knows anything about a particular
-/// repo (that main is where the dev stack runs, say), and it comes from that
-/// repo's config rather than from anything here.
+/// The facts the daemon can always say: which branch you are on, where it is
+/// now, where you were reading before.
 ///
 /// Written as an instruction rather than a status line because that is what it is:
 /// the paths the agent has been using are stale from this point on, and it will
 /// reach for one on its very next tool call unless it is told not to.
-pub(crate) fn arrival_notice(
-    app: &Arc<AppState>,
-    branch: &str,
-    from: &std::path::Path,
-    to: &std::path::Path,
-    into_main: bool,
-) -> String {
+pub(crate) fn arrival_notice(branch: &str, from: &std::path::Path, to: &std::path::Path) -> String {
     let mut note = format!(
         "This conversation has been moved. The branch {branch} was carried into another \
          checkout and this session followed it: your working directory is now {}, and \
@@ -340,10 +329,6 @@ pub(crate) fn arrival_notice(
          git in this directory works now. Treat remembered absolute paths as stale and \
          re-read anything you are about to change.",
     );
-    if let Some(extra) = app.settings().workspace_notes.for_main(into_main) {
-        note.push(' ');
-        note.push_str(extra);
-    }
     note
 }
 
@@ -393,7 +378,7 @@ pub(crate) async fn carry_record(
             None
         }
     };
-    let notice = arrival_notice(app, branch, &src_cwd, dest_path, dest == MAIN);
+    let notice = arrival_notice(branch, &src_cwd, dest_path);
     let mut inner = app.inner.write().await;
     if let Some(s) = inner.sessions.get_mut(&id) {
         s.workspace = dest.to_string();

@@ -1085,11 +1085,10 @@ pub async fn spawn_worktree_session(
             None => app.cfg.upstream_ref.clone(),
         };
         let branch = format!("worktree-{name}");
-        /* A claimed spare is already all of this: cut by `create_worktree`, put
-        through both hooks, registered, and measured clean at the base moments ago
-        by `spare::claim`. So neither the cut nor the hooks run again — running
-        them would re-pay the 4.4 seconds the pool exists to remove, and
-        `worktree_init` over a tree that is already based is not a repair. */
+        /* A claimed spare is already all of this: cut by `create_worktree`,
+        registered, and measured clean at the base moments ago by `spare::claim`.
+        So the cut does not run again — that would re-pay the 4.4 seconds the pool
+        exists to remove. */
         let path = match &claimed {
             Some((_, at)) => at.clone(),
             None => {
@@ -1107,11 +1106,7 @@ pub async fn spawn_worktree_session(
                     Board::Loud,
                 )
                 .await?;
-                // Both worktree hooks on top, `worktree_init` then
-                // `worktree_setup`, for a repo whose setup does not hang off the
-                // `WorktreeCreate` the line above just ran. Configured per repo,
-                // and nothing at all when unset.
-                crate::worktree::run_worktree_hooks(app, &path, Board::Loud).await;
+                crate::worktree::finish_cut(app, Board::Loud).await;
                 path
             }
         };
@@ -1626,9 +1621,8 @@ pub async fn ensure_pr_worktree_at(
             Board::Loud,
         )
         .await?;
-        // Only when we actually cut it. Skipped when the tree was already there,
-        // since setup ran when it was first created.
-        crate::worktree::run_worktree_hooks(app, &path, Board::Loud).await;
+        // Only when we actually cut it: the board was told a create began.
+        crate::worktree::finish_cut(app, Board::Loud).await;
     }
     app.register_worktree(&name, path, Some(head_ref.to_string()))
         .await;

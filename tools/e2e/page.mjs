@@ -426,9 +426,13 @@ try {
     await page.waitForTimeout(150)
     return page.$eval('#setdiscard', (b) => !b.hidden)
   }
-  // The notes are on the Git tab; a field on a tab that is not open cannot be typed into.
+  /* The retention is on the Git tab, and a field on a tab that is not open cannot
+     be typed into. A number, and one the daemon applies without a restart, so the
+     save below does not restart it in the middle of the check. */
   await page.click('.settings-tab[data-tab="git"]')
-  check(await dirtyAfter('#setnotemain', 'the dev stack runs here') === true,
+  const was = await page.$eval('#setretain', (i) => i.value)
+  const plus = (/** @type {number} */ n) => String(Number(was || 0) + n)
+  check(await dirtyAfter('#setretain', plus(1)) === true,
     'a config field marks the pane unsaved')
   await page.click('#setdiscard')
   await page.waitForTimeout(300)
@@ -436,21 +440,21 @@ try {
   /* **Putting a value back is not a change.** The flag used to latch on the first
      edit, so undoing it by hand still said "unsaved changes" about a draft that was
      the config. */
-  const was = await page.$eval('#setnotemain', (i) => i.value)
-  check(await dirtyAfter('#setnotemain', `${was}x`) === true && await dirtyAfter('#setnotemain', was) === false,
+  check(await dirtyAfter('#setretain', plus(2)) === true && await dirtyAfter('#setretain', was) === false,
     'typing a field back to what was read clears unsaved')
 
-  /* **MOD+Enter submits from a textarea** (#45), where Enter is a newline and the
-     button was a Tab or a mouse away. Saved means the unsaved flag clears with the
-     typing still in the box; then put back the same way. */
-  await dirtyAfter('#setnotemain', `${was}y`)
-  await page.press('#setnotemain', `${MOD_KEY}+Enter`)
+  /* **MOD+Enter submits from a field** (#45): from a textarea, where Enter is a
+     newline, it is the only way, and the handler is the same for every field in
+     the form, so a plain field holds it. Saved means the unsaved flag clears with
+     the typing still in the box; then put back the same way. */
+  await dirtyAfter('#setretain', plus(3))
+  await page.press('#setretain', `${MOD_KEY}+Enter`)
   await page.waitForTimeout(400)
   check(await page.$eval('#setdiscard', (b) => b.hidden)
-    && await page.$eval('#setnotemain', (i) => i.value) === `${was}y`,
-    'MOD+Enter in a settings textarea saves')
-  await dirtyAfter('#setnotemain', was)
-  await page.press('#setnotemain', `${MOD_KEY}+Enter`)
+    && await page.$eval('#setretain', (i) => i.value) === plus(3),
+    'MOD+Enter in a settings field saves')
+  await dirtyAfter('#setretain', was)
+  await page.press('#setretain', `${MOD_KEY}+Enter`)
   await page.waitForTimeout(400)
 
   /* **The review queue's source shows the fields it uses and no others.** Three
