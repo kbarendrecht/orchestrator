@@ -34,7 +34,12 @@ export type DiffSummary = { base: string, files: Array<DiffFile>, added: number,
  */
 export type EndedPr = { number: number, title: string, url: string, head_ref: string, outcome: PrOutcome, };
 
-export type FileDiff = { path: string, hunks: Array<Hunk>, binary: boolean, truncated: boolean, };
+export type FileDiff = { path: string, hunks: Array<Hunk>, binary: boolean, truncated: boolean, 
+/**
+ * A lockfile, or a file the repo marks `linguist-generated`, so the pane
+ * folds it to one line ([`generated`]).
+ */
+generated: boolean, };
 
 /**
  * One foldable range. `line` stays on screen with a marker; `line + 1 ..= last`

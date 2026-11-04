@@ -303,6 +303,9 @@ pub struct FileDiff {
     pub hunks: Vec<Hunk>,
     pub binary: bool,
     pub truncated: bool,
+    /// A lockfile, or a file the repo marks `linguist-generated`, so the pane
+    /// folds it to one line ([`generated`]).
+    pub generated: bool,
 }
 
 /// Who last changed one line, for the viewer's blame gutter.
@@ -454,6 +457,56 @@ pub fn file_diff(
     old: Option<&str>,
     context: u32,
 ) -> Result<FileDiff> {
+    let mut diff = file_hunks(cwd, base, path, old, context)?;
+    diff.generated = generated(cwd, path);
+    Ok(diff)
+}
+
+/// Lockfiles by name, because every package manager writes one and no repo
+/// reads it in a review. A repo can still say otherwise with
+/// `linguist-generated=false`.
+const LOCKFILES: &[&str] = &[
+    "Cargo.lock",
+    "package-lock.json",
+    "npm-shrinkwrap.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "bun.lock",
+    "composer.lock",
+    "Gemfile.lock",
+    "poetry.lock",
+    "uv.lock",
+    "Pipfile.lock",
+    "go.sum",
+    "mix.lock",
+    "pubspec.lock",
+    "flake.lock",
+];
+
+/// Whether `path` is generated: git's `linguist-generated` attribute when the
+/// repo sets it either way, else whether it is a lockfile by name. The
+/// attribute is GitHub's own, so a repo that already folds a file in its PRs
+/// folds it here with nothing new to configure.
+fn generated(cwd: &Path, path: &str) -> bool {
+    let said = git(cwd, &["check-attr", "linguist-generated", "--", path]).unwrap_or_default();
+    // `<path>: linguist-generated: <value>`, and the path itself may hold a colon.
+    match said.trim_end().rsplit(": ").next().unwrap_or("") {
+        "set" | "true" => true,
+        "unset" | "false" => false,
+        _ => {
+            let name = path.rsplit('/').next().unwrap_or(path);
+            LOCKFILES.contains(&name)
+        }
+    }
+}
+
+fn file_hunks(
+    cwd: &Path,
+    base: &str,
+    path: &str,
+    old: Option<&str>,
+    context: u32,
+) -> Result<FileDiff> {
     let ctx = format!("-U{context}");
     let mut args = vec!["diff", "-M", &ctx, base, "--"];
     args.extend(old);
@@ -563,6 +616,7 @@ fn parse_unified(path: &str, raw: &str) -> FileDiff {
         hunks,
         binary,
         truncated: false,
+        generated: false,
     }
 }
 
@@ -1350,6 +1404,27 @@ index 111..222 100644
             }
         }
     }
+
+    #[test]
+    fn a_lockfile_or_a_marked_file_is_generated() {
+        let dir = orchd_base::testutil::scratch_repo("diff-generated");
+        std::fs::create_dir_all(dir.join("web")).unwrap();
+        std::fs::write(
+            dir.join(".gitattributes"),
+            "web/*.d.ts linguist-generated\nyarn.lock -linguist-generated\n",
+        )
+        .unwrap();
+        for f in ["Cargo.lock", "yarn.lock", "web/types.d.ts", "src.rs"] {
+            std::fs::write(dir.join(f), "a\n").unwrap();
+        }
+        assert!(generated(&dir, "Cargo.lock"), "a lockfile by name");
+        assert!(generated(&dir, "web/types.d.ts"), "a file the repo marks");
+        assert!(!generated(&dir, "yarn.lock"), "a lockfile the repo unmarks");
+        assert!(!generated(&dir, "src.rs"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A file git has never seen is entirely the change, and the pane said the
     /// opposite of that.
     ///

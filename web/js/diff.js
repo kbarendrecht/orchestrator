@@ -601,7 +601,8 @@ function commitsOf(/** @type {import('../snapshot').WorkspaceView} */ w) {
  *           cursor: number, pendingCursor: 'first' | 'last' | null, context: number,
  *           anchors?: HTMLElement[], loading?: boolean, lines: string[] | null,
  *           reveal: Map<number, { top: number, bottom: number }>, gone?: string | null,
- *           imports: import('../repo').Fold[], openImports: Set<number> }}
+ *           imports: import('../repo').Fold[], openImports: Set<number>,
+ *           openGenerated: boolean }}
  */
 const diffState = {
   open: false,
@@ -638,6 +639,9 @@ const diffState = {
      reviews. */
   imports: [],
   openImports: new Set(),
+  /* A generated file is drawn as one line until it is asked for: a lockfile is
+     hundreds of lines nobody reads, and it pushed the real change off screen. */
+  openGenerated: false,
 };
 
 /* **Three questions, and the header is a menu between them** (#47). `Changes` is
@@ -858,6 +862,26 @@ function renderDiff() {
     return note(listed?.status === '?' ? 'A new, empty file.'
       : from ? `Renamed from ${from}, no content changes.`
       : 'No textual changes against this base.');
+  }
+
+  /* **A generated file is one line until it is asked for**, the way a hunk that
+     only moves imports is. No change blocks either, so the stepper walks past it
+     to the next file somebody wrote. */
+  if (f.generated && !diffState.openGenerated) {
+    let added = 0;
+    let gone = 0;
+    for (const r of f.hunks.flatMap((h) => h.rows)) {
+      if (r.kind === 'add') added++;
+      else if (r.kind === 'del') gone++;
+    }
+    const bar = el('div', 'fold', `⋯ generated, +${added} −${gone}, click to show`);
+    bar.title = 'A lockfile, or marked linguist-generated in .gitattributes';
+    bar.onclick = () => { diffState.openGenerated = true; renderDiff(); };
+    body.appendChild(bar);
+    $('ovcount').textContent = '';
+    diffState.anchors = [];
+    drawMap();
+    return;
   }
 
   const anchors = [];
@@ -1203,6 +1227,7 @@ async function loadFile(/** @type {string} */ path) {
   diffState.reveal = new Map();
   diffState.imports = [];
   diffState.openImports = new Set();
+  diffState.openGenerated = false;
   try {
     let live;
     [diffState.file, live] = await Promise.all([
