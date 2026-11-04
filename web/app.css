@@ -2361,6 +2361,9 @@ select.opfield,input.opfield{appearance:none}
 .opgo:disabled{opacity:.45;cursor:default}
 .opmsg{min-height:16px;font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--ghost)}
 .opmsg.bad{color:var(--bad)}
+/* The trust warning on the review: amber, because it needs you before the first
+   session, and a box rather than a line so it is not read past. */
+.optrust{margin:4px 0 0;padding:9px 12px;border:1px solid var(--attn);border-radius:var(--r);color:var(--text);font-size:calc(12px * var(--fs));line-height:1.5;max-width:60ch}
 .opsechead{
   font-family:var(--mono);font-size:calc(9.5px * var(--fs));letter-spacing:.16em;
   text-transform:uppercase;color:var(--faint-solid);

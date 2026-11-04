@@ -230,6 +230,12 @@ function reviewPanel() {
   procs.id = 'opprocs';
   panel.append(procs);
 
+  // Filled only when Claude Code has not trusted the folder yet (`fillReview`).
+  const trust = el('p', 'optrust');
+  trust.id = 'optrust';
+  trust.hidden = true;
+  panel.append(trust);
+
   const actions = el('div', 'opactions');
   const cancel = el('button', 'opbtn ghost', 'Back');
   cancel.onclick = () => toPanel('welcome');
@@ -388,6 +394,15 @@ function fillReview(d) {
     : d.env_source === 'direnv' ? 'found .envrc'
       : "nothing detected — sessions get the daemon's environment";
   $('opwt').textContent = d.worktrees;
+
+  /* **Said here, before the first session dies of it.** Claude Code stops in a
+     folder it has not trusted, and the session then exits with nothing on screen
+     to say why. Accepting the dialog once, in a terminal, is the whole fix. */
+  const trust = $('optrust');
+  trust.hidden = d.trusted !== false;
+  trust.textContent = d.trusted === false
+    ? `Claude Code has not trusted this folder yet, so a session here would stop at once. Run claude in ${d.path} once and accept its trust question, then open.`
+    : '';
 
   const procs = $('opprocs');
   procs.replaceChildren();

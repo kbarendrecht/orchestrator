@@ -188,6 +188,10 @@ pub struct Detected {
     /// watch. Offered unchecked: orchd never starts someone's stack behind their
     /// back on first open.
     pub processes: Vec<DetectedProcess>,
+    /// Whether Claude Code trusts this folder, from `~/.claude.json`
+    /// ([`orchd::machine::trust_at_open`]). `false` is the warning: the first
+    /// session here would stop at once. `None` when the file cannot be read.
+    pub trusted: Option<bool>,
 }
 
 /// A process orchd guessed the repo runs, and how to run it.
@@ -342,6 +346,9 @@ pub fn detect(path: &Path) -> Detected {
         env_source,
         worktrees: ".claude/worktrees".to_string(),
         processes: detect_processes(path),
+        trusted: orchd::machine::trust_at_open(
+            &std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()),
+        ),
     }
 }
 

@@ -294,6 +294,38 @@ fn trust_accepted_in(home: &Path, dir: &Path) -> Option<bool> {
     entry.get("hasTrustDialogAccepted")?.as_bool()
 }
 
+/// Whether a folder about to be opened has Claude Code's trust, for the open
+/// screen.
+///
+/// **Wider than [`trust_accepted`] on purpose.** At boot a folder Claude Code has
+/// never seen is "cannot tell", because the checkout is already working and a
+/// false alarm teaches people to skip the log. At open it is the case to say
+/// something about: a folder nobody ran `claude` in is the one whose first session
+/// stops at once. So `Some(false)` here is "no trust recorded for it or any folder
+/// above it", and `None` is only a file that cannot be read.
+pub fn trust_at_open(dir: &Path) -> Option<bool> {
+    let home = std::env::var("HOME").ok()?;
+    trust_at_open_in(Path::new(&home), dir)
+}
+
+fn trust_at_open_in(home: &Path, dir: &Path) -> Option<bool> {
+    let raw = std::fs::read_to_string(home.join(".claude.json")).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let projects = v.get("projects")?;
+    let accepted = |d: &Path| {
+        projects
+            .get(d.to_string_lossy().as_ref())
+            .and_then(|e| e.get("hasTrustDialogAccepted"))
+            .and_then(serde_json::Value::as_bool)
+    };
+    // The folder's own answer when it has one, then the nearest folder above it
+    // that says yes: trust given to a parent covers what is under it.
+    if let Some(own) = accepted(dir) {
+        return Some(own);
+    }
+    Some(dir.ancestors().skip(1).any(|d| accepted(d) == Some(true)))
+}
+
 /// Everything worth saying about this machine, in boot order.
 ///
 /// `tracker_server` is the MCP server name the configured tracker needs, or `None`
@@ -569,6 +601,36 @@ mod tests {
         ));
         assert_eq!(at(&dir), Some(true));
 
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// At open, a folder with no trust anywhere above it is the warning, and a
+    /// parent's trust covers it.
+    #[test]
+    fn trust_at_open_says_no_for_a_folder_nobody_trusted() {
+        let root = tmp("trust-open");
+        let home = root.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let parent = root.join("dev");
+        let dir = parent.join("site");
+        let write = |body: &str| std::fs::write(home.join(".claude.json"), body).unwrap();
+        let at = |d: &std::path::Path| trust_at_open_in(&home, d);
+        let key = |d: &std::path::Path| d.to_string_lossy().into_owned();
+
+        assert_eq!(at(&dir), None, "no file is still cannot tell");
+        write(r#"{"projects":{}}"#);
+        assert_eq!(at(&dir), Some(false), "never seen is not yet trusted");
+        write(&format!(
+            r#"{{"projects":{{"{}":{{"hasTrustDialogAccepted":true}}}}}}"#,
+            key(&parent)
+        ));
+        assert_eq!(at(&dir), Some(true), "a parent's trust covers it");
+        write(&format!(
+            r#"{{"projects":{{"{}":{{"hasTrustDialogAccepted":true}},"{}":{{"hasTrustDialogAccepted":false}}}}}}"#,
+            key(&parent),
+            key(&dir)
+        ));
+        assert_eq!(at(&dir), Some(false), "its own no wins over a parent's yes");
         let _ = std::fs::remove_dir_all(&root);
     }
 

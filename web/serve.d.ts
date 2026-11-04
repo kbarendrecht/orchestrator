@@ -97,7 +97,13 @@ worktrees: string,
  * watch. Offered unchecked: orchd never starts someone's stack behind their
  * back on first open.
  */
-processes: Array<DetectedProcess>, };
+processes: Array<DetectedProcess>, 
+/**
+ * Whether Claude Code trusts this folder, from `~/.claude.json`
+ * ([`orchd::machine::trust_at_open`]). `false` is the warning: the first
+ * session here would stop at once. `None` when the file cannot be read.
+ */
+trusted: boolean | null, };
 
 /**
  * A process orchd guessed the repo runs, and how to run it.
