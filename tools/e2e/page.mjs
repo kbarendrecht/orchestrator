@@ -2026,6 +2026,13 @@ try {
   check(await page.evaluate(() => document.querySelector('#diffbody .ln.cur')
     ?.previousElementSibling?.classList.contains('gutter') === true),
   'the change stepper marks the right pane')
+  /* The change map: one tick per change block, placed on the track, and the
+     current one marked. Measured off the layout, so it is a page fact. */
+  check(await page.evaluate(() => {
+    const map = document.querySelector('#diffmap')
+    const tick = map?.querySelector('.tick.cur')
+    return !!map && !map.hidden && !!tick && tick.getBoundingClientRect().height >= 3
+  }), 'the change map draws a tick for the change, and marks it')
   await press('#ovedit')
   await page.waitForSelector('#diffbody.editing .editarea', { timeout: 5000 })
   /* The layers behind the textarea are painted on the next frame, so the textarea

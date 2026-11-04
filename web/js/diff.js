@@ -845,6 +845,7 @@ function renderDiff() {
     body.appendChild(el('div', 'diffnote', t));
     $('ovcount').textContent = '';
     diffState.anchors = [];
+    drawMap();
   };
   if (diffState.loading) return note('reading the diff…');
   if (!f && diffState.gone === diffState.path) return note('This file is gone: it was removed after the list was drawn.');
@@ -1021,6 +1022,7 @@ function renderDiff() {
       : Math.min(diffState.cursor, last);
   diffState.pendingCursor = null;
   markCursor();
+  drawMap();
 }
 
 function revertArrow(/** @type {import('./revert.js').Block} */ b) {
@@ -1087,6 +1089,7 @@ function markCursor() {
   if (!a) return;
   a.classList.add('cur');
   a.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  for (const [i, t] of [...$('diffmap').children].entries()) t.classList.toggle('cur', i === diffState.cursor);
   // Within-file position, plus which file of the changeset when there is more
   // than one — the stepper walks the whole PR, so "3 of 7" alone would not say
   // where in it you are.
@@ -1246,6 +1249,37 @@ async function askImports(/** @type {string} */ path) {
   if (diffState.file?.hunks.some(importsOnly)) renderDiff();
 }
 
+/** Draw the change map beside the diff: one tick per change block, placed where
+ *  the block is in the drawn diff, so a long file shows its shape before you
+ *  scroll it. Read off the laid-out rows, because the folds decide where a
+ *  block ends up and only the layout knows. */
+function drawMap() {
+  const body = $('diffbody');
+  const map = $('diffmap');
+  map.replaceChildren();
+  const anchors = diffState.anchors || [];
+  const total = body.scrollHeight;
+  map.hidden = !anchors.length || body.classList.contains('editing') || !total;
+  if (map.hidden) return;
+  const tall = map.clientHeight;
+  for (let b = 0; b < anchors.length; b++) {
+    const rows = /** @type {HTMLElement[]} */ ([...body.querySelectorAll(`[data-blk="${b}"]`)]);
+    if (!rows.length) continue;
+    const top = Math.min(...rows.map((r) => r.offsetTop));
+    const bottom = Math.max(...rows.map((r) => r.offsetTop + r.offsetHeight));
+    const add = rows.some((r) => r.classList.contains('add'));
+    const del = rows.some((r) => r.classList.contains('del'));
+    const tick = el('button', 'tick' + (add && del ? ' mix' : add ? ' add' : ' del'));
+    tick.style.top = `${(top / total) * 100}%`;
+    tick.style.height = `${Math.max(3, ((bottom - top) / total) * tall)}px`;
+    tick.title = `change ${b + 1} of ${anchors.length}`;
+    tick.setAttribute('aria-label', tick.title);
+    tick.onclick = () => { diffState.cursor = b; markCursor(); };
+    if (b === diffState.cursor) tick.classList.add('cur');
+    map.appendChild(tick);
+  }
+}
+
 /** Whether every change in a hunk lands inside one import run of the file as it
  *  is now. A deletion is placed where its lines went, which is the line after
  *  the new side's last one. */
@@ -1370,5 +1404,9 @@ function openEditor() {
     },
   });
 }
+
+/* The ticks are placed in pixels read off the layout, so a resize of the overlay
+   or a wrap that moves rows has to place them again. */
+new ResizeObserver(() => { if (diffState.open) drawMap(); }).observe($('diffbody'));
 
 export { goTo, baseMenu, setView, diffState as state, openDiff as open, closeDiff as close, renderDiff as render, stepChange as step, loadFile, renderFiles, openEditor };

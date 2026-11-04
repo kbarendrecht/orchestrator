@@ -182,7 +182,12 @@
           <button class="head-btn" id="ovclose">Close <kbd>Esc</kbd></button>
         </div>
       </div>
-      <div class="diff" id="diffbody"></div>
+      <!-- The diff and its change map side by side, so the map spans exactly the
+           height the diff scrolls in. -->
+      <div class="diffwrap">
+        <div class="diff" id="diffbody"></div>
+        <div class="diffmap" id="diffmap" hidden></div>
+      </div>
     </div>
 
     <!-- ============ FIND OVERLAY ============ -->
