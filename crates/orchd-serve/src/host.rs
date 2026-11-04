@@ -191,6 +191,10 @@ pub struct Host {
     /// A link that arrived with no page to take it — the one that launched the
     /// app, most often. The first page to connect gets it.
     pending_link: Mutex<Option<crate::link::OpenFile>>,
+    /// Folders `orch open` asked the page to open, and the one held when no page
+    /// was connected, the way [`Host::open_link`] holds a link.
+    projects: tokio::sync::broadcast::Sender<String>,
+    pending_project: Mutex<Option<String>>,
     /// [`HostFile::labels`], read once at start and written through
     /// [`Host::label_checkout`], so naming the set never reads a file.
     labels: Mutex<std::collections::BTreeMap<String, Label>>,
@@ -236,6 +240,8 @@ impl Host {
             changes: tokio::sync::broadcast::channel(16).0,
             links: tokio::sync::broadcast::channel(4).0,
             pending_link: Mutex::new(None),
+            projects: tokio::sync::broadcast::channel(4).0,
+            pending_project: Mutex::new(None),
             labels: Mutex::new(read_host_file().map(|f| f.labels).unwrap_or_default()),
         })
     }
@@ -256,6 +262,23 @@ impl Host {
         if let Some(control) = self.window() {
             if let Err(e) = control.dispatch(orchd::window::WindowCmd::Focus) {
                 tracing::debug!("could not raise the window for a link: {e:#}");
+            }
+        }
+    }
+
+    /// Open a folder as a project in whichever page is showing: `orch open`.
+    ///
+    /// The page decides what that means, the way the rail's Open project does: an
+    /// open checkout is switched to, anything else goes through the review. Held
+    /// when no page is connected, and the window is raised either way, because the
+    /// command was typed in another window.
+    pub fn open_project(&self, path: String) {
+        if self.projects.send(path.clone()).is_err() {
+            *locked(&self.pending_project) = Some(path);
+        }
+        if let Some(control) = self.window() {
+            if let Err(e) = control.dispatch(orchd::window::WindowCmd::Focus) {
+                tracing::debug!("could not raise the window for a project: {e:#}");
             }
         }
     }
@@ -1595,6 +1618,7 @@ pub fn router(host: Arc<Host>) -> Router {
         .route("/api/host/checkout/label", post(label_checkout))
         .route("/ws/host", get(host_socket))
         .route("/api/host/open", post(open_link))
+        .route("/api/host/project", post(open_project))
         .route("/api/host/recent", get(recent))
         .route(
             "/api/host/usage-ping",
@@ -1814,6 +1838,26 @@ struct WsQuery {
     token: String,
 }
 
+/// A folder to open as a project, from `orch open` in some shell.
+///
+/// Only a folder that exists, resolved here, where every other path meets the
+/// checkouts it is compared with. Whether it can open is the review's question.
+async fn open_project(State(host): State<Arc<Host>>, Json(body): Json<CheckoutPath>) -> Response {
+    let path = PathBuf::from(&body.path);
+    let found = orchd::proc::run_blocking("resolving a project", move || {
+        std::fs::canonicalize(&path).ok().filter(|p| p.is_dir())
+    })
+    .await;
+    match found {
+        Ok(Some(path)) => {
+            host.open_project(path.to_string_lossy().into_owned());
+            Json(json!({ "ok": true })).into_response()
+        }
+        Ok(None) => refusal(&format!("{} is not a folder", body.path)),
+        Err(e) => refusal(&format!("{e:#}")),
+    }
+}
+
 /// A deep link, handed over by the second launch that received it (`link`).
 async fn open_link(State(host): State<Arc<Host>>, Json(body): Json<serde_json::Value>) -> Response {
     let url = body
@@ -1834,6 +1878,7 @@ async fn host_socket_loop(host: Arc<Host>, mut socket: axum::extract::ws::WebSoc
     use axum::extract::ws::Message;
     let mut sub = host.changes.subscribe();
     let mut links = host.links.subscribe();
+    let mut projects = host.projects.subscribe();
     async fn send_open(
         socket: &mut axum::extract::ws::WebSocket,
         file: &crate::link::OpenFile,
@@ -1861,8 +1906,24 @@ async fn host_socket_loop(host: Arc<Host>, mut socket: axum::extract::ws::WebSoc
         }
         tracing::info!(path = %file.path, "a held link went to the page");
     }
+    let held = locked(&host.pending_project).take();
+    if let Some(path) = held {
+        if socket
+            .send(Message::Text(json!({ "project": path }).to_string()))
+            .await
+            .is_err()
+        {
+            return;
+        }
+    }
     loop {
         tokio::select! {
+            path = projects.recv() => match path {
+                Ok(path) => if socket.send(Message::Text(json!({ "project": path }).to_string())).await.is_err() { break },
+                // A request, like a link: a missed one is not repaired by a later one.
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(_) => break,
+            },
             file = links.recv() => match file {
                 Ok(file) => if !send_open(&mut socket, &file).await { break },
                 // A link is a click, not state: a missed one is not repaired by a
@@ -2176,6 +2237,44 @@ mod tests {
                     .into_owned(),
                 line: 7,
             }),
+            "held for the first page to connect"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `orch open`: a folder reaches the host on its token, resolved, and waits
+    /// for the page; a file is not a project.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn orch_open_hands_a_folder_to_the_running_host() {
+        let serving = serve("the-token".into(), 0, orchd::window::Chrome::None)
+            .await
+            .unwrap();
+        let port = serving.host.port;
+        let dir = orchd::testutil::scratch("open-project");
+        std::fs::write(dir.join("f.txt"), "x").unwrap();
+        let post = |path: std::path::PathBuf| {
+            tokio::task::spawn_blocking(move || {
+                crate::link::post(
+                    port,
+                    "the-token",
+                    "/api/host/project",
+                    &json!({ "path": path.to_string_lossy() }),
+                )
+            })
+        };
+        assert!(
+            post(dir.join("f.txt")).await.unwrap().is_err(),
+            "a file is refused"
+        );
+        post(dir.clone()).await.unwrap().unwrap();
+        assert_eq!(
+            locked(&serving.host.pending_project).clone(),
+            Some(
+                std::fs::canonicalize(&dir)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            ),
             "held for the first page to connect"
         );
         let _ = std::fs::remove_dir_all(&dir);

@@ -153,16 +153,45 @@ pub fn forward(port: u16, url: &str) -> Result<()> {
 }
 
 pub(crate) fn send(port: u16, token: &str, url: &str) -> Result<()> {
+    post(
+        port,
+        token,
+        "/api/host/open",
+        &serde_json::json!({ "url": url }),
+    )
+    .context("the running app refused the link")
+}
+
+/// Hand a folder to the running app to open as a project: `orch open`.
+///
+/// The same door a second launch uses for a link: the host's `port`, with the
+/// token in [`TOKEN_FILE`]. The port is the caller's to pass, as for [`forward`],
+/// so this module names nothing in `host`. With no app running there is nothing
+/// to open it in, and the answer says so rather than starting one behind the shell.
+pub fn open_project(port: u16, path: &str) -> Result<()> {
+    let token = std::fs::read_to_string(token_path()?)
+        .context("the app is not running; start it, then run this again")?;
+    post(
+        port,
+        token.trim(),
+        "/api/host/project",
+        &serde_json::json!({ "path": path }),
+    )
+}
+
+/// One POST to the host, by hand: this runs from a second process with no
+/// runtime, and a `200` is the only answer that counts as done.
+pub(crate) fn post(port: u16, token: &str, route: &str, body: &serde_json::Value) -> Result<()> {
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     let timeout = std::time::Duration::from_secs(2);
     let mut stream = std::net::TcpStream::connect_timeout(&addr, timeout)
         .with_context(|| format!("nothing is listening on port {port}"))?;
     stream.set_read_timeout(Some(timeout))?;
     stream.set_write_timeout(Some(timeout))?;
-    let body = serde_json::json!({ "url": url }).to_string();
+    let body = body.to_string();
     write!(
         stream,
-        "POST /api/host/open HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nx-orch-token: {token}\r\n\
+        "POST {route} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nx-orch-token: {token}\r\n\
          content-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
         body.len()
     )?;
@@ -170,10 +199,7 @@ pub(crate) fn send(port: u16, token: &str, url: &str) -> Result<()> {
     stream.read_to_string(&mut answer)?;
     let status = answer.split_whitespace().nth(1).unwrap_or("");
     if status != "200" {
-        bail!(
-            "the running app refused the link: {}",
-            answer.lines().last().unwrap_or("")
-        );
+        bail!("{}", answer.lines().last().unwrap_or(""));
     }
     Ok(())
 }

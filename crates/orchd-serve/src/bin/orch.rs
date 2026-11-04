@@ -48,6 +48,9 @@ orch — talk to the orchestrator you are running inside
   orch outside <path>
       Ask to run git in that folder. Remembered for it, for this session.
 
+  orch open [<path>]
+      Open a folder as a project in the running app. Works from any shell.
+
   orch guard push [--base <branch>] [--main <path>] [--worktrees <path>]
       Not for you to call — the daemon registers this as a PreToolUse hook.
 
@@ -202,6 +205,14 @@ out of the area the session works in.
                       it that half is skipped.
 ";
 
+const HELP_OPEN: &str = "\
+orch open [<path>]
+
+Open a folder in the running app, the current one when no path is given: switched
+to when it is already open, and reviewed first when it is new. Works from any
+shell, not only inside a session. Fails when the app is not running.
+";
+
 const HELP_HOOK: &str = "\
 orch hook <route>
 
@@ -235,6 +246,7 @@ fn help_for(cmd: &str) -> Option<&'static str> {
         "outside" => HELP_OUTSIDE,
         "guard" => HELP_GUARD,
         "hook" => HELP_HOOK,
+        "open" => HELP_OPEN,
         _ => return None,
     })
 }
@@ -287,6 +299,7 @@ fn spec(cmd: &str) -> Option<&'static [(&'static str, Arity)]> {
             ("--worktrees", Arity::Value),
         ],
         "hook" => &[],
+        "open" => &[],
         _ => return None,
     })
 }
@@ -661,6 +674,11 @@ fn main() -> ExitCode {
     if cmd == "hook" {
         return hook(&parsed);
     }
+    // And `open`, which talks to the app rather than to a checkout's daemon, so it
+    // works from any shell and needs no session at all.
+    if cmd == "open" {
+        return open_project(&parsed);
+    }
     match run(cmd, &parsed) {
         Ok(out) => {
             if !out.is_empty() {
@@ -673,6 +691,32 @@ fn main() -> ExitCode {
             // The kind, for a script. A person reads the line above and gets the
             // same sentence either way — see `Failure`.
             ExitCode::from(e.code)
+        }
+    }
+}
+
+/// `orch open [<path>]`: hand a folder to the running app, like `code .`.
+fn open_project(a: &Parsed) -> ExitCode {
+    let path = match a.words.first() {
+        Some(p) => std::path::PathBuf::from(p),
+        None => match std::env::current_dir() {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("orch: cannot read the current folder: {e}");
+                return ExitCode::FAILURE;
+            }
+        },
+    };
+    // Absolute before it leaves, because the app resolves it against its own cwd.
+    let path = std::path::absolute(&path).unwrap_or(path);
+    match orchd_serve::link::open_project(orchd_serve::host::PORT, &path.to_string_lossy()) {
+        Ok(()) => {
+            println!("opened {} in the app", path.display());
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("orch: {e:#}");
+            ExitCode::FAILURE
         }
     }
 }

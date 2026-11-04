@@ -2371,6 +2371,20 @@ function connectAll() {
  *  So the list is reconciled in place: new checkouts get a socket, closed ones
  *  lose their terminals, and the rail redraws. Nothing else moves.
  */
+/** A folder `orch open` named: switch to it when it is open, and otherwise open
+ *  it the way the rail's Open project does, through the git question and the
+ *  review.
+ *
+ *  @param {string} path */
+function openProject(path) {
+  const open = CHECKOUTS.find((c) => c.path === path);
+  if (open) {
+    enterCheckout(open);
+    return;
+  }
+  void Open.reviewAndAdd(path);
+}
+
 function connectHost() {
   const sock = new WebSocket(
     `${HOST.wsBase}/ws/host?token=${encodeURIComponent(HOST.token)}`
@@ -2378,6 +2392,7 @@ function connectHost() {
   sock.onmessage = (ev) => {
     const message = JSON.parse(ev.data);
     if (message.open) return openLink(message.open);
+    if (message.project) return openProject(message.project);
     const { checkouts } = message;
     const open = new Set(checkouts.map((/** @type {import('./js/core.js').Target} */ c) => c.path));
     /* **A checkout that came back on a new port is as gone as one that left.** Both
