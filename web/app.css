@@ -1864,6 +1864,7 @@ button.settings-co:hover{color:var(--text);background:var(--hover)}
 .diffmap .tick.mix{background:linear-gradient(var(--bad) 50%,var(--ok) 50%)}
 .diffmap .tick.cur{left:0;right:0;box-shadow:0 0 0 1px var(--text)}
 .diffmap .tick:hover{left:1px;right:1px}
+#ovws[aria-pressed="true"]{background:var(--raised);color:var(--text);box-shadow:inset 0 0 0 1px var(--line)}
 .diff{flex:1;overflow:auto;font-family:var(--code);font-size:calc(var(--code-px,11.5px) * var(--fs));line-height:1.65}
 /* align-content:start matters: the grid is taller than its rows, and the
    default `stretch` hands the leftover height to every auto-sized row, so a

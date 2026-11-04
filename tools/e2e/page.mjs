@@ -2033,6 +2033,15 @@ try {
     const tick = map?.querySelector('.tick.cur')
     return !!map && !map.hidden && !!tick && tick.getBoundingClientRect().height >= 3
   }), 'the change map draws a tick for the change, and marks it')
+  // The whitespace toggle says its state, and a press diffs again without it.
+  await press('#ovws')
+  await page.waitForFunction(() => document.querySelector('#ovws')?.getAttribute('aria-pressed') === 'true',
+    null, { timeout: 5000 })
+  await page.waitForFunction(() => !!document.querySelector('#diffbody .ln'), null, { timeout: 10_000 })
+  await press('#ovws')
+  await page.waitForFunction(() => document.querySelector('#ovws')?.getAttribute('aria-pressed') === 'false',
+    null, { timeout: 5000 })
+  await page.waitForFunction(() => !!document.querySelector('#diffbody .ln.cur'), null, { timeout: 10_000 })
   await press('#ovedit')
   await page.waitForSelector('#diffbody.editing .editarea', { timeout: 5000 })
   /* The layers behind the textarea are painted on the next frame, so the textarea

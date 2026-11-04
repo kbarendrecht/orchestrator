@@ -2506,6 +2506,9 @@ pub struct FileDiffQuery {
     /// Widening this is how expand-on-click is served.
     #[serde(default = "default_context")]
     pub context: u32,
+    /// `-w`, for a change buried in re-indentation.
+    #[serde(default)]
+    pub ignore_ws: bool,
 }
 
 fn default_context() -> u32 {
@@ -2525,10 +2528,10 @@ pub async fn diff_file(
     // A pathological context value would ask git for the whole repo.
     let context = q.context.min(10_000);
     // Off the runtime: another `git diff`, per file you open.
-    let (file, old) = (q.path.clone(), q.old_path.clone());
+    let (file, old, ignore_ws) = (q.path.clone(), q.old_path.clone(), q.ignore_ws);
     Ok(Json(
         crate::proc::run_blocking("a file diff", move || {
-            crate::diff::file_diff(&path, &base, &file, old.as_deref(), context)
+            crate::diff::file_diff(&path, &base, &file, old.as_deref(), context, ignore_ws)
         })
         .await??,
     ))

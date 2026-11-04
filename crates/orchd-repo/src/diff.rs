@@ -445,7 +445,8 @@ pub fn show_at(cwd: &Path, base: &str, path: &str) -> Result<String> {
 }
 
 /// Hunks for one file. `context` widens `-U`, which is how expand-on-click is
-/// served without a second diff format.
+/// served without a second diff format. `ignore_ws` is `-w`: a block an agent
+/// re-indented then shows only the lines that changed.
 ///
 /// `old` is a rename's old path, and git has to be given it: a pathspec of the new
 /// path alone hides the other half of the pair, so git cannot detect the rename and
@@ -456,8 +457,9 @@ pub fn file_diff(
     path: &str,
     old: Option<&str>,
     context: u32,
+    ignore_ws: bool,
 ) -> Result<FileDiff> {
-    let mut diff = file_hunks(cwd, base, path, old, context)?;
+    let mut diff = file_hunks(cwd, base, path, old, context, ignore_ws)?;
     diff.generated = generated(cwd, path);
     Ok(diff)
 }
@@ -506,9 +508,14 @@ fn file_hunks(
     path: &str,
     old: Option<&str>,
     context: u32,
+    ignore_ws: bool,
 ) -> Result<FileDiff> {
     let ctx = format!("-U{context}");
-    let mut args = vec!["diff", "-M", &ctx, base, "--"];
+    let mut args = vec!["diff", "-M", &ctx];
+    if ignore_ws {
+        args.push("-w");
+    }
+    args.extend([base, "--"]);
     args.extend(old);
     args.push(path);
     let out = git(cwd, &args)?;
@@ -1000,7 +1007,7 @@ mod tests {
 
         // The hunks pair the two halves, so only the real edit is a change. Asked
         // for by the new path alone, git saw an added file and every line was green.
-        let d = file_diff(&dir, &base, "new.txt", Some("old.txt"), 3).unwrap();
+        let d = file_diff(&dir, &base, "new.txt", Some("old.txt"), 3, false).unwrap();
         assert!(
             d.hunks.is_empty(),
             "a pure rename has no lines to show: {:?}",
@@ -1406,7 +1413,7 @@ index 111..222 100644
     }
 
     #[test]
-    fn a_lockfile_or_a_marked_file_is_generated() {
+    fn a_lockfile_or_a_marked_file_is_generated_and_whitespace_can_be_ignored() {
         let dir = orchd_base::testutil::scratch_repo("diff-generated");
         std::fs::create_dir_all(dir.join("web")).unwrap();
         std::fs::write(
@@ -1422,6 +1429,25 @@ index 111..222 100644
         assert!(!generated(&dir, "yarn.lock"), "a lockfile the repo unmarks");
         assert!(!generated(&dir, "src.rs"));
 
+        std::fs::write(dir.join("src.rs"), "fn a() {\n    b();\n}\n").unwrap();
+        orchd_base::testutil::git(&dir, &["add", "-A"]);
+        orchd_base::testutil::git(&dir, &["commit", "-q", "-m", "base"]);
+        std::fs::write(
+            dir.join("src.rs"),
+            "fn a() {\n    if x {\n        b();\n    }\n}\n",
+        )
+        .unwrap();
+        let changed = |ignore| -> usize {
+            file_diff(&dir, "HEAD", "src.rs", None, 3, ignore)
+                .unwrap()
+                .hunks
+                .iter()
+                .flat_map(|h| h.rows.iter())
+                .filter(|r| r.kind != RowKind::Context)
+                .count()
+        };
+        assert_eq!(changed(false), 4, "the re-indented line shows as a change");
+        assert_eq!(changed(true), 2, "and with -w only the two new lines do");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1441,7 +1467,7 @@ index 111..222 100644
         // The new file, never added.
         std::fs::write(dir.join("fresh.txt"), "alpha\nbeta\n").unwrap();
 
-        let d = file_diff(&dir, "HEAD", "fresh.txt", None, 3).expect("a diff");
+        let d = file_diff(&dir, "HEAD", "fresh.txt", None, 3, false).expect("a diff");
         assert!(
             !d.hunks.is_empty(),
             "an untracked file must show its contents"
@@ -1457,7 +1483,7 @@ index 111..222 100644
 
         // And the case it must not break: a tracked file with nothing to say still
         // says nothing, rather than reporting itself as entirely new.
-        let clean = file_diff(&dir, "HEAD", "tracked.txt", None, 3).expect("a diff");
+        let clean = file_diff(&dir, "HEAD", "tracked.txt", None, 3, false).expect("a diff");
         assert!(
             clean.hunks.is_empty(),
             "an unmodified tracked file is not an addition: {:?}",

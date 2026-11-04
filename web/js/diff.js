@@ -602,7 +602,7 @@ function commitsOf(/** @type {import('../snapshot').WorkspaceView} */ w) {
  *           anchors?: HTMLElement[], loading?: boolean, lines: string[] | null,
  *           reveal: Map<number, { top: number, bottom: number }>, gone?: string | null,
  *           imports: import('../repo').Fold[], openImports: Set<number>,
- *           openGenerated: boolean }}
+ *           openGenerated: boolean, ignoreWs: boolean }}
  */
 const diffState = {
   open: false,
@@ -642,6 +642,9 @@ const diffState = {
   /* A generated file is drawn as one line until it is asked for: a lockfile is
      hundreds of lines nobody reads, and it pushed the real change off screen. */
   openGenerated: false,
+  /* `-w`, remembered per browser like the mode. A re-indented block is all red
+     and green with it off, and the line that really changed is lost in it. */
+  ignoreWs: false,
 };
 
 /* **Three questions, and the header is a menu between them** (#47). `Changes` is
@@ -657,6 +660,10 @@ try {
   const kept = localStorage.getItem(BASE_KEY);
   diffState.base = kept === 'pushed' || kept === 'head' ? kept : 'upstream';
 } catch (err) { /* no storage: the pane opens on `Changes` */ }
+const WS_KEY = 'orch.diffIgnoreWs';
+try {
+  diffState.ignoreWs = localStorage.getItem(WS_KEY) === '1';
+} catch (err) { /* no storage: whitespace counts */ }
 const VIEW_KEY = 'orch.changesView';
 try {
   if (localStorage.getItem(VIEW_KEY) === 'files') diffState.view = 'files';
@@ -844,6 +851,7 @@ function renderDiff() {
     $('ovpath').appendChild(document.createTextNode(name));
   }
   $('ovmode').dataset.mode = diffState.split ? 'split' : 'unified';
+  $('ovws').setAttribute('aria-pressed', String(diffState.ignoreWs));
 
   const note = (/** @type {string} */ t) => {
     body.appendChild(el('div', 'diffnote', t));
@@ -861,6 +869,7 @@ function renderDiff() {
     const listed = diffState.summary?.files.find((x) => x.path === diffState.path);
     return note(listed?.status === '?' ? 'A new, empty file.'
       : from ? `Renamed from ${from}, no content changes.`
+      : diffState.ignoreWs ? 'Only whitespace changes here, and whitespace is hidden.'
       : 'No textual changes against this base.');
   }
 
@@ -1010,7 +1019,9 @@ function renderDiff() {
           if (!splitInBlock) {
             block += 1; anchors.push(ro); splitInBlock = true; inHunk += 1;
             const b = blocks[inHunk];
-            if (b) gutter.appendChild(revertArrow(b));
+            /* Not with whitespace hidden: the rows then differ from the file in
+               their indentation, and the arrow would write those rows back. */
+            if (b && !diffState.ignoreWs) gutter.appendChild(revertArrow(b));
           }
           lo.dataset.blk = ro.dataset.blk = String(block);
         } else {
@@ -1208,18 +1219,26 @@ function linesOf(/** @type {string | undefined} */ content) {
   return (content.endsWith('\n') ? content.slice(0, -1) : content).split('\n');
 }
 
+/** The `/api/diff/file` query for `path`: one place, because the editor's save
+ *  asks again and a flag added to one copy was a flag the other dropped. */
+function fileQuery(/** @type {string} */ ws, /** @type {string} */ path) {
+  const q = new URLSearchParams({
+    workspace: ws, base: diffState.base, path, context: String(diffState.context),
+  });
+  if (diffState.ignoreWs) q.set('ignore_ws', 'true');
+  const from = renamedFrom(path);
+  if (from) q.set('old_path', from);
+  const pr = prForWorkspace(ws);
+  if (pr && pr.base_ref) q.set('pr_base', pr.base_ref);
+  return q;
+}
+
 async function loadFile(/** @type {string} */ path) {
   const ws = diffState.ws || activeWorkspaceId();
   if (!ws) return;
   if (Editor.isOpen() && path !== Editor.state.path && !await Editor.close()) return;
   diffState.path = path;
-  const q = new URLSearchParams({
-    workspace: ws, base: diffState.base, path, context: String(diffState.context),
-  });
-  const from = renamedFrom(path);
-  if (from) q.set('old_path', from);
-  const pr = prForWorkspace(ws);
-  if (pr && pr.base_ref) q.set('pr_base', pr.base_ref);
+  const q = fileQuery(ws, path);
   // Show "reading the diff…" only if the fetch outlasts a couple of frames, so a
   // fast local diff never flashes it and a slow one stops reading as "did nothing"
   // by leaving the previous file's hunks on screen.
@@ -1303,6 +1322,14 @@ function drawMap() {
     if (b === diffState.cursor) tick.classList.add('cur');
     map.appendChild(tick);
   }
+}
+
+/** Turn `-w` on or off, and diff the open file again with it. */
+function toggleWs() {
+  diffState.ignoreWs = !diffState.ignoreWs;
+  try { localStorage.setItem(WS_KEY, diffState.ignoreWs ? '1' : '0'); } catch (err) { /* not kept */ }
+  if (diffState.path) void loadFile(diffState.path);
+  else renderDiff();
 }
 
 /** Whether every change in a hunk lands inside one import run of the file as it
@@ -1398,16 +1425,7 @@ function openEditor() {
     onSaved: async () => {
       // Re-diff so the changeset reflects the write.
       await loadSummary();
-      const q = new URLSearchParams({
-        workspace: ws,
-        base: diffState.base,
-        path: diffState.path ?? '',
-        context: String(diffState.context),
-      });
-      const from = renamedFrom(diffState.path);
-      if (from) q.set('old_path', from);
-      const pr = prForWorkspace(ws);
-      if (pr?.base_ref) q.set('pr_base', pr.base_ref);
+      const q = fileQuery(ws, diffState.path ?? '');
       try {
         let live;
         [diffState.file, live] = await Promise.all([
@@ -1434,4 +1452,4 @@ function openEditor() {
    or a wrap that moves rows has to place them again. */
 new ResizeObserver(() => { if (diffState.open) drawMap(); }).observe($('diffbody'));
 
-export { goTo, baseMenu, setView, diffState as state, openDiff as open, closeDiff as close, renderDiff as render, stepChange as step, loadFile, renderFiles, openEditor };
+export { toggleWs, goTo, baseMenu, setView, diffState as state, openDiff as open, closeDiff as close, renderDiff as render, stepChange as step, loadFile, renderFiles, openEditor };
