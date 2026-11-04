@@ -856,8 +856,9 @@ function renderDiff() {
   $('ovmode').dataset.mode = diffState.split ? 'split' : 'unified';
   $('ovws').setAttribute('aria-pressed', String(diffState.ignoreWs));
 
-  const note = (/** @type {string} */ t) => {
-    body.appendChild(el('div', 'diffnote', t));
+  /** A file with nothing to step through: a sentence, or a fold bar. */
+  const note = (/** @type {string | HTMLElement} */ t) => {
+    body.appendChild(typeof t === 'string' ? el('div', 'diffnote', t) : t);
     $('ovcount').textContent = '';
     diffState.anchors = [];
     drawMap();
@@ -880,20 +881,14 @@ function renderDiff() {
      only moves imports is. No change blocks either, so the stepper walks past it
      to the next file somebody wrote. */
   if (f.generated && !diffState.openGenerated) {
-    let added = 0;
-    let gone = 0;
-    for (const r of f.hunks.flatMap((h) => h.rows)) {
-      if (r.kind === 'add') added++;
-      else if (r.kind === 'del') gone++;
-    }
-    const bar = el('div', 'fold', `⋯ generated, +${added} −${gone}, click to show`);
-    bar.title = 'A lockfile, or marked linguist-generated in .gitattributes';
-    bar.onclick = () => { diffState.openGenerated = true; renderDiff(); };
-    body.appendChild(bar);
-    $('ovcount').textContent = '';
-    diffState.anchors = [];
-    drawMap();
-    return;
+    const path = diffState.path ?? '';
+    return note(foldBar(f.hunks.flatMap((h) => h.rows), 'generated',
+      'A lockfile, or marked linguist-generated in .gitattributes', () => {
+        diffState.openGenerated = true;
+        renderDiff();
+        // Not parsed while it was one line: nothing on screen needed it.
+        void askStructure(path);
+      }));
   }
 
   const anchors = [];
@@ -975,19 +970,10 @@ function renderDiff() {
     }
 
     if (importsOnly(h) && !diffState.openImports.has(hi)) {
-      let added = 0;
-      let gone = 0;
-      for (const r of h.rows) {
-        if (r.kind === 'add') added++;
-        else if (r.kind === 'del') gone++;
-      }
-      const bar = el('div', 'fold', `⋯ imports changed, +${added} −${gone}, click to show`);
-      bar.title = 'Only imports change here';
-      bar.onclick = () => {
+      body.appendChild(foldBar(h.rows, 'imports changed', 'Only imports change here', () => {
         diffState.openImports.add(hi);
         renderDiff();
-      };
-      body.appendChild(bar);
+      }));
       continue;
     }
 
@@ -1278,7 +1264,8 @@ async function loadFile(/** @type {string} */ path) {
   diffState.loading = false;
   renderDiff();
   renderFiles();
-  void askStructure(path);
+  // A generated file is one line until it is opened, and its bar asks then.
+  if (!diffState.file?.generated) void askStructure(path);
 }
 
 /** The size `structure.rs` stops parsing at, its `HUGE`. */
@@ -1303,23 +1290,53 @@ async function askStructure(/** @type {string} */ path) {
   if (diffState.path !== path || diffState.lines !== lines) return;
   diffState.imports = s.folds.filter((f) => f.kind === 'imports');
   diffState.symbols = s.symbols;
+  // Drawn again only when the parse changes what is on screen: a fold opened, an
+  // imports-only hunk, or a scope to name.
   const opened = openBlocks();
-  if (opened || s.symbols.length || diffState.file?.hunks.some(importsOnly)) renderDiff();
+  if (opened || diffState.file?.hunks.some((h) => importsOnly(h) || scopesOf(h).length)) renderDiff();
 }
 
-/** The new-side lines a hunk changes, first and last. A deletion counts where its
- *  lines went, the line after the new side's last one. `null` for no change. */
-function changedSpan(/** @type {import('../repo').Hunk} */ h) {
+/** The new-side line each change in a hunk lands on. A deletion counts where its
+ *  lines went, the line after the new side's last one. */
+function changedLines(/** @type {import('../repo').Hunk} */ h) {
   let n = h.new_start - 1;
-  let lo = Infinity;
-  let hi = -Infinity;
+  const out = [];
   for (const r of h.rows) {
     if (r.kind === 'context') { n = r.new ?? n; continue; }
-    const at = r.kind === 'add' ? (n = r.new ?? n + 1) : n + 1;
-    lo = Math.min(lo, at);
-    hi = Math.max(hi, at);
+    out.push(r.kind === 'add' ? (n = r.new ?? n + 1) : n + 1);
+  }
+  return out;
+}
+
+/** The new-side lines a hunk changes, first and last, or `null` for no change. */
+function changedSpan(/** @type {import('../repo').Hunk} */ h) {
+  // A loop, not `Math.min(...at)`: a new file is one hunk, and JavaScriptCore
+  // refuses a call with more than 65536 arguments.
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const n of changedLines(h)) {
+    lo = Math.min(lo, n);
+    hi = Math.max(hi, n);
   }
   return lo <= hi ? { lo, hi } : null;
+}
+
+/** A fold bar for rows nobody reads: what changed, how much, and a click to show
+ *  them. The imports-only hunk and the generated file both draw one.
+ *
+ *  @param {import('../repo').Row[]} rows @param {string} what @param {string} title
+ *  @param {() => void} open */
+function foldBar(rows, what, title, open) {
+  let added = 0;
+  let gone = 0;
+  for (const r of rows) {
+    if (r.kind === 'add') added++;
+    else if (r.kind === 'del') gone++;
+  }
+  const bar = el('div', 'fold', `⋯ ${what}, +${added} −${gone}, click to show`);
+  bar.title = title;
+  bar.onclick = open;
+  return bar;
 }
 
 /** The declarations a hunk's first change sits inside, outermost first: the
@@ -1408,12 +1425,27 @@ function drawMap() {
   }
 }
 
-/** Turn `-w` on or off, and diff the open file again with it. */
-function toggleWs() {
+/** Turn `-w` on or off, and diff the open file again with it.
+ *
+ *  **The diff only.** The file on disk and its parse do not change with `-w`, so
+ *  they are kept; the hunks do, so the folds keyed on them start again. */
+async function toggleWs() {
   diffState.ignoreWs = !diffState.ignoreWs;
   try { localStorage.setItem(WS_KEY, diffState.ignoreWs ? '1' : '0'); } catch (err) { /* not kept */ }
-  if (diffState.path) void loadFile(diffState.path);
-  else renderDiff();
+  const ws = diffState.ws || activeWorkspaceId();
+  const path = diffState.path;
+  if (!ws || !path) return renderDiff();
+  try {
+    const file = await get(`/api/diff/file?${fileQuery(ws, path)}`);
+    if (diffState.path !== path) return;
+    diffState.file = file;
+  } catch (e) {
+    return toast(reason(e), true);
+  }
+  diffState.reveal = new Map();
+  diffState.openImports = new Set();
+  openBlocks();
+  renderDiff();
 }
 
 /** Whether every change in a hunk lands inside one import run of the file as it
@@ -1422,18 +1454,8 @@ function toggleWs() {
 function importsOnly(/** @type {import('../repo').Hunk} */ h) {
   const runs = diffState.imports;
   if (!runs.length) return false;
-  let n = h.new_start - 1;
-  let changes = 0;
-  for (const r of h.rows) {
-    if (r.kind === 'context') {
-      n = r.new ?? n;
-      continue;
-    }
-    const at = r.kind === 'add' ? (n = r.new ?? n + 1) : n + 1;
-    if (!runs.some((f) => at >= f.line && at <= f.last)) return false;
-    changes++;
-  }
-  return changes > 0;
+  const at = changedLines(h);
+  return at.length > 0 && at.every((n) => runs.some((f) => n >= f.line && n <= f.last));
 }
 
 async function openDiff(/** @type {string} */ path) {
@@ -1534,7 +1556,12 @@ function openEditor() {
 }
 
 /* The ticks are placed in pixels read off the layout, so a resize of the overlay
-   or a wrap that moves rows has to place them again. */
-new ResizeObserver(() => { if (diffState.open) drawMap(); }).observe($('diffbody'));
+   or a wrap that moves rows has to place them again.
+   Once per frame, since a drag of a pane edge reports many sizes in one. */
+let mapFrame = 0;
+new ResizeObserver(() => {
+  if (!diffState.open || mapFrame) return;
+  mapFrame = requestAnimationFrame(() => { mapFrame = 0; drawMap(); });
+}).observe($('diffbody'));
 
 export { toggleWs, goTo, baseMenu, setView, diffState as state, openDiff as open, closeDiff as close, renderDiff as render, stepChange as step, loadFile, renderFiles, openEditor };

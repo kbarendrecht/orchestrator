@@ -286,12 +286,26 @@ fn trust_accepted(dir: &Path) -> Option<bool> {
 /// threads, and half of what the daemon reads is keyed on it. Setting it "for one
 /// test" sets it for whatever else is running at that moment.
 fn trust_accepted_in(home: &Path, dir: &Path) -> Option<bool> {
-    let raw = std::fs::read_to_string(home.join(".claude.json")).ok()?;
-    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    let entry = v.get("projects")?.get(dir.to_string_lossy().as_ref())?;
     // Present and false is untrusted. Present without the key is a project Claude
     // Code knows and has not recorded a decision for, which is not a refusal.
-    entry.get("hasTrustDialogAccepted")?.as_bool()
+    trust_recorded(&claude_projects(home)?, dir)
+}
+
+/// The `projects` map of `~/.claude.json`, where Claude Code records trust per
+/// directory. `None` for a file that is absent, unreadable or a shape that has
+/// changed: every caller reads that as "cannot tell".
+fn claude_projects(home: &Path) -> Option<serde_json::Value> {
+    let raw = std::fs::read_to_string(home.join(".claude.json")).ok()?;
+    let mut v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    Some(v.get_mut("projects")?.take())
+}
+
+/// The trust decision recorded for exactly `dir`, if there is one.
+fn trust_recorded(projects: &serde_json::Value, dir: &Path) -> Option<bool> {
+    projects
+        .get(dir.to_string_lossy().as_ref())?
+        .get("hasTrustDialogAccepted")?
+        .as_bool()
 }
 
 /// Whether a folder about to be opened has Claude Code's trust, for the open
@@ -309,15 +323,8 @@ pub fn trust_at_open(dir: &Path) -> Option<bool> {
 }
 
 fn trust_at_open_in(home: &Path, dir: &Path) -> Option<bool> {
-    let raw = std::fs::read_to_string(home.join(".claude.json")).ok()?;
-    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    let projects = v.get("projects")?;
-    let accepted = |d: &Path| {
-        projects
-            .get(d.to_string_lossy().as_ref())
-            .and_then(|e| e.get("hasTrustDialogAccepted"))
-            .and_then(serde_json::Value::as_bool)
-    };
+    let projects = claude_projects(home)?;
+    let accepted = |d: &Path| trust_recorded(&projects, d);
     // The folder's own answer when it has one, then the nearest folder above it
     // that says yes: trust given to a parent covers what is under it.
     if let Some(own) = accepted(dir) {

@@ -51,7 +51,6 @@ pub(crate) struct MovedOut {
 pub(crate) async fn move_out(
     app: &Arc<AppState>,
     _held: &crate::state::MainMove<'_>,
-    board: Board,
     at: Option<(&str, &std::path::Path)>,
 ) -> anyhow::Result<MovedOut> {
     let main = app.cfg.main_checkout.clone();
@@ -106,7 +105,6 @@ pub(crate) async fn move_out(
         .await??
     };
 
-    crate::worktree::finish_cut(app, board).await;
     app.register_worktree(&name, path.clone(), Some(git.branch.clone()))
         .await;
     // Main gave the branch away, and `reconcile` only adds: left in, main would go
@@ -138,10 +136,9 @@ pub(crate) async fn move_out(
 pub(crate) async fn move_out_carrying(
     app: &Arc<AppState>,
     held: &crate::state::MainMove<'_>,
-    board: Board,
     at: Option<(&str, &std::path::Path)>,
 ) -> Result<MovedOut> {
-    let out = move_out(app, held, board, at).await?;
+    let out = move_out(app, held, at).await?;
     for id in &out.records {
         carry_record(app, *id, &out.name, &out.path, &out.git.branch).await;
     }
@@ -443,7 +440,7 @@ pub(crate) async fn free_pr_branch(
         _ => return Ok(None),
     }
     refuse_if_main_is_busy(app, pr, head_ref).await?;
-    let out = move_out_carrying(app, &held, Board::Loud, Some((name, path))).await?;
+    let out = move_out_carrying(app, &held, Some((name, path))).await?;
     /* A log line rather than something in the response, for `park_main`'s reason:
     the checkout under every worktree just changed and that is worth recording, but
     there are several callers of this and threading a warning up through all of
@@ -668,7 +665,7 @@ pub(crate) async fn park_main(app: &Arc<AppState>) {
     }
 
     if !about.is_empty() {
-        match move_out_carrying(app, &held, Board::Quiet, None).await {
+        match move_out_carrying(app, &held, None).await {
             Ok(out) => {
                 tracing::info!(
                     branch = %out.git.branch, tree = %out.name, sessions = out.records.len(),
@@ -788,7 +785,7 @@ pub(crate) async fn switch_main_to_pr(
     if let Some(on) = on.filter(|on| Some(on) != base.as_ref() && on != head_ref) {
         let (_, about) = to_carry(app, MAIN, &on).await;
         if !about.is_empty() {
-            let out = move_out_carrying(app, held, Board::Loud, None).await?;
+            let out = move_out_carrying(app, held, None).await?;
             tracing::info!(
                 branch = %out.git.branch, tree = %out.name, sessions = out.records.len(),
                 "main is leaving {on} for {head_ref}, so {on} moved out with its sessions"

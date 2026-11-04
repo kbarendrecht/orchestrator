@@ -80,10 +80,9 @@ export async function reviewAndAdd(path) {
   /* **A folder without git is a question first.** orchd runs on git, so the one
      way such a folder opens is by becoming a git project, and that writes into
      it: asked, never assumed. */
-  let target = path;
   try {
     const v = await callHost('/api/host/validate', { path });
-    target = v.path;
+    path = v.path;
     if (v.git === false) {
       const yes = await confirmBox(
         `${v.name} is not a git project. Make it one so it can open? This runs git init there and commits what is in it now.`,
@@ -94,14 +93,13 @@ export async function reviewAndAdd(path) {
         return;
       }
       setMessage('making it a git project…');
-      ({ path: target } = await callHost('/api/host/git-init', { path: v.path }));
+      ({ path } = await callHost('/api/host/git-init', { path }));
     }
   } catch (e) {
     setMessage(reason(e), true);
     toPanel('welcome');
     return;
   }
-  path = target;
   toPanel('review');
   /** @type {import('../serve').Detected} */
   let found;

@@ -1862,7 +1862,6 @@ button.settings-co:hover{color:var(--text);background:var(--hover)}
 /* The diff and its change map. `position:relative` on the diff makes it the
    rows' offsetParent, which is what the map's ticks are measured against. */
 .diffwrap{flex:1;display:flex;min-height:0}
-.diff{position:relative;min-width:0}
 .diffmap{flex:0 0 12px;position:relative;background:var(--surface);border-left:1px solid var(--line-soft)}
 .diffmap .tick{position:absolute;left:3px;right:3px;padding:0;border:0;border-radius:1px;cursor:pointer;background:var(--faint-solid)}
 .diffmap .tick.add{background:var(--ok)}
@@ -1871,7 +1870,7 @@ button.settings-co:hover{color:var(--text);background:var(--hover)}
 .diffmap .tick.cur{left:0;right:0;box-shadow:0 0 0 1px var(--text)}
 .diffmap .tick:hover{left:1px;right:1px}
 #ovws[aria-pressed="true"]{background:var(--raised);color:var(--text);box-shadow:inset 0 0 0 1px var(--line)}
-.diff{flex:1;overflow:auto;font-family:var(--code);font-size:calc(var(--code-px,11.5px) * var(--fs));line-height:1.65}
+.diff{position:relative;min-width:0;flex:1;overflow:auto;font-family:var(--code);font-size:calc(var(--code-px,11.5px) * var(--fs));line-height:1.65}
 /* align-content:start matters: the grid is taller than its rows, and the
    default `stretch` hands the leftover height to every auto-sized row, so a
    one-line diff row renders four lines tall. */

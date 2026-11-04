@@ -991,7 +991,7 @@ $('filestree').onclick = (ev) => Diff.setView('files', ev);
 $('ovws').onclick = async () => {
   // A re-diff replaces what the editor is showing, so an open edit goes first.
   if (Editor.isOpen() && !(await Editor.close())) return;
-  Diff.toggleWs();
+  void Diff.toggleWs();
 };
 $('ovmode').onclick = async (ev) => {
   // A press on the half that is already open asks for nothing.

@@ -117,8 +117,12 @@ pub fn in_args(args: impl IntoIterator<Item = String>) -> Option<String> {
         .find(|a| a.starts_with(&format!("{SCHEME}:")))
 }
 
+/// The host's token file, wherever this process's config dir is: a session's
+/// shell inherits its checkout's `checkouts/<key>`, and the host writes the token
+/// at the root above it.
 fn token_path() -> Result<PathBuf> {
-    Ok(orchd::config::Config::config_dir()?.join(TOKEN_FILE))
+    let dir = orchd::config::Config::config_dir()?;
+    Ok(orchd::instance::host_config_dir(&dir).join(TOKEN_FILE))
 }
 
 /// Leave the host token where a second launch can find it.
@@ -169,19 +173,10 @@ pub(crate) fn send(port: u16, token: &str, url: &str) -> Result<()> {
 /// so this module names nothing in `host`. With no app running there is nothing
 /// to open it in, and the answer says so rather than starting one behind the shell.
 ///
-/// **The token is the host's, and a session's shell is not the host's.** A
-/// hosted child runs with `ORCHD_CONFIG_DIR` set to `<root>/checkouts/<key>`,
-/// and every session and drawer terminal inherits it, so the plain
-/// [`token_path`] there names a file the host never writes. The root is two up.
+/// From a session's shell too: [`token_path`] finds the host's root from the
+/// `checkouts/<key>` that shell inherits.
 pub fn open_project(port: u16, path: &str) -> Result<()> {
-    let own = token_path()?;
-    let hosted = own
-        .parent()
-        .filter(|d| d.parent().and_then(|p| p.file_name()) == Some("checkouts".as_ref()))
-        .and_then(|d| d.parent()?.parent())
-        .map(|root| root.join(TOKEN_FILE));
-    let token = std::fs::read_to_string(&own)
-        .or_else(|e| hosted.map_or(Err(e), std::fs::read_to_string))
+    let token = std::fs::read_to_string(token_path()?)
         .context("the app is not running; start it, then run this again")?;
     post(
         port,

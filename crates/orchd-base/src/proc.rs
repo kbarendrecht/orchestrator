@@ -92,23 +92,6 @@ pub fn stop_bounded() {
 /// to ask for a pty, not for this.
 pub type LineSink = std::sync::Arc<dyn Fn(&str) + Send + Sync>;
 
-/// [`run_bounded`], reporting each line as the child writes it.
-///
-/// For a command a person is waiting on: a worktree cut is a fetch, a checkout of
-/// 18k files and a warm-up, and the board had one word for all of it. The `Output`
-/// is unchanged — the sink is a copy of the stream, not a replacement — so a
-/// caller that also reads stdout as a protocol (`WorktreeCreate` prints the path
-/// it made) keeps working.
-pub fn run_bounded_streaming(
-    cwd: &Path,
-    timeout_secs: u64,
-    argv: &[String],
-    label: &str,
-    sink: LineSink,
-) -> Result<Output> {
-    run_bounded_with_input(cwd, timeout_secs, argv, label, None, &[], Some(sink))
-}
-
 /// Read one pipe to the end, keeping every byte and announcing whole lines.
 ///
 /// Kept as one function with the sink optional, because the two behaviours differ
@@ -218,7 +201,10 @@ pub fn stderr_tail(stderr: &[u8]) -> String {
 /// that is writing output before it finishes reading.
 ///
 /// `envs` are added to the child's inherited environment, and `sink` — if there is
-/// one — sees each line as the child writes it; see [`run_bounded_streaming`].
+/// one — sees each line as the child writes it, for a command a person is waiting
+/// on. The `Output` is unchanged by it: the sink is a copy of the stream, so a
+/// caller that also reads stdout as a protocol (`WorktreeCreate` prints the path
+/// it made) keeps working.
 pub fn run_bounded_with_input(
     cwd: &Path,
     timeout_secs: u64,
@@ -525,8 +511,16 @@ mod tests {
                 seen.lock().map(|v| v.len()).unwrap_or(0)
             })
         };
-        let out =
-            run_bounded_streaming(&std::env::temp_dir(), 10, &argv, "test", sink).expect("it ran");
+        let out = run_bounded_with_input(
+            &std::env::temp_dir(),
+            10,
+            &argv,
+            "test",
+            None,
+            &[],
+            Some(sink),
+        )
+        .expect("it ran");
         assert!(out.status.success());
         assert!(
             began.elapsed() >= Duration::from_millis(900),
@@ -575,7 +569,16 @@ mod tests {
             // all — all on stderr, which is where a script reports its steps.
             "printf '  … step one\\r\\033[K  ✔ step one\\nno newline here' 1>&2".to_string(),
         ];
-        run_bounded_streaming(&std::env::temp_dir(), 10, &argv, "test", sink).expect("it ran");
+        run_bounded_with_input(
+            &std::env::temp_dir(),
+            10,
+            &argv,
+            "test",
+            None,
+            &[],
+            Some(sink),
+        )
+        .expect("it ran");
         let seen = seen.lock().expect("not poisoned").clone();
         assert_eq!(
             seen,

@@ -380,18 +380,8 @@ impl Host {
                 anyhow::ensure!(band <= 4, "a band is 1 to 4, or 0 for the automatic one");
                 label.band = (band > 0).then_some(band);
             }
-            update_host_file(|file| {
-                if label == Label::default() {
-                    file.labels.remove(path);
-                } else {
-                    file.labels.insert(path.to_string(), label.clone());
-                }
-            })?;
-            if label == Label::default() {
-                labels.remove(path);
-            } else {
-                labels.insert(path.to_string(), label);
-            }
+            update_host_file(|file| put_label(&mut file.labels, path, label.clone()))?;
+            put_label(&mut labels, path, label);
         }
         let mut open = locked(&self.checkouts);
         name_the_set(&mut open, &locked(&self.labels));
@@ -1087,6 +1077,16 @@ pub fn remembered_checkouts() -> Vec<PathBuf> {
         None => orchd::config::Config::existing()
             .map(|cfg| vec![cfg.main_checkout])
             .unwrap_or_default(),
+    }
+}
+
+/// Store a label, or drop it when it holds nothing: the file and the map in
+/// memory keep one rule, so a cleared label leaves no empty entry in either.
+fn put_label(labels: &mut std::collections::BTreeMap<String, Label>, path: &str, label: Label) {
+    if label == Label::default() {
+        labels.remove(path);
+    } else {
+        labels.insert(path.to_string(), label);
     }
 }
 
@@ -1883,12 +1883,9 @@ async fn host_socket_loop(host: Arc<Host>, mut socket: axum::extract::ws::WebSoc
     let mut sub = host.changes.subscribe();
     let mut links = host.links.subscribe();
     let mut projects = host.projects.subscribe();
-    async fn send_open(
-        socket: &mut axum::extract::ws::WebSocket,
-        file: &crate::link::OpenFile,
-    ) -> bool {
-        let text = json!({ "open": file }).to_string();
-        socket.send(Message::Text(text)).await.is_ok()
+    // A page request is one JSON frame, a link to open or a folder to open.
+    async fn send_json(socket: &mut axum::extract::ws::WebSocket, v: serde_json::Value) -> bool {
+        socket.send(Message::Text(v.to_string())).await.is_ok()
     }
     async fn send(socket: &mut axum::extract::ws::WebSocket, list: Vec<Checkout>) -> bool {
         let Ok(text) = serde_json::to_string(&json!({ "checkouts": list })) else {
@@ -1905,31 +1902,27 @@ async fn host_socket_loop(host: Arc<Host>, mut socket: axum::extract::ws::WebSoc
     // After the list, so the page knows the checkout the file is in.
     let held = locked(&host.pending_link).take();
     if let Some(file) = held {
-        if !send_open(&mut socket, &file).await {
+        if !send_json(&mut socket, json!({ "open": file })).await {
             return;
         }
         tracing::info!(path = %file.path, "a held link went to the page");
     }
     let held = locked(&host.pending_project).take();
     if let Some(path) = held {
-        if socket
-            .send(Message::Text(json!({ "project": path }).to_string()))
-            .await
-            .is_err()
-        {
+        if !send_json(&mut socket, json!({ "project": path })).await {
             return;
         }
     }
     loop {
         tokio::select! {
             path = projects.recv() => match path {
-                Ok(path) => if socket.send(Message::Text(json!({ "project": path }).to_string())).await.is_err() { break },
+                Ok(path) => if !send_json(&mut socket, json!({ "project": path })).await { break },
                 // A request, like a link: a missed one is not repaired by a later one.
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                 Err(_) => break,
             },
             file = links.recv() => match file {
-                Ok(file) => if !send_open(&mut socket, &file).await { break },
+                Ok(file) => if !send_json(&mut socket, json!({ "open": file })).await { break },
                 // A link is a click, not state: a missed one is not repaired by a
                 // later one, and a page this far behind is not being looked at.
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}

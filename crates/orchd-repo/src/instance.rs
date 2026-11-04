@@ -138,6 +138,20 @@ pub fn lock_path(config_dir: &Path, checkout: Option<&Path>) -> PathBuf {
     }
 }
 
+/// The host's own config dir, from any process's: the root above
+/// `checkouts/<key>` for a hosted child and for everything it spawns, which
+/// inherit its `ORCHD_CONFIG_DIR`, else `config_dir` itself. Beside
+/// [`lock_path`] because both read the one layout, and a second copy of it is the
+/// one that would go stale when the layout moves.
+pub fn host_config_dir(config_dir: &Path) -> PathBuf {
+    match config_dir.parent() {
+        Some(checkouts) if checkouts.file_name() == Some("checkouts".as_ref()) => checkouts
+            .parent()
+            .map_or_else(|| config_dir.to_path_buf(), Path::to_path_buf),
+        _ => config_dir.to_path_buf(),
+    }
+}
+
 /// The name of a checkout's state directory: `<leaf>-<hash>`.
 ///
 /// **The hash is over the checkout path alone**, so the directory is a function of
@@ -284,6 +298,18 @@ fn acquire_within(path: PathBuf, patience: std::time::Duration) -> Result<Lock> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A hosted child's dir, and so its sessions', leads back to the host's root;
+    /// the root leads to itself.
+    #[test]
+    fn the_host_dir_is_the_root_above_a_checkouts_dir() {
+        let root = Path::new("/cfg/orchd");
+        assert_eq!(
+            host_config_dir(&root.join("checkouts").join("app-1a2b")),
+            root
+        );
+        assert_eq!(host_config_dir(root), root);
+    }
 
     fn scratch(tag: &str) -> PathBuf {
         crate::testutil::scratch(&format!("lock-{tag}")).join("instance.pid")

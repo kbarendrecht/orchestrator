@@ -314,8 +314,6 @@ pub async fn revive(
         .map_err(|e| anyhow::anyhow!("rebuild task failed: {e}"))??;
     drop(cutting);
 
-    finish_cut(app, Board::Loud).await;
-
     app.register_worktree(&name, cwd.to_path_buf(), Some(branch.clone()))
         .await;
 
@@ -730,7 +728,7 @@ pub(crate) fn repo_worktree_hooks(main: &std::path::Path, event: &str) -> Vec<St
 /// A sink whose lines land in the snapshot, so a script a person is waiting on
 /// says what it is doing.
 ///
-/// Returns the sink to hand to [`crate::proc::run_bounded_streaming`] and the task
+/// Returns the sink to hand to [`crate::proc::run_bounded_with_input`] and the task
 /// that drains it. **Await the task after the blocking call**: the sink is dropped
 /// with the closure that held it, which closes the channel, which is what ends the
 /// task — so awaiting it before the command finishes would hang.
@@ -876,28 +874,6 @@ fn remove_payload(main: &std::path::Path, path: &std::path::Path) -> serde_json:
     })
 }
 
-// ---------------------------------------------------------------------------
-// The post-create seam
-// ---------------------------------------------------------------------------
-//
-// Here rather than in `spawn`, because a rebuilt worktree needs the same scripts
-// as a fresh one and `revive` is in this file — which made `worktree` and `spawn`
-// call each other over one function. Cutting the tree is this module's job, and
-// the scripts that finish the cut are part of it.
-
-/// The end of a cut the board was watching.
-///
-/// What is left of the post-create seam, which used to run the repo's
-/// `worktree_init` and `worktree_setup` here. Nobody set them, and a repo that
-/// does its setup in `WorktreeCreate` is served by [`create_worktree`] running
-/// that hook. The board still needs telling the create is over, so every caller
-/// that cut a tree for a person ends here. See `AppState::create_end`.
-pub(crate) async fn finish_cut(app: &Arc<AppState>, board: Board) {
-    if board.is_loud() {
-        app.create_end().await;
-    }
-}
-
 /// What the daemon needs the new worktree to have checked out.
 ///
 /// The repo's `WorktreeCreate` hook decides its own branch and base, so whatever it
@@ -951,9 +927,26 @@ pub(crate) async fn create_worktree(
     want: Want<'_>,
     board: Board,
 ) -> Result<std::path::PathBuf> {
+    // A loud cut is a report on the board, and it ends here on success the way
+    // `cut_worktree` ends it on failure: the board says when the tree is ready.
+    let made = cut_worktree(app, name, path, want, board).await?;
+    if board.is_loud() {
+        app.create_end().await;
+    }
+    Ok(made)
+}
+
+/// [`create_worktree`]'s work, with the board's report left open on success.
+async fn cut_worktree(
+    app: &Arc<AppState>,
+    name: &str,
+    path: &std::path::Path,
+    want: Want<'_>,
+    board: Board,
+) -> Result<std::path::PathBuf> {
     // The board's report on this cut starts here, because this is where the first
     // script runs: the repo's own `WorktreeCreate` is usually the whole of the wait.
-    // Ended by `finish_cut`, which every caller of this runs after it, and
+    // Ended by `create_worktree` on success, and
     // on the error path below.
     if board.is_loud() {
         app.create_begin(name).await;

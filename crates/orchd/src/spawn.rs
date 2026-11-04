@@ -1106,7 +1106,6 @@ pub async fn spawn_worktree_session(
                     Board::Loud,
                 )
                 .await?;
-                crate::worktree::finish_cut(app, Board::Loud).await;
                 path
             }
         };
@@ -1621,8 +1620,6 @@ pub async fn ensure_pr_worktree_at(
             Board::Loud,
         )
         .await?;
-        // Only when we actually cut it: the board was told a create began.
-        crate::worktree::finish_cut(app, Board::Loud).await;
     }
     app.register_worktree(&name, path, Some(head_ref.to_string()))
         .await;
