@@ -3082,10 +3082,16 @@ try {
   })
   await page.waitForFunction(() => document.getElementById('fvpath')?.textContent === 'other.md',
     null, { timeout: 5000 })
-  const second = await page.$$eval('#fvsrc .fnrow', (rs) => {
-    const r = rs.find((x) => x.textContent === 'two')?.getBoundingClientRect()
-    return r ? { x: r.left + 40, y: r.top + r.height / 2 } : null
-  })
+  /* **Waited for until it has a size, not read once.** `#fvpath` names the file
+     before its rows are laid out, so a single read could find the row at
+     0×0 — and a right-click at `y: 0` lands on the window's top resize handle,
+     which opens no menu. That is how this failed five CI runs in a row from
+     2026-11-03, on commits that never touched the viewer. */
+  const second = await page.waitForFunction(() => {
+    const r = [...document.querySelectorAll('#fvsrc .fnrow')]
+      .find((x) => x.textContent === 'two')?.getBoundingClientRect()
+    return r && r.width > 0 && r.height > 0 ? { x: r.left + 40, y: r.top + r.height / 2 } : null
+  }, null, { timeout: 5000 }).then((h) => h.jsonValue()).catch(() => null)
   /* Toasts first: the stack hangs from the top of the window, and the earlier
      cases leave a few up. A long enough stack covers this row, and the right
      click then lands on a toast and opens nothing. */
