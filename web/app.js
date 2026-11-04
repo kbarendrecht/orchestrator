@@ -3,7 +3,7 @@
 // The SPA is a module now, so what it reaches for is written down. `core.js` holds
 // the primitives every part needs; `queue.js` is the first seam extracted whole.
 import {
-$, AGENT_LABEL, bandOf, el, icon, paintBadge, toast, reason, safeHref, copyText, call, callHost, get, activeCheckout, CHECKOUTS, setCheckouts, HOST, snapshotOf, repoSummary, everySession, enterCheckout, snap, receive, keyActivate, setZoom, setUiPx, uiPx, saveZoom, onScaleChange, onNoFocusBack, ZOOM, selected, setSelected, onSelection, prForWorkspace, terms, CHROME, stateLabel, sessionDot, isWaiting, isArchived, byNewest, currentSession, activeWorkspaceId, currentWorkspaceId, closeMenu, menuOpen, openMenu, callOn, newSession, newWorktree, newShell, mainWorkspace, workspaceById, prState, prSeverity, prsOf, handedToPr, drawerCollapsed, setDrawerCollapsed, pendingSelect, setPendingSelect, onDrawerChange, onCreatingChange, creating, creatingIn, startingShown, appMod, IS_MAC, MOD_LABEL, closeLegend, toggleLegend, typingElsewhere, mark, reportBoot, dialogOpen, dismissDialog, promptBox, bytesOn, unchanged, tick,
+$, AGENT_LABEL, el, icon, toast, reason, safeHref, copyText, call, callHost, get, activeCheckout, CHECKOUTS, setCheckouts, HOST, snapshotOf, repoSummary, everySession, enterCheckout, snap, receive, keyActivate, setZoom, setUiPx, uiPx, saveZoom, onScaleChange, onNoFocusBack, ZOOM, selected, setSelected, onSelection, prForWorkspace, terms, CHROME, stateLabel, sessionDot, isWaiting, isArchived, byNewest, currentSession, activeWorkspaceId, currentWorkspaceId, closeMenu, menuOpen, openMenu, callOn, newSession, newWorktree, newShell, mainWorkspace, workspaceById, prState, prSeverity, prsOf, handedToPr, drawerCollapsed, setDrawerCollapsed, pendingSelect, setPendingSelect, onDrawerChange, onCreatingChange, creating, creatingIn, startingShown, appMod, IS_MAC, MOD_LABEL, closeLegend, toggleLegend, typingElsewhere, mark, reportBoot, dialogOpen, dismissDialog, promptBox, bytesOn, unchanged, tick,
 } from './js/core.js';
 import { onThemeChange } from './js/theme.js';
 import { detailEl, symbolAt } from './js/source.js';
@@ -722,9 +722,6 @@ function renderContext() {
   // The same class list the rail row draws, so the two cannot disagree about what
   // this session is — see `sessionDot`.
   $('ctxdot').className = s ? sessionDot(s) : 'dot sdot idle';
-  const badge = $('ctxbadge');
-  badge.hidden = CHECKOUTS.length < 2;
-  if (!badge.hidden) paintBadge(badge, activeCheckout(), bandOf(activeCheckout().path));
   $('ctxname').textContent = s ? Rail.rowName(s, { id: wsId }) : (wsId || 'no session');
   $('ctxforked').hidden = !(s && s.forked_from);
   /* The agent, when it is a question at all: only when this checkout's open

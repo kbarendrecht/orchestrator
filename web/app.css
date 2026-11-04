@@ -477,7 +477,7 @@ button.ctx-btn:hover{color:var(--text)}
    here as it does everywhere else. */
 .co-count.attn{color:var(--attn)}
 /* A checkout's badge: its initials on its colour, in the rail header, the PR
-   pane, the review queue, the session bar and the settings list. `paintBadge`
+   pane, the review queue and the settings list. `checkoutBadge`
    says why it replaced the band. Sized on the UI scale, so it grows with the text
    beside it; at the default scale it is the 18px the design settled on. Past the
    palette it has no `data-band` and stays grey. */
@@ -492,11 +492,9 @@ button.ctx-btn:hover{color:var(--text)}
 .co-badge[data-band="3"]{background:var(--co-3-fill);color:var(--co-3-ink)}
 .co-badge[data-band="4"]{background:var(--co-4-fill);color:var(--co-4-ink)}
 /* 8px either side of the badge wherever it sits, from each row's own gap: the
-   rail header's is 6, the session bar's 12, the settings heading's 7, and the PR
-   and review heads already have 8. A margin of 8 on top of those was what put
-   the session bar's badge twice as far from the name as from the dot. */
+   rail header's is 6, the settings heading's 7, and the PR and review heads
+   already have 8. A flat margin on top of those spaced each one differently. */
 .co-head .co-badge{margin:0 2px}
-.top-c .co-badge{margin:0 -4px}
 .settings-tgroup .co-badge{margin-right:1px}
 /* A name, not a label — which is the whole of what changed here.
    It used to be 10px, 700, tracked .08em: an `.eyebrow` with one pixel and half

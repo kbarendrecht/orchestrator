@@ -338,7 +338,7 @@ export function badgeText(name) {
   return two.toUpperCase();
 }
 
-/** Paint a checkout's badge onto `node`: its initials on its colour.
+/** A checkout's badge: its initials on its colour.
  *
  *  **A badge, where this was a band.** A 3px edge on the rail header, the PR pane
  *  and the review queue said "this colour is this checkout" only to someone who had
@@ -348,25 +348,13 @@ export function badgeText(name) {
  *  checkouts sharing a colour is worse than one having none, and grey repeats
  *  nobody's colour while keeping the letters.
  *
- *  @param {HTMLElement} node
- *  @param {Target} c
- *  @param {number | null} band
- */
-export function paintBadge(node, c, band) {
-  node.textContent = badgeText(c.name);
-  if (band) node.dataset.band = String(band);
-  else delete node.dataset.band;
-  node.title = c.name;
-}
-
-/** A new badge for a checkout, for the places that build their header each draw.
- *
  *  @param {Target} c
  *  @param {number | null} band
  */
 export function checkoutBadge(c, band) {
-  const node = el('span', 'co-badge');
-  paintBadge(node, c, band);
+  const node = el('span', 'co-badge', badgeText(c.name));
+  if (band) node.dataset.band = String(band);
+  node.title = c.name;
   return node;
 }
 
