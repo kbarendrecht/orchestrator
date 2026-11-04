@@ -326,6 +326,50 @@ export function bandOf(path) {
   return n < BANDS ? n + 1 : null;
 }
 
+/** Two letters for a checkout: the first of each of its first two words, or its
+ *  first two letters when it is one word — `inventory-api` is IA, `orchestrator`
+ *  OR. Read from the name you see, so a rename moves the badge with it.
+ *
+ *  @param {string} name
+ */
+export function badgeText(name) {
+  const words = name.split(/[-_.\s]+/).filter(Boolean);
+  const two = words.length > 1 ? words[0][0] + words[1][0] : (words[0] ?? name).slice(0, 2);
+  return two.toUpperCase();
+}
+
+/** Paint a checkout's badge onto `node`: its initials on its colour.
+ *
+ *  **A badge, where this was a band.** A 3px edge on the rail header, the PR pane
+ *  and the review queue said "this colour is this checkout" only to someone who had
+ *  already matched the colours up; the initials say which on their own, and the
+ *  colour reinforces them rather than standing in for them. Past the palette the
+ *  badge is grey rather than absent: the band was left off there because two
+ *  checkouts sharing a colour is worse than one having none, and grey repeats
+ *  nobody's colour while keeping the letters.
+ *
+ *  @param {HTMLElement} node
+ *  @param {Target} c
+ *  @param {number | null} band
+ */
+export function paintBadge(node, c, band) {
+  node.textContent = badgeText(c.name);
+  if (band) node.dataset.band = String(band);
+  else delete node.dataset.band;
+  node.title = c.name;
+}
+
+/** A new badge for a checkout, for the places that build their header each draw.
+ *
+ *  @param {Target} c
+ *  @param {number | null} band
+ */
+export function checkoutBadge(c, band) {
+  const node = el('span', 'co-badge');
+  paintBadge(node, c, band);
+  return node;
+}
+
 /** Go to a checkout, carrying a selection with you.
  *
  *  **"Activate that checkout" has to mean "select something in it"**, because the

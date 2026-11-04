@@ -1,7 +1,7 @@
 // The rail: what is running, what is waiting on you, and the PRs beside it.
 // Twenty-four names, three out; the rest is how a row decides what it says.
 
-import { $, activeCheckout, AGENT_LABEL, ageLabel, bandOf, byNewest, call, callFor, callHost, callOn, caret, checkoutOf, CHECKOUTS, chooseBox, clock, confirmBox, promptBox, copyText, creating, creatingIn, creatingIntoMain, dotClass, el, enterCheckout, icon, iconLabel, getHost, getOn, handedToPr, hasPr, inTrouble, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, QUEUE_MAX, reason, refreshButton, repoSummary, safeHref, selected, sessionDot, sessionsOf, sessionOrder, setPendingSelect, setSelected, setSessionOrder, snap, snapshotFor, snapshotOf, startingShown, stateClass, stateLabel, terms, toast, paintSig, reconcile, unchanged, watchStarting } from './core.js';
+import { $, activeCheckout, AGENT_LABEL, ageLabel, bandOf, byNewest, call, callFor, callHost, callOn, caret, checkoutBadge, checkoutOf, CHECKOUTS, chooseBox, clock, confirmBox, promptBox, copyText, creating, creatingIn, creatingIntoMain, dotClass, el, enterCheckout, icon, iconLabel, getHost, getOn, handedToPr, hasPr, inTrouble, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, QUEUE_MAX, reason, refreshButton, repoSummary, safeHref, selected, sessionDot, sessionsOf, sessionOrder, setPendingSelect, setSelected, setSessionOrder, snap, snapshotFor, snapshotOf, startingShown, stateClass, stateLabel, terms, toast, paintSig, reconcile, unchanged, watchStarting } from './core.js';
 import * as Open from './open.js';
 import * as Term from './term.js';
 
@@ -222,12 +222,6 @@ function renderRail() {
       fill: (/** @type {HTMLElement} */ g) => fillPrGroup(prpane, g),
     }]);
   } else {
-    /* The band is set on the pane itself by `fillPrGroup`, so the arm that does
-       not call it has to take it off: with two checkouts open, the one-line notice
-       otherwise wears the previous checkout's colour — which is the one thing the
-       band exists to say. */
-    prpane.classList.remove('pr-of-checkout');
-    prpane.style.removeProperty('--band');
     reconcile(prpane, [{ key: 'noforge', sig: chrome, build: () => noForge() }]);
   }
 }
@@ -639,11 +633,6 @@ function checkoutHead(c) {
      sighted reader gets the brighter text. */
   const head = el('div', 'co-head');
   head.title = repoSummary(c);
-  const band = bandOf(c.path);
-  if (band) {
-    head.dataset.band = String(band);
-    head.style.setProperty('--band', `var(--co-${band})`);
-  }
   const shut = folded.has(c.path);
   if (shut) head.classList.add('folded');
   if (!c.live) head.classList.add('down');
@@ -664,6 +653,11 @@ function checkoutHead(c) {
      and it cost nothing to answer. A *single* click stays "go there": the name
      already means that, and one gesture cannot mean both. */
   head.ondblclick = () => setFolded(c.path, !shut);
+
+  /* Hidden from a screen reader: the name beside it says the same, in full. */
+  const badge = checkoutBadge(c, bandOf(c.path));
+  badge.setAttribute('aria-hidden', 'true');
+  head.appendChild(badge);
 
   const name = el('button', 'co-name', c.name);
   name.type = 'button';
@@ -967,18 +961,11 @@ function noForge() {
 function fillPrGroup(/** @type {HTMLElement} */ block, /** @type {HTMLElement} */ group) {
   const prs = snap.prs || [];
   /* It lists one checkout's PRs — the one you are in — and it sits below the
-     scroller, so the block whose colour would have said which has scrolled away.
-     The band says it instead. Only with several checkouts open, like every other
-     piece of this chrome. */
-  /* On the *block*, not on this group, and that is a fix rather than a detail: the
-     band drew down `.ws`, which ends where its rows do, while the block below it
-     carries the pane's own bottom padding — so the stripe stopped short of the
-     window edge and read as an unfinished line. The review queue's is on its block
-     for the same reason. */
-  const band = CHECKOUTS.length > 1 ? bandOf(activeCheckout().path) : null;
-  block.classList.toggle('pr-of-checkout', !!band);
-  if (band) block.style.setProperty('--band', `var(--co-${band})`);
-  else block.style.removeProperty('--band');
+     scroller, so the header whose badge would have said which has scrolled away.
+     Its own head wears the badge instead. Only with several checkouts open, like
+     every other piece of this chrome. */
+  const owner = CHECKOUTS.length > 1 ? activeCheckout() : null;
+  const band = owner ? bandOf(owner.path) : null;
 
   /* Whether there is an age to show, not what it says: `paintSig` drops every
      `_ms` field, because the text is a `data-clock` node `tick` rewrites in
@@ -986,10 +973,10 @@ function fillPrGroup(/** @type {HTMLElement} */ block, /** @type {HTMLElement} *
      `refreshButton` clears the spinner it started when that counter moves. */
   const hasAge = snap.pr_age_ms != null && !snap.pr_polling;
   const headSig = paintSig([showPrs, prs, snap.pr_error, snap.pr_poll ?? 0,
-    !!snap.pr_polling, hasAge, band]);
+    !!snap.pr_polling, hasAge, band, owner?.name]);
 
   /** @type {any[]} */
-  const items = [{ key: 'head', sig: headSig, build: () => prHead(prs) }];
+  const items = [{ key: 'head', sig: headSig, build: () => prHead(prs, owner, band) }];
   if (!showPrs) {
     reconcile(group, items);
     return;
@@ -1010,12 +997,17 @@ function fillPrGroup(/** @type {HTMLElement} */ block, /** @type {HTMLElement} *
   reconcile(group, items);
 }
 
-/** The PR pane's head: the count, the poll age and the refresh button. */
-function prHead(/** @type {any[]} */ prs) {
+/** The PR pane's head: whose PRs, the count, the poll age and the refresh button.
+ *
+ *  @param {any[]} prs
+ *  @param {import('./core.js').Target | null} owner the checkout, with several open
+ *  @param {number | null} band */
+function prHead(prs, owner, band) {
   const head = el('button', 'prgroup-head');
   head.setAttribute('aria-expanded', String(showPrs));
   head.appendChild(caret());
   head.appendChild(el('span', 'eyebrow', 'PRs'));
+  if (owner) head.appendChild(checkoutBadge(owner, band));
 
   // The summary sits where the detail already is, rather than duplicated at
   // the top of the rail (§9).

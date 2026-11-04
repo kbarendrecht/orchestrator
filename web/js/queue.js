@@ -3,7 +3,7 @@
 // The first seam to become a real module: five names, one of which leaves. What
 // it needs from elsewhere is now an import list rather than an assumption about
 // what happens to be in scope.
-import { $, activeCheckout, bandOf, call, caret, CHECKOUTS, CHROME, clock, compactAge, confirmBox, copyText, el, icon, keyActivate, openMenu, QUEUE_MAX, refreshButton, safeHref, snap, toast, unchanged } from './core.js';
+import { $, activeCheckout, bandOf, call, caret, checkoutBadge, CHECKOUTS, CHROME, clock, compactAge, confirmBox, copyText, el, icon, keyActivate, openMenu, QUEUE_MAX, refreshButton, safeHref, snap, toast, unchanged } from './core.js';
 
 /** Above this many, the press asks first.
  *
@@ -151,8 +151,6 @@ function renderReviews() {
     if (!block.hidden) {
       head.replaceChildren();
       list.replaceChildren();
-      block.classList.remove('rv-of-checkout');
-      block.style.removeProperty('--band');
       headDrawn.sig = null;
       listDrawn.sig = null;
       block.hidden = true;
@@ -162,18 +160,14 @@ function renderReviews() {
   block.hidden = false;
 
   block.classList.toggle('closed', !showReviews);
-  /* The same band the PR pane wears, for the same reason it wears it: this pane
+  /* The same badge the PR pane wears, for the same reason it wears it: this pane
      answers for one checkout — the one you are in — and it sits below a scroller,
-     so the coloured block that would have said which has scrolled away. The two
-     panes are a pair (yours bottom-left, your colleagues' bottom-right) and one
-     of them saying which checkout it means while the other does not is the pair
-     disagreeing about a question they both answer.
-     On the right edge rather than the left, which is the one thing that differs:
-     each band runs down the outer edge of its own column. */
-  const band = CHECKOUTS.length > 1 ? bandOf(activeCheckout().path) : null;
-  block.classList.toggle('rv-of-checkout', !!band);
-  if (band) block.style.setProperty('--band', `var(--co-${band})`);
-  else block.style.removeProperty('--band');
+     so the header that would have said which has scrolled away. The two panes are
+     a pair (yours bottom-left, your colleagues' bottom-right) and one of them
+     saying which checkout it means while the other does not is the pair
+     disagreeing about a question they both answer. */
+  const owner = CHECKOUTS.length > 1 ? activeCheckout() : null;
+  const band = owner ? bandOf(owner.path) : null;
   /* Whether there is an age to show, not what it says: the text itself is a
      `data-clock` node that `tick` rewrites in place once a second, and
      `paintSig` drops `reviews_age_ms` for exactly that reason.
@@ -181,7 +175,7 @@ function renderReviews() {
      started when that counter moves, and it can only do that when it is built. */
   const hasAge = snap.reviews_age_ms != null && !snap.reviews_polling;
   const drawHead = !unchanged(headDrawn, [showReviews, rv,
-    snap.reviews_poll ?? 0, !!snap.reviews_polling, hasAge, requestedOnly]);
+    snap.reviews_poll ?? 0, !!snap.reviews_polling, hasAge, requestedOnly, band, owner?.name]);
   const drawList = !unchanged(listDrawn, [showReviews, showBlockedReviews, rv, requestedOnly]);
   if (!drawHead && !drawList) return;
   if (drawHead) head.replaceChildren();
@@ -194,6 +188,7 @@ function renderReviews() {
        can be dragged to 230px — and `PRs` in the mirroring pane bottom-left is
        already one word. The pane is still the review queue everywhere else. */
     head.appendChild(el('span', 'eyebrow', 'Reviews'));
+    if (owner) head.appendChild(checkoutBadge(owner, band));
   }
   const count = el('span', 'rvcount');
 

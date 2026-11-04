@@ -1,7 +1,7 @@
 // The settings panel. The zoom control it offers lives in core, because the
 // terminals read the scale too.
 
-import { AGENT_LABEL, CHECKOUTS, activeCheckout, bandOf, callOn, getOn, snapshotOf, ctl, $, WHEEL, ZOOM, borrowFocus, callHost, getHost, caret, setUiPx, uiPx, UI_PX_MAX, UI_PX_MIN, closeLegend, el, MOD_LABEL, onSelection, reason, returnFocus, loadWheel, saveWheel, saveZoom, setWheel, setZoom, snap, uiScale, wheelSpeed } from './core.js';
+import { AGENT_LABEL, CHECKOUTS, activeCheckout, bandOf, checkoutBadge, callOn, getOn, snapshotOf, ctl, $, WHEEL, ZOOM, borrowFocus, callHost, getHost, caret, setUiPx, uiPx, UI_PX_MAX, UI_PX_MIN, closeLegend, el, MOD_LABEL, onSelection, reason, returnFocus, loadWheel, saveWheel, saveZoom, setWheel, setZoom, snap, uiScale, wheelSpeed } from './core.js';
 import { currentPreset, detectedFonts, FONTS, fontStack, onThemeChange, PRESETS, resetTheme, SEE_THROUGH, setTheme, SIZE_MAX, SIZE_MIN, theme, validFontName } from './theme.js';
 /* The arithmetic, for reading a typed hex back. A leaf with no imports of its own,
    so the module graph stays the DAG `dependency-cruiser` insists on — and the same
@@ -28,8 +28,8 @@ let projectTabs = /** @type {HTMLElement[]} */ ([]);
 /** One heading per open project, the chosen one with its tabs under it.
  *
  *  **Option 3 of the settings groups review**: every project is a click away, and
- *  the band says which one you are editing, the same band its rail block has. The
- *  band only shows with more than one project, as in the rail. */
+ *  each wears the same badge as its rail header. The badge only shows with more
+ *  than one project, as in the rail. */
 function renderProjects() {
   const at = target();
   const several = CHECKOUTS.length > 1;
@@ -42,11 +42,10 @@ function renderProjects() {
        so a button there was a control that looked pressable and did nothing. */
     const head = el(open ? 'div' : 'button', 'settings-tgroup settings-co');
     if (!open) head.setAttribute('type', 'button');
-    const band = several ? bandOf(c.path) : null;
-    if (band) {
-      const mark = el('span', 'settings-band');
-      mark.style.background = `var(--co-${band})`;
-      head.appendChild(mark);
+    if (several) {
+      const badge = checkoutBadge(c, bandOf(c.path));
+      badge.setAttribute('aria-hidden', 'true');
+      head.appendChild(badge);
     }
     head.append(c.name);
     head.title = open ? `${c.name}'s config.json` : `Show ${c.name}'s settings`;

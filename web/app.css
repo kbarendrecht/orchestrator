@@ -60,16 +60,26 @@
   --work:#5AA9BE;
   --ok:#62B282;
   --bad:#DB7A72;
-  /* The checkout bands: one per open checkout, as reinforcement for the name
-     beside them rather than as information of their own — nothing is ever *only*
-     a colour here. Chosen to sit clear of `--attn` and `--bad`, which mean
-     "needs you" and "failing" everywhere else in this UI; a band the same amber
-     as the attention amber would read as a state. Four, because past that a palette stops
-     being distinguishable at a glance and the rail draws no band at all instead. */
+  /* The checkout colours, one per open checkout, worn by its badge as
+     reinforcement for the initials on it rather than as information of their own —
+     nothing is ever *only* a colour here. Chosen to sit clear of `--attn` and
+     `--bad`, which mean "needs you" and "failing" everywhere else in this UI; a
+     badge the same amber as the attention amber would read as a state. Four,
+     because past that a palette stops being distinguishable at a glance and the
+     badge goes grey instead. */
   --co-1:#7E9CC4;
   --co-2:#8FAE8A;
   --co-3:#B294BB;
   --co-4:#C9A87C;
+  /* The badge's two shades of each, worked out once rather than mixed at run time:
+     `color-mix()` is newer than the WebKitGTK some distributions still ship. The
+     fill is the colour 86% over the board's ground, the ink 20% over black — a
+     dark shade of the same hue, so the letters read on the fill without the black
+     a solid badge would carry. */
+  --co-1-fill:#6E88AA;--co-1-ink:#191F27;
+  --co-2-fill:#7C9778;--co-2-ink:#1D231C;
+  --co-3-fill:#9B81A2;--co-3-ink:#241E25;
+  --co-4-fill:#AE926C;--co-4-ink:#282219;
   /* Merged, and nothing else. GitHub's own purple, which is the colour this
      palette had deliberately left unused *because* it reads as merged there — see
      `--auto` below, where that reasoning is written down. A session row wears it
@@ -442,7 +452,7 @@ button.ctx-btn:hover{color:var(--text)}
    offset that kept the two from overlapping. */
 .co-head{
   display:flex;align-items:center;gap:6px;width:100%;
-  padding:8px 15px 5px 9px;position:sticky;top:0;z-index:3;
+  padding:8px 15px 5px 12px;position:sticky;top:0;z-index:3;
   background:var(--panel-ground,var(--surface));border-bottom:1px solid var(--line-soft);
 }
 /* Grabbable, because the whole strip is the drag handle. `:active` is the only
@@ -466,10 +476,28 @@ button.ctx-btn:hover{color:var(--text)}
 /* Only when something is actually waiting, so amber keeps meaning "needs you"
    here as it does everywhere else. */
 .co-count.attn{color:var(--attn)}
-/* The band, as a left edge rather than a swatch: it runs the height of the strip,
-   so it reads as "this block" rather than as a bullet. `aria-hidden` is not needed
-   on a border — there is nothing for a screen reader to read. */
-.co-head[data-band]{border-left:3px solid var(--band);padding-left:12px}
+/* A checkout's badge: its initials on its colour, in the rail header, the PR
+   pane, the review queue, the session bar and the settings list. `paintBadge`
+   says why it replaced the band. Sized on the UI scale, so it grows with the text
+   beside it; at the default scale it is the 18px the design settled on. Past the
+   palette it has no `data-band` and stays grey. */
+.co-badge{
+  flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;
+  width:calc(15.6px * var(--fs));height:calc(15.6px * var(--fs));border-radius:calc(4.3px * var(--fs));
+  font-family:var(--label);font-size:calc(7.4px * var(--fs));font-weight:700;line-height:1;letter-spacing:.02em;
+  background:var(--hover);color:var(--dim);-webkit-user-select:none;user-select:none;
+}
+.co-badge[data-band="1"]{background:var(--co-1-fill);color:var(--co-1-ink)}
+.co-badge[data-band="2"]{background:var(--co-2-fill);color:var(--co-2-ink)}
+.co-badge[data-band="3"]{background:var(--co-3-fill);color:var(--co-3-ink)}
+.co-badge[data-band="4"]{background:var(--co-4-fill);color:var(--co-4-ink)}
+/* 8px either side of the badge wherever it sits, from each row's own gap: the
+   rail header's is 6, the session bar's 12, the settings heading's 7, and the PR
+   and review heads already have 8. A margin of 8 on top of those was what put
+   the session bar's badge twice as far from the name as from the dot. */
+.co-head .co-badge{margin:0 2px}
+.top-c .co-badge{margin:0 -4px}
+.settings-tgroup .co-badge{margin-right:1px}
 /* A name, not a label — which is the whole of what changed here.
    It used to be 10px, 700, tracked .08em: an `.eyebrow` with one pixel and half
    the tracking, sitting directly above a real `.eyebrow` and reading as a slightly
@@ -499,16 +527,6 @@ button.ctx-btn:hover{color:var(--text)}
 /* The way a second checkout is ever opened, at the foot of the list where "and
    another one" belongs. `.railbtn` gives it the rail's own row shape; this only
    makes it read as an action rather than as an empty state. */
-/* The PR pane answers for one checkout, and it sits below the scroller where that
-   checkout's own band has gone. Same edge, same colour. */
-.pr-of-checkout{border-left:3px solid var(--band)}
-/* The review queue says the same thing on the *other* side, because it lives in
-   the other column. Each band runs down the outer edge of the column it is in —
-   the PR pane's against the window's left, this one against its right — so the
-   pair reads as two margins of one board rather than as two lines pointing at
-   each other across the middle of it. Same width and colour; only the edge
-   differs, which is why it is a second rule rather than a variable. */
-.rv-of-checkout{border-right:3px solid var(--band)}
 .railbtn.addco{
   display:flex;align-items:center;gap:8px;width:auto;margin:4px 8px 6px;padding:6px 8px;
   font-family:var(--sans);font-size:calc(12px * var(--fs));border-radius:var(--r);
@@ -1630,7 +1648,6 @@ span.settings-tgroup{font-size:calc(10.5px * var(--fs));letter-spacing:.06em;tex
 div.settings-co{color:var(--dim)}
 button.settings-co{color:var(--ghost)}
 button.settings-co:hover{color:var(--text);background:var(--hover)}
-.settings-band{width:6px;height:6px;border-radius:2px;flex:0 0 auto}
 .settings-projects{display:flex;flex-direction:column;gap:2px}
 .settings-projects>.settings-tab{padding-left:18px}
 /* Help: one header across the top, the tabs and the open half below it. */
