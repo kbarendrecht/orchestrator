@@ -1701,6 +1701,14 @@ button.settings-co:hover{color:var(--text);background:var(--hover)}
 .ctxmenu-item:hover:not(:disabled){background:var(--bg)}
 .ctxmenu-item:disabled{color:var(--ghost);cursor:default}
 .ctxmenu-item.bad:hover:not(:disabled){color:var(--bad)}
+/* A colour choice: the band itself before the name, and a tick on the one in use. */
+.ctxmenu-item.swatch{display:flex;align-items:center;gap:8px}
+.ctxmenu-item.swatch::before{content:"";width:10px;height:10px;border-radius:2px;flex:none;border:1px dashed var(--faint-solid)}
+.ctxmenu-item.swatch.co1::before{background:var(--co-1);border:0}
+.ctxmenu-item.swatch.co2::before{background:var(--co-2);border:0}
+.ctxmenu-item.swatch.co3::before{background:var(--co-3);border:0}
+.ctxmenu-item.swatch.co4::before{background:var(--co-4);border:0}
+.ctxmenu-item.swatch.on::after{content:"\2713";margin-left:auto;color:var(--dim)}
 /* A pick of one, like the changes pane's three lists: every row keeps the room
    for the tick, so the labels line up whichever is on. */
 .ctxmenu-item.pick{position:relative;padding-left:22px}

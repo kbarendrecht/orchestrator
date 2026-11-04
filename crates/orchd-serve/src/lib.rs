@@ -625,6 +625,7 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
         repo: resolve_repo(&app).map(|(o, n)| format!("{o}/{n}")),
         // One checkout, so nothing to clash with.
         clash: None,
+        band: None,
     });
     // **A daemon a host spawned does not serve the page.** Its own host would be a
     // second page server nobody visits, on a port whose only caller is the parent,

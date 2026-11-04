@@ -99,6 +99,24 @@ pub struct Checkout {
     /// the two is named here rather than tolerated in silence — the two daemons
     /// cannot see each other's fix runs, and nothing else would ever say so.
     pub clash: Option<String>,
+    /// The band colour you picked for it, 1 to 4, or `None` for the one the page
+    /// assigns by order. From [`Label`].
+    pub band: Option<u8>,
+}
+
+/// What you called a checkout and which colour you gave it, keyed on its path in
+/// [`HostFile::labels`].
+///
+/// **The host's, not the checkout's**: the name is how this window shows the
+/// folder, so renaming it changes nothing on disk and nothing another tool sees.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct Label {
+    /// Shown in place of the folder name. `None` keeps the computed one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// 1 to 4, the band palette. `None` is the order's band.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub band: Option<u8>,
 }
 
 /// What the host owns.
@@ -173,6 +191,9 @@ pub struct Host {
     /// A link that arrived with no page to take it — the one that launched the
     /// app, most often. The first page to connect gets it.
     pending_link: Mutex<Option<crate::link::OpenFile>>,
+    /// [`HostFile::labels`], read once at start and written through
+    /// [`Host::label_checkout`], so naming the set never reads a file.
+    labels: Mutex<std::collections::BTreeMap<String, Label>>,
 }
 
 /// Lock, and survive a poisoning.
@@ -215,6 +236,7 @@ impl Host {
             changes: tokio::sync::broadcast::channel(16).0,
             links: tokio::sync::broadcast::channel(4).0,
             pending_link: Mutex::new(None),
+            labels: Mutex::new(read_host_file().map(|f| f.labels).unwrap_or_default()),
         })
     }
 
@@ -254,7 +276,7 @@ impl Host {
             Some(existing) => *existing = checkout,
             None => open.push(checkout),
         }
-        name_the_set(&mut open);
+        name_the_set(&mut open, &locked(&self.labels));
         drop(open);
         self.announce();
     }
@@ -318,6 +340,50 @@ impl Host {
     ///
     /// Paths it does not name keep their relative order, at the end: a reorder
     /// racing an `add` must not drop the checkout that just arrived.
+    /// Rename a checkout or give it a colour. `name` empty and `band` 0 each go
+    /// back to the computed answer. Written to the host file, then applied to the
+    /// open set and announced, so the rail redraws with it.
+    ///
+    /// Blocking file IO: called through `run_blocking`.
+    pub fn label_checkout(
+        &self,
+        path: &str,
+        name: Option<&str>,
+        band: Option<u8>,
+    ) -> anyhow::Result<()> {
+        let mut label = locked(&self.labels).get(path).cloned().unwrap_or_default();
+        if let Some(name) = name {
+            let name = name.trim();
+            label.name = (!name.is_empty()).then(|| name.to_string());
+        }
+        if let Some(band) = band {
+            anyhow::ensure!(band <= 4, "a band is 1 to 4, or 0 for the automatic one");
+            label.band = (band > 0).then_some(band);
+        }
+        let key = path.to_string();
+        let stored = label.clone();
+        update_host_file(|file| {
+            if stored == Label::default() {
+                file.labels.remove(&key);
+            } else {
+                file.labels.insert(key.clone(), stored.clone());
+            }
+        })?;
+        {
+            let mut labels = locked(&self.labels);
+            if label == Label::default() {
+                labels.remove(path);
+            } else {
+                labels.insert(path.to_string(), label);
+            }
+        }
+        let mut open = locked(&self.checkouts);
+        name_the_set(&mut open, &locked(&self.labels));
+        drop(open);
+        self.announce();
+        Ok(())
+    }
+
     pub fn order_checkouts(&self, order: &[PathBuf]) {
         self.reorder(order);
         self.remember();
@@ -401,6 +467,7 @@ impl Host {
             live: false,
             repo: None,
             clash: None,
+            band: None,
         });
     }
 
@@ -500,6 +567,7 @@ impl Host {
             // only place the authoritative answer exists, so the row carries it.
             repo: child.ready.repo.clone(),
             clash: None,
+            band: None,
         });
         self.note_repo_clash(checkout);
         locked(&self.children).insert(checkout.to_path_buf(), Arc::new(child));
@@ -653,7 +721,7 @@ impl Host {
             open.retain(|c| c.path != path);
             // The set shrank, so a name that was only long because of a collision
             // gets its short form back.
-            name_the_set(&mut open);
+            name_the_set(&mut open, &locked(&self.labels));
             // The other half of a clash goes with it: a warning naming a checkout
             // that is no longer open is a warning nobody can act on.
             for row in open
@@ -904,6 +972,10 @@ pub struct HostFile {
     /// ping, so turning it off takes effect without a restart.
     #[serde(default = "default_usage_ping")]
     pub usage_ping: bool,
+    /// What you renamed a checkout to and which colour you gave it, by path.
+    /// Kept for a closed checkout too, so reopening it brings its name back.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub labels: std::collections::BTreeMap<String, Label>,
 }
 
 /// **Hand-written, because `derive(Default)` disagreed with serde and won.**
@@ -923,6 +995,7 @@ impl Default for HostFile {
             checkout_retention_days: default_checkout_retention_days(),
             see_through_window: false,
             usage_ping: default_usage_ping(),
+            labels: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -1000,7 +1073,9 @@ pub fn remembered_checkouts() -> Vec<PathBuf> {
 /// One level of parent only. A pair that collides at two levels
 /// (`a/x/app`, `b/x/app`) is rarer than the cost of a name that grows without
 /// bound, and the full path is on the row's tooltip either way.
-fn name_the_set(checkouts: &mut [Checkout]) {
+///
+/// A [`Label`] you set wins over both, and its band rides on the row.
+fn name_the_set(checkouts: &mut [Checkout], labels: &std::collections::BTreeMap<String, Label>) {
     let leaf = |p: &str| {
         Path::new(p)
             .file_name()
@@ -1024,6 +1099,11 @@ fn name_the_set(checkouts: &mut [Checkout]) {
             // one is. The short name is still better than nothing.
             _ => short,
         };
+        let label = labels.get(&c.path);
+        if let Some(name) = label.and_then(|l| l.name.clone()) {
+            c.name = name;
+        }
+        c.band = label.and_then(|l| l.band);
     }
 }
 
@@ -1512,6 +1592,7 @@ pub fn router(host: Arc<Host>) -> Router {
         .route("/api/host/checkout/close", post(close_checkout))
         .route("/api/host/checkout/reopen", post(reopen_checkout))
         .route("/api/host/checkout/order", post(order_checkouts))
+        .route("/api/host/checkout/label", post(label_checkout))
         .route("/ws/host", get(host_socket))
         .route("/api/host/open", post(open_link))
         .route("/api/host/recent", get(recent))
@@ -1814,6 +1895,30 @@ struct CheckoutOrder {
     paths: Vec<String>,
 }
 
+#[derive(serde::Deserialize)]
+struct CheckoutLabel {
+    path: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    band: Option<u8>,
+}
+
+/// Rename a checkout or recolour it ([`Host::label_checkout`]).
+async fn label_checkout(
+    State(host): State<Arc<Host>>,
+    Json(body): Json<CheckoutLabel>,
+) -> Response {
+    let done = orchd::proc::run_blocking("labelling a checkout", move || {
+        host.label_checkout(&body.path, body.name.as_deref(), body.band)
+    })
+    .await;
+    match done {
+        Ok(Ok(())) => Json(json!({ "ok": true })).into_response(),
+        Ok(Err(e)) | Err(e) => refusal(&format!("{e:#}")),
+    }
+}
+
 async fn order_checkouts(
     State(host): State<Arc<Host>>,
     Json(body): Json<CheckoutOrder>,
@@ -2074,6 +2179,37 @@ mod tests {
             "held for the first page to connect"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A name you gave a checkout wins over the folder's, and its colour rides on
+    /// the row; with no label the computed name and no band come back.
+    #[test]
+    fn a_label_names_and_colours_its_checkout() {
+        let row = |path: &str| Checkout {
+            path: path.into(),
+            name: String::new(),
+            port: 1,
+            token: String::new(),
+            live: true,
+            repo: None,
+            clash: None,
+            band: None,
+        };
+        let mut set = vec![row("/w/app"), row("/p/app"), row("/x/site")];
+        let mut labels = std::collections::BTreeMap::new();
+        labels.insert(
+            "/x/site".to_string(),
+            Label {
+                name: Some("marketing".into()),
+                band: Some(3),
+            },
+        );
+        name_the_set(&mut set, &labels);
+        let got: Vec<(&str, Option<u8>)> = set.iter().map(|c| (c.name.as_str(), c.band)).collect();
+        assert_eq!(
+            got,
+            [("w/app", None), ("p/app", None), ("marketing", Some(3))]
+        );
     }
 
     /// The app's page keeps one origin, and does not sit on a child's port.

@@ -1,7 +1,7 @@
 // The rail: what is running, what is waiting on you, and the PRs beside it.
 // Twenty-four names, three out; the rest is how a row decides what it says.
 
-import { $, activeCheckout, AGENT_LABEL, ageLabel, bandOf, byNewest, call, callFor, callHost, callOn, caret, checkoutOf, CHECKOUTS, chooseBox, clock, confirmBox, copyText, creating, creatingIn, creatingIntoMain, dotClass, el, enterCheckout, icon, iconLabel, getHost, getOn, handedToPr, hasPr, inTrouble, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, QUEUE_MAX, reason, refreshButton, repoSummary, safeHref, selected, sessionDot, sessionsOf, sessionOrder, setPendingSelect, setSelected, setSessionOrder, snap, snapshotFor, snapshotOf, startingShown, stateClass, stateLabel, terms, toast, paintSig, reconcile, unchanged, watchStarting } from './core.js';
+import { $, activeCheckout, AGENT_LABEL, ageLabel, bandOf, byNewest, call, callFor, callHost, callOn, caret, checkoutOf, CHECKOUTS, chooseBox, clock, confirmBox, promptBox, copyText, creating, creatingIn, creatingIntoMain, dotClass, el, enterCheckout, icon, iconLabel, getHost, getOn, handedToPr, hasPr, inTrouble, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, QUEUE_MAX, reason, refreshButton, repoSummary, safeHref, selected, sessionDot, sessionsOf, sessionOrder, setPendingSelect, setSelected, setSessionOrder, snap, snapshotFor, snapshotOf, startingShown, stateClass, stateLabel, terms, toast, paintSig, reconcile, unchanged, watchStarting } from './core.js';
 import * as Open from './open.js';
 import * as Term from './term.js';
 
@@ -378,6 +378,37 @@ async function closeCheckout(c) {
   }
 }
 
+/** Call a checkout what you call it. The name is the host's, so the folder does
+ *  not change; an empty name goes back to the folder's.
+ *
+ *  @param {import('./core.js').Target} c */
+async function renameCheckout(c) {
+  const name = await promptBox('Name this project', { value: c.name, placeholder: 'the folder name', ok: 'Rename' });
+  if (name === null) return;
+  try {
+    await callHost('/api/host/checkout/label', { path: c.path, name });
+  } catch (e) {
+    toast(reason(e), true);
+  }
+}
+
+/** A checkout's colour, as the menu's second level: the four bands, or back to
+ *  the one it gets by order. The open one is ticked.
+ *
+ *  @param {import('./core.js').Target} c
+ *  @returns {import('./core.js').MenuItem[]} */
+function colourItems(c) {
+  const pick = (/** @type {number} */ band) => () => void callHost('/api/host/checkout/label', { path: c.path, band })
+    .catch((e) => toast(reason(e), true));
+  // The class names written out, so the dead-CSS check can see each one.
+  const swatches = [['blue', 'co1'], ['green', 'co2'], ['purple', 'co3'], ['sand', 'co4']];
+  /** @type {import('./core.js').MenuItem[]} */
+  const items = swatches.map(([name, cls], i) => /** @type {import('./core.js').MenuItem} */ (
+    [name, `swatch ${cls}${c.band === i + 1 ? ' on' : ''}`, pick(i + 1)]));
+  items.push(['automatic', `swatch${c.band ? '' : ' on'}`, pick(0)]);
+  return items;
+}
+
 /* Which checkouts are folded away, by path.
  *
  * **In the browser, unlike the order.** Folding is a view preference — which part
@@ -664,6 +695,8 @@ function checkoutHead(c) {
     // A dead checkout's row exists so this can be pressed; a live one has nothing
     // to reopen.
     ['reopen', null, c.live ? null : () => reopenCheckout(c)],
+    ['rename\u2026', null, () => void renameCheckout(c)],
+    ['colour', null, colourItems(c)],
     ['close', 'bad', () => closeCheckout(c)],
   ]);
 

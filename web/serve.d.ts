@@ -60,7 +60,12 @@ repo: string | null,
  * the two is named here rather than tolerated in silence — the two daemons
  * cannot see each other's fix runs, and nothing else would ever say so.
  */
-clash: string | null, };
+clash: string | null, 
+/**
+ * The band colour you picked for it, 1 to 4, or `None` for the one the page
+ * assigns by order. From [`Label`].
+ */
+band: number | null, };
 
 /**
  * What orchd worked out about a chosen checkout, for the review step to confirm.

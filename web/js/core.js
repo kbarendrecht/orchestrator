@@ -238,7 +238,7 @@ export function setCheckouts(next) {
  *  @type {Target}
  */
 const PAGE_ONLY = {
-  path: '', name: '', port: Number(location.port) || 0, live: true, repo: null, clash: null,
+  path: '', name: '', port: Number(location.port) || 0, live: true, repo: null, clash: null, band: null,
   base: '', wsBase: `ws://${location.host}`, token: window.__ORCH__.token,
 };
 
@@ -317,6 +317,10 @@ const BANDS = 4;
  *  @param {string} path
  */
 export function bandOf(path) {
+  // A colour you picked wins. It can repeat another checkout's: that is yours to
+  // choose, and the name beside the band still says which is which.
+  const picked = CHECKOUTS.find((c) => c.path === path)?.band;
+  if (picked) return picked;
   if (!bands.has(path)) bands.set(path, bands.size);
   const n = bands.get(path);
   return n < BANDS ? n + 1 : null;
