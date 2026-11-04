@@ -639,7 +639,8 @@ const diffState = {
      reviews. */
   imports: [],
   openImports: new Set(),
-  /* The file's declarations, from the same parse, for a hunk's scope header. */
+  /* The file's declarations, from the same parse, for a hunk's scope header and
+     for its block context. */
   symbols: [],
   /* A generated file is drawn as one line until it is asked for: a lockfile is
      hundreds of lines nobody reads, and it pushed the real change off screen. */
@@ -1284,7 +1285,7 @@ async function loadFile(/** @type {string} */ path) {
 const STRUCTURE_MAX = 512 * 1024;
 
 /** Ask for the loaded file's parse: its imports, for a hunk that only touches
- *  them, and its declarations, for each hunk's scope. After
+ *  them, and its declarations, for each hunk's scope and block context. After
  *  the diff is on screen, so the parse never delays it. */
 async function askStructure(/** @type {string} */ path) {
   const lines = diffState.lines;
@@ -1302,7 +1303,8 @@ async function askStructure(/** @type {string} */ path) {
   if (diffState.path !== path || diffState.lines !== lines) return;
   diffState.imports = s.folds.filter((f) => f.kind === 'imports');
   diffState.symbols = s.symbols;
-  if (s.symbols.length || diffState.file?.hunks.some(importsOnly)) renderDiff();
+  const opened = openBlocks();
+  if (opened || s.symbols.length || diffState.file?.hunks.some(importsOnly)) renderDiff();
 }
 
 /** The new-side lines a hunk changes, first and last. A deletion counts where its
@@ -1326,6 +1328,41 @@ function scopesOf(/** @type {import('../repo').Hunk} */ h) {
   const span = changedSpan(h);
   if (!span) return [];
   return diffState.symbols.filter((x) => x.line < span.lo && x.end >= span.lo);
+}
+
+/** A block this short is shown whole around its change. Longer, and the fixed
+ *  context is what you get: a 300-line class shown whole is no longer a diff. */
+const BLOCK_MAX = 40;
+
+/** **Context that ends at the block**: open the folds around each hunk far
+ *  enough to show the smallest declaration holding all of its change, when that
+ *  declaration is short. Raised into `reveal`, never lowered, so a fold you
+ *  opened stays open. Says whether anything moved. */
+function openBlocks() {
+  const f = diffState.file;
+  if (!f || !diffState.lines || !diffState.symbols.length) return false;
+  let moved = false;
+  const raise = (/** @type {number} */ idx, /** @type {number} */ top, /** @type {number} */ bottom) => {
+    const seen = diffState.reveal.get(idx) ?? { top: 0, bottom: 0 };
+    const next = { top: Math.max(seen.top, top), bottom: Math.max(seen.bottom, bottom) };
+    if (next.top !== seen.top || next.bottom !== seen.bottom) {
+      diffState.reveal.set(idx, next);
+      moved = true;
+    }
+  };
+  for (const [hi, h] of f.hunks.entries()) {
+    const span = changedSpan(h);
+    if (!span) continue;
+    const holding = diffState.symbols
+      .filter((x) => x.line <= span.lo && x.end >= span.hi && x.end - x.line + 1 <= BLOCK_MAX)
+      .sort((a, b) => (a.end - a.line) - (b.end - b.line))[0];
+    if (!holding) continue;
+    let last = h.new_start - 1;
+    for (const r of h.rows) last = r.new ?? last;
+    raise(hi, 0, Math.max(0, h.new_start - holding.line));
+    raise(hi + 1, Math.max(0, holding.end - last), 0);
+  }
+  return moved;
 }
 
 /** Draw the change map beside the diff: one tick per change block, placed where
