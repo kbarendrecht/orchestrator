@@ -602,7 +602,7 @@ function commitsOf(/** @type {import('../snapshot').WorkspaceView} */ w) {
  *           anchors?: HTMLElement[], loading?: boolean, lines: string[] | null,
  *           reveal: Map<number, { top: number, bottom: number }>, gone?: string | null,
  *           imports: import('../repo').Fold[], openImports: Set<number>,
- *           openGenerated: boolean, ignoreWs: boolean }}
+ *           symbols: import('../repo').Symbol[], openGenerated: boolean, ignoreWs: boolean }}
  */
 const diffState = {
   open: false,
@@ -639,6 +639,8 @@ const diffState = {
      reviews. */
   imports: [],
   openImports: new Set(),
+  /* The file's declarations, from the same parse, for a hunk's scope header. */
+  symbols: [],
   /* A generated file is drawn as one line until it is asked for: a lockfile is
      hundreds of lines nobody reads, and it pushed the real change off screen. */
   openGenerated: false,
@@ -995,7 +997,14 @@ function renderDiff() {
     // under a fold: with nothing hidden above, the line it names is on screen, and
     // with every fold opened the heading sat in the middle of continuous code.
     // Nor when it repeats the hunk above, whose heading is still pinned.
-    const sectionOf = (/** @type {import('../repo').Hunk} */ x) => (x.header && x.header.split('@@')[2] || '').trim();
+    /* **The parse's scope first, git's guess second.** Git's section text is a
+       regex over the lines above the hunk, and it names whatever matched last; the
+       parse names the declarations that really hold the change, `fn › match`. */
+    const sectionOf = (/** @type {import('../repo').Hunk} */ x) => {
+      const scopes = scopesOf(x);
+      return scopes.length ? scopes.map((y) => y.name).join(' \u203a ')
+        : (x.header && x.header.split('@@')[2] || '').trim();
+    };
     const section = sectionOf(h);
     const seen = diffState.reveal.get(hi) ?? { top: 0, bottom: 0 };
     const folded = h.gap_before > seen.top + seen.bottom;
@@ -1246,6 +1255,7 @@ async function loadFile(/** @type {string} */ path) {
   diffState.reveal = new Map();
   diffState.imports = [];
   diffState.openImports = new Set();
+  diffState.symbols = [];
   diffState.openGenerated = false;
   try {
     let live;
@@ -1267,15 +1277,16 @@ async function loadFile(/** @type {string} */ path) {
   diffState.loading = false;
   renderDiff();
   renderFiles();
-  void askImports(path);
+  void askStructure(path);
 }
 
-/** Ask where the loaded file's imports are, and redraw if a hunk only touches
- *  them. After the diff is on screen, so the parse never delays it. */
 /** The size `structure.rs` stops parsing at, its `HUGE`. */
 const STRUCTURE_MAX = 512 * 1024;
 
-async function askImports(/** @type {string} */ path) {
+/** Ask for the loaded file's parse: its imports, for a hunk that only touches
+ *  them, and its declarations, for each hunk's scope. After
+ *  the diff is on screen, so the parse never delays it. */
+async function askStructure(/** @type {string} */ path) {
   const lines = diffState.lines;
   if (!lines || !diffState.file?.hunks.length) return;
   const text = lines.join('\n');
@@ -1290,7 +1301,31 @@ async function askImports(/** @type {string} */ path) {
   }
   if (diffState.path !== path || diffState.lines !== lines) return;
   diffState.imports = s.folds.filter((f) => f.kind === 'imports');
-  if (diffState.file?.hunks.some(importsOnly)) renderDiff();
+  diffState.symbols = s.symbols;
+  if (s.symbols.length || diffState.file?.hunks.some(importsOnly)) renderDiff();
+}
+
+/** The new-side lines a hunk changes, first and last. A deletion counts where its
+ *  lines went, the line after the new side's last one. `null` for no change. */
+function changedSpan(/** @type {import('../repo').Hunk} */ h) {
+  let n = h.new_start - 1;
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const r of h.rows) {
+    if (r.kind === 'context') { n = r.new ?? n; continue; }
+    const at = r.kind === 'add' ? (n = r.new ?? n + 1) : n + 1;
+    lo = Math.min(lo, at);
+    hi = Math.max(hi, at);
+  }
+  return lo <= hi ? { lo, hi } : null;
+}
+
+/** The declarations a hunk's first change sits inside, outermost first: the
+ *  viewer's rule, a symbol that starts above the line and reaches it. */
+function scopesOf(/** @type {import('../repo').Hunk} */ h) {
+  const span = changedSpan(h);
+  if (!span) return [];
+  return diffState.symbols.filter((x) => x.line < span.lo && x.end >= span.lo);
 }
 
 /** Draw the change map beside the diff: one tick per change block, placed where
@@ -1440,7 +1475,8 @@ function openEditor() {
         // index now names a different hunk: both are asked again.
         diffState.imports = [];
         diffState.openImports = new Set();
-        void askImports(diffState.path ?? '');
+        diffState.symbols = [];
+        void askStructure(diffState.path ?? '');
       } catch (e) {
         /* the editor is still the source of truth on screen */
       }
