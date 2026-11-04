@@ -576,7 +576,10 @@ export function iconLabel(tag, cls, label, ...ds) {
   const b = /** @type {HTMLElementTagNameMap[T]} */ (el(tag, cls));
   if (tag === 'button') b.setAttribute('type', 'button');
   if (ds.length) b.appendChild(icon('practic', 1.4, ...ds));
-  b.append(label);
+  /* The word in a span of its own, so a narrow pane can drop it and keep the
+     icon (`.ilbl` in the CSS), and named on the button so it still has one then. */
+  b.appendChild(el('span', 'ilbl', label));
+  b.setAttribute('aria-label', label);
   return b;
 }
 

@@ -1099,8 +1099,11 @@ function prRow(/** @type {any} */ p) {
       b.onclick = (ev) => { ev.preventDefault(); ev.stopPropagation(); setSelected(running.session); };
       row.appendChild(b);
     } else if (press.kind === 'open') {
+      /* **Handle or Fix, never both.** The review pass hands on the CI it is not
+         allowed to fix, so Handle already reaches what Fix would, and two verbs
+         on one row only took the title's room. */
       if (needsResolve) row.appendChild(reviewButtons(p));
-      if (needsFix) row.appendChild(actionButton(p, 'fix-pr', 'Fix'));
+      else if (needsFix) row.appendChild(actionButton(p, 'fix-pr', 'Fix'));
     } else if (needsResolve || needsFix) {
       /* No button whose only outcome is an error toast, and not silence either: a
          chip where the button would be, carrying the sentence the press would have
