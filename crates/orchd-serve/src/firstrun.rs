@@ -51,7 +51,7 @@ fn recent_file_in(dir: &Path) -> PathBuf {
 /// The last component of a path, as a display name. `orchestrator` for
 /// `~/development/orchestrator`. Falls back to the whole path if there is no
 /// component (the filesystem root), which no real checkout is.
-fn name_of(path: &Path) -> String {
+pub(crate) fn name_of(path: &Path) -> String {
     path.file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.to_string_lossy().into_owned())
@@ -143,6 +143,36 @@ pub fn validate(path: &Path) -> std::result::Result<ProjectInfo, String> {
         name: name_of(&path),
         path: path.to_string_lossy().into_owned(),
     })
+}
+
+/// A folder that exists and is not a git repository yet, canonical, or `None`.
+///
+/// What the open screen asks about: "make this a git project so it can open?"
+/// [`validate`] still refuses it, because a daemon cannot run on one; this is the
+/// question in front of that refusal.
+pub fn plain_folder(path: &Path) -> Option<PathBuf> {
+    let path = expand_home(path, std::env::var_os("HOME").map(PathBuf::from).as_deref());
+    let path = std::fs::canonicalize(&path).ok().filter(|p| p.is_dir())?;
+    (!path.join(".git").exists()).then_some(path)
+}
+
+/// Make a plain folder a git project: `git init`, then one commit of what is in
+/// it, so there is a `HEAD` to cut worktrees from and diff against.
+///
+/// **Only a [`plain_folder`]**, checked again here rather than trusted from the
+/// page, so this never touches a repository that already exists. An empty folder
+/// gets an empty commit. A commit git refuses, most often for want of a
+/// `user.name`, comes back in git's own words.
+pub fn git_init(path: &Path) -> std::result::Result<PathBuf, String> {
+    let Some(path) = plain_folder(path) else {
+        return Err("That folder is already a git repository, or is not a folder.".into());
+    };
+    let run = |args: &[&str]| orchd::git::git(&path, args).map_err(|e| format!("{e:#}"));
+    run(&["init", "-q"])?;
+    run(&["add", "-A"])?;
+    run(&["commit", "-q", "--allow-empty", "-m", "initial commit"])
+        .map_err(|e| format!("git made the repository but could not commit: {e}"))?;
+    Ok(path)
 }
 
 /// `~` and `~/x` mean the home directory, the way the box's own placeholder
@@ -504,6 +534,27 @@ fn write_config_to(file: &Path, path: &Path, ov: &Overrides) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A plain folder becomes a git project with one commit, and a repository is
+    /// never touched a second time.
+    #[test]
+    fn a_plain_folder_becomes_a_git_project_once() {
+        let dir = orchd::testutil::scratch("firstrun-git-init");
+        std::fs::write(dir.join("notes.md"), "hello\n").unwrap();
+        assert!(validate(&dir).is_err(), "a plain folder still cannot open");
+        assert!(plain_folder(&dir).is_some());
+        /* A machine with no git identity cannot commit, and then the answer has to
+        say so rather than leave a half-made project looking finished. */
+        if let Err(e) = git_init(&dir) {
+            assert!(e.contains("could not commit"), "{e}");
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+        assert!(validate(&dir).is_ok(), "and now it opens");
+        assert!(plain_folder(&dir).is_none());
+        assert!(git_init(&dir).is_err(), "a repository is not made twice");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// A unique dir per test, so the recents functions can be exercised through
     /// their dir-taking half with no global `ORCHD_CONFIG_DIR` — the tests run in

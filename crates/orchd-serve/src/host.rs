@@ -1626,6 +1626,7 @@ pub fn router(host: Arc<Host>) -> Router {
         )
         .route("/api/host/pick", post(pick))
         .route("/api/host/validate", post(validate))
+        .route("/api/host/git-init", post(git_init))
         .route("/api/host/detect", post(detect))
         .route("/api/window/resize/:edge", post(window_resize))
         .route("/api/window/:cmd", post(window_cmd))
@@ -2053,10 +2054,32 @@ async fn pick(State(host): State<Arc<Host>>) -> Response {
 /// keystroke, so it stays the cheap half: one `canonicalize` and one `.git` test.
 async fn validate(Json(body): Json<CheckoutPath>) -> Response {
     match crate::firstrun::validate(Path::new(&body.path)) {
-        Ok(info) => {
-            Json(json!({ "ok": true, "name": info.name, "path": info.path })).into_response()
-        }
-        Err(message) => refusal(&message),
+        Ok(info) => Json(json!({ "ok": true, "git": true, "name": info.name, "path": info.path }))
+            .into_response(),
+        // A folder that only lacks git is a question, not a refusal: the page asks
+        // whether to make it a git project (`git_init`).
+        Err(message) => match crate::firstrun::plain_folder(Path::new(&body.path)) {
+            Some(path) => Json(json!({
+                "ok": true, "git": false, "name": crate::firstrun::name_of(&path),
+                "path": path.to_string_lossy(),
+            }))
+            .into_response(),
+            None => refusal(&message),
+        },
+    }
+}
+
+/// Make a plain folder a git project, so it can open ([`crate::firstrun::git_init`]).
+async fn git_init(Json(body): Json<CheckoutPath>) -> Response {
+    let path = PathBuf::from(&body.path);
+    match orchd::proc::run_blocking("making a git project", move || {
+        crate::firstrun::git_init(&path)
+    })
+    .await
+    {
+        Ok(Ok(path)) => Json(json!({ "ok": true, "path": path.to_string_lossy() })).into_response(),
+        Ok(Err(message)) => refusal(&message),
+        Err(e) => refusal(&format!("{e:#}")),
     }
 }
 

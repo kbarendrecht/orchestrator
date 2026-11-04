@@ -16,7 +16,7 @@
 // checkout you have opened before, whose config is already written and is the
 // daemon's to read, not this screen's to re-answer.
 
-import { $, CHECKOUTS, callHost, chooseBox, el, ctl, getHost, icon, reason, toast } from './core.js';
+import { $, CHECKOUTS, callHost, chooseBox, confirmBox, el, ctl, getHost, icon, reason, toast } from './core.js';
 
 /** The overlay, built once on first use.
  *
@@ -77,6 +77,31 @@ export function showWelcome() {
 export async function reviewAndAdd(path) {
   build();
   setMessage('checking…');
+  /* **A folder without git is a question first.** orchd runs on git, so the one
+     way such a folder opens is by becoming a git project, and that writes into
+     it: asked, never assumed. */
+  let target = path;
+  try {
+    const v = await callHost('/api/host/validate', { path });
+    target = v.path;
+    if (v.git === false) {
+      const yes = await confirmBox(
+        `${v.name} is not a git project. Make it one so it can open? This runs git init there and commits what is in it now.`,
+        { ok: 'Make it a git project', danger: false });
+      if (!yes) {
+        setMessage('');
+        toPanel('welcome');
+        return;
+      }
+      setMessage('making it a git project…');
+      ({ path: target } = await callHost('/api/host/git-init', { path: v.path }));
+    }
+  } catch (e) {
+    setMessage(reason(e), true);
+    toPanel('welcome');
+    return;
+  }
+  path = target;
   toPanel('review');
   /** @type {import('../serve').Detected} */
   let found;
@@ -309,7 +334,9 @@ async function checkPath() {
     const answer = await callHost('/api/host/validate', { path });
     if (mine !== seq) return;
     ctl('opgo').disabled = false;
-    setMessage(`✓ ${answer.name}`);
+    setMessage(answer.git === false
+      ? `${answer.name} is not a git project yet; opening it asks to make it one`
+      : `✓ ${answer.name}`);
   } catch (e) {
     if (mine !== seq) return;
     input.classList.add('bad');

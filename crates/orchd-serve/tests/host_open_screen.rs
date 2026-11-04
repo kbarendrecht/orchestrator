@@ -67,15 +67,36 @@ async fn the_open_screen_judges_a_folder_reads_it_and_carries_its_answers() {
     assert_eq!(body["name"], "repo");
     assert_eq!(body["path"].as_str(), Some(repo.to_string_lossy().as_ref()));
 
-    // A refusal is a sentence the screen shows, not a status the screen has to
-    // translate — the same shape every other host refusal takes.
+    // A folder that only lacks git is a question, not a refusal: the screen asks
+    // whether to make it a git project. It still cannot be added as it is.
     let (code, body) = post(
         &format!("{base}/api/host/validate"),
         &base,
         &token,
         &format!(r#"{{"path":{:?}}}"#, plain.to_string_lossy()),
     );
-    assert_eq!(code, 400, "a directory with no .git was accepted: {body}");
+    assert_eq!(code, 200, "a plain folder was refused outright: {body}");
+    assert_eq!(
+        body["git"], false,
+        "a plain folder read as a git project: {body}"
+    );
+    let (code, body) = post(
+        &format!("{base}/api/host/checkout"),
+        &base,
+        &token,
+        &format!(r#"{{"path":{:?}}}"#, plain.to_string_lossy()),
+    );
+    assert_eq!(code, 400, "a directory with no .git was added: {body}");
+
+    // A refusal is a sentence the screen shows, not a status the screen has to
+    // translate — the same shape every other host refusal takes.
+    let (code, body) = post(
+        &format!("{base}/api/host/validate"),
+        &base,
+        &token,
+        &format!(r#"{{"path":{:?}}}"#, plain.join("nope").to_string_lossy()),
+    );
+    assert_eq!(code, 400, "a missing folder was accepted: {body}");
     assert!(
         body["error"].as_str().is_some_and(|e| !e.is_empty()),
         "the refusal said nothing a person could act on: {body}"
