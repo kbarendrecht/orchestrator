@@ -2065,9 +2065,11 @@ button.settings-co:hover{color:var(--text);background:var(--hover)}
 .prblock,.rvblock{container-type:inline-size}
 @container (max-width:265px){ .prage{display:none} }
 /* **A narrow PR pane shows its verbs as icons.** Fix, Handle and Session each
-   cost about 70px with their word, and at this width two of them left the title a
-   few letters; the word stays on the button's tooltip and its `aria-label`. */
-@container (max-width:400px){
+   cost about 70px with their word, and below this width two of them left the title
+   a few letters; the word stays on the button's tooltip and its `aria-label`.
+   Under the 320px rail it opens at, so the words show until the rail is dragged
+   narrower: at 400px they were icons at the default width. */
+@container (max-width:280px){
   .prrow :is(.pract,.jump) .ilbl{display:none}
   .prrow :is(.pract,.jump):has(.practic){padding:0 5px}
 }
