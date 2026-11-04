@@ -1568,7 +1568,7 @@ export function dotClass(/** @type {import('../snapshot').SessionView} */ s) {
      had only just resumed wore the attention colour while the bar deliberately
      left it out of the count — the dot shouting about the one thing the rail had
      decided not to shout about. */
-  if (k === 'your_turn') return s.state.reason === 'ready' ? 'idle' : 'blocked';
+  if (k === 'your_turn') return turnClass(s.state.reason);
   /* No colour of its own for a session started as a pass. It used to wear azure
      ahead of its state, on the reasoning that "already being handled" outranks
      what the session is doing — which stopped being true the moment a pass meant
@@ -1584,8 +1584,25 @@ export function stateClass(/** @type {import('../snapshot').SessionView} */ s) {
   // The same severity the dot takes, so the words and the dot cannot disagree.
   const parked = handedToPr(s);
   if (parked) return prSeverity(parked) || 'pr';
-  if (k === 'your_turn' && s.state.reason !== 'ready') return 'blocked';
+  if (k === 'your_turn') {
+    const c = turnClass(s.state.reason);
+    return c === 'idle' ? '' : c;
+  }
   return '';
+}
+
+/** The colour of a turn that is yours, by why it is yours.
+ *
+ *  **A finished turn is green, and amber is kept for a blocked agent.** The two
+ *  were one colour, so a session that had only finished its work looked exactly
+ *  like one stuck on a question or a permission prompt, and the rail could not say
+ *  which of them needs you now. `ready`, a session that has only just resumed, is
+ *  idle, for the reason `dotClass` gives.
+ *
+ *  @param {import('../snapshot').TurnReason} reason */
+function turnClass(reason) {
+  if (reason === 'ready') return 'idle';
+  return reason === 'turn_complete' ? 'done' : 'blocked';
 }
 
 /** Idle time worth surfacing. A session you opened and have not typed into is
