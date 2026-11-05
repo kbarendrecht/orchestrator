@@ -381,8 +381,44 @@ pub fn turn_end(lines: &str, turn_id: &str) -> Option<TurnEnd> {
     })
 }
 
+/// The files an `apply_patch` call touches, as the patch names them.
+///
+/// **Codex edits through `apply_patch`, and its hook input has no `file_path`.**
+/// Measured on 0.166.0: `PreToolUse` for an edit arrives as `tool_name:
+/// "apply_patch"` with `tool_input: {"command": "*** Begin Patch\n*** Update
+/// File: edit.txt\n…"}`, so every hook that read `file_path` saw nothing for a
+/// Codex edit. The paths are relative to the session's cwd, as written.
+pub fn patch_paths(patch: &str) -> Vec<&str> {
+    const HEADS: [&str; 4] = [
+        "*** Update File: ",
+        "*** Add File: ",
+        "*** Delete File: ",
+        // A rename names its new path on a line of its own, under the update.
+        "*** Move to: ",
+    ];
+    patch
+        .lines()
+        .filter_map(|l| HEADS.iter().find_map(|h| l.strip_prefix(h)))
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_patch_names_every_file_it_touches() {
+        let patch = "*** Begin Patch\n*** Update File: src/a.rs\n@@\n-old\n+new\n\
+                     *** Add File: b.txt\n+hi\n*** Delete File: c.txt\n\
+                     *** Update File: d.rs\n*** Move to: e.rs\n*** End Patch";
+        assert_eq!(
+            patch_paths(patch),
+            ["src/a.rs", "b.txt", "c.txt", "d.rs", "e.rs"]
+        );
+        // A changed line that happens to look like a header is a `+` or `-` line.
+        assert!(patch_paths("*** Begin Patch\n+*** Update File: x\n*** End Patch").is_empty());
+    }
+
     use super::*;
 
     /// The three endings, off lines shaped like 0.162.1's, and an earlier turn's

@@ -182,6 +182,40 @@ impl HookPayload {
 
 /// Correlation is exact: the session id is carried in a header interpolated from
 /// `$ORCH_SESSION_ID` at spawn. No cwd or pid heuristics (§3).
+/// The files a tool call writes, for whichever agent made it.
+///
+/// Claude Code's `Edit` and `Write` name one in `file_path`. Codex's `apply_patch`
+/// names none there and lists them inside the patch instead
+/// ([`orchd::codex::patch_paths`]), relative to the session's cwd. Reading
+/// `file_path` alone is what left every Codex edit invisible to the stale-buffer
+/// warning and to `dirty_paths`.
+fn edited_paths(payload: &HookPayload) -> Vec<PathBuf> {
+    let input = payload.tool_input.as_ref();
+    if let Some(path) = input
+        .and_then(|v| v.get("file_path"))
+        .and_then(|v| v.as_str())
+    {
+        return vec![PathBuf::from(path)];
+    }
+    if payload.tool_name.as_deref() != Some("apply_patch") {
+        return Vec::new();
+    }
+    let Some(patch) = input
+        .and_then(|v| v.get("command"))
+        .and_then(|v| v.as_str())
+    else {
+        return Vec::new();
+    };
+    let cwd = payload.cwd.as_deref().map(Path::new);
+    orchd::codex::patch_paths(patch)
+        .into_iter()
+        .map(|p| match cwd {
+            Some(cwd) if Path::new(p).is_relative() => cwd.join(p),
+            _ => PathBuf::from(p),
+        })
+        .collect()
+}
+
 fn session_of(headers: &HeaderMap, payload: &HookPayload) -> Option<Uuid> {
     headers
         .get("x-orch-session")
@@ -591,12 +625,7 @@ pub async fn post_tool_use(
     let Some(id) = session_of(&headers, &payload) else {
         return ok();
     };
-    let edited = payload
-        .tool_input
-        .as_ref()
-        .and_then(|v| v.get("file_path"))
-        .and_then(|v| v.as_str())
-        .map(PathBuf::from);
+    let edited = edited_paths(&payload);
 
     /* **`EnterWorktree` fires no `SessionStart`, so a tree it entered is adopted
     here** (#55). It was adopted only at boot, or by the next `SessionStart`
@@ -620,20 +649,20 @@ pub async fn post_tool_use(
     // class of change waited for the end of the turn.
     let mut needs_reconcile = None;
     // An edit is worth a snapshot on its own: the right-hand pane lists it.
-    let mut changed = edited.is_some();
+    let mut changed = !edited.is_empty();
     {
-        let owner = match &edited {
-            // A shared dir in a worktree can be a symlink back to main. Resolve every
-            // hook path through realpath before attributing it, or the edit shows
-            // as a phantom untracked file in the wrong pane (§4).
-            Some(path) => {
-                let real = resolved(path);
-                let owner = app.workspace_for_path(&real).await;
-                app.with_session(id, |s| s.dirty_paths.insert(real)).await;
-                owner
+        // A shared dir in a worktree can be a symlink back to main. Resolve every
+        // hook path through realpath before attributing it, or the edit shows
+        // as a phantom untracked file in the wrong pane (§4). A patch can touch
+        // several files; the first one names the workspace to reconcile.
+        let mut owner = None;
+        for path in &edited {
+            let real = resolved(path);
+            if owner.is_none() {
+                owner = app.workspace_for_path(&real).await;
             }
-            None => None,
-        };
+            app.with_session(id, |s| s.dirty_paths.insert(real)).await;
+        }
         let mut inner = app.inner.write().await;
         if let Some(s) = inner.sessions.get_mut(&id) {
             // Using a tool means the agent is going, whatever the last lifecycle
@@ -999,31 +1028,25 @@ pub async fn pre_edit(
 
     // Said before anything about the file, and said here rather than at the prompt.
     //
-    // `UserPromptSubmit` looks like the natural place and is not: measured against a
-    // real session on the fixture daemon, `additionalContext` from the **http** form
-    // of that hook never reaches the model, and taking the notice there consumed it
-    // for nothing. This deny reason does reach it, which is what `claim_stale_warning`
-    // below has always relied on, and the moment an agent reaches for a path is
-    // exactly the moment being in a different tree starts to matter.
+    // The moment an agent reaches for a tool is the moment being in a different tree
+    // starts to matter, and a deny reason reaches the model in both agents (Codex
+    // quotes it verbatim, measured on 0.166.0). This comment used to say the prompt
+    // hook could not carry it: that `additionalContext` from the http form of
+    // `UserPromptSubmit` never reached the model. Measured again on Claude Code
+    // 2.1.318 and Codex 0.166.0, it does, in both, so the prompt is a channel too;
+    // the August failure behind the old claim was never recorded.
     if let Some(notice) = app.take_arrival_notice(id).await {
         return deny(notice);
     }
 
-    let Some(path) = payload
-        .tool_input
-        .as_ref()
-        .and_then(|v| v.get("file_path"))
-        .and_then(|v| v.as_str())
-    else {
-        return ok();
-    };
-
-    match app.claim_stale_warning(id, &PathBuf::from(path)).await {
-        Some(reason) => deny(reason),
-        // An empty body leaves the decision alone; this hook is otherwise an
-        // observer and must never gate an ordinary edit.
-        None => ok(),
+    for path in edited_paths(&payload) {
+        if let Some(reason) = app.claim_stale_warning(id, &path).await {
+            return deny(reason);
+        }
     }
+    // An empty body leaves the decision alone; this hook is otherwise an
+    // observer and must never gate an ordinary edit.
+    ok()
 }
 
 /// A tool *starting* after you interrupted is a new turn, so the session is
@@ -1336,8 +1359,8 @@ pub fn write_settings(
                 // took Claude Code's bare "isolated in the worktree" refusal sixteen
                 // times over two days with the explanation still queued behind it.
                 // `PostToolUse` was widened off this same matcher for the same
-                // reason; the handler already returns early when there is no
-                // `file_path`, so a Bash call costs one loopback round trip.
+                // reason; the handler finds no edited path in a Bash call
+                // (`edited_paths`), so one costs a loopback round trip.
                 entry("pre-edit"),
             ],
             // Every tool, not just the two that write files. `Bash` is the one
@@ -2055,6 +2078,63 @@ mod tests {
                 "a tool starting {ago}s after the interrupt"
             );
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A Codex edit is warned about a file you rewrote, as a Claude Code one is.
+    ///
+    /// Codex's `apply_patch` names its files inside the patch, relative to the
+    /// session's cwd, and sends no `file_path` (measured on 0.166.0). The handler
+    /// read only `file_path`, so this warning could never reach a Codex session.
+    #[tokio::test]
+    async fn a_codex_patch_is_warned_about_a_file_you_rewrote() {
+        let dir = std::env::temp_dir().join(format!("orchd-hooks-patch-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/a.rs"), "fn a() {}\n").unwrap();
+        let app = orchd::testutil::app_at(&dir, "");
+        let id = uuid::Uuid::new_v4();
+        app.inner
+            .write()
+            .await
+            .sessions
+            .insert(id, Session::new(id, MAIN.to_string(), dir.clone(), None));
+        app.record_human_edit(dir.join("src/a.rs")).await;
+        let mut headers = HeaderMap::new();
+        headers.insert("x-orch-session", id.to_string().parse().unwrap());
+        let patch = |file: &str| HookPayload {
+            tool_name: Some("apply_patch".into()),
+            cwd: Some(dir.to_string_lossy().into_owned()),
+            tool_input: Some(serde_json::json!({
+                "command": format!("*** Begin Patch\n*** Update File: {file}\n@@\n-a\n+b\n*** End Patch"),
+            })),
+            ..HookPayload::default()
+        };
+        let reason = |r: HookResult| {
+            r.1 .0
+                .pointer("/hookSpecificOutput/permissionDecisionReason")
+                .cloned()
+        };
+
+        let (untouched, _) = pre_edit(
+            AxState(app.clone()),
+            headers.clone(),
+            Json(patch("src/b.rs")),
+        )
+        .await;
+        assert_eq!(untouched, StatusCode::OK);
+        let first = pre_edit(
+            AxState(app.clone()),
+            headers.clone(),
+            Json(patch("src/a.rs")),
+        )
+        .await;
+        assert!(
+            reason(first).and_then(|r| r.as_str().map(|r| r.contains("STALE BUFFER")))
+                == Some(true),
+            "the patch to the rewritten file is refused with the warning"
+        );
+        let retry = pre_edit(AxState(app.clone()), headers, Json(patch("src/a.rs"))).await;
+        assert!(reason(retry).is_none(), "and the retry goes through");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
