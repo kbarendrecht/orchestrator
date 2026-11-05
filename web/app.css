@@ -442,6 +442,10 @@ button.ctx-btn:hover{color:var(--text)}
   border:1px solid var(--line);border-radius:var(--r);padding:0 4px;flex:0 0 auto;
   letter-spacing:.04em;
 }
+/* Files another workspace changed too: grey for the same file, amber for the
+   same lines. `flex:none` so a long name clips before the mark does. */
+.sess-overlap{flex:none;font-size:calc(11px * var(--fs));line-height:1;color:var(--faint-solid)}
+.sess-overlap.lines{color:var(--attn)}
 
 /* The checkout a block of sessions belongs to. Drawn only when there is more than
    one, so a single-checkout rail is exactly what it always was.
@@ -1984,6 +1988,9 @@ button.settings-co:hover{color:var(--text);background:var(--hover)}
 .dfrow[aria-current="true"]{background:var(--raised)}
 .dfnum{font-size:calc(9px * var(--fs));color:var(--faint-solid);letter-spacing:-.02em;white-space:nowrap}
 .dfnum .p{color:var(--ok)}.dfnum .m{color:var(--bad)}
+.dfalso{color:var(--faint-solid);margin-right:6px;cursor:pointer}
+.dfalso.lines{color:var(--attn)}
+.dfalso:hover{text-decoration:underline}
 
 /* ---------- PR group (§9) ---------- */
 /* At 4-6 sessions plus PRs the rail runs long, so PR rows stay single-line. */

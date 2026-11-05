@@ -304,7 +304,7 @@ pub struct FileDiff {
     pub binary: bool,
     pub truncated: bool,
     /// A lockfile, or a file the repo marks `linguist-generated`, so the pane
-    /// folds it to one line ([`generated`]).
+    /// folds it to one line ([`is_generated`]).
     pub generated: bool,
 }
 
@@ -460,7 +460,7 @@ pub fn file_diff(
     ignore_ws: bool,
 ) -> Result<FileDiff> {
     let mut diff = file_hunks(cwd, base, path, old, context, ignore_ws)?;
-    diff.generated = generated(cwd, path);
+    diff.generated = is_generated(cwd, path);
     Ok(diff)
 }
 
@@ -488,8 +488,9 @@ const LOCKFILES: &[&str] = &[
 /// Whether `path` is generated: git's `linguist-generated` attribute when the
 /// repo sets it either way, else whether it is a lockfile by name. The
 /// attribute is GitHub's own, so a repo that already folds a file in its PRs
-/// folds it here with nothing new to configure.
-fn generated(cwd: &Path, path: &str) -> bool {
+/// folds it here with nothing new to configure. The conflict marks skip these
+/// too ([`crate::overlap`]).
+pub fn is_generated(cwd: &Path, path: &str) -> bool {
     let said = git(cwd, &["check-attr", "linguist-generated", "--", path]).unwrap_or_default();
     // `<path>: linguist-generated: <value>`, and the path itself may hold a colon.
     match said.trim_end().rsplit(": ").next().unwrap_or("") {
@@ -1424,10 +1425,16 @@ index 111..222 100644
         for f in ["Cargo.lock", "yarn.lock", "web/types.d.ts", "src.rs"] {
             std::fs::write(dir.join(f), "a\n").unwrap();
         }
-        assert!(generated(&dir, "Cargo.lock"), "a lockfile by name");
-        assert!(generated(&dir, "web/types.d.ts"), "a file the repo marks");
-        assert!(!generated(&dir, "yarn.lock"), "a lockfile the repo unmarks");
-        assert!(!generated(&dir, "src.rs"));
+        assert!(is_generated(&dir, "Cargo.lock"), "a lockfile by name");
+        assert!(
+            is_generated(&dir, "web/types.d.ts"),
+            "a file the repo marks"
+        );
+        assert!(
+            !is_generated(&dir, "yarn.lock"),
+            "a lockfile the repo unmarks"
+        );
+        assert!(!is_generated(&dir, "src.rs"));
 
         std::fs::write(dir.join("src.rs"), "fn a() {\n    b();\n}\n").unwrap();
         orchd_base::testutil::git(&dir, &["add", "-A"]);

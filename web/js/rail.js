@@ -1330,13 +1330,13 @@ function fillSessions(/** @type {HTMLElement} */ group, /** @type {import('./cor
      from the drawing again. */
   const rowSig = (/** @type {import('../snapshot').SessionView} */ s, /** @type {any} */ w, /** @type {boolean} */ fromMain) =>
     paintSig([s, w, s.id === selected, startingShown(), fromMain, order, c.path,
-      stateLabel(s), stateClass(s), dotClass(s), hasPr(s)], NOT_DRAWN);
+      stateLabel(s), stateClass(s), dotClass(s), hasPr(s), overlapMark(state, s.workspace)], NOT_DRAWN);
 
   for (const s of mainRows) {
     items.push({
       key: `s:${s.id}`,
       sig: rowSig(s, main, true),
-      build: () => draggable(sessionRow(s, main, true), s, 'main'),
+      build: () => draggable(sessionRow(s, main, true, overlapMark(state, s.workspace)), s, 'main'),
     });
   }
   if (starting && !creatingIntoMain()) items.push(placeholder);
@@ -1345,7 +1345,7 @@ function fillSessions(/** @type {HTMLElement} */ group, /** @type {import('./cor
     items.push({
       key: `s:${s.id}`,
       sig: rowSig(s, { id: s.workspace }, false),
-      build: () => draggable(sessionRow(s, { id: s.workspace }), s, 'tree'),
+      build: () => draggable(sessionRow(s, { id: s.workspace }, false, overlapMark(state, s.workspace)), s, 'tree'),
     });
   }
 
@@ -2028,7 +2028,24 @@ function forkBadge(/** @type {import('../snapshot').SessionView} */ s) {
   return s.forked_from ? el('span', 'forked', 'fork') : null;
 }
 
-function sessionRow(/** @type {import('../snapshot').SessionView} */ s, /** @type {{ id: string | null } | undefined} */ w, /** @type {boolean} */ fromMain = false) {
+/** What a row's overlap mark says: nothing, or which files another workspace
+ *  in the same checkout also changed, and whether on the same lines.
+ *
+ *  Read from the row's own checkout's snapshot, not `snap`: the rail draws every
+ *  open checkout, and the active one's workspaces are not this row's.
+ *
+ *  @param {import('../snapshot').Snapshot} state @param {string} workspace
+ *  @returns {{ lines: boolean, title: string } | null} */
+function overlapMark(state, workspace) {
+  const list = state.workspaces.find((w) => w.id === workspace)?.overlaps ?? [];
+  if (!list.length) return null;
+  const lines = list.some((o) => o.lines);
+  const who = [...new Set(list.map((o) => o.with))].join(', ');
+  const files = list.length === 1 ? '1 file' : `${list.length} files`;
+  return { lines, title: `${files} also changed in ${who}${lines ? ', on the same lines' : ''}` };
+}
+
+function sessionRow(/** @type {import('../snapshot').SessionView} */ s, /** @type {{ id: string | null } | undefined} */ w, /** @type {boolean} */ fromMain = false, /** @type {{ lines: boolean, title: string } | null} */ overlap = null) {
   const btn = el('button', 'sess');
   /* **Current means "what the centre pane is showing", not "what is selected".**
      While you are watching a create, the pane is showing the create — the selection
@@ -2051,6 +2068,10 @@ function sessionRow(/** @type {import('../snapshot').SessionView} */ s, /** @typ
     `${liveName}\nstarted ${ageLabel(s.created_ms)} ago`));
   const forked = forkBadge(s);
   if (forked) row.appendChild(forked);
+  /* **Another session changed the same files.** On the row rather than the dot,
+     which is already two facts (`docs/traps/ui.md`). Amber only for the same
+     lines, which is a merge conflict in waiting; the same file is a grey hint. */
+  if (overlap) row.appendChild(el('span', 'sess-overlap' + (overlap.lines ? ' lines' : ''), '\u21c4', overlap.title));
   /* **Only the exception is marked.** This row is in the main checkout, which is
      the unusual one — nearly every session is a worktree session, so a tag on
      every row would be a column of one repeated word and would spend width the

@@ -468,11 +468,41 @@ session, nothing to do. The three that use `if let` instead go on to do somethin
 without one: `user_prompt_submit` and `stop_failure` still `notify` (a payload the
 daemon cannot place is still a moment the page's clocks moved), and `subagent_stop`
 only logs. Reading them as one idiom and unifying would drop those notifies. */
+/// A prompt was sent: the session is working, and the agent may have something
+/// to hear.
+///
+/// **Answered, not detached**, because the answer is the point: the note about
+/// files another workspace also changed ([`AppState::overlap_note`]) rides back as
+/// `additionalContext`. Behind [`detach`] it was answered with an empty `ok()`
+/// before the handler ran, so nothing it returned could ever reach the agent.
+/// The note is one read of memory under the lock; the state change and the
+/// snapshot that used to be the whole handler still run detached, for the reason
+/// `detach` exists.
 pub async fn user_prompt_submit(
     AxState(app): AxState<Arc<AppState>>,
     headers: HeaderMap,
     Json(payload): Json<HookPayload>,
 ) -> HookResult {
+    let note = match session_of(&headers, &payload) {
+        Some(id) => app.overlap_note(id).await,
+        None => None,
+    };
+    tokio::spawn(prompt_observed(app, headers, payload));
+    match note {
+        Some(note) => (
+            StatusCode::OK,
+            Json(json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "UserPromptSubmit",
+                    "additionalContext": note,
+                }
+            })),
+        ),
+        None => ok(),
+    }
+}
+
+async fn prompt_observed(app: Arc<AppState>, headers: HeaderMap, payload: HookPayload) {
     if let Some(id) = session_of(&headers, &payload) {
         learn_agent_id(&app, id, &payload, false).await;
         // Sending the next prompt is one of exactly two ways YourTurn
@@ -494,7 +524,6 @@ pub async fn user_prompt_submit(
         }
     }
     app.notify().await;
-    ok()
 }
 
 /// How often [`watch_turn_end`] reads the rollout again. A second is the scale
@@ -1878,7 +1907,7 @@ mod tests {
         for id in [codex, claude] {
             let mut headers = HeaderMap::new();
             headers.insert("x-orch-session", id.to_string().parse().unwrap());
-            let _ = user_prompt_submit(AxState(app.clone()), headers, Json(payload())).await;
+            prompt_observed(app.clone(), headers, payload()).await;
         }
         let inner = app.inner.read().await;
         let s = &inner.sessions[&codex];
@@ -1927,7 +1956,7 @@ mod tests {
             turn_id: Some("t2".into()),
             ..HookPayload::default()
         };
-        let _ = user_prompt_submit(AxState(app.clone()), headers, Json(payload)).await;
+        prompt_observed(app.clone(), headers, payload).await;
 
         let state = || async { app.inner.read().await.sessions[&id].state.clone() };
         tokio::time::sleep(TURN_END_POLL * 2).await;
@@ -1995,8 +2024,7 @@ mod tests {
         assert_eq!(held().await, None, "the daemon's id needs no second copy");
 
         let cleared = Uuid::new_v4().to_string();
-        let _ =
-            user_prompt_submit(AxState(app.clone()), headers(), Json(says(cleared.clone()))).await;
+        prompt_observed(app.clone(), headers(), says(cleared.clone())).await;
         assert_eq!(held().await, None, "only SessionStart moves it");
 
         let _ = session_start(AxState(app.clone()), headers(), Json(says(cleared.clone()))).await;
@@ -2300,6 +2328,89 @@ mod tests {
             );
         }
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The prompt hook hands the agent a note about files another workspace also
+    /// changed, once per overlap, and says it again when the same file becomes the
+    /// same lines.
+    #[tokio::test]
+    async fn the_next_prompt_carries_an_overlap_once() {
+        let dir =
+            std::env::temp_dir().join(format!("orchd-hooks-overlap-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let app = orchd::testutil::app_at(&dir, "");
+        let id = uuid::Uuid::new_v4();
+        let other = "feature-x".to_string();
+        {
+            let mut inner = app.inner.write().await;
+            inner
+                .sessions
+                .insert(id, Session::new(id, MAIN.to_string(), dir.clone(), None));
+            let mut w = orchd::model::Workspace {
+                id: other.clone(),
+                path: dir.join("x"),
+                kind: orchd::model::WorkspaceKind::Worktree {
+                    name: other.clone(),
+                },
+                branches: Default::default(),
+                processes: Vec::new(),
+                occupant: None,
+                tree: Default::default(),
+                banked: None,
+            };
+            w.tree.branch = Some("x-branch".into());
+            inner.workspaces.insert(other.clone(), w);
+        }
+        let set = |lines: bool| {
+            let app = app.clone();
+            let other = other.clone();
+            async move {
+                let (a, b) = if MAIN < other.as_str() {
+                    (MAIN.to_string(), other)
+                } else {
+                    (other, MAIN.to_string())
+                };
+                app.inner.write().await.overlaps = vec![orchd::overlap::Pair {
+                    a,
+                    b,
+                    found: orchd::overlap::Found {
+                        path: "src/a.rs".into(),
+                        lines,
+                        stamp: [0; 5],
+                    },
+                }];
+            }
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert("x-orch-session", id.to_string().parse().unwrap());
+        let note = |r: HookResult| {
+            r.1 .0
+                .pointer("/hookSpecificOutput/additionalContext")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        };
+        let prompt = || {
+            user_prompt_submit(
+                AxState(app.clone()),
+                headers.clone(),
+                Json(HookPayload::default()),
+            )
+        };
+
+        assert_eq!(note(prompt().await), None, "nothing to say yet");
+        set(false).await;
+        let first = note(prompt().await).expect("the overlap is said");
+        assert!(
+            first.contains("src/a.rs")
+                && first.contains("`feature-x`")
+                && first.contains("x-branch")
+        );
+        assert!(!first.contains("same or adjacent lines"));
+        assert_eq!(note(prompt().await), None, "and said once");
+        set(true).await;
+        let closer = note(prompt().await).expect("the same lines are news");
+        assert!(closer.contains("same or adjacent lines"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -698,19 +698,25 @@ pub struct Session {
     /// leave that tree alone. Teardown's preflight would refuse a dirty or unpushed
     /// tree either way, but a clean worktree of yours is not the agent's to remove.
     pub spawn_cut_worktree: bool,
-    /// A one-off message for the agent, delivered at its next prompt.
+    /// A one-off message for the agent, delivered as the refusal of its next tool
+    /// call (`pre_edit`).
     ///
     /// The daemon can move a conversation between checkouts, and until this the
     /// agent was never told: it came back believing it was in the tree it had been
     /// reading all along, and the first thing it did with a remembered path was
-    /// wrong. `UserPromptSubmit` is the moment to say so: it is the only hook that
-    /// can hand the agent context, and until the human speaks to the session there
-    /// is nothing for the note to change.
+    /// wrong. The moment it reaches for a tool is the moment that starts to matter.
     ///
     /// Taken, not read: delivered exactly once. Carried across a resume and
     /// persisted, because a session moved while it was not running is told when
     /// auto-resume brings it back, which may be days later.
     pub arrival_notice: Option<String>,
+    /// The overlaps this session's agent has been told about, as `(path, other
+    /// workspace, same lines)`, so each is said once.
+    ///
+    /// An overlap that grows from the same file to the same lines is a new entry
+    /// and is said again. Memory only: after a restart an agent is told once more,
+    /// which costs a line of context and loses nothing.
+    pub told_overlaps: HashSet<(String, String, bool)>,
     /// Written into the pty once `SessionStart` fires.
     ///
     /// `initialUserMessage` is only honoured in non-interactive mode, and a
@@ -778,6 +784,7 @@ impl Session {
             state_since: now,
             branch: None,
             arrival_notice: None,
+            told_overlaps: HashSet::new(),
             dirty_paths: HashSet::new(),
             boundary_violations: Vec::new(),
             last_reconcile: None,

@@ -848,11 +848,13 @@ fn daemon_router(app: Arc<AppState>) -> Router {
         .route("/ws/events", get(ws::events))
         .route("/ws/pty", get(ws::pty))
         // Hook endpoints live under their own prefix and are treated as
-        // write-only observers (§12). The one that answers a question rather
-        // than recording something stays on this router; the rest are merged in
-        // below, behind the layer that stops a one-second timeout cancelling
-        // them.
+        // write-only observers (§12). The two that answer the agent rather than
+        // only recording something stay on this router: `pre-edit` may refuse a
+        // tool, and `user-prompt-submit` may hand the agent a note. The rest are
+        // merged in below, behind the layer that stops a one-second timeout
+        // cancelling them.
         .route("/hooks/pre-edit", post(hooks::pre_edit))
+        .route("/hooks/user-prompt-submit", post(hooks::user_prompt_submit))
         .merge(observer_hooks())
         .layer(axum::middleware::from_fn_with_state(
             app.clone(),
@@ -868,7 +870,6 @@ fn daemon_router(app: Arc<AppState>) -> Router {
 fn observer_hooks() -> Router<Arc<AppState>> {
     Router::new()
         .route("/hooks/session-start", post(hooks::session_start))
-        .route("/hooks/user-prompt-submit", post(hooks::user_prompt_submit))
         .route("/hooks/post-tool-use", post(hooks::post_tool_use))
         .route("/hooks/notification/:kind", post(hooks::notification))
         .route("/hooks/stop", post(hooks::stop))

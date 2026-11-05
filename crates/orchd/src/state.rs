@@ -321,6 +321,11 @@ pub struct Inner {
     /// that lags by one tick, or any poll between the disappearance and the merge,
     /// spends the only attempt.
     pub pending_outcome: Vec<(u64, String)>,
+    /// Files two workspaces both changed, one entry per pair and file
+    /// ([`crate::overlap`]). Rebuilt for a workspace each time it reconciles, so a
+    /// pair is fresh whenever either side moved. Memory only: every reconcile
+    /// after a restart measures it again.
+    pub overlaps: Vec<crate::overlap::Pair>,
     /// PRs whose head is **not** the local branch of the same name, with why —
     /// `git::HeadCheck::refusal` as the last PR poll found it, and kept in step by
     /// every fresh read ([`AppState::pr_head`]).
@@ -1192,6 +1197,7 @@ impl AppState {
                 prs: Vec::new(),
                 prs_ended: Vec::new(),
                 pending_outcome: Vec::new(),
+                overlaps: Vec::new(),
                 foreign_heads: HashMap::new(),
                 spare: Default::default(),
                 viewer: None,
@@ -1759,6 +1765,20 @@ impl AppState {
                 unpushed: w.tree.unpushed,
                 rebasing: w.tree.rebasing,
                 measured: w.tree.measured,
+                // Sent for every workspace, idle or not: it is a handful of rows,
+                // and the rail marks a row whose pane is not open. A pair whose
+                // other side has since gone is dropped here rather than at teardown.
+                overlaps: inner
+                    .overlaps
+                    .iter()
+                    .filter(|p| p.involves(&w.id))
+                    .filter(|p| inner.workspaces.contains_key(p.other(&w.id)))
+                    .map(|p| OverlapView {
+                        path: p.found.path.clone(),
+                        with: p.other(&w.id).to_string(),
+                        lines: p.found.lines,
+                    })
+                    .collect(),
             })
             .collect();
         workspaces.sort_by(|a, b| b.is_main.cmp(&a.is_main).then(a.id.cmp(&b.id)));
@@ -1897,6 +1917,69 @@ impl AppState {
                 told: Default::default(),
             },
         );
+    }
+
+    /// What this session's agent should hear about files another workspace also
+    /// changed, or `None` when there is nothing it has not heard.
+    ///
+    /// Read at the next prompt and handed over as `additionalContext`, which both
+    /// agents put in front of the model (measured on Claude Code 2.1.318 and Codex
+    /// 0.166.0). **A note, never a turn**: typing it into the pty would start work
+    /// nobody asked for, which is the automatic hand-on the review flow removed.
+    pub async fn overlap_note(&self, session: SessionId) -> Option<String> {
+        let mut inner = self.inner.write().await;
+        let ws = inner.sessions.get(&session)?.workspace.clone();
+        let branch_of = |inner: &Inner, id: &str| {
+            inner
+                .workspaces
+                .get(id)
+                .and_then(|w| w.tree.branch.clone())
+                .map(|b| format!(" (branch `{b}`)"))
+                .unwrap_or_default()
+        };
+        let new: Vec<(String, String, bool)> = inner
+            .overlaps
+            .iter()
+            .filter(|p| p.involves(&ws) && inner.workspaces.contains_key(p.other(&ws)))
+            .map(|p| {
+                (
+                    p.found.path.clone(),
+                    p.other(&ws).to_string(),
+                    p.found.lines,
+                )
+            })
+            .filter(|k| {
+                !inner
+                    .sessions
+                    .get(&session)
+                    .is_some_and(|s| s.told_overlaps.contains(k))
+            })
+            .collect();
+        if new.is_empty() {
+            return None;
+        }
+        let lines: Vec<String> = new
+            .iter()
+            .map(|(path, with, same)| {
+                let near = if *same {
+                    ", on the same or adjacent lines"
+                } else {
+                    ""
+                };
+                format!(
+                    "- {path}: also changed in workspace `{with}`{}{near}",
+                    branch_of(&inner, with)
+                )
+            })
+            .collect();
+        let s = inner.sessions.get_mut(&session)?;
+        s.told_overlaps.extend(new);
+        Some(format!(
+            "orchd: another workspace has changed files that this workspace changed too.\n{}\n\
+             Before you edit these files, check whether the other change conflicts with yours. \
+             If it does, tell the user rather than resolving it on your own.",
+            lines.join("\n")
+        ))
     }
 
     /// The one-off notice for a session the daemon moved, taken so it is said once.
@@ -2614,7 +2697,85 @@ impl AppState {
                 }
             }
         }
+        drop(inner);
+        self.refresh_overlaps(workspace).await;
         Ok(())
+    }
+
+    /// Where `workspace`'s changes meet every other workspace's, rebuilt from the
+    /// lists the reconcile just measured.
+    ///
+    /// Each pair is ordered by id and compared in that order, so the line stamps
+    /// mean the same thing whichever side refreshed. Git runs on a blocking
+    /// thread, bounded by [`crate::overlap::LINE_BUDGET`] per refresh.
+    pub async fn refresh_overlaps(&self, workspace: &str) {
+        type Tree = (String, PathBuf, Option<String>, Vec<crate::model::DiffFile>);
+        let (me, others, known) = {
+            let inner = self.inner.read().await;
+            let Some(w) = inner.workspaces.get(workspace) else {
+                return;
+            };
+            let tree = |w: &crate::model::Workspace| -> Tree {
+                (
+                    w.id.clone(),
+                    w.path.clone(),
+                    w.tree.base.clone(),
+                    w.tree.changed.clone(),
+                )
+            };
+            let others: Vec<Tree> = inner
+                .workspaces
+                .values()
+                .filter(|o| o.id != workspace && o.tree.measured && !o.tree.changed.is_empty())
+                .map(tree)
+                .collect();
+            let known: Vec<crate::overlap::Pair> = inner
+                .overlaps
+                .iter()
+                .filter(|p| p.involves(workspace))
+                .cloned()
+                .collect();
+            (tree(w), others, known)
+        };
+        let fresh = if me.3.is_empty() {
+            Vec::new()
+        } else {
+            orchd_base::proc::run_blocking("comparing changed files", move || {
+                let mut budget = crate::overlap::LINE_BUDGET;
+                let mut pairs = Vec::new();
+                for other in &others {
+                    let (a, b) = if me.0 < other.0 {
+                        (&me, other)
+                    } else {
+                        (other, &me)
+                    };
+                    let base = a.2.as_deref().filter(|_| a.2 == b.2);
+                    let before: Vec<crate::overlap::Found> = known
+                        .iter()
+                        .filter(|p| p.a == a.0 && p.b == b.0)
+                        .map(|p| p.found.clone())
+                        .collect();
+                    for found in
+                        crate::overlap::compare(&a.1, &a.3, &b.1, &b.3, base, &before, &mut budget)
+                    {
+                        pairs.push(crate::overlap::Pair {
+                            a: a.0.clone(),
+                            b: b.0.clone(),
+                            found,
+                        });
+                    }
+                }
+                pairs
+            })
+            .await
+            .unwrap_or_default()
+        };
+        let mut inner = self.inner.write().await;
+        inner.overlaps.retain(|p| !p.involves(workspace));
+        inner.overlaps.extend(fresh);
+        inner
+            .overlaps
+            .sort_by(|x, y| (&x.found.path, &x.a, &x.b).cmp(&(&y.found.path, &y.a, &y.b)));
     }
 }
 
@@ -2996,6 +3157,24 @@ pub struct WorkspaceView {
     /// changed", which is the one thing a changed-files pane must not say when it
     /// does not know.
     pub measured: bool,
+    /// Files this workspace changed that another workspace changed too, sorted by
+    /// path and then by the other workspace. See [`crate::overlap`].
+    pub overlaps: Vec<OverlapView>,
+}
+
+/// One file another workspace changed as well.
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(
+    any(test, feature = "test-util"),
+    derive(ts_rs::TS),
+    ts(export, export_to = "snapshot.d.ts")
+)]
+pub struct OverlapView {
+    pub path: String,
+    /// The other workspace's id.
+    pub with: String,
+    /// Whether the changed lines overlap or touch, not only the file.
+    pub lines: bool,
 }
 
 #[derive(Debug, Serialize)]

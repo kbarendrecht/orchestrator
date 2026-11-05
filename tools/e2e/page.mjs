@@ -3226,6 +3226,48 @@ try {
     check(false, 'Shift Shift leftOpened the finder for the left-out folder')
   }
 
+  /* --- two workspaces that changed one file are marked (overlap.rs) ---------- */
+
+  /* **The same new file in two worktrees is marked on both rails and on the file
+     row**, amber because two new files at one path are an add/add conflict. The
+     daemon half is flow 51; this is the half only a page can show: that the mark
+     is drawn, that it names the other workspace, and that the chip goes there. */
+  const pageWs = (await t.session(session)).workspace
+  for (const at of [tree, leftTree]) fs.writeFileSync(path.join(at, 'both-made.txt'), 'mine\n')
+  for (const ws of [pageWs, leftWs]) await t.api('POST', `/api/workspace/${ws}/reconcile`)
+  await page.click(`#rail .sess[data-id="${leftSession}"]`)
+  const marked = await page.waitForFunction((id) => {
+    const m = document.querySelector(`#rail .sess[data-id="${id}"] .sess-overlap`)
+    return m ? { lines: m.classList.contains('lines'), title: m.getAttribute('title') } : null
+  }, leftSession, { timeout: 10_000 }).then((h) => h.jsonValue()).catch(() => null)
+  check(!!marked && marked.lines && (marked.title ?? '').includes(pageWs),
+    `the rail marks a session whose file another workspace also made, got ${JSON.stringify(marked)}`)
+  const chip = await page.waitForFunction(() => {
+    const row = [...document.querySelectorAll('#filepanes .frow, #filepanes .dfrow')]
+      .find((r) => r.querySelector('.fname')?.textContent?.endsWith('both-made.txt'))
+    const c = row?.querySelector('.dfalso')
+    // Inside the row's own box: a fourth grid cell wraps onto a line of its own.
+    const box = row?.getBoundingClientRect()
+    const name = row?.querySelector('.fname')?.getBoundingClientRect()
+    const at = c?.getBoundingClientRect()
+    // Beside the name, not under it: the chip's middle is within the name's line.
+    const inRow = !!box && !!name && !!at && at.top >= box.top && at.bottom <= box.bottom
+      && (at.top + at.bottom) / 2 > name.top && (at.top + at.bottom) / 2 < name.bottom
+    return c ? { text: c.textContent, lines: c.classList.contains('lines'), inRow } : null
+  }, null, { timeout: 10_000 }).then((h) => h.jsonValue()).catch(() => null)
+  check(!!chip && chip.lines && (chip.text ?? '').includes(pageWs) && chip.inRow,
+    `and the file row names the other workspace, on the row's one line, got ${JSON.stringify(chip)}`)
+  await page.evaluate(() => {
+    const row = [...document.querySelectorAll('#filepanes .frow, #filepanes .dfrow')]
+      .find((r) => r.querySelector('.fname')?.textContent?.endsWith('both-made.txt'))
+    const c = /** @type {HTMLElement | null | undefined} */ (row?.querySelector('.dfalso'))
+    c?.click()
+  })
+  check(await page.evaluate(async () => (await import('/js/core.js')).selected) === session,
+    'and pressing it goes to the session in that workspace')
+  for (const at of [tree, leftTree]) fs.rmSync(path.join(at, 'both-made.txt'))
+  for (const ws of [pageWs, leftWs]) await t.api('POST', `/api/workspace/${ws}/reconcile`)
+
   /* **Restart from a row's menu selects that row.** You restart a session to
      watch it come back, and a menu opened on another row left the old one on
      screen. Last, because the restart respawns that session's agent. */

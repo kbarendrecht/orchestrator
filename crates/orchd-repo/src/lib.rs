@@ -19,6 +19,7 @@ pub mod launch;
 pub mod logging;
 pub mod machine;
 pub mod migrate;
+pub mod overlap;
 pub mod patch;
 pub mod reviews;
 pub mod search;

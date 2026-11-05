@@ -37,7 +37,7 @@ export type EndedPr = { number: number, title: string, url: string, head_ref: st
 export type FileDiff = { path: string, hunks: Array<Hunk>, binary: boolean, truncated: boolean, 
 /**
  * A lockfile, or a file the repo marks `linguist-generated`, so the pane
- * folds it to one line ([`generated`]).
+ * folds it to one line ([`is_generated`]).
  */
 generated: boolean, };
 

@@ -21,7 +21,7 @@ pub use orchd_base::{
 // from there back up here.
 pub use orchd_repo::{
     agent, codex, config, diff, env_source, forge, instance, launch, logging, machine, migrate,
-    patch, reviews, search, skills, story, structure, symbols,
+    overlap, patch, reviews, search, skills, story, structure, symbols,
 };
 
 pub mod api;

@@ -199,6 +199,19 @@ free: boolean, };
 export type Offer = { "kind": "button", command: string, } | { "kind": "advice", command: string, } | { "kind": "link_only" };
 
 /**
+ * One file another workspace changed as well.
+ */
+export type OverlapView = { path: string, 
+/**
+ * The other workspace's id.
+ */
+with: string, 
+/**
+ * Whether the changed lines overlap or touch, not only the file.
+ */
+lines: boolean, };
+
+/**
  * The PR pass a session was started to run, when it was started as one.
  *
  * **One field rather than two.** `pr` and `command` are inseparable — a pass with
@@ -772,4 +785,9 @@ unpushed: number, rebasing: boolean,
  * changed", which is the one thing a changed-files pane must not say when it
  * does not know.
  */
-measured: boolean, };
+measured: boolean, 
+/**
+ * Files this workspace changed that another workspace changed too, sorted by
+ * path and then by the other workspace. See [`crate::overlap`].
+ */
+overlaps: Array<OverlapView>, };
