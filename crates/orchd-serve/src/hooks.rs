@@ -1090,9 +1090,10 @@ const INTERRUPT_SETTLE: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Refuse one tool call and tell the model why.
 ///
-/// The daemon's only way to say something an agent will actually read: hooks are
-/// one-way and the pty is the human's. Every use of it is announce-once, because a
-/// deny that repeats stalls the turn instead of informing it.
+/// One of the two ways the daemon says something an agent will read; the other is
+/// `additionalContext` on the next prompt. This one lands at the moment of the
+/// tool call. Every use of it is announce-once, because a deny that repeats stalls
+/// the turn instead of informing it.
 fn deny(reason: String) -> HookResult {
     (
         StatusCode::OK,
@@ -1258,7 +1259,22 @@ fn codex_overrides(
     let Some(orch) = orch_binary() else {
         return Vec::new();
     };
-    let orch = sh_quote(&orch.to_string_lossy());
+    codex_hooks(
+        &sh_quote(&orch.to_string_lossy()),
+        base_branch,
+        main,
+        worktrees,
+    )
+}
+
+/// [`codex_overrides`] for a given `orch`, so a test can read the list without the
+/// sibling binary having been built.
+fn codex_hooks(
+    orch: &str,
+    base_branch: Option<&str>,
+    main: &std::path::Path,
+    worktrees: &std::path::Path,
+) -> Vec<String> {
     let hook = |route: &str| vec![(format!("{orch} hook {route}"), 5)];
     let mut pre: Vec<orchd::codex::HookGroup> = vec![(None, hook("pre-edit"))];
     if let Some(guard) = push_guard_command(base_branch, main, worktrees) {
@@ -2285,6 +2301,105 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Routes one agent registers and the other does not, each with why. A route
+    /// the daemon serves must be registered for both agents or be named here.
+    const ONE_AGENT: [(&str, &str); 5] = [
+        // Codex has no `StopFailure`: a failed turn is read off its rollout
+        // (`watch_turn_end`).
+        ("stop-failure", "claude"),
+        // Claude Code never says it was interrupted (`ws::note_interrupt`).
+        ("interrupt", "codex"),
+        // Codex has no `Notification` event; its permission prompt arrives as
+        // `PermissionRequest`, posted to `notification/permission_prompt`.
+        ("notification/agent_needs_input", "claude"),
+        ("notification/idle_prompt", "claude"),
+        // Posted by a repo's own `worktree-edit-boundary` hook, not by either
+        // agent's daemon-written settings.
+        ("boundary-block", "neither"),
+    ];
+
+    /// **The two hook lists stay in step.** Claude Code's settings and Codex's
+    /// `-c` overrides are built separately, and a route added to one was simply
+    /// missing from the other, with nothing to say so: the only symptom is an
+    /// agent whose rail stops following one kind of event. So every route the
+    /// router serves is registered for both, or for one with its reason in
+    /// [`ONE_AGENT`]; and every route either list registers is one the router
+    /// serves, which catches a misspelt route that would answer 404 in silence.
+    #[test]
+    fn the_two_agents_register_the_same_hooks_or_say_why_not() {
+        use std::collections::BTreeSet;
+        let routes = |text: &str, marker: &str| -> BTreeSet<String> {
+            text.match_indices(marker)
+                .map(|(i, _)| {
+                    text[i + marker.len()..]
+                        .chars()
+                        .take_while(|c| c.is_ascii_alphanumeric() || "-_/:".contains(*c))
+                        .collect::<String>()
+                })
+                .collect()
+        };
+        let served = routes(include_str!("lib.rs"), "\"/hooks/");
+
+        let dir = orchd::testutil::scratch("hook-lists");
+        std::env::set_var("HOME", &dir);
+        let repo = std::path::Path::new("/repo");
+        let trees = std::path::Path::new("/repo/.claude/worktrees");
+        let path = write_settings(7777, None, Some("main"), repo, trees).expect("write settings");
+        let claude = routes(
+            &std::fs::read_to_string(&path).unwrap(),
+            "127.0.0.1:7777/hooks/",
+        );
+        let codex = routes(
+            &codex_hooks("orch", Some("main"), repo, trees).join("\n"),
+            "orch hook ",
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // A concrete route matches a served one, `:kind` standing for any segment.
+        let serves = |route: &str| {
+            served.iter().any(|s| {
+                let (s, r): (Vec<_>, Vec<_>) = (s.split('/').collect(), route.split('/').collect());
+                s.len() == r.len() && s.iter().zip(&r).all(|(a, b)| a.starts_with(':') || a == b)
+            })
+        };
+        for r in claude.iter().chain(&codex) {
+            assert!(
+                serves(r),
+                "`{r}` is registered but the router serves no such hook"
+            );
+        }
+        let concrete: BTreeSet<String> = served
+            .iter()
+            .filter(|s| !s.contains(':'))
+            .cloned()
+            .chain(
+                claude
+                    .iter()
+                    .chain(&codex)
+                    .filter(|r| !served.contains(*r))
+                    .cloned(),
+            )
+            .collect();
+        for r in &concrete {
+            let said = ONE_AGENT
+                .iter()
+                .find(|(route, _)| route == r)
+                .map(|(_, who)| *who);
+            let has = (claude.contains(r), codex.contains(r));
+            let expected = match said {
+                None => (true, true),
+                Some("claude") => (true, false),
+                Some("codex") => (false, true),
+                Some(_) => (false, false),
+            };
+            assert_eq!(
+                has, expected,
+                "`{r}`: (claude, codex) register it as {has:?}; add it to the other list, \
+                 or name it in ONE_AGENT with why"
+            );
+        }
     }
 
     /// The failure mode the Python guard had: it ran by shebang, so a machine
