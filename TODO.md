@@ -287,3 +287,17 @@ this file, which churned it from every build; that feature is gone.
   successful start instead, which meant the bound never bit and a daemon dying on
   boot restarted forever. Leaving the ask in invited somebody to build a guard that
   exists.
+
+- **Deferred: orchd on a phone.** Much of the agent work around this project is
+  driven from a phone, through a remote-control app, and orchd is a window on the
+  desktop. So an agent blocked on a question waits until somebody is back at the
+  machine, although the page that asks it is already served over HTTP and opens in
+  any browser tab. The useful shape is narrow: the rail with its amber rows, the
+  blocking question with its answer box, and the PR rows with their verbs. It is
+  not the diff, the editor or the terminals.
+
+  The UI is the small half. The open question is **reaching the daemon from
+  outside the machine**: it listens on loopback, and the page's token can spawn a
+  pty, so whatever carries it (a tailnet, a tunnel, a signed link) carries a
+  shell. That is the same decision the entry on running somewhere else has to make
+  first, and it should be made once for both.
