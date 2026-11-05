@@ -9,7 +9,7 @@
 import { $, FORGE_LABEL, activeWorkspaceId, borrowFocus, call, confirmBox, currentSession, currentWorkspaceId, el, get, icon, iconLabel, openMenu, pending, prForWorkspace, returnFocus, snap, reason, toast, paintSig, reconcile, unchanged, workspaceById } from './core.js';
 import * as Editor from './editor.js';
 import { changeBlocks, revertedText } from './revert.js';
-import { charRanges, langFor, lineSegments } from './source.js';
+import { STATE_MAX, charRanges, langFor, lineSegments, lineTokens } from './source.js';
 import * as Tree from './tree.js';
 
 // ---------------------------------------------------------------------------
@@ -786,7 +786,8 @@ function lineEl(/** @type {import('../repo').Row} */ row, /** @type {'old' | 'ne
     // string. Convert the ranges to character offsets so the two line up, then
     // merge. A blank line still needs a space so the row has height.
     const words = charRanges(row.text, row.words || []);
-    const segs = lineSegments(row.text, words, langFor(diffState.path ?? ''));
+    const lang = langFor(diffState.path ?? '');
+    const segs = lineSegments(row.text, words, lang, rowTokens(row, side, lang) ?? undefined);
     if (!segs.length) {
       body.textContent = row.text || ' ';
     } else {
@@ -801,6 +802,63 @@ function lineEl(/** @type {import('../repo').Row} */ row, /** @type {'old' | 'ne
   }
   div.appendChild(body);
   return div;
+}
+
+/** Syntax ranges for each side of the open file, from one pass over each, so a
+ *  row inside a block comment is coloured as one. Keyed on the loaded diff and
+ *  lines, which every load and every save replaces.
+ *
+ *  **The old side is rebuilt, not fetched.** Outside the hunks the two sides are
+ *  the same lines, and inside them the old side is the context and the removed
+ *  rows: so the working tree plus the hunks *is* the old file, and the daemon
+ *  needs no second read for a colour.
+ *  @type {{ file: unknown, lines: unknown, lang: string | null,
+ *           old: Side | null, new: Side | null }} */
+let sides = { file: null, lines: null, lang: null, old: null, new: null };
+/** @typedef {{ text: string[], toks: { s: number, e: number, cls: string }[][] }} Side */
+
+/** One side's lines, tokenised together. Null past `STATE_MAX`, where each row
+ *  is tokenised alone as it always was. */
+function sideOf(/** @type {string[]} */ text, /** @type {string} */ lang) {
+  const whole = text.join('\n');
+  return whole.length > STATE_MAX ? null : { text, toks: lineTokens(whole, lang) };
+}
+
+/** The old file, from the new one and the hunks between them. */
+function oldLines(/** @type {import('../repo').FileDiff} */ f, /** @type {string[]} */ lines) {
+  const out = [];
+  let n = 0;
+  for (const h of f.hunks) {
+    // A hunk with no new-side row (a pure removal at -U0) names the line it
+    // follows, not the one it starts on.
+    const before = h.rows.some((r) => r.kind !== 'del') ? h.new_start - 1 : h.new_start;
+    while (n < before && n < lines.length) out.push(lines[n++] ?? '');
+    for (const r of h.rows) {
+      if (r.kind !== 'add') out.push(r.text);
+      if (r.kind !== 'del') n++;
+    }
+  }
+  while (n < lines.length) out.push(lines[n++] ?? '');
+  return out;
+}
+
+/** A row's ranges from its side's whole-file pass, or null to tokenise it alone.
+ *
+ *  **Only when the text agrees.** The sides are lined up by line number, and a
+ *  `-w` diff or a file that moved between the two reads can leave a number
+ *  naming a different line; a mismatch costs that row its context, never its
+ *  colour. */
+function rowTokens(/** @type {import('../repo').Row} */ row, /** @type {'old' | 'new'} */ side, /** @type {string | null} */ lang) {
+  const f = diffState.file;
+  if (!f || !lang) return null;
+  if (sides.file !== f || sides.lines !== diffState.lines || sides.lang !== lang) {
+    const now = (diffState.lines ?? []).map((l) => l.replace(/\r$/, ''));
+    sides = { file: f, lines: diffState.lines, lang, old: sideOf(oldLines(f, now), lang), new: diffState.lines ? sideOf(now, lang) : null };
+  }
+  const old = row.kind === 'del' || (row.kind === 'context' && side === 'old');
+  const at = (old ? row.old : row.new) ?? 0;
+  const s = old ? sides.old : sides.new;
+  return s && s.text[at - 1] === row.text ? s.toks[at - 1] ?? null : null;
 }
 
 /** Align a hunk's rows into side-by-side pairs.

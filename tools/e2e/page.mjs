@@ -2204,6 +2204,28 @@ try {
   await page.waitForSelector('#diffbody .ln.goto', { timeout: 5000 })
   check(await page.$eval('#diffbody .ln.goto i', (i) => i.dataset.n) === '10',
     'g then 10 lands on line 10 of the file, out of its fold')
+
+  /* **A changed line inside a block comment is coloured as comment, on both
+     sides.** Prism keeps no state between calls, so a line tokenised alone read
+     ` *  whose second line…` as code: the diff colours each side from one pass
+     over its whole file, and the old side is rebuilt from the new one and the
+     hunks. Every piece of the row has to carry the comment colour, or a word the
+     change split off was tokenised without its context. */
+  const doc = ['/** a block comment', ' *  whose second line is old', ' */', 'const a = 1;']
+  fs.writeFileSync(path.join(tree, 'colour.js'), doc.join('\n') + '\n')
+  git(tree, ['add', 'colour.js'])
+  git(tree, ['commit', '-qm', 'a commented file'])
+  git(tree, ['update-ref', 'refs/remotes/origin/main', 'HEAD'])
+  doc[1] = ' *  whose second line is new'
+  fs.writeFileSync(path.join(tree, 'colour.js'), doc.join('\n') + '\n')
+  await page.evaluate(async () => (await import('/js/diff.js')).loadFile('colour.js'))
+  await page.waitForSelector('#diffbody .ln.add', { timeout: 10_000 })
+  const commented = await page.evaluate(() => Object.fromEntries(['del', 'add'].map((k) => {
+    const s = document.querySelector(`#diffbody .ln.${k} s`)
+    return [k, !!s && [...s.childNodes].every((n) => n instanceof HTMLElement && n.classList.contains('tok-comment'))]
+  })))
+  check(commented.del && commented.add,
+    `a changed line inside a block comment is comment on both sides, got ${JSON.stringify(commented)}`)
   git(tree, ['update-ref', 'refs/remotes/origin/main', upstreamWas])
 
   /* **Untracked files stay in the open diff's list**, one row each. The list is

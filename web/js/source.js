@@ -156,9 +156,10 @@ export function lineTokens(text, lang) {
 }
 
 /** Split a line at every boundary — syntax-token edges and word-diff edges both
- *  — so each segment can carry a token colour and a change background at once. */
-export function lineSegments(/** @type {string} */ text, /** @type {{ s: number, e: number }[]} */ words, /** @type {string | null} */ lang) {
-  const toks = hlTokens(text, lang);
+ *  — so each segment can carry a token colour and a change background at once.
+ *  `toks` is the line's syntax ranges when the caller has them from a pass over
+ *  the whole file; without them the line is tokenised alone. */
+export function lineSegments(/** @type {string} */ text, /** @type {{ s: number, e: number }[]} */ words, /** @type {string | null} */ lang, toks = hlTokens(text, lang)) {
   const bset = new Set([0, text.length]);
   for (const t of toks) { bset.add(t.s); bset.add(t.e); }
   for (const w of words) { bset.add(w.s); bset.add(w.e); }
