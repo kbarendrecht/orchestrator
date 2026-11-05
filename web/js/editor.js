@@ -20,7 +20,7 @@
 import { appMod, call, confirmBox, el, get, IS_MAC, MOD_LABEL, reason, toast } from './core.js';
 import { commentFor, indent, indentUnit, newline, toggleComment } from './editkeys.js';
 import { hasMarkers, merge3 } from './merge.js';
-import { hlTokens, langFor, paintRanges } from './source.js';
+import { STATE_MAX, hlTokens, langFor, lineTokens, paintRanges } from './source.js';
 
 /** The chord is the same in both overlays, so the label is written once and from
  *  the platform's own modifier — a hardcoded glyph here was the Mac key
@@ -354,6 +354,15 @@ function decorate(ta, lang) {
   }
   wrap.appendChild(ta);
   let queued = false;
+  /** Syntax ranges for the buffer's first `upto` lines, as of `value`.
+   *
+   *  **The prefix, not the buffer**: lexer state only flows down, so the lines
+   *  above the window are all a drawn line needs, and a keystroke near the top of
+   *  a long file costs that much and no more. Scrolling inside what was covered
+   *  costs nothing; past it, the prefix is taken again with `AHEAD` to spare.
+   *  @type {{ value: string, upto: number, toks: { s: number, e: number, cls: string }[][] }} */
+  let hl = { value: '', upto: 0, toks: [] };
+  const AHEAD = 200;
   const paint = () => {
     queued = false;
     /* **A whole pixel per line, or the layers drift apart in WebKit.** The CSS
@@ -408,9 +417,15 @@ function decorate(ta, lang) {
     }));
     markedIn.style.transform = `translate(${-ta.scrollLeft}px, ${first * lh - ta.scrollTop}px)`;
     if (!inner) return;
-    inner.replaceChildren(...lines.map((l) => {
+    const need = first + lines.length;
+    const whole = ta.value.length <= STATE_MAX;
+    if (whole && (hl.value !== ta.value || hl.upto < need)) {
+      const upto = Math.min(all.length, need + AHEAD);
+      hl = { value: ta.value, upto, toks: lineTokens(all.slice(0, upto).join('\n'), lang) };
+    }
+    inner.replaceChildren(...lines.map((l, i) => {
       const row = el('div');
-      paintRanges(row, l || ' ', l ? hlTokens(l, lang) : []);
+      paintRanges(row, l || ' ', !l ? [] : whole ? hl.toks[first + i] ?? [] : hlTokens(l, lang));
       return row;
     }));
     inner.style.transform = `translate(${-ta.scrollLeft}px, ${first * lh - ta.scrollTop}px)`;

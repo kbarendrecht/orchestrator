@@ -15,7 +15,7 @@
 // reads as a truncated file rather than a broken viewer.
 
 import { activeCheckout, appMod, call, copyText, el, FORGE_LABEL, get, openMenu, reason, safeHref, snap, toast } from './core.js';
-import { byteRange, charRanges, hlTokens, langFor, paintRanges } from './source.js';
+import { STATE_MAX, byteRange, charRanges, hlTokens, langFor, lineTokens, paintRanges } from './source.js';
 import { parse } from './markdown.js';
 import { refsIn } from './pathlink.js';
 import { indentUnit } from './editkeys.js';
@@ -139,6 +139,11 @@ export function create(on) {
   /** @type {number[]} */
   let indents = [];
   let step = 2;
+  /** Syntax ranges by file line, from one pass over the whole file so a line
+   *  inside a block comment knows it is. Undefined until a row first asks, and
+   *  null past `STATE_MAX`, where each row is tokenised alone as it is drawn.
+   *  @type {{ s: number, e: number, cls: string }[][] | null | undefined} */
+  let colours;
 
   const rowCount = () => (shown ? shown.length : view.file?.lines.length ?? 0);
   /** The file line, 0-based, drawn as row `r`. */
@@ -332,6 +337,7 @@ export function create(on) {
     shown = null;
     scopesKey = '';
     indents = plain ? [] : measureIndents(view.file.lines);
+    colours = undefined;
     const unit = plain ? '' : indentUnit(content);
     step = unit === '\t' ? TAB : unit.length || 2;
   }
@@ -579,7 +585,12 @@ export function create(on) {
     // background rather than elements, so it costs no DOM.
     const ind = indents[i] ?? 0;
     if (ind > 0) body.style.setProperty('--ind', `${ind}ch`);
-    const ranges = hlTokens(text, file.lang);
+    if (colours === undefined) {
+      const whole = file.lang ? file.lines.join('\n') : '';
+      colours = whole && whole.length <= STATE_MAX ? lineTokens(whole, file.lang) : null;
+    }
+    // A copy, because the find span is pushed into it below.
+    const ranges = colours ? [...(colours[i] ?? [])] : hlTokens(text, file.lang);
     if (n === spot.line && spot.len) {
       // The match, marked through the same range machinery the word-diff paints
       // with. Byte offsets from Rust, so they are converted rather than assumed.

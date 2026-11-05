@@ -113,6 +113,48 @@ export function hlTokens(/** @type {string} */ text, /** @type {string | null} *
   return out;
 }
 
+/** Past this a file is coloured a line at a time, which is what every file was
+ *  before: wrong inside a multi-line comment or string, but bounded by the lines
+ *  on screen. Prism measured 10ms for the 68 KB `diff.js` as one string, and
+ *  700ms for the minified 477 KB `xterm.js`, so the cap is what one pass costs
+ *  rather than how big a file may be. */
+export const STATE_MAX = 128 * 1024;
+
+/** `text`'s ranges per line, tokenised as one string and split back at the
+ *  newlines.
+ *
+ *  **Prism keeps no state between calls**, so a line tokenised alone has no idea
+ *  it is inside a block comment or a template string: the second line of every
+ *  JSDoc block was coloured as code. Tokenising the whole text is the only way
+ *  Prism sees where a comment opened, and a token that spans lines is cut into
+ *  one range per line it covers.
+ *
+ *  @param {string} text @param {string | null} lang
+ *  @returns {{ s: number, e: number, cls: string }[][]} */
+export function lineTokens(text, lang) {
+  const toks = hlTokens(text, lang);
+  const out = [];
+  let k = 0;
+  let start = 0;
+  for (const line of text.split('\n')) {
+    const end = start + line.length;
+    // Ranges are in order and do not overlap, so one cursor walks them all; a
+    // range still open past this line is kept for the next.
+    while (k < toks.length && (toks[k]?.e ?? 0) <= start) k++;
+    const mine = [];
+    for (let j = k; j < toks.length; j++) {
+      const t = /** @type {{ s: number, e: number, cls: string }} */ (toks[j]);
+      if (t.s >= end) break;
+      const s = Math.max(t.s, start);
+      const e = Math.min(t.e, end);
+      if (e > s) mine.push({ s: s - start, e: e - start, cls: t.cls });
+    }
+    out.push(mine);
+    start = end + 1;
+  }
+  return out;
+}
+
 /** Split a line at every boundary — syntax-token edges and word-diff edges both
  *  — so each segment can carry a token colour and a change background at once. */
 export function lineSegments(/** @type {string} */ text, /** @type {{ s: number, e: number }[]} */ words, /** @type {string | null} */ lang) {
