@@ -190,14 +190,16 @@ answer, then prints `allowed` or `refused`.
 ";
 
 const HELP_GUARD: &str = "\
-orch guard push [--base <branch>] [--main <path>] [--worktrees <path>]
+orch guard push [--base <branch>] [--main <path>] [--worktrees <path>] [--ask-base]
 
 Not for you to call. The daemon registers this as a PreToolUse hook; it reads the
 payload on stdin and exits 2 to refuse a dangerous push, or a git command aimed
 out of the area the session works in.
 
-  --base <branch>     The branch that must never be pushed to. Defaults to the
-                      daemon's configured upstream ref.
+  --base <branch>     The base branch, which a push may not write unasked.
+                      Defaults to the daemon's configured upstream ref.
+  --ask-base          Ask the person before a push that writes the base branch,
+                      instead of refusing it. For an agent whose hooks can ask.
   --main <path>       The main checkout. Without it both boundary rules are
                       skipped, since there is nothing to measure against.
   --worktrees <path>  Where the daemon keeps its worktrees. A session standing in
@@ -295,6 +297,7 @@ fn spec(cmd: &str) -> Option<&'static [(&'static str, Arity)]> {
         "outside" => &[],
         "guard" => &[
             ("--base", Arity::Value),
+            ("--ask-base", Arity::Flag),
             ("--main", Arity::Value),
             ("--worktrees", Arity::Value),
         ],
@@ -891,9 +894,24 @@ fn guard(a: &Parsed) -> ExitCode {
         worktrees_dir: worktrees_dir.as_deref(),
         granted: &granted,
     };
-    match orchd::guard::check(&call, a.value("--base")) {
-        Some(reason) => {
-            eprintln!("{reason}");
+    match orchd::guard::verdict(&call, a.value("--base")) {
+        /* **Claude Code's own permission prompt**, which a PreToolUse hook raises by
+        answering `ask` on stdout and exiting 0. Only with `--ask-base`, which the
+        daemon gives Claude Code's hook and not Codex's: an agent that ignored the
+        answer would let the push through with nobody asked. */
+        Some(orchd::guard::Verdict::Ask(reason)) if a.has("--ask-base") => {
+            println!(
+                "{}",
+                serde_json::json!({ "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "ask",
+                    "permissionDecisionReason": reason,
+                }})
+            );
+            ExitCode::SUCCESS
+        }
+        Some(v) => {
+            eprintln!("{}", v.reason());
             // Claude Code's "block and tell the model why" code.
             ExitCode::from(2)
         }

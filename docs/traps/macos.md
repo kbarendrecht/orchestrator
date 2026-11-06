@@ -54,7 +54,12 @@ script the agent writes goes around it. Do not write docs that claim otherwise;
 the README did, and that is the kind of sentence that earns misplaced trust.
 Three rules: no lease-less force push, no push that writes the base branch (from
 `upstream_ref`, never a list of likely names, and only while `protect_base` is on)
-or removes branches, and no git that changes main or another managed worktree. **Rebase, never `git merge`, is *this*
+or removes branches, and no git that changes main or another managed worktree.
+**The base-branch push is a question in Claude Code, not a refusal**: its hook
+carries `--ask-base`, and `orch guard push` then answers `permissionDecision:
+"ask"`, which is Claude Code's own permission prompt. Codex's hook does not
+carry it, because Codex trusts a hook by the hash of its command and an answer
+it did not honour would let the push through unasked; there it is still refused. **Rebase, never `git merge`, is *this*
 repo's convention** for its own branches,
 not a rule the guard or the skills impose: `fix-pr` reads each repo's
 own convention and merge the base in where that repo does.

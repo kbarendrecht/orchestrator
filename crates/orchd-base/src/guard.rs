@@ -85,8 +85,36 @@ pub struct Call<'a> {
 /// a guessed name.
 pub type Base<'a> = Option<&'a str>;
 
-/// `Some(reason)` to refuse the tool call, `None` to let it through.
+/// What the guard says about a tool call it does not let straight through.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Verdict {
+    /// Refused, with the reason the agent is told.
+    Deny(String),
+    /// **A question for the person, not a wall.** A push that writes the base
+    /// branch is sometimes exactly what was asked for (a repo whose own changes
+    /// land on `main`), and the person at the prompt can tell which. Only where
+    /// the agent can ask: `orch guard push --ask-base`, which Claude Code's hook
+    /// carries. Anywhere else it is a [`Verdict::Deny`].
+    Ask(String),
+}
+
+impl Verdict {
+    /// The sentence, whichever it is.
+    pub fn reason(&self) -> &str {
+        match self {
+            Verdict::Deny(r) | Verdict::Ask(r) => r,
+        }
+    }
+}
+
+/// `Some(reason)` to stop the tool call, `None` to let it through: [`verdict`]
+/// without the difference between a refusal and a question.
 pub fn check(call: &Call, base: Base) -> Option<String> {
+    verdict(call, base).map(|v| v.reason().to_string())
+}
+
+/// What the guard says about one tool call, `None` to let it through.
+pub fn verdict(call: &Call, base: Base) -> Option<Verdict> {
     if call.tool_name != "Bash" {
         return None;
     }
@@ -97,11 +125,11 @@ pub fn check(call: &Call, base: Base) -> Option<String> {
     the same fail-open this module makes everywhere else. */
     let mut at = call.cwd.map(|c| c.to_path_buf());
     for segment in segments(call.command) {
-        if let Some(reason) = check_one(&segment, base, call.current_branch) {
-            return Some(reason);
+        if let Some(v) = check_one(&segment, base, call.current_branch) {
+            return Some(v);
         }
         if let Some(reason) = isolation(&segment, at.as_deref(), call) {
-            return Some(reason);
+            return Some(Verdict::Deny(reason));
         }
         if let Some(moved) = cd_target(&segment) {
             at = moved.map(|to| resolve(at.as_deref(), &to));
@@ -176,7 +204,7 @@ fn push_args(segment: &str) -> Option<Vec<String>> {
     (tokens[i] == "push").then(|| tokens[i + 1..].iter().map(|s| s.to_string()).collect())
 }
 
-fn check_one(segment: &str, base: Base, current_branch: Option<&str>) -> Option<String> {
+fn check_one(segment: &str, base: Base, current_branch: Option<&str>) -> Option<Verdict> {
     let args = push_args(segment)?;
 
     // `--force-with-lease` refuses when someone else has pushed since you last
@@ -188,23 +216,23 @@ fn check_one(segment: &str, base: Base, current_branch: Option<&str>) -> Option<
     // and clustering it would be a way around this, but a clustered short flag is
     // also not something an agent writes.
     if args.iter().any(|a| a == "--force" || a == "-f") {
-        return Some(
+        return Some(Verdict::Deny(
             "orchd: plain `--force` is denied. Use `--force-with-lease`, which refuses \
              when someone else has pushed since you last fetched."
                 .into(),
-        );
+        ));
     }
     let specs = refspecs(&args);
     // A leading `+` is `--force` for that one ref, and git still checks a lease
     // against it, so it is only the lease-less spelling that is refused.
     let leased = args.iter().any(|a| a.starts_with("--force-with-lease"));
     if !leased && specs.iter().any(|s| s.starts_with('+')) {
-        return Some(
+        return Some(Verdict::Deny(
             "orchd: a `+<ref>` refspec is a force push with no lease, and it is denied. \
              Use `--force-with-lease`, which refuses when someone else has pushed since \
              you last fetched."
                 .into(),
-        );
+        ));
     }
 
     /* The pushes that write or remove remote branches the command never names.
@@ -217,27 +245,27 @@ fn check_one(segment: &str, base: Base, current_branch: Option<&str>) -> Option<
         .chain(specs.iter().map(String::as_str).filter(|s| *s == ":"))
         .find(|a| matches!(*a, "--mirror" | "--all" | "--branches" | "--prune" | ":"))
     {
-        return Some(format!(
+        return Some(Verdict::Deny(format!(
             "orchd: `git push {flag}` is denied, it writes or removes remote branches the \
              command does not name. Push the branch you mean."
-        ));
+        )));
     }
     if args.iter().any(|a| a == "--delete" || a == "-d")
         || specs.iter().any(|s| s.len() > 1 && s.starts_with(':'))
     {
-        return Some(
+        return Some(Verdict::Deny(
             "orchd: deleting a remote branch is denied. Ask the user to delete it.".into(),
-        );
+        ));
     }
 
     let base = base?;
     let dsts = destinations(&specs, current_branch);
     for dst in &dsts {
         if dst == base {
-            return Some(format!(
-                "orchd: pushing to `{base}` is denied — it is the base branch this \
-                 checkout is measured against. Open a PR instead."
-            ));
+            return Some(Verdict::Ask(format!(
+                "orchd: `{base}` is the base branch this checkout is measured against, \
+                 and this push writes it. Usually that is a PR instead."
+            )));
         }
     }
 
@@ -245,10 +273,10 @@ fn check_one(segment: &str, base: Base, current_branch: Option<&str>) -> Option<
     // nothing written down, and the spelling-only version of this guard let it
     // through. Only reachable when the branch could actually be read.
     if dsts.is_empty() && current_branch == Some(base) {
-        return Some(format!(
-            "orchd: `git push` from `{base}` is denied — it is the base branch this \
-             checkout is measured against. Open a PR instead."
-        ));
+        return Some(Verdict::Ask(format!(
+            "orchd: `git push` from `{base}` writes the base branch this checkout is \
+             measured against. Usually that is a PR instead."
+        )));
     }
     None
 }
@@ -564,6 +592,23 @@ mod tests {
         assert!(denied("git push origin 'main'"));
         assert!(!denied("git push origin topic"));
         assert!(!denied("git push origin HEAD:topic"));
+    }
+
+    /// A base push is a question for the person; the pushes nobody should make
+    /// unattended stay refusals.
+    #[test]
+    fn a_base_push_asks_and_the_rest_still_refuse() {
+        let kind = |c: &str| match verdict(&bash(c, None), Some("main")) {
+            Some(Verdict::Ask(_)) => "ask",
+            Some(Verdict::Deny(_)) => "deny",
+            None => "allow",
+        };
+        assert_eq!(kind("git push origin main"), "ask");
+        assert_eq!(kind("git push origin HEAD:refs/heads/main"), "ask");
+        assert_eq!(kind("git push --force origin topic"), "deny");
+        assert_eq!(kind("git push origin --delete topic"), "deny");
+        assert_eq!(kind("git push --all origin"), "deny");
+        assert_eq!(kind("git push origin topic"), "allow");
     }
 
     #[test]

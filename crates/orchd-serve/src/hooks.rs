@@ -1236,7 +1236,14 @@ fn push_guard_hook(
     main: &std::path::Path,
     worktrees: &std::path::Path,
 ) -> Option<serde_json::Value> {
-    let command = push_guard_command(base_branch, main, worktrees)?;
+    /* Claude Code asks the person before a push that writes the base branch, with
+    its own permission prompt. Codex's command stays as it is: its hooks are
+    trusted by the hash of the command, and an answer it did not honour would let
+    the push through unasked. */
+    let command = format!(
+        "{} --ask-base",
+        push_guard_command(base_branch, main, worktrees)?
+    );
     Some(json!({ "matcher": "Bash", "hooks": [{
         "type": "command",
         "command": command,
@@ -2323,8 +2330,12 @@ mod tests {
                 "the quoted path must name the binary that runs the guard"
             );
             assert!(
-                guard.ends_with("--base 'main'"),
+                guard.contains(" --base 'main'"),
                 "the base branch must reach the guard, got {guard}"
+            );
+            assert!(
+                guard.ends_with(" --ask-base"),
+                "Claude Code's guard asks before a base push, got {guard}"
             );
         }
 
@@ -2546,7 +2557,7 @@ mod tests {
         ) {
             let cmd = hook["hooks"][0]["command"].as_str().expect("a command");
             assert!(
-                cmd.ends_with("guard push"),
+                !cmd.contains(" --base "),
                 "no --base should be passed: {cmd}"
             );
         }
