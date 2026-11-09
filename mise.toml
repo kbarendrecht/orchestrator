@@ -315,7 +315,7 @@ run = "cargo build -p orchd-serve --bin orchd && node tools/e2e/renderer.mjs"
 # the tag has to be deleted by hand, and the next one starts over. It has happened
 # twice, both times a test that passed on Linux and failed on macos-14.
 #
-#   mise run release              # bump the last CalVer component
+#   mise run release              # bump, taking the month from the clock
 #   mise run release -- 2027.1.1  # or say the version
 #   mise run release -- --dry-run
 #
@@ -375,11 +375,27 @@ main() {
     [ -z "$VERSION" ] || die "--retry re-cuts the version already in Cargo.toml ($cur); do not name one"
     VERSION=$cur
   elif [ -z "$VERSION" ]; then
-    # CalVer, and only the last component is bumped here: a new month is a
-    # decision rather than an increment, so it is passed in.
+    # CalVer reads the clock, and it used to read only the last number. The month
+    # was a decision to be passed in, which meant nobody passed it: v2026.10.15 and
+    # v2026.10.16 both published in November, so two versions name a month they
+    # were not cut in. The date is not a decision — it is a fact the machine has,
+    # so take it from the machine and leave the deciding to `mise run release --
+    # <version>`.
     y=${cur%%.*}; rest=${cur#*.}; m=${rest%%.*}; n=${rest#*.}
     case $y$m$n in *[!0-9]*) die "$cur is not <year>.<month>.<n> — pass the version you want" ;; esac
-    VERSION="$y.$m.$((n + 1))"
+    # `%-m` is a GNU and BSD extension rather than POSIX, and a release is cut on
+    # whatever machine you are on — so strip the zero here instead.
+    ty=$(date +%Y); tm=$(date +%m); tm=${tm#0}
+    if [ "$y.$m" = "$ty.$tm" ]; then
+      VERSION="$y.$m.$((n + 1))"
+    elif [ $(( ty * 12 + tm )) -gt $(( y * 12 + m )) ]; then
+      # The first of a month is `.1`, which is what every hand-cut rollover used.
+      VERSION="$ty.$tm.1"
+    else
+      # A clock behind the last release would cut a version *below* it, which no
+      # installer can resolve forward from. Refuse rather than guess which is wrong.
+      die "today is $ty.$tm but the last version is $cur — fix the clock, or pass the version you want"
+    fi
   fi
   tag="v$VERSION"
   if [ "$RETRY" = 1 ]; then

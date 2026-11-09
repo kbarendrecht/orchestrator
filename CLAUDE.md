@@ -465,8 +465,17 @@ together: same entries, same order, same groups.
 `mise run release` — it bumps the version, **waits for `check` to go green on the
 commit you are on**, commits, tags, pushes, and then **waits for the release
 workflow and asserts the release carries assets**. `mise run release -- 2027.1.1`
-names a version instead of bumping the last component; `--dry-run` stops before
-anything is written.
+names a version instead of bumping; `--dry-run` stops before anything is
+written.
+
+**The bump takes the year and month from the clock**, and increments the last
+number only while the month still matches. It used to increment the last number
+and nothing else, on the rule that a new month is a decision rather than an
+increment — so nobody ever made that decision, and v2026.10.15 and v2026.10.16
+both published in November. A version that names the wrong month is a date that
+lies, which is the one thing CalVer is for. The rollover is `<year>.<month>.1`,
+what every hand-cut one used, and a clock *behind* the last version is refused
+rather than guessed at.
 
 **The waiting is the whole point, and it is why the task exists.** `check` is the
 only thing that runs the test suite on **macOS**, and the release workflow runs it

@@ -217,7 +217,7 @@ in **WebKitGTK**, so it is good for layout and not the last word.
 | [`TODO.md`](TODO.md) | what is open |
 
 Releases are CalVer (`year.month.n`), and `mise run release` cuts one: it bumps
-the version, **waits for `check` to go green on the commit you are on**, then
+the version from the clock, **waits for `check` to go green on the commit you are on**, then
 commits, tags and pushes. The waiting is the point — `check` is the only thing
 that runs the suite on macOS, and a tag pushed before it answers may publish
 nothing.
