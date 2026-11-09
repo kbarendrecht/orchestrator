@@ -367,11 +367,13 @@ function renderFiles() {
   const listSum = w && fetched && !diffState.open ? listedSummary(w) : null;
   const known = w ? changedOf(w) : [];
   const tree = diffState.view === 'files' && !diffState.open;
+  // The changes themselves, grouped by folder: the toggle in the Changes menu.
+  const asTree = !tree && changesTree;
   // Only the changes view's tooltip reads them, so the tree does not fetch them.
   const commits = w && !tree ? commitsOf(w) : null;
   if (unchanged(drawn, [wsId, w, cur?.id ?? null, !!(cur && pending(cur)), snap.upstream_ref,
     diffState.open, diffState.path, diffState.summary, mode, listSum, known, commits, diffState.view,
-    Tree.rev()], NOT_SHOWN)) return;
+    changesTree, Tree.rev()], NOT_SHOWN)) return;
   if (w) renderDivergence(w);
   const panes = $('filepanes');
 
@@ -422,7 +424,7 @@ function renderFiles() {
   $('filescount').textContent = total ? String(total) : '';
 
   if (tree) {
-    $('filesfoot').textContent = Tree.render(panes, w.id, known || [], renderFiles, { onlyChanged: Tree.onlyChanged() });
+    $('filesfoot').textContent = Tree.render(panes, w.id, known || [], renderFiles);
     $('filestitle').title = 'Show the changes';
     return;
   }
@@ -453,7 +455,26 @@ function renderFiles() {
           : counting()),
     });
   }
-  reconcile(panes, items);
+  /* **The same list as a tree**, when the Changes menu says so: only the changed
+     files and the folders on the way to them, and a row does what the list's row
+     does. Not for an empty list, whose sentence says more than an empty tree. */
+  if (asTree && files.length) {
+    Tree.render(panes, w.id, files, renderFiles, {
+      onlyChanged: true,
+      picked: sum ? diffState.path : null,
+      pick: (path) => {
+        if (sum) {
+          diffState.cursor = 0;
+          diffState.context = 3;
+          void loadFile(path);
+        } else {
+          void openDiff(path);
+        }
+      },
+    });
+  } else {
+    reconcile(panes, items);
+  }
 
   /* **"Nothing changed" and "not counted yet" are different sentences.** Every
      field this pane reads defaults to a value that looks like a real answer — no
@@ -667,6 +688,14 @@ const WS_KEY = 'orch.diffIgnoreWs';
 try {
   diffState.ignoreWs = localStorage.getItem(WS_KEY) === '1';
 } catch (err) { /* no storage: whitespace counts */ }
+/* Whether the Changes view draws its list as a tree. It was "Only changed files"
+   on the Files view, which made Files mean two things; Files is the whole tree
+   now, and the changed files as a tree belong to the view about changes. */
+const TREE_KEY = 'orch.changesTree';
+let changesTree = false;
+try {
+  changesTree = localStorage.getItem(TREE_KEY) === '1';
+} catch (err) { /* no storage: the list */ }
 const VIEW_KEY = 'orch.changesView';
 try {
   if (localStorage.getItem(VIEW_KEY) === 'files') diffState.view = 'files';
@@ -679,13 +708,7 @@ function setView(/** @type {'changes' | 'files'} */ view, /** @type {MouseEvent}
     baseMenu(ev);
     return;
   }
-  if (view === 'files' && diffState.view === 'files') {
-    openMenu(ev, [['Only changed files', `pick${Tree.onlyChanged() ? ' on' : ''}`, () => {
-      Tree.setOnlyChanged(!Tree.onlyChanged());
-      renderFiles();
-    }]]);
-    return;
-  }
+  // Files has no menu: it is the whole tree, and nothing else.
   if (view === diffState.view) return;
   diffState.view = view;
   try {
@@ -734,11 +757,20 @@ function changedOf(/** @type {import('../snapshot').WorkspaceView} */ w) {
  *  ticked. */
 function baseMenu(/** @type {MouseEvent} */ ev) {
   const w = workspaceById(diffState.ws || activeWorkspaceId());
-  openMenu(ev, Object.entries(MODES).map(([key, m]) => /** @type {import('./core.js').MenuItem} */ ([
+  /** @type {import('./core.js').MenuItem[]} */
+  const items = Object.entries(MODES).map(([key, m]) => /** @type {import('./core.js').MenuItem} */ ([
     (w && m.size(w)) ? `${m.menu} \u00b7 ${m.size(w)}` : m.menu,
     `pick${key === diffState.base ? ' on' : ''}`,
     () => void setBase(key),
-  ])));
+  ]));
+  items.push(['Show as a tree', `pick${changesTree ? ' on' : ''}`, () => {
+    changesTree = !changesTree;
+    try {
+      localStorage.setItem(TREE_KEY, changesTree ? '1' : '0');
+    } catch (err) { /* private mode: it still switched for this session */ }
+    renderFiles();
+  }]);
+  openMenu(ev, items);
 }
 
 /** Point the pane at one of [`MODES`]. */
@@ -1532,6 +1564,17 @@ async function openDiff(/** @type {string} */ path) {
   diffState.ws = ws;
   diffState.context = 3;
   borrowFocus('diff');
+  /* **Emptied before it is shown.** The overlay keeps its last diff in the DOM
+     when it closes, and nothing renders until the list and the file have both
+     come back, so the old diff flashed for that wait. Blank rather than "reading
+     the diff…", which `loadFile` holds back for a slow fetch only: on a fast one
+     the words would be the flash. */
+  diffState.file = null;
+  diffState.anchors = [];
+  $('diffbody').replaceChildren();
+  $('ovpath').replaceChildren();
+  $('ovcount').textContent = '';
+  drawMap();
   $('overlay').classList.add('on');
   await loadSummary();
   const files = diffState.summary?.files ?? [];

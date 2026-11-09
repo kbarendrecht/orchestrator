@@ -354,23 +354,39 @@ try {
       .then(() => true, () => false)
     check(shut, 'and Escape closes it again')
   } else check(false, 'the tree has a file row at its top level')
-  /* Files, pressed while it shows, is its menu, and "Only changed files" keeps the
-     rows that carry a change: the changed files grouped by folder (#46). */
-  const onlyChanged = async () => {
-    await page.click('#filestree')
-    const item = page.locator('#ctxmenu button', { hasText: 'Only changed files' })
+  /* **Files is the whole tree and has no menu**: pressed while it shows, it does
+     nothing. The changed files as a tree moved to the Changes menu. */
+  await page.click('#filestree')
+  await page.waitForTimeout(300)
+  check(await page.$('#ctxmenu:not([hidden])') === null, 'Files pressed again opens no menu')
+  check(await page.$eval('#filestree', (b) => !b.querySelector('.fcaret')), 'and carries no chevron')
+  await page.click('#filestitle')
+  check(await page.$eval('#filestitle', (b) => b.getAttribute('aria-pressed') === 'true'),
+    'pressing Changes from the tree goes back to the changes, not to the base menu')
+  /* "Show as a tree" in the Changes menu: the same changes, grouped by folder (#46),
+     and no row without a change. */
+  const asTree = async () => {
+    await page.click('#filestitle')
+    const item = page.locator('#ctxmenu button', { hasText: 'Show as a tree' })
     await item.waitFor({ timeout: 5000 })
     await item.click()
     await page.waitForTimeout(300)
   }
-  await onlyChanged()
-  const changedOnly = await page.$$eval('#filepanes .trow', (rows) => rows.every((r) =>
+  // A change to show: at this point the worktree has none.
+  const treeMark = path.join(t.worktreePath('page'), 'tree-mark.txt')
+  fs.writeFileSync(treeMark, 'x\n')
+  await t.api('POST', '/api/workspace/page/reconcile')
+  await page.waitForSelector('#filepanes .frow, #filepanes .dfrow', { timeout: 10_000 }).catch(() => {})
+  await asTree()
+  const treeShown = await page.waitForSelector('#filepanes .trow', { timeout: 5000 }).then(() => true, () => false)
+  const changedOnly = treeShown && await page.$$eval('#filepanes .trow', (rows) => rows.every((r) =>
     r.classList.contains('dir') ? !!r.querySelector('.tdot') : !!r.querySelector('.tcd')))
-  check(changedOnly, 'only changed files keeps no row without a change')
-  await onlyChanged()
-  await page.click('#filestitle')
-  check(await page.$eval('#filestitle', (b) => b.getAttribute('aria-pressed') === 'true'),
-    'pressing Changes from the tree goes back to the changes, not to the base menu')
+  check(treeShown && changedOnly, `the Changes view as a tree keeps no row without a change, got ${JSON.stringify(
+    await page.$$eval('#filepanes > *', (rows) => rows.slice(0, 6).map((r) => r.className + ':' + (r.textContent ?? '').trim())))}`)
+  await asTree()
+  check(await page.$$eval('#filepanes .trow', (r) => r.length) === 0, 'and turned off it is the list again')
+  fs.rmSync(treeMark)
+  await t.api('POST', '/api/workspace/page/reconcile')
 
   /* --- an untracked file is one row in every mode (#49) ------------------------ */
 
@@ -2037,6 +2053,21 @@ try {
     const tick = map?.querySelector('.tick.cur')
     return !!map && !map.hidden && !!tick && tick.getBoundingClientRect().height >= 3
   }), 'the change map draws a tick for the change, and marks it')
+  /* **Opened again, it shows nothing of the last diff.** The overlay keeps its
+     rows when it closes, and the body used to be drawn only once the new file
+     came back, so the old diff flashed. Read in the same tick as the open, which
+     is the frame the flash was in. */
+  const blankOnOpen = await page.evaluate(async () => {
+    const d = await import('/js/diff.js')
+    await d.close()
+    const opening = d.open()
+    const blank = (document.getElementById('diffbody')?.children.length ?? 1) === 0
+      && (document.getElementById('ovpath')?.textContent ?? 'x') === ''
+    await opening
+    return blank
+  })
+  check(blankOnOpen, 'a diff opened again does not flash the last one')
+  await page.waitForFunction(() => !!document.querySelector('#diffbody .ln'), null, { timeout: 10_000 })
   // The whitespace toggle says its state, and a press diffs again without it.
   await press('#ovws')
   await page.waitForFunction(() => document.querySelector('#ovws')?.getAttribute('aria-pressed') === 'true',

@@ -26,26 +26,11 @@ const TTL = 60_000;
  *  @type {{ rev: number, ws: string | null, key: string | null, at: number, loading: boolean, failed: string | null,
  *           tree: Map<string, Folder>, total: number, truncated: boolean, big: Set<string>,
  *           under: Map<string, string | string[]>, open: Map<string, Set<string>>,
- *           shut: Map<string, Set<string>>, onlyChanged: boolean }} */
+ *           shut: Map<string, Set<string>> }} */
 const state = {
   rev: 0, ws: null, key: null, at: 0, loading: false, failed: null,
   tree: new Map(), total: 0, truncated: false, big: new Set(), under: new Map(), open: new Map(), shut: new Map(),
-  onlyChanged: false,
 };
-try {
-  state.onlyChanged = localStorage.getItem('orch.treeOnlyChanged') === '1';
-} catch (err) { /* no storage: the whole tree */ }
-
-/** Whether the changes pane's tree keeps only what changed. */
-export const onlyChanged = () => state.onlyChanged;
-/** Switch it, and keep it for this browser. */
-export function setOnlyChanged(/** @type {boolean} */ on) {
-  state.onlyChanged = on;
-  state.rev++;
-  try {
-    localStorage.setItem('orch.treeOnlyChanged', on ? '1' : '0');
-  } catch (err) { /* private mode: it still switched for this session */ }
-}
 
 /** Every caller that asked while a fetch was in flight. The pane and the finder
  *  both draw from this one cache, so the answer has to reach whichever asked, not
