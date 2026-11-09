@@ -590,7 +590,7 @@ button.ctx-btn:hover{color:var(--text)}
    Doubled with `.dot` so each rule outranks the review queue's `.dot.ok`. */
 .dot.sdot{--d:#6B6B6B;background:var(--d);border:0}
 .dot.sdot.blocked{--d:var(--attn)}
-.dot.sdot.done{--d:var(--ok)}
+.dot.sdot.done{--d:var(--done)}
 .dot.sdot.build,.dot.sdot.bad{--d:var(--bad)}
 .dot.sdot.ok{--d:var(--ok);background:var(--d)}
 /* GitHub's purple, and the one place this palette spends it. `--auto` carries a
@@ -639,8 +639,12 @@ button.ctx-btn:hover{color:var(--text)}
 .sess-cmd{color:var(--auto)}
 .sess-state{color:var(--dim)}
 .sess-state.blocked{color:var(--attn)}
-/* A finished turn: yours to pick up, but nothing is blocked on you. */
-.sess-state.done{color:var(--ok)}
+/* A finished turn: yours to pick up, but nothing is blocked on you. Champagne,
+   picked from forty: it asks for some attention and less than amber, and green
+   was wrong because green already says "fine" about a PR. Its own `:root` rather
+   than the first one, which `check-palette` holds to the theme's defaults. */
+:root{--done:#E6D2B5}
+.sess-state.done{color:var(--done)}
 /* The PR's own severity, in the words the rest of the window already uses: red is
    a failure whether a build or a PR reported it, green is clean, purple is merged,
    grey is a PR with nothing to say. The teal this used to be was the *working*
@@ -1911,9 +1915,11 @@ button.settings-co:hover{color:var(--text);background:var(--hover)}
 .ln i::before{content:attr(data-n)}
 .ln s{text-decoration:none;padding:0 12px;display:block}
 .ln.add s{background:var(--add)}
-/* The number takes the side's colour too, so a change reads from the gutter. */
-.ln.add i{color:var(--ok)}
-.ln.del i{color:var(--bad)}
+/* The number takes the side's colour too, so a change reads from the gutter. A
+   muted shade of it, near the plain number's grey: the full state colour down a
+   whole hunk was louder than the code beside it. */
+.ln.add i{color:var(--add-num)}
+.ln.del i{color:var(--del-num)}
 /* Where "go to line" landed, until the next jump. */
 .ln.goto i{box-shadow:inset 2px 0 0 var(--focus)}
 .ln.del s{background:var(--del)}
@@ -1957,6 +1963,8 @@ button.settings-co:hover{color:var(--text);background:var(--hover)}
   --add-hi:rgba(95,169,124,.32);
   --del:rgba(201,97,90,.13);
   --del-hi:rgba(201,97,90,.32);
+  --add-num:#7A9E86;
+  --del-num:#B0857F;
 }
 .fold{
   padding:4px 12px;color:var(--faint-solid);background:var(--surface);font-family:var(--sans);
