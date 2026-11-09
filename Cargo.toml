@@ -53,7 +53,9 @@ tracing-subscriber = "0.3"
 # would make the three modules that legitimately call libc uncompilable rather than
 # exceptional. `deny` keeps the rule — a new `unsafe` anywhere else is a compile
 # error until somebody says out loud where it lives — while `pty.rs`, `proc.rs` and
-# `instance.rs` opt in at the top of the file with the reason beside it.
+# `instance.rs` opt in at the top of the file with the reason beside it, and
+# `orch`'s `disclaim` module opts in for the macOS spawn that makes an agent its
+# own responsible process.
 #
 # Six `unsafe` sites in the tree, every one a single libc call: `killpg`,
 # `getpgid`, `getpgrp`, `kill`, `flock`. "Zero unsafe outside the libc calls, all

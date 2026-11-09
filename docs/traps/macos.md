@@ -443,3 +443,29 @@ after the run. And locally the daemon resolves its agent through mise, which fin
 a *real* `claude` rather than the stand-in: run it with mise off the PATH
 (`PATH=~/.local/share/mise/shims:/usr/bin:/bin`) or stage 3 waits for a turn that
 never comes. CI has no mise at all, which is why it never sees this.
+
+## A permission prompt names the responsible process, so an agent is started as its own.
+macOS asks for a protected folder on behalf of the **responsible process**, the
+app at the top of the tree. The app starts the daemon and the daemon starts
+`claude` in a pty, so a colleague's every prompt read "Orchestrator wants
+access to …" for files the agent was reaching for. Terminal, iTerm2 and VS Code
+have the same tree and answer it the same way: the child is spawned with
+responsibility disclaimed (`responsibility_spawnattrs_setdisclaim`, in libSystem
+since 10.14, in no public header) and becomes its own.
+
+`portable-pty` starts a child with fork and exec, which cannot carry a spawn
+attribute, so on macOS the agent's argv goes behind `orch exec-disclaimed --`
+(`orchd::spawn::disclaimed`). `orch` then `posix_spawn`s the agent with
+`POSIX_SPAWN_SETEXEC` and the disclaim set: the spawn *replaces* `orch`, so the
+pty's child is still the agent under the same pid, and its signals, exit code
+and kill land where they did. A disclaim that fails falls back to a plain exec
+rather than a session that never starts. The agent is resolved before the
+spawn, in `insert_and_spawn`, so a missing agent is refused in the old words and
+`agent_exe` names the agent rather than `orch`.
+
+**Only a Mac can say it took, and the runner does.** `app-check` finds the
+stand-in agent by its session id and asks `orch responsible-pid <pid>`; the
+answer must be the pid itself. **The cost:** a grant now belongs to the agent's
+binary, so one given to Orchestrator does not carry over, and an agent whose
+binary is not signed with a stable identity is asked again after each update.
+Drawer shells and managed processes still start under the app.

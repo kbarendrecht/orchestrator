@@ -310,6 +310,42 @@ try {
     return (s.json.sessions ?? []).some((x) => x.id === session && x.has_transcript)
   })
   ok('it has taken a turn and is on disk')
+
+  /* **On macOS the agent answers for itself.** Started under the app, every file
+     it reached for was asked about as "Orchestrator wants access"; it starts
+     through `orch exec-disclaimed` now (`orchd::spawn::disclaimed`), and only the
+     real system can say whether that took. The agent's command line carries the
+     session id, and the exec keeps the pid, so that is how it is found. */
+  if (process.platform === 'darwin') {
+    const orch = path.join(path.dirname(appBin), 'orch')
+    const found = await run('pgrep', ['-f', session])
+    const pid = (found.out ?? '').split('\n').map((l) => l.trim()).find(Boolean)
+    if (!pid) bad(`no process carries the session id ${session.slice(0, 8)}`)
+    else {
+      const asked = await run(orch, ['responsible-pid', pid])
+      const owner = (asked.out ?? '').trim()
+      if (owner === pid) ok(`the agent (pid ${pid}) is its own responsible process`)
+      else bad(`the agent (pid ${pid}) answers to pid ${owner || '?'}, so a permission prompt names the app ${asked.err ?? ''}`)
+    }
+  }
+
+  /* **On macOS the agent answers for itself.** Started under the app, every file
+     it reached for was asked about as "Orchestrator wants access"; it starts
+     through `orch exec-disclaimed` now (`orchd::spawn::disclaimed`), which only
+     the real system can prove. The agent's command line carries the session id,
+     and `exec` keeps the pid, so that is how it is found. */
+  if (process.platform === 'darwin') {
+    const orch = path.join(path.dirname(appBin), 'orch')
+    const found = await run('pgrep', ['-f', session])
+    const pid = (found.out ?? '').split('\n').map((l) => l.trim()).find(Boolean)
+    if (!pid) bad(`no process carries the session id ${session.slice(0, 8)}`)
+    else {
+      const asked = await run(orch, ['responsible-pid', pid])
+      const owner = (asked.out ?? '').trim()
+      if (owner === pid) ok(`the agent (pid ${pid}) is its own responsible process`)
+      else bad(`the agent (pid ${pid}) answers to pid ${owner || '?'}, so a permission prompt names the app: ${asked.err ?? ''}`)
+    }
+  }
   await shot('2-session')
 
   // --- 4. the restart -------------------------------------------------------

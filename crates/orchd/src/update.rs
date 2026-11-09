@@ -1010,6 +1010,23 @@ fn strip_deleted(exe: &std::path::Path) -> std::path::PathBuf {
 /// `ENOENT` — the app went away and did not come back. So strip the suffix before
 /// anything else, and let the fallback return the cleaned path rather than the
 /// tombstone.
+/// The `orch` beside the running daemon, through `latest` when mise installed
+/// us. The hooks register it (`orchd_serve::hooks`) and a macOS agent starts
+/// through it ([`crate::spawn`]); both write the path somewhere that outlives
+/// this process, which is why the stable path comes first.
+pub fn orch_binary() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let name = if cfg!(windows) { "orch.exe" } else { "orch" };
+    let stable = stable_exe(&exe);
+    // The stable path first, the running one as the fallback: a layout without a
+    // `latest` beside it gets exactly what it got before.
+    let candidates = [
+        stable.parent().map(|dir| dir.join(name)),
+        exe.parent().map(|dir| dir.join(name)),
+    ];
+    candidates.into_iter().flatten().find(|orch| orch.exists())
+}
+
 pub fn stable_exe(exe: &std::path::Path) -> std::path::PathBuf {
     let exe = strip_deleted(exe);
     let exe = exe.as_path();

@@ -434,6 +434,7 @@ together: same entries, same order, same groups.
 - A process outside a bundle is a window macOS will not manage.
 - An installer that exits 0 is not an upgrade, and for the app that was the only question asked.
 - A restart the app does to itself is a different path from one a person does.
+- A permission prompt names the responsible process, so an agent is started as its own.
 
 ### The crates, and what a move breaks
 

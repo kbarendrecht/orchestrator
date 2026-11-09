@@ -670,6 +670,15 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     };
 
+    /* **Two commands nobody types, answered before anything else.** What follows
+    `exec-disclaimed --` is an agent's whole argv, which may hold `--help` or any
+    other word, so it must not reach help or the argv guard below. */
+    match cmd {
+        "exec-disclaimed" => return disclaim::exec(&args[1..]),
+        "responsible-pid" => return disclaim::responsible(&args[1..]),
+        _ => {}
+    }
+
     // **Before everything, including the guard and the session environment.** No
     // ordering further down can make `orch new --help` not have spawned a session,
     // so help is answered here and nothing else runs at all. A `--prompt "--help"`
@@ -1464,5 +1473,146 @@ mod tests {
             str_at(&reply("200\n{\"path\":\"/tmp/x\"}").unwrap(), "path"),
             "/tmp/x"
         );
+    }
+}
+
+/// How the daemon starts an agent on macOS, so a permission prompt names the
+/// agent and not the app (`orchd::spawn::agent_argv`).
+///
+/// **macOS asks on behalf of the "responsible process"**, the app at the top of
+/// the tree, so every file `claude` reached for read "Orchestrator wants access".
+/// Terminal, iTerm2 and VS Code have the same tree and answer it the same way:
+/// the child is started with responsibility disclaimed, and becomes its own.
+/// `responsibility_spawnattrs_setdisclaim` is not in a public header; it has been
+/// in libSystem since 10.14 and those three depend on it.
+///
+/// **An exec, not a child.** `POSIX_SPAWN_SETEXEC` makes the spawn replace this
+/// process, so the pty's child is still the agent under the same pid: its
+/// signals, its exit code and the daemon's kill all land where they did.
+/// `portable-pty` starts processes with fork and exec, which has no way to carry
+/// the attribute, and that is why this step exists at all.
+///
+/// The workspace denies `unsafe_code`; this module opts out for the four libSystem
+/// calls below and nothing else.
+#[allow(unsafe_code)]
+mod disclaim {
+    use std::process::ExitCode;
+
+    /// `orch exec-disclaimed -- <program> <args>…`: become the program, its own
+    /// responsible process where the platform has the notion. A disclaim that
+    /// fails still starts the agent, as a plain exec, rather than leaving a
+    /// session that never starts.
+    pub fn exec(rest: &[String]) -> ExitCode {
+        let argv: Vec<&String> = match rest.first().map(String::as_str) {
+            Some("--") => rest[1..].iter().collect(),
+            _ => rest.iter().collect(),
+        };
+        let Some(program) = argv.first() else {
+            eprintln!("orch: exec-disclaimed needs a program after --");
+            return ExitCode::FAILURE;
+        };
+        #[cfg(target_os = "macos")]
+        if let Err(e) = mac::spawn_exec(&argv) {
+            eprintln!("orch: could not start {program} as its own process ({e}); starting it under the app");
+        }
+        use std::os::unix::process::CommandExt;
+        let err = std::process::Command::new(program).args(&argv[1..]).exec();
+        eprintln!("orch: could not start {program}: {err}");
+        ExitCode::from(127)
+    }
+
+    /// `orch responsible-pid <pid>`: which process macOS holds responsible for
+    /// `pid`. For `tools/app-check.mjs`, which asserts a session is its own.
+    pub fn responsible(rest: &[String]) -> ExitCode {
+        let Some(pid) = rest.first().and_then(|p| p.parse::<i32>().ok()) else {
+            eprintln!("orch: responsible-pid needs a pid");
+            return ExitCode::FAILURE;
+        };
+        #[cfg(target_os = "macos")]
+        {
+            println!("{}", mac::responsible_for(pid));
+            ExitCode::SUCCESS
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            // No such notion elsewhere: every process answers for itself.
+            println!("{pid}");
+            ExitCode::SUCCESS
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    mod mac {
+        use std::ffi::{c_char, c_int, CString};
+
+        extern "C" {
+            fn responsibility_spawnattrs_setdisclaim(
+                attrs: *mut libc::posix_spawnattr_t,
+                disclaim: c_int,
+            ) -> c_int;
+            fn responsibility_get_pid_responsible_for_pid(pid: libc::pid_t) -> libc::pid_t;
+        }
+
+        pub fn responsible_for(pid: i32) -> i32 {
+            // SAFETY: a lookup by pid; an unknown pid answers -1.
+            unsafe { responsibility_get_pid_responsible_for_pid(pid) }
+        }
+
+        fn cstr(s: &str) -> std::io::Result<CString> {
+            CString::new(s).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))
+        }
+
+        /// Only returns on failure: on success this process is the program.
+        pub fn spawn_exec(argv: &[&String]) -> std::io::Result<()> {
+            let args: Vec<CString> = argv.iter().map(|a| cstr(a)).collect::<Result<_, _>>()?;
+            let env: Vec<CString> = std::env::vars_os()
+                .filter_map(|(k, v)| {
+                    let mut kv = k.into_encoded_bytes();
+                    kv.push(b'=');
+                    kv.extend(v.into_encoded_bytes());
+                    CString::new(kv).ok()
+                })
+                .collect();
+            let mut arg_ptrs: Vec<*mut c_char> =
+                args.iter().map(|a| a.as_ptr().cast_mut()).collect();
+            arg_ptrs.push(std::ptr::null_mut());
+            let mut env_ptrs: Vec<*mut c_char> =
+                env.iter().map(|e| e.as_ptr().cast_mut()).collect();
+            env_ptrs.push(std::ptr::null_mut());
+            let check = |r: c_int| {
+                if r == 0 {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::from_raw_os_error(r))
+                }
+            };
+            // SAFETY: every pointer is into a vector that outlives the call, both
+            // lists are null-terminated, and the attribute is initialised before
+            // use and destroyed on the failure path (success never returns).
+            unsafe {
+                let mut attr: libc::posix_spawnattr_t = std::mem::zeroed();
+                check(libc::posix_spawnattr_init(&mut attr))?;
+                let set = check(libc::posix_spawnattr_setflags(
+                    &mut attr,
+                    libc::POSIX_SPAWN_SETEXEC as libc::c_short,
+                ))
+                .and_then(|()| check(responsibility_spawnattrs_setdisclaim(&mut attr, 1)));
+                if let Err(e) = set {
+                    libc::posix_spawnattr_destroy(&mut attr);
+                    return Err(e);
+                }
+                let mut pid: libc::pid_t = 0;
+                let r = libc::posix_spawnp(
+                    &mut pid,
+                    arg_ptrs[0],
+                    std::ptr::null(),
+                    &attr,
+                    arg_ptrs.as_ptr(),
+                    env_ptrs.as_ptr(),
+                );
+                libc::posix_spawnattr_destroy(&mut attr);
+                check(r)
+            }
+        }
     }
 }

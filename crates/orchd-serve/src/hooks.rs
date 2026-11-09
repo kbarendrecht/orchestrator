@@ -1187,16 +1187,7 @@ pub async fn boundary_block(
 /// shebang, so a machine without `python3` got a hook that exited 127 and a
 /// guard that had silently stopped existing.
 fn orch_binary() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let name = if cfg!(windows) { "orch.exe" } else { "orch" };
-    let stable = orchd::update::stable_exe(&exe);
-    // The stable path first, the running one as the fallback: a layout without a
-    // `latest` beside it gets exactly what it got before.
-    let candidates = [
-        stable.parent().map(|dir| dir.join(name)),
-        exe.parent().map(|dir| dir.join(name)),
-    ];
-    candidates.into_iter().flatten().find(|orch| orch.exists())
+    orchd::update::orch_binary()
 }
 
 /// Single-quote a string for a shell.

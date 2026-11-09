@@ -315,6 +315,17 @@ pub(crate) async fn insert_and_spawn(
     unset: &[&str],
 ) -> Result<crate::pty::Spawned> {
     crate::headroom::check().map_err(|why| anyhow::anyhow!("not starting a session: {why}"))?;
+    /* **Behind `orch exec-disclaimed` the agent is the word after `--`** (macOS,
+    [`disclaimed`]). Resolved here, before anything is inserted, so a missing agent
+    is refused in the words it always was rather than by `orch` inside the pane,
+    and so `agent_exe` names the agent: it is what the upgrade check compares, and
+    `orch` never changes when the agent does. */
+    let agent_exe = match cmd {
+        [_, verb, dash, agent, ..] if verb == "exec-disclaimed" && dash == "--" => {
+            Some(crate::pty::which(agent, cwd, env, unset)?)
+        }
+        _ => None,
+    };
     let previous = {
         let mut inner = app.inner.write().await;
         /* The bar reports the *last* attempt, the way `pr_error` reports the last
@@ -357,7 +368,7 @@ pub(crate) async fn insert_and_spawn(
             s.pty = Some(spawned.handle.clone());
             s.pid = spawned.pid;
             // What this process *is*, for the day the agent is upgraded under it.
-            s.agent_exe = Some(spawned.program.clone());
+            s.agent_exe = Some(agent_exe.unwrap_or_else(|| spawned.program.clone()));
         }
         // Live now, so its own state speaks for it from here — whoever started it.
         // Taken out here rather than by auto-resume alone because auto-resume is
@@ -1395,7 +1406,32 @@ async fn agent_argv(
     };
     let mut flags = flags;
     flags.extend(agent.launch_flags(&session.launch));
-    Ok(agent.argv(session.id, start, flags, prompt.as_deref()))
+    Ok(disclaimed(agent.argv(
+        session.id,
+        start,
+        flags,
+        prompt.as_deref(),
+    )))
+}
+
+/// On macOS, the agent's argv behind `orch exec-disclaimed --`, so the agent is
+/// its own responsible process and a permission prompt names it, not the app.
+/// `orch`'s `disclaim` module says why and how; elsewhere, and without an `orch`
+/// beside the daemon, the argv as it was.
+fn disclaimed(argv: Vec<String>) -> Vec<String> {
+    if !cfg!(target_os = "macos") {
+        return argv;
+    }
+    let Some(orch) = crate::update::orch_binary() else {
+        return argv;
+    };
+    let mut out = vec![
+        orch.to_string_lossy().into_owned(),
+        "exec-disclaimed".to_string(),
+        "--".to_string(),
+    ];
+    out.extend(argv);
+    out
 }
 
 /// Start a run over a PR in `workspace`: an ordinary session, typed one line.
