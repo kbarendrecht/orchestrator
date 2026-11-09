@@ -1054,12 +1054,18 @@ impl Inner {
     /// The stack `workspace` sits on top of, as the lower workspace and the stack.
     /// On a branch built on two (on one that is itself built on another), the
     /// nearer one: the lower branch with the most commits.
+    ///
+    /// **Only among lower branches somebody is working in.** Idle worktrees carry
+    /// the same commits (the tree a branch was first written in, an old copy of
+    /// it), and one of those was picked as "nearer" and then dropped by the
+    /// snapshot's live check: the row showed no stack although a live one was
+    /// there, on all three sessions it was reported on.
     pub fn stacked_on(&self, workspace: &str) -> Option<(String, &crate::overlap::Stack)> {
         self.stacks
             .iter()
             .filter_map(|((a, b), s)| {
                 let (lower, upper) = if s.lower_is_a { (a, b) } else { (b, a) };
-                (upper == workspace).then(|| (lower.clone(), s))
+                (upper == workspace && self.has_live_session(lower)).then(|| (lower.clone(), s))
             })
             .max_by_key(|(_, s)| s.lower_commits)
     }
@@ -5127,6 +5133,54 @@ mod tests {
             Some(7),
             "the PR outlives the open list"
         );
+    }
+
+    /// A lower branch nobody works in is passed over for one somebody does, even
+    /// when it is the nearer: idle worktrees that carried the same commits hid
+    /// every live stack on the board.
+    #[tokio::test]
+    async fn the_stack_shown_is_on_a_branch_somebody_works_in() {
+        let app = app().await;
+        {
+            let mut inner = app.inner.write().await;
+            for (ws, live) in [("low", true), ("old", false), ("up", true)] {
+                inner.workspaces.insert(
+                    ws.to_string(),
+                    crate::model::Workspace {
+                        id: ws.to_string(),
+                        path: format!("/tmp/{ws}").into(),
+                        kind: crate::model::WorkspaceKind::Worktree {
+                            name: ws.to_string(),
+                        },
+                        branches: Default::default(),
+                        processes: Vec::new(),
+                        occupant: None,
+                        tree: Default::default(),
+                        banked: None,
+                    },
+                );
+                if live {
+                    let id = Uuid::new_v4();
+                    inner.sessions.insert(
+                        id,
+                        Session::new(id, ws.to_string(), format!("/tmp/{ws}").into(), None),
+                    );
+                }
+            }
+            let stack = |commits| crate::overlap::Stack {
+                lower_is_a: true,
+                behind: 0,
+                lower_tip: "x".into(),
+                anchor: "x".into(),
+                lower_commits: commits,
+            };
+            inner.stacks.insert(("low".into(), "up".into()), stack(3));
+            // Nearer by commits, and idle.
+            inner.stacks.insert(("old".into(), "up".into()), stack(4));
+        }
+        let snap = app.snapshot().await;
+        let up = snap.workspaces.iter().find(|w| w.id == "up").unwrap();
+        assert_eq!(up.stacked_on.as_ref().map(|s| s.on.as_str()), Some("low"));
     }
 
     /// Stack notes go to both sides, once per pair and lower head, and an upper
