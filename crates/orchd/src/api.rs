@@ -2893,6 +2893,99 @@ pub async fn reveal_path(
     Ok(Json(json!({ "opened": shown })))
 }
 
+#[derive(Deserialize)]
+pub struct FolderBody {
+    /// An absolute path, or one under `~/`, as an agent printed it.
+    pub path: String,
+}
+
+#[derive(Deserialize)]
+pub struct FoldersBody {
+    pub paths: Vec<String>,
+}
+
+/// Folders that Finder treats as one thing, and `open` *runs* rather than shows:
+/// `open Foo.app` launches the app. A folder link is for looking, so these are
+/// refused wherever they are in the path.
+const PACKAGES: [&str; 10] = [
+    "app",
+    "bundle",
+    "framework",
+    "pkg",
+    "mpkg",
+    "plugin",
+    "kext",
+    "prefpane",
+    "xpc",
+    "appex",
+];
+
+/// `raw` as a folder that is safe to hand the file manager: absolute (or `~/`),
+/// existing, a directory, and no package anywhere along it. Canonical, so a link
+/// that points into a package is judged by where it lands.
+///
+/// **Not bounded by a workspace, and that is the point** (#56): an agent leaves
+/// its work in a temporary folder "somewhere" and prints the path. What keeps it
+/// narrow is the rest: only a folder, never a file, and only opened, never run.
+pub(crate) fn outside_folder(raw: &str) -> anyhow::Result<std::path::PathBuf> {
+    let raw = raw.trim();
+    let path = match raw.strip_prefix("~/") {
+        Some(rest) => std::path::PathBuf::from(
+            std::env::var_os("HOME")
+                .ok_or_else(|| anyhow::anyhow!("no HOME to expand ~ against"))?,
+        )
+        .join(rest),
+        None => std::path::PathBuf::from(raw),
+    };
+    if !path.is_absolute() {
+        anyhow::bail!("{raw} is not an absolute path");
+    }
+    let real = std::fs::canonicalize(&path).map_err(|_| anyhow::anyhow!("there is no {raw}"))?;
+    if !real.is_dir() {
+        anyhow::bail!("{raw} is not a folder");
+    }
+    let package = real.components().any(|c| {
+        std::path::Path::new(c.as_os_str())
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| PACKAGES.contains(&e.to_ascii_lowercase().as_str()))
+    });
+    if package {
+        anyhow::bail!("{raw} is inside an app or package, which is opened by running it");
+    }
+    Ok(real)
+}
+
+/// Which of `paths` are folders [`outside_folder`] would open: what the page asks
+/// before it underlines a printed path no workspace holds. At most fifty, a line's
+/// worth and then some.
+pub async fn folders_exist(Json(body): Json<FoldersBody>) -> ApiResult<serde_json::Value> {
+    if body.paths.len() > 50 {
+        refuse!("ask about at most fifty paths at a time");
+    }
+    let paths = body.paths;
+    let answers = crate::proc::run_blocking("checking printed folders", move || {
+        paths
+            .iter()
+            .map(|p| outside_folder(p).is_ok())
+            .collect::<Vec<bool>>()
+    })
+    .await?;
+    Ok(Json(json!({ "folders": answers })))
+}
+
+/// Open a folder no workspace holds in the machine's file manager (#56). See
+/// [`outside_folder`] for what is refused.
+pub async fn open_folder(Json(body): Json<FolderBody>) -> ApiResult<serde_json::Value> {
+    let raw = body.path;
+    let dir = crate::proc::run_blocking("resolving a folder to open", move || outside_folder(&raw))
+        .await??;
+    let shown = dir.display().to_string();
+    open_detached(&shown).await?;
+    tracing::info!("handed the folder {shown} to the file manager");
+    Ok(Json(json!({ "opened": shown })))
+}
+
 /// Open one changed file on the forge, in the browser.
 ///
 /// The URL is minted here rather than in the SPA so the client carries no
@@ -3269,6 +3362,54 @@ pub async fn fix_pr(
 
 #[cfg(test)]
 mod tests {
+    use super::outside_folder;
+
+    /// A printed folder outside every workspace opens, and nothing else does: not
+    /// a file, not a relative path, not a missing one, and not anything inside an
+    /// app bundle, which `open` would run (#56).
+    #[test]
+    fn only_a_real_folder_outside_the_workspaces_is_opened() {
+        let root = std::env::temp_dir().join(format!("orchd-folder-{}", uuid::Uuid::new_v4()));
+        let dir = root.join("results");
+        let app = root.join("Thing.app").join("Contents");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&app).unwrap();
+        std::fs::write(dir.join("a.txt"), "a").unwrap();
+        let s = |p: &std::path::Path| p.to_string_lossy().into_owned();
+
+        assert_eq!(
+            outside_folder(&s(&dir)).unwrap(),
+            std::fs::canonicalize(&dir).unwrap()
+        );
+        assert!(
+            outside_folder(&format!("{}/", s(&dir))).is_ok(),
+            "with its trailing slash too"
+        );
+        assert!(
+            outside_folder(&s(&dir.join("a.txt"))).is_err(),
+            "a file is not a folder"
+        );
+        assert!(
+            outside_folder("results").is_err(),
+            "a relative path is the workspace's business"
+        );
+        assert!(outside_folder(&s(&root.join("gone"))).is_err());
+        assert!(
+            outside_folder(&s(&root.join("Thing.app"))).is_err(),
+            "an app runs when opened"
+        );
+        assert!(
+            outside_folder(&s(&app)).is_err(),
+            "and so does anything inside one"
+        );
+        let home = std::env::var("HOME").unwrap();
+        assert_eq!(
+            outside_folder("~/").unwrap(),
+            std::fs::canonicalize(home).unwrap()
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     use super::*;
 
     /// An install with no installer behind it must refuse, and say what to do.

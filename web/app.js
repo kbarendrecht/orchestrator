@@ -1050,6 +1050,26 @@ const checkoutAt = (/** @type {string} */ checkout) =>
    **what a relative path is relative to**, which is the pty's own directory
    rather than the workspace root — a shell started somewhere else prints paths
    from there. */
+/* **A folder no workspace holds opens in the file manager** (#56): an agent leaves
+   its work in a temporary folder "somewhere" and prints the path. Asked of the
+   daemon (`api::outside_folder`), which opens only a folder, never a file, and
+   never anything inside an app bundle. Answers are kept a few seconds, so a sweep
+   of the pointer over the scrollback is one request per path, not one per line. */
+/** @type {Map<string, { at: number, yes: Promise<boolean> }>} */
+const outsideFolders = new Map();
+const isOutsideFolder = (/** @type {string} */ checkout, /** @type {string} */ path) => {
+  if (!path.startsWith('/')) return Promise.resolve(false);
+  const key = `${checkout}\n${path}`;
+  const kept = outsideFolders.get(key);
+  if (kept && Date.now() - kept.at < 5_000) return kept.yes;
+  const yes = callOn(checkoutAt(checkout), '/api/open/folders', { paths: [path] })
+    .then((r) => !!r?.folders?.[0], () => false);
+  outsideFolders.set(key, { at: Date.now(), yes });
+  return yes;
+};
+const openOutsideFolder = (/** @type {string} */ checkout, /** @type {string} */ path) =>
+  void callOn(checkoutAt(checkout), '/api/open/folder', { path }).catch((e) => toast(reason(e), true));
+
 Term.onPathClick(({ checkout, target, path, line, last, ev }) => {
   const state = snapshotOf(checkout) ?? snap;
   const where = ptyRoot(state, target);
@@ -1062,8 +1082,11 @@ Term.onPathClick(({ checkout, target, path, line, last, ev }) => {
     if (scratch) return openScratch();
     // Refused rather than opened and failed: `/etc/hosts` is a real file and not
     // this workspace's, and a viewer that answers "no such file" would be lying
-    // about which of the two went wrong.
-    return toast(`${path} is outside this workspace`, true);
+    // about which of the two went wrong. A folder is the exception, and it opens
+    // in the file manager rather than here.
+    return void isOutsideFolder(checkout, path).then((folder) => (folder
+      ? openOutsideFolder(checkout, path)
+      : toast(`${path} is outside this workspace`, true)));
   }
   /* **The file viewer, not the finder.** Opening one file used to take over the
      search overlay, which threw away whatever search was in it and answered a
@@ -1116,7 +1139,7 @@ Term.onPathCheck(({ checkout, target, paths }) => {
         .then(() => locate(state, where, path, checkout), () => null)
       : null);
     return Promise.resolve(found).then((hit) => {
-      if (!hit) return inScratch();
+      if (!hit) return inScratch().then((ok) => ok || isOutsideFolder(checkout, path));
       // A workspace file by that name wins over the scratchpad shorthand.
       return FileView.known(at, hit.workspace, hit.rel).then((k) => k || inScratch());
     });
@@ -1132,7 +1155,9 @@ Term.onPathHover(({ checkout, target, path }) => {
   if (!where) return null;
   const hit = locate(state, where, path, checkout);
   return (hit && FileView.hoverFor(checkout, hit.workspace, hit.rel))
-    ?? scratchpadOf(state, target, path)?.abs ?? null;
+    ?? scratchpadOf(state, target, path)?.abs
+    // Underlined only once the daemon said it is a folder, so this is that answer.
+    ?? (path.startsWith('/') ? `${IS_MAC ? 'Open in Finder' : 'Open in the file manager'}: ${path}` : null);
 });
 
 /* **The same path, with the other two things you can do to it.** A click opens
@@ -1150,7 +1175,14 @@ Term.onPathMenu(({ checkout, target, path, line, last, ev }) => {
   if (!hit) {
     // The scratchpad image the click opens has the same two items here.
     const scratch = scratchpadOf(state, target, path);
-    if (!scratch) return toast(`${path} is outside this workspace`, true);
+    if (!scratch) {
+      return void isOutsideFolder(checkout, path).then((folder) => (folder
+        ? openMenu(ev, [
+          [IS_MAC ? 'Open with Finder' : 'Open with the file manager', null, () => openOutsideFolder(checkout, path)],
+          ['Copy path', null, () => void copyText(path).then((ok) => { if (ok) toast(`copied ${path}`); })],
+        ])
+        : toast(`${path} is outside this workspace`, true)));
+    }
     const own = checkoutAt(checkout);
     return openMenu(ev, [
       ['Open here', null, () => void FileView.openScratch(scratch.workspace, scratch.session, scratch.abs, own)],

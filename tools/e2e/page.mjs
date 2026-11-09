@@ -3065,6 +3065,55 @@ try {
     .then(() => false, (e) => /line break/.test(e.message))
   check(refusedNewline, 'a command with a line break in it is refused, not typed')
 
+  /* --- a folder outside every workspace opens in the file manager (#56) ------- */
+
+  /* An agent leaves its work in a temporary folder and prints the path. The folder
+     is underlined and its menu offers the file manager; a *file* out there is
+     not, because only a folder may be opened from a printed path. Nothing is
+     pressed: on a desktop that would open a real file manager window. */
+  // Short and straight under `/tmp`, not `os.tmpdir()`: a long path wraps, and a
+  // row then holds only part of the line this looks for.
+  const outside = fs.mkdtempSync(path.join(fs.realpathSync('/tmp'), 'orchd-r-'))
+  fs.writeFileSync(path.join(outside, 'report.txt'), 'r\n')
+  /* **A shell of its own**, opened through the API and then picked by its tab,
+     the way the spare-shell case does it: the one the case above typed into is
+     closed, and the drawer's remaining terminal did not take typed keys. */
+  const { process: folderShell } = await t.api('POST', `/api/workspace/${ws}/shell`)
+  await page.waitForSelector(`#dtabs .dtab[data-key="${folderShell}"]`, { timeout: 15_000 })
+  if (!await page.$(`#dtabs .dtab[data-key="${folderShell}"][aria-selected="true"]`)) {
+    await page.click(`#dtabs .dtab[data-key="${folderShell}"]`)
+  }
+  await page.waitForFunction(() => {
+    const rows = document.querySelector('#drawerbody .termhost:not([hidden]) .xterm-rows')
+    return !!rows && [...rows.children].some((r) => (r.textContent ?? '').includes('$'))
+  }, null, { timeout: 15_000 })
+  await focusTerm()
+  await page.keyboard.type(`printf 'left in %s now\\n' ${outside}`)
+  await page.keyboard.press('Enter')
+  const folderAt = await pointAt(`left in ${outside} now`, 9, 9 + outside.length)
+  const folderLinked = await hoverLink(folderAt).then(() => true, () => false)
+  check(folderLinked, 'a folder outside every workspace is underlined')
+  if (folderLinked) {
+    await page.mouse.click(folderAt.x, folderAt.y, { button: 'right' })
+    const items = await page.waitForSelector('#ctxmenu:not([hidden]) button', { timeout: 5000 })
+      .then(() => page.$$eval('#ctxmenu > .ctxmenu-item', (bs) => bs.map((b) => b.textContent)), () => [])
+    check(items.length === 2 && /Finder|file manager/.test(items[0] ?? '') && items[1] === 'Copy path',
+      `and its menu opens it in the file manager or copies it, got ${JSON.stringify(items)}`)
+    await page.keyboard.press('Escape')
+  }
+  const fileOut = path.join(outside, 'report.txt')
+  await focusTerm()
+  await page.keyboard.type(`printf 'wrote %s too\\n' ${fileOut}`)
+  await page.keyboard.press('Enter')
+  const fileAt = await pointAt(`wrote ${fileOut} too`, 6, 6 + fileOut.length)
+  await page.mouse.move(fileAt.x, fileAt.y + 120)
+  await page.mouse.move(fileAt.x, fileAt.y)
+  await page.waitForTimeout(1500)
+  check(!(await page.$('#drawerbody .termhost:not([hidden]) .xterm-cursor-pointer')),
+    'a file outside every workspace is not underlined: only a folder may be opened from out there')
+  fs.rmSync(outside, { recursive: true, force: true })
+  await t.api('POST', `/api/process/${folderShell}/close`).catch(() => {})
+
   await t.api('POST', `/api/process/${shell}/close`)
 
   /* --- a restart puts the pane back on the new process (#35) ----------------- */
