@@ -6,7 +6,7 @@
 // knows about strings and nothing about changesets. Three other modules wanted
 // it and none of them wanted a diff.
 
-import { $, FORGE_LABEL, activeWorkspaceId, borrowFocus, call, confirmBox, currentSession, currentWorkspaceId, el, get, icon, iconLabel, openMenu, pending, prForWorkspace, returnFocus, snap, reason, setSelected, toast, paintSig, reconcile, unchanged, workspaceById } from './core.js';
+import { $, FORGE_LABEL, activeWorkspaceId, borrowFocus, call, confirmBox, currentSession, currentWorkspaceId, el, get, icon, iconLabel, openMenu, pending, prForWorkspace, returnFocus, snap, reason, toast, paintSig, reconcile, unchanged, workspaceById } from './core.js';
 import * as Editor from './editor.js';
 import { changeBlocks, revertedText } from './revert.js';
 import { STATE_MAX, charRanges, langFor, lineSegments, lineTokens } from './source.js';
@@ -309,29 +309,6 @@ function fileRow(/** @type {import('../snapshot').WorkspaceView} */ w, /** @type
       nums.appendChild(el('span', 'm', `\u2212${f.deleted}`));
     }
     row.appendChild(nums);
-    /* **Another workspace changed this file too** (`overlap.rs`). It names the
-       first and counts the rest, amber when the lines meet. A press goes to a live
-       session in that workspace, which is where you would go to settle it; it is
-       a span with its own handler rather than a button, because a button inside
-       this row's button is not valid markup. **Inside the counts cell**, not a
-       fourth child: the row is a three-column grid, and a fourth cell wraps onto
-       a line of its own (`.frow` in app.css says what that cost before). */
-    const also = (w.overlaps ?? []).filter((o) => o.path === f.path);
-    if (also.length) {
-      const first = /** @type {import('../snapshot').OverlapView} */ (also[0]);
-      const lines = also.some((o) => o.lines);
-      const chip = el('span', 'dfalso' + (lines ? ' lines' : ''),
-        `\u21c4 ${first.with}${also.length > 1 ? ` +${also.length - 1}` : ''}`,
-        `Also changed in ${also.map((o) => o.with).join(', ')}${lines ? ', on the same lines' : ''}`);
-      chip.onclick = (ev) => {
-        ev.stopPropagation();
-        const there = snap.sessions.find((x) => x.workspace === first.with
-          && x.state.state !== 'archived' && x.state.state !== 'exited');
-        if (there) setSelected(there.id);
-        else toast(`No live session in ${first.with}`);
-      };
-      nums.prepend(chip);
-    }
     row.onclick = () => {
       if (sum) {
         diffState.cursor = 0;
@@ -460,8 +437,7 @@ function renderFiles() {
   /** @type {any[]} */
   const items = files.map((/** @type {any} */ f) => ({
     key: `f:${f.path}`,
-    sig: paintSig([f, !!sum, sum ? f.path === diffState.path : false, w.id,
-      (w.overlaps ?? []).filter((o) => o.path === f.path)]),
+    sig: paintSig([f, !!sum, sum ? f.path === diffState.path : false, w.id]),
     build: () => fileRow(w, f, sum),
   }));
   if (!files.length) {

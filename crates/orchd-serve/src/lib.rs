@@ -750,6 +750,9 @@ fn daemon_router(app: Arc<AppState>) -> Router {
         .route("/api/sessions/nudge", post(api::nudge_sessions))
         .route("/api/session/:id/fork", post(api::fork_session))
         .route("/api/session/:id/spawn", post(api::spawn_from_session))
+        .route("/api/session/:id/message", post(api::message_session))
+        .route("/api/session/:id/deliver-inbox", post(api::deliver_inbox))
+        .route("/api/session/:id/restack", post(api::ask_restack))
         // Both halves of the worktree grant on one path: the agent asks with a
         // POST, the push guard reads with a GET before it refuses anything.
         .route(
@@ -1356,7 +1359,19 @@ fn start_pr_poller(app: Arc<AppState>) {
                                         );
                                         let mut inner = app.inner.write().await;
                                         inner.pending_outcome.retain(|(n, _)| *n != number);
+                                        let rebase = if ended.outcome
+                                            == orchd::forge::PrOutcome::Merged
+                                        {
+                                            inner
+                                                .tell_overlaps_merged(&ended, &app.cfg.upstream_ref)
+                                        } else {
+                                            Vec::new()
+                                        };
                                         inner.remember_ended(ended);
+                                        drop(inner);
+                                        for id in rebase {
+                                            app.deliver_inbox(id).await;
+                                        }
                                     }
                                     // Still open to the forge: the search lagged, or
                                     // the PR is no longer yours. It stays queued

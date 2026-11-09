@@ -28,6 +28,7 @@
 mod bank;
 mod base;
 mod exec;
+mod merge;
 mod refs;
 mod review;
 mod status;
@@ -37,6 +38,7 @@ mod worktree;
 pub use bank::*;
 pub use base::*;
 pub use exec::*;
+pub use merge::*;
 pub use refs::*;
 pub use review::*;
 pub use status::*;

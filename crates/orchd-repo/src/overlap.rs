@@ -1,4 +1,4 @@
-//! Where two workspaces changed the same file, and whether the same lines.
+//! Where two workspaces changed the same file, and whether git can merge them.
 //!
 //! **Two agents in two worktrees find out they collided at merge time**, after
 //! both have built on their half. Each tree's changed-file list is already in
@@ -6,12 +6,17 @@
 //! costs two `git diff -U0` runs per shared file, which is why it is bounded and
 //! only asked about files the first question found.
 //!
-//! "Same lines" is a near-miss test, not a merge. Both sides are compared on the
-//! *old* side of their diff, which means the same thing only when the two trees
-//! branched from the same commit, so a pair with different merge-bases is told
-//! about the file and nothing finer. Ranges that touch count as well as ranges
-//! that overlap, because git refuses to merge two hunks with no unchanged line
-//! between them.
+//! **A conflict is asked of git, and only for a pair that shares a file.** Each
+//! side's tree becomes a commit no branch points to (`git stash create`), and
+//! `git merge-tree` merges the two in memory: three git runs per pair, against
+//! the two per *file* the old guess cost, and an answer rather than a guess.
+//! Pairs that share nothing never reach git, which is what keeps this cheap.
+//!
+//! The guess is still here, as the fallback for a git too old for `merge-tree
+//! --write-tree` (2.38): both sides compared on the *old* side of their diff,
+//! which means the same thing only when the two trees branched from the same
+//! commit. Ranges that touch count as well as ranges that overlap, because git
+//! refuses to merge two hunks with no unchanged line between them.
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -23,8 +28,9 @@ use orchd_base::model::DiffFile;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Found {
     pub path: String,
-    /// Whether the changed lines overlap or touch, as far as could be measured.
-    pub lines: bool,
+    /// Whether git cannot merge the two sides of this file. Measured by a merge
+    /// where git allows it, and guessed from the changed lines where it does not.
+    pub conflict: bool,
     /// What `lines` was measured against: see [`Stamp`].
     pub stamp: Stamp,
 }
@@ -84,7 +90,7 @@ pub fn compare(
     budget: &mut usize,
 ) -> Vec<Found> {
     let theirs: HashSet<&str> = b_files.iter().map(|f| f.path.as_str()).collect();
-    let mut found = Vec::new();
+    let mut shared = Vec::new();
     for mine in a_files.iter().filter(|f| theirs.contains(f.path.as_str())) {
         // A lockfile changes on every branch that adds a dependency and is
         // regenerated rather than merged: flagging it would put a mark on nearly
@@ -102,31 +108,276 @@ pub fn compare(
             other.deleted,
             u32::from(base.is_some()),
         ];
-        let before = known
-            .iter()
-            .find(|k| k.path == mine.path && k.stamp == stamp);
-        let lines = match (base, Some(other)) {
-            _ if before.is_some() => before.is_some_and(|k| k.lines),
-            // Both created it: there is no old side to compare, and two new files
-            // at one path are an add/add conflict whatever they hold.
-            (_, Some(o)) if is_new(mine) && is_new(o) => true,
-            (Some(base), Some(_)) if *budget > 0 => {
+        shared.push((mine, other, stamp));
+    }
+    let before =
+        |path: &str, stamp: &Stamp| known.iter().find(|k| k.path == path && &k.stamp == stamp);
+    // One merge for the pair, and none when every shared file still measures what
+    // it did last time.
+    let fresh = shared.iter().any(|(m, _, s)| before(&m.path, s).is_none());
+    let merged: Option<HashSet<String>> = (fresh && *budget > 0)
+        .then(|| {
+            *budget -= 1;
+            real_conflicts(a, b)
+        })
+        .flatten();
+
+    let mut found: Vec<Found> = shared
+        .into_iter()
+        .map(|(mine, other, stamp)| {
+            let untracked = mine.status == "?" || other.status == "?";
+            let conflict = if is_new(mine) && is_new(other) && untracked {
+                // Both created it and one has not committed it, so the merge's
+                // snapshot cannot see it: the two files themselves say. Equal is
+                // no conflict, which is every file a stacked branch carries from
+                // the branch under it.
+                differ(a, b, &mine.path)
+            } else if let Some(set) = &merged {
+                set.contains(&mine.path)
+            } else if let Some(k) = before(&mine.path, &stamp) {
+                k.conflict
+            } else if let (Some(base), true) = (base, *budget > 0) {
                 *budget -= 1;
                 touches(
                     &changed_ranges(a, base, &mine.path),
                     &changed_ranges(b, base, &mine.path),
                 )
+            } else {
+                false
+            };
+            Found {
+                path: mine.path.clone(),
+                conflict,
+                stamp,
             }
-            _ => false,
-        };
-        found.push(Found {
-            path: mine.path.clone(),
-            lines,
-            stamp,
-        });
-    }
+        })
+        .collect();
     found.sort_by(|x, y| x.path.cmp(&y.path));
     found
+}
+
+/// Whether the file at `path` differs between the two trees, reading the files.
+/// A folder git reported whole (`src/new/`) cannot be compared, and counts.
+fn differ(a: &Path, b: &Path, path: &str) -> bool {
+    if path.ends_with('/') {
+        return true;
+    }
+    match (std::fs::read(a.join(path)), std::fs::read(b.join(path))) {
+        (Ok(x), Ok(y)) => x != y,
+        _ => true,
+    }
+}
+
+/// Two branches where one is built on the other: the lower one's commits, or
+/// some of them, are in the upper one's history past the base.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stack {
+    /// Whether the first tree of the pair is the lower one.
+    pub lower_is_a: bool,
+    /// Commits on the lower branch that the upper one does not have yet.
+    pub behind: u32,
+    /// The lower branch's head, so "it moved" is said once per move.
+    pub lower_tip: String,
+    /// The newest lower commit the upper branch has, by id or by a copy of it.
+    /// What a copied stack is recognised from again once the lower branch has
+    /// moved past it ([`stack_of`]'s `before`).
+    pub anchor: String,
+    /// How many commits the lower branch has past the base, so a branch built on
+    /// two others is shown on the nearer one.
+    pub lower_commits: u32,
+}
+
+/// Whether the trees at `a` and `b` are a stack, and which way up.
+///
+/// **A stack shares history past the base.** Two peers branched from
+/// `upstream` share nothing after it; a branch cut from another's commit shares
+/// that commit, which is not in `upstream`. Their overlap is then not a dispute:
+/// the upper one rebases onto the lower one, which is a restack, the agents' own
+/// job (`TODO.md`).
+///
+/// **The lower one is the branch created first**, read from each branch's reflog.
+/// Both histories hold the shared commits, so the graph alone cannot say which
+/// branch they were made on. Without a reflog, a branch whose head *is* the
+/// shared commit is the lower one; with neither, `None`, and the pair is left as
+/// peers. Blocking: it runs git.
+pub fn stack_of(a: &Path, b: &Path, upstream: &str, before: Option<&Stack>) -> Option<Stack> {
+    let head = |p: &Path| {
+        git(p, &["rev-parse", "HEAD"])
+            .ok()
+            .map(|s| s.trim().to_string())
+    };
+    let (ha, hb) = (head(a)?, head(b)?);
+    let shared = git(a, &["merge-base", &ha, &hb]).ok()?.trim().to_string();
+    // When the branch was made: the oldest reflog entry's own date. Not `%ct`,
+    // which is the commit's, and a branch cut from another starts on the very
+    // commit the other one is on, so both would read the same.
+    let born = |p: &Path| -> Option<u64> {
+        let branch = git(p, &["symbolic-ref", "--short", "HEAD"]).ok()?;
+        let log = git(
+            p,
+            &[
+                "reflog",
+                "show",
+                "--date=unix",
+                "--format=%gd",
+                &format!("refs/heads/{}", branch.trim()),
+            ],
+        )
+        .ok()?;
+        let last = log.lines().last()?;
+        last.rsplit_once('{')?.1.trim_end_matches('}').parse().ok()
+    };
+    // Shared history that `upstream` already has is no stack by the graph; it
+    // may still be one whose commits a rebase copied ([`copied_stack`]).
+    if git(a, &["merge-base", "--is-ancestor", &shared, upstream]).is_ok() {
+        return copied_stack(a, &ha, &hb, upstream, before);
+    }
+    let lower_is_a = match (born(a), born(b)) {
+        (Some(x), Some(y)) if x != y => x < y,
+        _ if ha == shared => true,
+        _ if hb == shared => false,
+        _ => return None,
+    };
+    let (lower, upper) = if lower_is_a { (&ha, &hb) } else { (&hb, &ha) };
+    let count = |range: String| -> u32 {
+        git(a, &["rev-list", "--count", &range])
+            .ok()
+            .and_then(|n| n.trim().parse().ok())
+            .unwrap_or(0)
+    };
+    Some(Stack {
+        lower_is_a,
+        behind: count(format!("{upper}..{lower}")),
+        lower_tip: lower.clone(),
+        anchor: shared,
+        lower_commits: count(format!("{upstream}..{lower}")),
+    })
+}
+
+/// A stack whose commits a rebase onto a newer base copied: the upper branch
+/// carries the lower one's commits under new ids, so the graph shares nothing
+/// past the base.
+///
+/// **The upper branch must carry every lower commit**, by its change (`git
+/// cherry`) or its subject; a rebase that resolved conflicts keeps the subject
+/// and changes the change. The strictness is the point. Two branches that each
+/// carry copies of a *third* branch's commits match each other on those, and a
+/// looser rule ("half of one side") called such siblings stacked and told one
+/// session it sat on four branches. Siblings each have commits the other lacks,
+/// so neither carries all of the other.
+///
+/// **And it survives the lower branch moving on.** Once the lower one gets a
+/// commit the upper lacks, "every commit" fails; so a pair that was a stack
+/// (`before`) stays one while its `anchor`, the last lower commit the upper
+/// carried, is still in the lower branch and everything up to it is still
+/// carried. The commits after it are what the upper is behind.
+fn copied_stack(
+    cwd: &Path,
+    ha: &str,
+    hb: &str,
+    upstream: &str,
+    before: Option<&Stack>,
+) -> Option<Stack> {
+    let base = |h: &str| {
+        git(cwd, &["merge-base", h, upstream])
+            .ok()
+            .map(|s| s.trim().to_string())
+    };
+    let (ba, bb) = (base(ha)?, base(hb)?);
+    let commits = |range: String| -> Vec<(String, String)> {
+        git(cwd, &["log", "--reverse", "--format=%H%x09%s", &range])
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| l.split_once('\t'))
+            .map(|(id, subject)| (id.to_string(), subject.to_string()))
+            .collect()
+    };
+    // Which of `mine` the head `theirs` carries, by change or by subject, and
+    // whether any matched by change.
+    let carried = |mine: &[(String, String)],
+                   my_base: &str,
+                   my_head: &str,
+                   their_base: &str,
+                   their_head: &str| {
+        let by_change: std::collections::HashSet<String> =
+            git(cwd, &["cherry", their_head, my_head, my_base])
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|l| l.strip_prefix("- "))
+                .map(|id| id.trim().to_string())
+                .collect();
+        let theirs = commits(format!("{their_base}..{their_head}"));
+        let subjects: std::collections::HashSet<&str> =
+            theirs.iter().map(|(_, s)| s.as_str()).collect();
+        let kept: Vec<bool> = mine
+            .iter()
+            .map(|(id, s)| by_change.contains(id) || subjects.contains(s.as_str()))
+            .collect();
+        (kept, !by_change.is_empty())
+    };
+    let (ca, cb) = (
+        commits(format!("{ba}..{ha}")),
+        commits(format!("{bb}..{hb}")),
+    );
+    if ca.is_empty() || cb.is_empty() {
+        return None;
+    }
+    let (ka, xa) = carried(&ca, &ba, ha, &bb, hb);
+    let (kb, xb) = carried(&cb, &bb, hb, &ba, ha);
+    // One commit matched on its subject alone is not enough to call a stack.
+    let all =
+        |kept: &[bool], by_change: bool| kept.iter().all(|k| *k) && (kept.len() >= 2 || by_change);
+    let made = |lower_is_a: bool, behind: usize, anchor: String| {
+        let (tip, list) = if lower_is_a { (ha, &ca) } else { (hb, &cb) };
+        Some(Stack {
+            lower_is_a,
+            behind: u32::try_from(behind).unwrap_or(u32::MAX),
+            lower_tip: tip.to_string(),
+            anchor,
+            lower_commits: u32::try_from(list.len()).unwrap_or(u32::MAX),
+        })
+    };
+    match (all(&ka, xa), all(&kb, xb)) {
+        (true, false) => return made(true, 0, ha.to_string()),
+        (false, true) => return made(false, 0, hb.to_string()),
+        // The same commits on both sides is the same work twice, not a stack.
+        (true, true) => return None,
+        (false, false) => {}
+    }
+    // Not carried whole: still the stack it was, if the lower branch only moved on.
+    let before = before?;
+    let (list, kept) = if before.lower_is_a {
+        (&ca, &ka)
+    } else {
+        (&cb, &kb)
+    };
+    let at = list.iter().position(|(id, _)| *id == before.anchor)?;
+    if !kept[..=at].iter().all(|k| *k) {
+        return None;
+    }
+    made(
+        before.lower_is_a,
+        list.len() - at - 1,
+        before.anchor.clone(),
+    )
+}
+
+/// The files git cannot merge between the two trees as they stand, or `None`
+/// when it could not be asked (an older git, a tree mid-rebase).
+fn real_conflicts(a: &Path, b: &Path) -> Option<HashSet<String>> {
+    use orchd_base::git::{merge_conflicts, snapshot_commit};
+    let (x, y) = (snapshot_commit(a).ok()?, snapshot_commit(b).ok()?);
+    match merge_conflicts(a, &x, &y) {
+        Ok(paths) => Some(paths.into_iter().collect()),
+        Err(e) => {
+            tracing::debug!(
+                "no merge-tree for {} and {}: {e:#}",
+                a.display(),
+                b.display()
+            );
+            None
+        }
+    }
 }
 
 fn is_new(f: &DiffFile) -> bool {
@@ -284,9 +535,9 @@ mod tests {
         ]);
         let mut budget = LINE_BUDGET;
         let found = compare(&main, &mine, &other, &theirs, Some(&base), &[], &mut budget);
-        let want = |path: &str, lines| Found {
+        let want = |path: &str, conflict| Found {
             path: path.into(),
-            lines,
+            conflict,
             stamp: [0, 0, 0, 0, 1],
         };
         assert_eq!(
@@ -299,17 +550,262 @@ mod tests {
         );
         assert_eq!(
             budget,
-            LINE_BUDGET - 2,
-            "the two files with an old side were measured"
+            LINE_BUDGET - 1,
+            "one merge for the pair, not one diff per file"
         );
 
-        // Different bases: the file is still shared, and the lines are not claimed.
+        // Asked again with nothing moved: no git at all.
+        let mut again = LINE_BUDGET;
+        let same = compare(
+            &main,
+            &mine,
+            &other,
+            &theirs,
+            Some(&base),
+            &found,
+            &mut again,
+        );
+        assert_eq!(same, found);
+        assert_eq!(
+            again, LINE_BUDGET,
+            "an unchanged pair is answered from what it said last time"
+        );
+
+        // Different bases: git still merges them, from their own merge-base.
         let mut budget = LINE_BUDGET;
         let found = compare(&main, &mine, &other, &theirs, None, &[], &mut budget);
         assert_eq!(
-            found.iter().filter(|f| f.lines).count(),
-            1,
-            "only the add/add"
+            found
+                .iter()
+                .filter(|f| f.conflict)
+                .map(|f| f.path.as_str())
+                .collect::<Vec<_>>(),
+            ["new.txt", "same.txt"],
+            "the merge does not need a shared base"
+        );
+        // And the tree it read is the agent's as it was: no stash, no index change.
+        assert_eq!(git(&main, &["stash", "list"]).unwrap(), "");
+        assert!(std::fs::read_to_string(main.join("same.txt"))
+            .unwrap()
+            .contains("changed 10"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// One repo, three branches: `develop`, `lower` cut from it, and `upper` cut
+    /// from `lower` a minute later. Then `lower` moves on by a commit.
+    #[test]
+    fn a_branch_built_on_another_is_a_stack_and_knows_which_way_up() {
+        let root = std::env::temp_dir().join(format!("orchd-stack-{}", uuid::Uuid::new_v4()));
+        let main = root.join("main");
+        std::fs::create_dir_all(&main).unwrap();
+        // Run with a fixed clock, so the reflog says which branch is older.
+        let at = |cwd: &Path, when: &str, args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(cwd)
+                .env("GIT_COMMITTER_DATE", when)
+                .env("GIT_AUTHOR_DATE", when)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        let early = "2026-01-01T10:00:00Z";
+        let later = "2026-01-01T10:01:00Z";
+        at(&main, early, &["init", "-q", "-b", "develop"]);
+        at(&main, early, &["config", "user.email", "t@t"]);
+        at(&main, early, &["config", "user.name", "t"]);
+        std::fs::write(main.join("base.txt"), "base\n").unwrap();
+        at(&main, early, &["add", "-A"]);
+        at(&main, early, &["commit", "-qm", "base"]);
+        let lower = root.join("lower");
+        at(
+            &main,
+            early,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "lower",
+                lower.to_str().unwrap(),
+            ],
+        );
+        std::fs::write(lower.join("shared.txt"), "one\n").unwrap();
+        at(&lower, early, &["add", "-A"]);
+        at(&lower, early, &["commit", "-qm", "lower one"]);
+        let upper = root.join("upper");
+        at(
+            &main,
+            later,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "upper",
+                upper.to_str().unwrap(),
+                "lower",
+            ],
+        );
+        std::fs::write(upper.join("mine.txt"), "mine\n").unwrap();
+        at(&upper, later, &["add", "-A"]);
+        at(&upper, later, &["commit", "-qm", "upper one"]);
+        std::fs::write(lower.join("more.txt"), "more\n").unwrap();
+        at(&lower, later, &["add", "-A"]);
+        at(&lower, later, &["commit", "-qm", "lower two"]);
+
+        let s = stack_of(&upper, &lower, "develop", None).expect("a stack");
+        assert!(
+            !s.lower_is_a,
+            "the branch made first is the lower one, whichever side asks"
+        );
+        assert_eq!(s.behind, 1, "the commit the upper one does not have");
+        assert!(
+            stack_of(&lower, &upper, "develop", None)
+                .expect("a stack")
+                .lower_is_a
+        );
+
+        // **Restacked onto a newer `develop`**, the way an agent does it: the
+        // upper branch now carries copies of the lower commits, its own one
+        // changed on the way, and the graph shares nothing past `develop`.
+        std::fs::write(main.join("later.txt"), "later\n").unwrap();
+        at(&main, later, &["add", "-A"]);
+        at(&main, later, &["commit", "-qm", "develop moves"]);
+        at(&upper, later, &["rebase", "-q", "develop"]);
+        // The lower branch was one commit ahead before the rebase, so only the
+        // stack remembered from before says this is still one.
+        assert_eq!(
+            stack_of(&upper, &lower, "develop", None),
+            None,
+            "not carried whole"
+        );
+        let copied =
+            stack_of(&upper, &lower, "develop", Some(&s)).expect("still a stack, by its commits");
+        assert!(!copied.lower_is_a, "and still the right way up");
+        assert_eq!(copied.behind, 1, "the commit it lacked before the rebase");
+
+        // A sibling: cut from the lower branch as well, with work of its own. It
+        // carries the lower commits, so it is stacked on the lower one; it is not
+        // stacked on the upper one, nor the upper on it.
+        let sibling = root.join("sibling");
+        at(
+            &main,
+            later,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "sibling",
+                sibling.to_str().unwrap(),
+                "lower",
+            ],
+        );
+        std::fs::write(sibling.join("own.txt"), "own\n").unwrap();
+        at(&sibling, later, &["add", "-A"]);
+        at(&sibling, later, &["commit", "-qm", "sibling's own"]);
+        at(&sibling, later, &["rebase", "-q", "develop"]);
+        assert_eq!(
+            stack_of(&sibling, &upper, "develop", None),
+            None,
+            "siblings are not a stack"
+        );
+
+        // The lower branch moves on: the copy no longer carries all of it, and
+        // the pair it was is still the stack, one commit behind.
+        std::fs::write(lower.join("three.txt"), "three\n").unwrap();
+        at(&lower, later, &["add", "-A"]);
+        at(&lower, later, &["commit", "-qm", "lower three"]);
+        assert_eq!(
+            stack_of(&upper, &lower, "develop", None),
+            None,
+            "without the memory it is not"
+        );
+        let moved =
+            stack_of(&upper, &lower, "develop", Some(&copied)).expect("with it, still a stack");
+        assert_eq!(moved.behind, 2, "behind by both commits it lacks");
+
+        // Two branches that share only `develop` are peers.
+        let peer = root.join("peer");
+        at(
+            &main,
+            later,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "peer",
+                peer.to_str().unwrap(),
+                "develop",
+            ],
+        );
+        std::fs::write(peer.join("p.txt"), "p\n").unwrap();
+        at(&peer, later, &["add", "-A"]);
+        at(&peer, later, &["commit", "-qm", "peer"]);
+        assert_eq!(stack_of(&peer, &lower, "develop", None), None);
+
+        // And the file both carry from `lower` is not a conflict: committed on
+        // both sides, the merge says so.
+        let row = |p: &str, st: &str| DiffFile {
+            path: p.into(),
+            status: st.into(),
+            added: 1,
+            deleted: 0,
+            binary: false,
+            eager: false,
+            old_path: None,
+            staged: false,
+            unstaged: false,
+        };
+        let mut budget = LINE_BUDGET;
+        let found = compare(
+            &lower,
+            &[row("shared.txt", "A")],
+            &upper,
+            &[row("shared.txt", "A")],
+            None,
+            &[],
+            &mut budget,
+        );
+        assert_eq!(found.len(), 1);
+        assert!(
+            !found[0].conflict,
+            "a file both created the same way merges cleanly"
+        );
+        // Untracked on both sides: the contents decide.
+        std::fs::write(lower.join("new.txt"), "same\n").unwrap();
+        std::fs::write(upper.join("new.txt"), "same\n").unwrap();
+        let mut budget = LINE_BUDGET;
+        let same = compare(
+            &lower,
+            &[row("new.txt", "?")],
+            &upper,
+            &[row("new.txt", "?")],
+            None,
+            &[],
+            &mut budget,
+        );
+        assert!(!same[0].conflict, "equal untracked files are no conflict");
+        std::fs::write(upper.join("new.txt"), "different\n").unwrap();
+        let mut budget = LINE_BUDGET;
+        let differ = compare(
+            &lower,
+            &[row("new.txt", "?")],
+            &upper,
+            &[row("new.txt", "?")],
+            None,
+            &[],
+            &mut budget,
+        );
+        assert!(
+            differ[0].conflict,
+            "and different ones are an add/add conflict"
         );
         let _ = std::fs::remove_dir_all(&root);
     }

@@ -714,12 +714,26 @@ pub struct Session {
     /// auto-resume brings it back, which may be days later.
     pub arrival_notice: Option<String>,
     /// The overlaps this session's agent has been told about, as `(path, other
-    /// workspace, same lines)`, so each is said once.
+    /// workspace, conflict)`, so each is said once.
     ///
-    /// An overlap that grows from the same file to the same lines is a new entry
-    /// and is said again. Memory only: after a restart an agent is told once more,
+    /// An overlap that grows from the same file to a conflict is a new entry and
+    /// is said again. Memory only: after a restart an agent is told once more,
     /// which costs a line of context and loses nothing.
     pub told_overlaps: HashSet<(String, String, bool)>,
+    /// Messages from other agents (`orch tell`), typed in as one turn once this
+    /// session is idle, so a message never lands in the middle of a turn.
+    ///
+    /// Memory only: a restart ends the turns these were answering anyway, and a
+    /// message typed into a conversation that has moved on is noise.
+    pub inbox: Vec<String>,
+    /// How many messages this session has sent each other session, held to
+    /// [`crate::state::TELL_CAP`] so two agents cannot talk until the budget is
+    /// gone. Memory only, like the inbox.
+    pub told: HashMap<SessionId, u32>,
+    /// The sessions this one was asked to settle its conflicts with ("Let the
+    /// agents solve it"), so the `orch ask` that ends it is read as the plan for
+    /// each of those pairs.
+    pub handling: Vec<SessionId>,
     /// Written into the pty once `SessionStart` fires.
     ///
     /// `initialUserMessage` is only honoured in non-interactive mode, and a
@@ -788,6 +802,9 @@ impl Session {
             branch: None,
             arrival_notice: None,
             told_overlaps: HashSet::new(),
+            inbox: Vec::new(),
+            told: HashMap::new(),
+            handling: Vec::new(),
             dirty_paths: HashSet::new(),
             boundary_violations: Vec::new(),
             last_reconcile: None,

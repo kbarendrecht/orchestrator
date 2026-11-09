@@ -3228,43 +3228,45 @@ try {
 
   /* --- two workspaces that changed one file are marked (overlap.rs) ---------- */
 
-  /* **The same new file in two worktrees is marked on both rails and on the file
-     row**, amber because two new files at one path are an add/add conflict. The
-     daemon half is flow 51; this is the half only a page can show: that the mark
-     is drawn, that it names the other workspace, and that the chip goes there. */
+  /* **The same new file in two worktrees is marked on both rails**, amber because
+     two new files at one path are an add/add conflict, and hovering the mark opens
+     a card that names the file and the other session. The daemon half is flow 51;
+     this is the half only a page can show. */
   const pageWs = (await t.session(session)).workspace
-  for (const at of [tree, leftTree]) fs.writeFileSync(path.join(at, 'both-made.txt'), 'mine\n')
+  for (const at of [tree, leftTree]) fs.writeFileSync(path.join(at, 'both-made.txt'), `made in ${at}\n`)
   for (const ws of [pageWs, leftWs]) await t.api('POST', `/api/workspace/${ws}/reconcile`)
   await page.click(`#rail .sess[data-id="${leftSession}"]`)
-  const marked = await page.waitForFunction((id) => {
-    const m = document.querySelector(`#rail .sess[data-id="${id}"] .sess-overlap`)
-    return m ? { lines: m.classList.contains('lines'), title: m.getAttribute('title') } : null
-  }, leftSession, { timeout: 10_000 }).then((h) => h.jsonValue()).catch(() => null)
-  check(!!marked && marked.lines && (marked.title ?? '').includes(pageWs),
-    `the rail marks a session whose file another workspace also made, got ${JSON.stringify(marked)}`)
-  const chip = await page.waitForFunction(() => {
-    const row = [...document.querySelectorAll('#filepanes .frow, #filepanes .dfrow')]
-      .find((r) => r.querySelector('.fname')?.textContent?.endsWith('both-made.txt'))
-    const c = row?.querySelector('.dfalso')
-    // Inside the row's own box: a fourth grid cell wraps onto a line of its own.
-    const box = row?.getBoundingClientRect()
-    const name = row?.querySelector('.fname')?.getBoundingClientRect()
-    const at = c?.getBoundingClientRect()
-    // Beside the name, not under it: the chip's middle is within the name's line.
-    const inRow = !!box && !!name && !!at && at.top >= box.top && at.bottom <= box.bottom
-      && (at.top + at.bottom) / 2 > name.top && (at.top + at.bottom) / 2 < name.bottom
-    return c ? { text: c.textContent, lines: c.classList.contains('lines'), inRow } : null
-  }, null, { timeout: 10_000 }).then((h) => h.jsonValue()).catch(() => null)
-  check(!!chip && chip.lines && (chip.text ?? '').includes(pageWs) && chip.inRow,
-    `and the file row names the other workspace, on the row's one line, got ${JSON.stringify(chip)}`)
-  await page.evaluate(() => {
-    const row = [...document.querySelectorAll('#filepanes .frow, #filepanes .dfrow')]
-      .find((r) => r.querySelector('.fname')?.textContent?.endsWith('both-made.txt'))
-    const c = /** @type {HTMLElement | null | undefined} */ (row?.querySelector('.dfalso'))
-    c?.click()
-  })
+  const mark = `#rail .sess[data-id="${leftSession}"] .sess-overlap`
+  const marked = await page.waitForFunction((sel) => {
+    const m = document.querySelector(sel)
+    return m ? { conflict: m.classList.contains('conflict'), title: m.getAttribute('title') } : null
+  }, mark, { timeout: 10_000 }).then((h) => h.jsonValue()).catch(() => null)
+  check(!!marked && marked.conflict && marked.title === null,
+    `the rail marks a session whose file another workspace also made, with no tooltip, got ${JSON.stringify(marked)}`)
+  await page.hover(mark)
+  /* The spotlight comes at once, before the card: the two sides lit, every other
+     row stepped back. */
+  const lit = await page.waitForFunction(([a, b]) => {
+    const rail = document.getElementById('rail')
+    if (!rail?.classList.contains('ov-spot')) return null
+    return [a, b].every((id) => rail.querySelector(`.sess[data-id="${id}"]`)?.classList.contains('ov-lit'))
+  }, [leftSession, session], { timeout: 5000 }).then(() => true).catch(() => false)
+  check(lit, 'hovering the mark spotlights both sides of the conflict')
+  const card = await page.waitForFunction(() => {
+    const c = document.querySelector('.ovcard:not([hidden])')
+    if (!c) return null
+    return {
+      files: [...c.querySelectorAll('.ovc-file')].map((f) => f.querySelector('.ovc-path')?.textContent),
+      who: c.querySelectorAll('button.ovc-who').length,
+    }
+  }, null, { timeout: 5000 }).then((h) => h.jsonValue()).catch(() => null)
+  check(!!card && card.who === 1 && card.files.includes('both-made.txt'),
+    `hovering the mark opens a card with the other session and the shared file, got ${JSON.stringify(card)}`)
+  await page.click('.ovcard button.ovc-who')
   check(await page.evaluate(async () => (await import('/js/core.js')).selected) === session,
-    'and pressing it goes to the session in that workspace')
+    'and pressing the session in it goes there')
+  check(await page.$eval('.ovcard', (c) => c.hidden), 'and the card closes')
+  check(await page.$eval('#rail', (r) => !r.classList.contains('ov-spot')), 'and the spotlight with it')
   for (const at of [tree, leftTree]) fs.rmSync(path.join(at, 'both-made.txt'))
   for (const ws of [pageWs, leftWs]) await t.api('POST', `/api/workspace/${ws}/reconcile`)
 

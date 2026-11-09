@@ -10,6 +10,7 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
+import { until } from '../harness.mjs'
 
 export const name = 'two workspaces that change one file are told so'
 
@@ -38,8 +39,8 @@ export async function run(t) {
   assert.deepEqual(
     seen,
     [
-      { path: 'README.md', with: right.workspace, lines: true },
-      { path: 'both-new.txt', with: right.workspace, lines: true },
+      { path: 'README.md', with: right.workspace, conflict: true, plan: null },
+      { path: 'both-new.txt', with: right.workspace, conflict: true, plan: null },
     ],
     `the left tree is told about both shared files and not its own: ${JSON.stringify(seen)}`,
   )
@@ -50,14 +51,84 @@ export async function run(t) {
   )
   assert.deepEqual(await overlaps('main'), [], 'main changed nothing and is told nothing')
 
-  // The agent hears it with its next prompt, once.
-  const prompt = () => t.api('POST', '/hooks/user-prompt-submit', {
-    session_id: left.id, hook_event_name: 'UserPromptSubmit', prompt: 'go on',
+  // **The first to reach a prompt leads**: the brief to settle it comes with
+  // that prompt, once, and nothing is pressed for it.
+  const promptAs = (id, text = 'go on') => t.api('POST', '/hooks/user-prompt-submit', {
+    session_id: id, hook_event_name: 'UserPromptSubmit', prompt: text,
   })
-  const note = (await prompt())?.hookSpecificOutput?.additionalContext ?? ''
+  const note = (await promptAs(left.id))?.hookSpecificOutput?.additionalContext ?? ''
   assert.ok(
-    note.includes('README.md') && note.includes(`\`${right.workspace}\``) && note.includes('same or adjacent lines'),
-    `the prompt hook answers with the note: ${JSON.stringify(note)}`,
+    note.includes('README.md') && note.includes(`\`${right.workspace}\``) && note.includes('you lead'),
+    `the lead's prompt carries the brief: ${JSON.stringify(note)}`,
   )
-  assert.equal((await prompt())?.hookSpecificOutput, undefined, 'and says it once')
+  assert.equal((await promptAs(left.id))?.hookSpecificOutput, undefined, 'and says it once')
+  // The other side follows rather than opening a negotiation of its own.
+  const follow = (await promptAs(right.id))?.hookSpecificOutput?.additionalContext ?? ''
+  assert.ok(follow.includes('leads') && follow.includes(left.id) && !follow.includes('you lead'),
+    `the other side is told who leads: ${JSON.stringify(follow)}`)
+  await t.api('POST', '/hooks/stop', { session_id: right.id, hook_event_name: 'Stop' })
+
+  // One agent can tell the other, as a turn typed in once the other is idle.
+  const tell = (from, to, text) => t.api('POST', `/api/session/${from}/message`, { to, text })
+  await t.settled(right.id)
+  const told = await tell(left.id, right.id, 'I will take README.md, can you leave it?')
+  assert.equal(told.delivered, true, 'the right session was idle, so it went in at once')
+  await until('the message to reach the right agent', async () =>
+    t.agentLog().includes(`${right.id.slice(0, 8)} turn: orchd: a message from session`))
+
+  // **A state the daemon guesses wrong**: an escaped question leaves it saying
+  // "asked a question" with no `Stop` to come. The message waits, the snapshot says
+  // so, and the person can send it.
+  await t.settled(right.id)
+  // During a turn, as a real question comes: a prompt, then the question.
+  await promptAs(right.id, 'go')
+  await t.api('POST', '/hooks/notification/agent_needs_input', { session_id: right.id, hook_event_name: 'Notification' })
+  assert.equal((await t.session(right.id)).state.reason, 'asked_a_question')
+  const stuck = await tell(left.id, right.id, 'are you there?')
+  assert.equal(stuck.delivered, false, 'a session asking a question got typed into')
+  assert.equal((await t.session(right.id)).inbox, 1, 'the waiting message is in the snapshot')
+  await t.api('POST', `/api/session/${right.id}/deliver-inbox`)
+  await until('the message sent by hand to land', async () => (await t.session(right.id)).inbox === 0)
+
+  // Three each way, then the person decides.
+  await t.settled(right.id)
+  await tell(left.id, right.id, 'third')
+  await assert.rejects(() => tell(left.id, right.id, 'fourth'), /ask the user with `orch ask`/)
+
+  // A session mid-turn is not typed into: the message waits for its `Stop`.
+  await promptAs(left.id, 'busy')
+  assert.equal((await t.session(left.id)).state.state, 'working')
+  const before = t.agentLog().split(`${left.id.slice(0, 8)} turn: orchd: a message`).length
+  const queued = await tell(right.id, left.id, 'fine, README.md is yours')
+  assert.equal(queued.delivered, false, 'a working session got typed into')
+  await t.api('POST', '/hooks/stop', { session_id: left.id, hook_event_name: 'Stop' })
+  await until('the queued message to land once the turn ended', async () =>
+    t.agentLog().split(`${left.id.slice(0, 8)} turn: orchd: a message`).length > before)
+  await t.settled(left.id)
+
+  // It ends in an `orch ask`, and the answer is the plan the card shows.
+  const asked = await t.api('POST', `/api/session/${left.id}/ask`, {
+    question: 'How do we settle README.md?',
+    options: [
+      { value: 'overlap-merge-first', label: 'left merges first, right rebases' },
+      { value: 'overlap-adapt', label: 'right adapts' },
+    ],
+  })
+  const askId = asked.ask ?? asked.id ?? (await t.session(left.id)).interaction.id
+  await t.api('POST', `/api/session/${left.id}/answer`, { ask: askId, answer: 'overlap-merge-first' })
+  const plans = (await overlaps(right.workspace)).map((o) => o.plan)
+  assert.ok(plans.length && plans.every((p) => p === 'left merges first, right rebases'),
+    `both sides of the pair carry the plan: ${JSON.stringify(plans)}`)
+
+  // And only inside an overlap: main changed nothing.
+  const { session: inMain } = await t.api('POST', '/api/session', { workspace: 'main' })
+  await t.settled(inMain)
+  await assert.rejects(() => tell(left.id, inMain, 'hi'), /changed no file you changed/)
+
+  // Once one side has no live session, neither side is marked.
+  await t.api('POST', `/api/session/${right.id}/kill`)
+  await until('the right session to stop being live', async () =>
+    (await t.session(right.id))?.alive === false)
+  assert.deepEqual(await overlaps(left.workspace), [], 'a stopped session is nobody to settle with')
+  assert.deepEqual(await overlaps(right.workspace), [], 'and its own tree is not marked either')
 }

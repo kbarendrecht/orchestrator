@@ -213,6 +213,9 @@ pub(crate) async fn note_interrupt(app: &Arc<AppState>, id: Uuid) {
         }
     }
     app.notify().await;
+    // An escaped turn sends no `Stop`, so this is the only moment it is known to
+    // be over, and a message that waited for it goes in now.
+    app.deliver_inbox(id).await;
 }
 
 async fn pty_loop(

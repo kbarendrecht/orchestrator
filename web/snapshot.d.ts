@@ -207,9 +207,14 @@ export type OverlapView = { path: string,
  */
 with: string, 
 /**
- * Whether the changed lines overlap or touch, not only the file.
+ * Whether git cannot merge the two sides of the file, not only that both
+ * changed it.
  */
-lines: boolean, };
+conflict: boolean, 
+/**
+ * What the user confirmed for this pair, when the two agents settled it.
+ */
+plan: string | null, };
 
 /**
  * The PR pass a session was started to run, when it was started as one.
@@ -447,6 +452,13 @@ interrupted: boolean,
  */
 restart_queued: boolean, 
 /**
+ * Messages from other agents waiting for this session to be idle
+ * (`orch tell`). Shown so a message the daemon cannot deliver is not
+ * invisible: a turn that ended on an escape sends no `Stop`, and the state
+ * can then say busy while the pane is at its prompt.
+ */
+inbox: number, 
+/**
  * Running an older Claude Code than a new session here would get — see
  * [`Session::agent_stale`]. What the agent bar counts when it offers to
  * restart the sessions an upgrade left behind.
@@ -616,6 +628,23 @@ upgrade_run: UpgradeRun | null,
  * latest one".
  */
 version: string, };
+
+/**
+ * The branch a workspace is built on, when it is the upper half of a stack.
+ */
+export type StackView = { 
+/**
+ * The lower workspace's id.
+ */
+on: string, 
+/**
+ * Commits on the lower branch this one does not have yet.
+ */
+behind: number, 
+/**
+ * Files a restack onto it will stop on.
+ */
+conflicts: number, };
 
 export type State = { "state": "starting" } | { "state": "working" } | { "state": "your_turn", since: { secs_since_epoch: number, nanos_since_epoch: number }, reason: TurnReason, } | { "state": "build_failing", summary: string, 
 /**
@@ -790,4 +819,8 @@ measured: boolean,
  * Files this workspace changed that another workspace changed too, sorted by
  * path and then by the other workspace. See [`crate::overlap`].
  */
-overlaps: Array<OverlapView>, };
+overlaps: Array<OverlapView>, 
+/**
+ * What this workspace is stacked on, when it is the upper half of a stack.
+ */
+stacked_on: StackView | null, };

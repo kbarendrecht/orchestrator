@@ -43,6 +43,10 @@ orch — talk to the orchestrator you are running inside
   orch ask --question <text> --option <value>:<label> ...
       Ask the human something and block until they answer.
 
+  orch tell <id> --text <text>
+      Message a session that changes files you changed. It reads it as its
+      next turn, once it is idle.
+
   orch run <name>
       Start one of the processes this workspace declares.
 
@@ -179,6 +183,20 @@ their words on a second line when they wrote any.
 Each poll blocks up to a minute and loops, so a human taking ten minutes is safe.
 ";
 
+const HELP_TELL: &str = "\
+orch tell <id> --text <text>
+
+Message another session, to settle files you both changed. The text is typed into
+it as its next turn once it is idle, never in the middle of one, with your id so
+it can answer with `orch tell` too. Prints whether it went in now or is queued.
+
+**Only a session whose workspace changed a file yours did**, which is what the
+daemon calls an overlap. Anyone else is refused.
+
+**Three messages each way.** Past that the two of you are not converging, and the
+question is the user's: ask them with `orch ask`.
+";
+
 const HELP_RUN: &str = "\
 orch run <name>
 
@@ -257,6 +275,7 @@ fn help_for(cmd: &str) -> Option<&'static str> {
         "teardown" => HELP_TEARDOWN,
         "ls" => HELP_LS,
         "ask" => HELP_ASK,
+        "tell" => HELP_TELL,
         "run" => HELP_RUN,
         "outside" => HELP_OUTSIDE,
         "guard" => HELP_GUARD,
@@ -308,6 +327,7 @@ fn spec(cmd: &str) -> Option<&'static [(&'static str, Arity)]> {
             ("--option", Arity::Value),
             ("--free", Arity::Value),
         ],
+        "tell" => &[("--text", Arity::Value)],
         "run" => &[],
         "outside" => &[],
         "guard" => &[
@@ -331,6 +351,7 @@ fn words_wanted(cmd: &str) -> (usize, &'static str) {
             "teardown needs the name of a worktree — `orch ls` prints them",
         ),
         "run" => (1, "run needs the name of a process"),
+        "tell" => (1, "tell needs the id of the session to message"),
         "outside" => (1, "outside needs the path you were refused"),
         // `guard push`: the sub-verb is a word, and `guard` checks which one.
         "guard" => (1, "the only guard is `orch guard push`"),
@@ -1058,6 +1079,27 @@ fn run(cmd: &str, a: &Parsed) -> Result<String, Failure> {
                 str_at(&v, "workspace"),
                 str_at(&v, "path")
             ))
+        }
+        "tell" => {
+            let Some(text) = a.value("--text") else {
+                return Err("tell needs --text".into());
+            };
+            let out = http(
+                "POST",
+                &format!("{base}/api/session/{me}/message"),
+                &token,
+                Some(&json!({ "to": a.words[0], "text": text }).to_string()),
+            )?;
+            let v = reply(&out)?;
+            Ok(
+                if v.get("delivered").and_then(Value::as_bool) == Some(true) {
+                    "delivered".into()
+                } else {
+                    "queued: it is busy or waiting on a prompt, and reads it when its turn \
+                 ends. The user can also send it from the overlap card."
+                        .into()
+                },
+            )
         }
         "kill" => {
             let child = &a.words[0];

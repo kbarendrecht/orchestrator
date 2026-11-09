@@ -82,7 +82,7 @@ crates/orchd-repo/    one checkout, described. No session state lives here.
   forge/          the Forge seam, reads only: trait + dispatch (mod.rs), agnostic
                   model (model.rs), the GitHub impl (github.rs)
   diff.rs         numstat, hunk parsing, word-level LCS
-  overlap.rs      files two workspaces both changed, and whether the same lines
+  overlap.rs      files two workspaces both changed, and whether git can merge them
   patch.rs        what git says changed: the numstat parser and the dirty list
   skills.rs       the vendored skills in skills/: a plugin dir for Claude Code's
                   --plugin-dir, the same set as instructions for Codex

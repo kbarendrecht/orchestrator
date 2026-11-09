@@ -768,6 +768,8 @@ pub async fn notification(
     };
     app.with_session(id, |s| s.wait_for(reason)).await;
     app.notify().await;
+    // An idle prompt is a turn that is over, `Stop` or not.
+    app.deliver_inbox(id).await;
     ok()
 }
 
@@ -833,6 +835,8 @@ pub async fn stop(
         }
     })
     .await;
+    // A message another agent sent while this one was mid-turn.
+    app.deliver_inbox(id).await;
 
     refresh_title(&app, id).await;
     let _ = app.reconcile(&workspace).await;
@@ -2342,9 +2346,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The prompt hook hands the agent a note about files another workspace also
-    /// changed, once per overlap, and says it again when the same file becomes the
-    /// same lines.
+    /// The prompt hook hands the first agent to a prompt the brief to settle a
+    /// conflict, once, and the other side a note saying who leads; nothing about a
+    /// file that merges cleanly.
     #[tokio::test]
     async fn the_next_prompt_carries_an_overlap_once() {
         let dir =
@@ -2387,7 +2391,7 @@ mod tests {
                     b,
                     found: orchd::overlap::Found {
                         path: "src/a.rs".into(),
-                        lines,
+                        conflict: lines,
                         stamp: [0; 5],
                     },
                 }];
@@ -2411,17 +2415,44 @@ mod tests {
 
         assert_eq!(note(prompt().await), None, "nothing to say yet");
         set(false).await;
-        let first = note(prompt().await).expect("the overlap is said");
+        assert_eq!(
+            note(prompt().await),
+            None,
+            "a workspace with no live session is nobody's to settle"
+        );
+        let there = uuid::Uuid::new_v4();
+        app.inner.write().await.sessions.insert(
+            there,
+            Session::new(there, other.clone(), dir.join("x"), None),
+        );
+        assert_eq!(
+            note(prompt().await),
+            None,
+            "a file that merges cleanly is nothing to say"
+        );
+        set(true).await;
+        let first = note(prompt().await).expect("a conflict is said");
         assert!(
             first.contains("src/a.rs")
                 && first.contains("`feature-x`")
                 && first.contains("x-branch")
+                && first.contains("you lead"),
+            "the first to a prompt gets the brief and leads: {first}"
         );
-        assert!(!first.contains("same or adjacent lines"));
         assert_eq!(note(prompt().await), None, "and said once");
-        set(true).await;
-        let closer = note(prompt().await).expect("the same lines are news");
-        assert!(closer.contains("same or adjacent lines"));
+        // The other side, at its own prompt, follows.
+        let mut theirs = HeaderMap::new();
+        theirs.insert("x-orch-session", there.to_string().parse().unwrap());
+        let follow = note(
+            user_prompt_submit(AxState(app.clone()), theirs, Json(HookPayload::default())).await,
+        )
+        .expect("the other side is told too");
+        assert!(
+            follow.contains("leads")
+                && follow.contains(&id.to_string())
+                && !follow.contains("you lead"),
+            "and told who leads, not to lead as well: {follow}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

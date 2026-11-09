@@ -21,6 +21,7 @@ Then none of this applies, and you must not simulate it.
 | `orch teardown` | Remove a worktree nobody is working in, when the human asks for a cleanup |
 | `orch ls` | The sessions, their state, their branch and their path |
 | `orch run` | Start one of the processes this workspace declares |
+| `orch tell` | Message a session that changes files you changed, to settle the overlap |
 
 **`orch <command> --help` is the reference, and it is the only one.** Read it
 before you use a command. What each flag means lives there, beside the code that

@@ -145,7 +145,7 @@ pub fn origin_ok(
 /// A list rather than a growing chain of `ends_with`, because it has been
 /// outgrown once already — see the note in [`guard`].
 fn is_ask_route(path: &str) -> bool {
-    const ASK_ROUTES: [&str; 7] = [
+    const ASK_ROUTES: [&str; 8] = [
         "/ask",
         "/wait",
         // The worktree grant, asked by the agent and read by the push guard —
@@ -161,6 +161,9 @@ fn is_ask_route(path: &str) -> bool {
         // `orch teardown`. Safe as a suffix only because the SPA's own teardown is
         // `/api/workspace/:id/teardown`, outside the `/api/session/` prefix.
         "/teardown",
+        // `orch tell`. Not `/tell`: that is the SPA's own route, which types into
+        // any session, and a suffix match would hand it to every ask token.
+        "/message",
     ];
     path.starts_with("/api/session/") && ASK_ROUTES.iter().any(|s| path.ends_with(s))
 }
@@ -980,6 +983,7 @@ pub async fn answer(
         if !picked.free && text.is_some() {
             refuse!("\"{}\" takes no words", picked.label);
         }
+        let label = picked.label.clone();
         open.answer = Some(body.answer.clone());
         open.answer_text = text.map(str::to_string);
         /* A yes to the daemon's own worktree question, and only to that one: the
@@ -1000,6 +1004,8 @@ pub async fn answer(
         // Answered, so it is going again. `Stop` will correct this if the turn
         // ends for real a moment later.
         s.set_state(crate::model::State::Working);
+        // The end of a Handle: the strategy the user confirmed, for the card.
+        AppState::record_overlap_plan(&mut inner, id, &body.answer, &label);
     }
     app.answered.notify_waiters();
     app.notify().await;
@@ -1349,6 +1355,54 @@ pub struct SpawnBody {
     pub model: Option<String>,
     #[serde(default)]
     pub effort: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct MessageBody {
+    /// The session to tell.
+    pub to: Uuid,
+    pub text: String,
+}
+
+/// One agent tells another something (`orch tell`): queued, and typed in as a
+/// turn once the receiver is idle. See [`AppState::message_session`].
+pub async fn message_session(
+    State(app): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<MessageBody>,
+) -> ApiResult<serde_json::Value> {
+    ask_token_ok(&app, id, &headers).await?;
+    let text = body.text.trim();
+    if text.is_empty() {
+        refuse!("nothing to send");
+    }
+    if text.len() > TELL_MAX {
+        refuse!("that is {} KB; a message is a few lines", text.len() / 1024);
+    }
+    let delivered = app.message_session(id, body.to, text).await?;
+    Ok(Json(json!({ "delivered": delivered })))
+}
+
+/// The overlap card's "Send now": type a session's waiting messages in, past the
+/// state check. See [`AppState::deliver_inbox_now`].
+pub async fn deliver_inbox(
+    State(app): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> ApiResult<serde_json::Value> {
+    app.deliver_inbox_now(id).await?;
+    app.notify().await;
+    Ok(Json(json!({ "delivered": true })))
+}
+
+/// The card's "Ask it to restack". See [`AppState::ask_restack`].
+pub async fn ask_restack(
+    State(app): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> ApiResult<serde_json::Value> {
+    let delivered = app.ask_restack(id).await?;
+    app.notify().await;
+    Ok(Json(json!({ "delivered": delivered })))
 }
 
 /// One session starts another.
