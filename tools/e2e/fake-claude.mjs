@@ -67,7 +67,10 @@ const dieFile = process.env.ORCH_E2E_DIR && path.join(process.env.ORCH_E2E_DIR, 
 // Every start and how it began, so a move that does not land can be read off the
 // agent's side as well as the daemon's: which resumes came, in which tree, and
 // which of them were told to die.
-note(`${forking ? 'fork of' : resumeOf ? 'resume of' : 'new'}${resumeOf ? ` ${resumeOf.slice(0, 8)}` : ''} in ${process.cwd()}`)
+// The model and effort too, when asked for: `orch new --model --effort` is only
+// proven by the agent being started with them.
+const launch = ['--model', '--effort'].filter(flag).map((f) => ` ${f.slice(2)} ${value(f)}`).join('')
+note(`${forking ? 'fork of' : resumeOf ? 'resume of' : 'new'}${resumeOf ? ` ${resumeOf.slice(0, 8)}` : ''} in ${process.cwd()}${launch}`)
 if (resumeOf && dieFile && fs.existsSync(dieFile)) {
   const [skip, die] = fs.readFileSync(dieFile, 'utf8').trim().split(',').map(Number)
   if (skip > 0) fs.writeFileSync(dieFile, `${skip - 1},${die}`)

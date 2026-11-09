@@ -438,6 +438,9 @@ struct Carried {
     /// still that parent's to undo.
     spawned_by: Option<SessionId>,
     spawn_cut_worktree: bool,
+    /// The model and effort, on both: the agent keeps neither across a resume, and
+    /// a fork continues the same work.
+    launch: crate::agent::Launch,
     /// That this conversation began as a fork of another.
     ///
     /// The rail draws a badge from it and `store` persists it, so a restart kept
@@ -498,6 +501,7 @@ impl Carried {
             name: if fork { None } else { prev.name.clone() },
             spawned_by: prev.spawned_by,
             spawn_cut_worktree: prev.spawn_cut_worktree,
+            launch: prev.launch.clone(),
             // A *new* fork is not itself forked from anything the parent records —
             // `spawn_session` sets that from the `Source`. This carries the fact
             // for a resume of a session that was already a fork.
@@ -546,6 +550,7 @@ impl Carried {
         }
         session.spawned_by = self.spawned_by;
         session.spawn_cut_worktree = self.spawn_cut_worktree;
+        session.launch = self.launch;
         session.forked_from = self.forked_from;
         session.pr = self.pr;
         session.branches = self.branches;
@@ -569,6 +574,18 @@ pub async fn spawn_session(
     workspace: &str,
     pass: Option<Pass>,
     source: Source,
+) -> Result<SessionId> {
+    spawn_session_with(app, workspace, pass, source, Default::default()).await
+}
+
+/// [`spawn_session`] on a chosen model and effort. Read for a new session only:
+/// a resume or a fork takes the one its conversation already had.
+pub async fn spawn_session_with(
+    app: &Arc<AppState>,
+    workspace: &str,
+    pass: Option<Pass>,
+    source: Source,
+    launch: crate::agent::Launch,
 ) -> Result<SessionId> {
     let id = match source {
         Source::Resume(prev) => prev,
@@ -598,7 +615,7 @@ pub async fn spawn_session(
             );
         }
     }
-    let out = spawn_session_claimed(app, workspace, pass, source, id).await;
+    let out = spawn_session_claimed(app, workspace, pass, source, id, launch).await;
     if out.is_err() {
         if let Some(pr) = fix_run {
             // Nothing is running, so nothing may claim to be.
@@ -618,6 +635,7 @@ async fn spawn_session_claimed(
     pass: Option<Pass>,
     source: Source,
     id: SessionId,
+    launch: crate::agent::Launch,
 ) -> Result<SessionId> {
     // Main is exclusive, and the claim is taken before anything is created so a
     // refusal costs no worktree and no pty. The claim is *given back* here rather
@@ -633,7 +651,7 @@ async fn spawn_session_claimed(
     } else {
         None
     };
-    let out = spawn_session_with_id(app, workspace, pass, source, id).await;
+    let out = spawn_session_with_id(app, workspace, pass, source, id, launch).await;
     if out.is_err() && _starting.is_some() {
         app.release_main(id).await;
     }
@@ -647,6 +665,7 @@ async fn spawn_session_with_id(
     pass: Option<Pass>,
     source: Source,
     id: SessionId,
+    launch: crate::agent::Launch,
 ) -> Result<SessionId> {
     // The centre pane is empty until this returns, so this is the number people
     // mean by "the terminal takes ages to appear". Three of the phases below are
@@ -789,6 +808,9 @@ async fn spawn_session_with_id(
 
     let mut session = Session::new(id, workspace.to_string(), path.clone(), pass);
     let carried_branch = carried.apply(&mut session);
+    if matches!(source, Source::New(_)) {
+        session.launch = launch;
+    }
     // Off the runtime like every other git call on this path; only a new session
     // asks (see `Carried::branch`).
     session.branch = match carried_branch {
@@ -942,6 +964,18 @@ pub async fn spawn_worktree_session(
     agent: crate::agent::Agent,
     fork: Option<SessionId>,
 ) -> Result<SessionId> {
+    spawn_worktree_session_with(app, name, agent, fork, Default::default()).await
+}
+
+/// [`spawn_worktree_session`] on a chosen model and effort. A fork takes its
+/// parent's instead, the way [`spawn_session_with`] does.
+pub async fn spawn_worktree_session_with(
+    app: &Arc<AppState>,
+    name: Option<&str>,
+    agent: crate::agent::Agent,
+    fork: Option<SessionId>,
+    launch: crate::agent::Launch,
+) -> Result<SessionId> {
     if let Some(name) = name {
         validate_worktree_name(name)?;
 
@@ -998,16 +1032,17 @@ pub async fn spawn_worktree_session(
     // The parent's own id for the conversation too, which `codex fork` is given, and
     // `claude --resume` once `/clear` has moved the parent off the daemon's id.
     // `agent` is the parent's on a fork: `api::fork_session` passes it.
-    let (parent_tree, parent_agent_id) = match fork {
+    let (parent_tree, parent_agent_id, launch) = match fork {
         Some(prev) => {
             let inner = app.inner.read().await;
             let parent = inner.sessions.get(&prev);
             (
                 parent.map(|s| s.cwd.clone()).filter(|p| p.exists()),
                 parent.and_then(|s| s.agent_session_id.clone()),
+                parent.map(|s| s.launch.clone()).unwrap_or_default(),
             )
         }
-        None => (None, None),
+        None => (None, None, launch),
     };
     // What travelled, in words, for the arrival notice below.
     let mut carried: Option<String> = None;
@@ -1227,6 +1262,7 @@ pub async fn spawn_worktree_session(
     }
     session.agent = agent;
     session.agent_session_id = parent_agent_id;
+    session.launch = launch;
     let begin = fork.map_or(Source::New(agent), Source::Fork);
     let cmd = agent_argv(&mut session, begin, &spawn_cwd, &env, &unset).await?;
     let spawned = insert_and_spawn(app, id, session, &cmd, &spawn_cwd, &env, &unset).await?;
@@ -1357,6 +1393,8 @@ async fn agent_argv(
         })
         .await??
     };
+    let mut flags = flags;
+    flags.extend(agent.launch_flags(&session.launch));
     Ok(agent.argv(session.id, start, flags, prompt.as_deref()))
 }
 
@@ -2906,6 +2944,10 @@ mod tests {
         prev.forked_from = Some(parent);
         prev.pr = Some(41);
         prev.created_at = began;
+        prev.launch = crate::agent::Launch {
+            model: Some("haiku".into()),
+            effort: Some("low".into()),
+        };
 
         let mut next = Session::new(Uuid::new_v4(), "wt".into(), PathBuf::from("/tmp"), None);
         let branch = Carried::from(Some(&prev), false).apply(&mut next);
@@ -2924,6 +2966,10 @@ mod tests {
         assert_eq!(next.forked_from, Some(parent), "that it was forked");
         assert_eq!(next.pr, Some(41), "the PR it was about");
         assert_eq!(next.created_at, began, "when the conversation began");
+        assert_eq!(
+            next.launch, prev.launch,
+            "the model and effort it was spawned on"
+        );
     }
 
     /// A question belonged to the process that asked it, so a respawn never comes

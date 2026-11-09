@@ -68,9 +68,17 @@ export async function run(t) {
 
   // 3. A fresh tree, its own branch, its own index — the default, and what a name
   //    asks for. Two of these is "spawn two fixers, one PR each".
+  // An effort the agent does not take is refused before anything is cut.
+  await assert.rejects(
+    () => t.api('POST', `/api/session/${parent}/spawn`, { name: 'fixer-a', effort: 'turbo' }),
+    /takes an effort of low, medium, high, xhigh, max, not "turbo"/,
+  )
+  assert.ok(!fs.existsSync(t.worktreePath('fixer-a')), 'a refused spawn cut a tree anyway')
   const fixer = await t.api('POST', `/api/session/${parent}/spawn`, {
     name: 'fixer-a',
     prompt: 'fix the dependabot bump',
+    model: 'haiku',
+    effort: 'low',
   })
   assert.equal(fixer.workspace, 'fixer-a')
   const dir = t.worktreePath('fixer-a')
@@ -79,6 +87,8 @@ export async function run(t) {
   assert.equal(fs.realpathSync(fixer.path), fs.realpathSync(dir), 'the reply must say where')
   assert.notEqual(fixer.path, beside.path, 'a fixer sharing the parent index is the bug')
   await t.settled(fixer.session)
+  assert.match(t.agentLog(), new RegExp(`${fixer.session.slice(0, 8)} new in .* model haiku effort low`),
+    'the agent was started on the model and effort asked for')
 
   // 4. And the undo takes the tree with it, so a spawn you regret leaves no
   //    checkout on disk with nothing in the rail pointing at it.

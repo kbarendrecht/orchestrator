@@ -25,6 +25,7 @@ const USAGE: &str = "\
 orch — talk to the orchestrator you are running inside
 
   orch new [--worktree [<name>] | --workspace <name>] [--prompt <text>]
+           [--model <model>] [--effort <level>]
       Start another session. Prints its id, workspace and path.
 
   orch kill <id>
@@ -64,6 +65,7 @@ Environment (set for you): ORCH_URL, ORCH_SESSION_ID, ORCH_ASK_TOKEN
 
 const HELP_NEW: &str = "\
 orch new [--worktree [<name>] | --workspace <name>] [--prompt <text>]
+         [--model <model>] [--effort <level>]
 
 Start another session, and print `<id>  <workspace>  <path>` — where it landed as
 well as what it is, so confirming the spawn went where you meant takes no second
@@ -85,6 +87,17 @@ command.
 
   --prompt <text>      Typed into the new session once it is up. Without one it
                        sits at an empty prompt waiting for somebody.
+
+  --model <model>      The model it runs on, as the agent names it: an alias such
+                       as `sonnet` or `opus`, or a full model name. Without one it
+                       gets the agent's default.
+
+  --effort <level>     How hard it thinks. Claude Code: low, medium, high, xhigh,
+                       max. Codex: minimal, low, medium, high, xhigh. Anything
+                       else is refused before the session starts.
+
+The new session runs on your own agent, and keeps its model and effort when it is
+resumed after a restart.
 
 With neither flag it gets a worktree cut for it, as `--worktree` without a name
 does. Your own tree is never shared: you are the session in it.
@@ -282,6 +295,8 @@ fn spec(cmd: &str) -> Option<&'static [(&'static str, Arity)]> {
             ("--workspace", Arity::Value),
             ("--worktree", Arity::Maybe),
             ("--prompt", Arity::Value),
+            ("--model", Arity::Value),
+            ("--effort", Arity::Value),
         ],
         "kill" => &[],
         "teardown" => &[],
@@ -1015,6 +1030,11 @@ fn run(cmd: &str, a: &Parsed) -> Result<String, Failure> {
             let mut body = json!({ "prompt": a.value("--prompt").unwrap_or("") });
             if let Some(w) = a.value("--workspace") {
                 body["workspace"] = json!(w);
+            }
+            for flag in ["--model", "--effort"] {
+                if let Some(v) = a.value(flag) {
+                    body[flag.trim_start_matches('-')] = json!(v);
+                }
             }
             if a.has("--worktree") {
                 body["worktree"] = json!(true);

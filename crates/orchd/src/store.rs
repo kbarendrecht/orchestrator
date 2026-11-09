@@ -164,6 +164,10 @@ pub struct SessionRecord {
     pub spawned_by: Option<SessionId>,
     #[serde(default)]
     pub spawn_cut_worktree: bool,
+    /// Persisted because the agent does not keep it across a resume. See
+    /// [`crate::agent::Launch`].
+    #[serde(default)]
+    pub launch: crate::agent::Launch,
     /// See [`crate::model::Session::agent`]. A record from before the choice
     /// existed is Claude Code's, which the default says.
     #[serde(default)]
@@ -199,6 +203,7 @@ impl SessionRecord {
             arrival_notice: s.arrival_notice.clone(),
             spawned_by: s.spawned_by,
             spawn_cut_worktree: s.spawn_cut_worktree,
+            launch: s.launch.clone(),
             agent: s.agent,
             agent_session_id: s.agent_session_id.clone(),
         }
@@ -230,6 +235,7 @@ impl SessionRecord {
         s.arrival_notice = self.arrival_notice;
         s.spawned_by = self.spawned_by;
         s.spawn_cut_worktree = self.spawn_cut_worktree;
+        s.launch = self.launch;
         s.agent = self.agent;
         s.agent_session_id = self.agent_session_id;
         // After the fields, not before: `resumable` reads `recovery` and
@@ -1754,6 +1760,7 @@ mod tests {
                 arrival_notice: None,
                 spawned_by: None,
                 spawn_cut_worktree: false,
+                launch: Default::default(),
                 agent: crate::agent::Agent::Claude,
                 agent_session_id: None,
             }
@@ -2566,9 +2573,14 @@ mod tests {
         );
         s.spawned_by = Some(parent);
         s.spawn_cut_worktree = true;
+        s.launch = crate::agent::Launch {
+            model: Some("haiku".into()),
+            effort: Some("low".into()),
+        };
         let back = SessionRecord::of(&s).restore();
         assert_eq!(back.spawned_by, Some(parent));
         assert!(back.spawn_cut_worktree);
+        assert_eq!(back.launch, s.launch, "and the model and effort it runs on");
 
         let old: SessionRecord = serde_json::from_value(serde_json::json!({
             "id": uuid::Uuid::new_v4(),

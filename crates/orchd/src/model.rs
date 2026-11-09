@@ -698,6 +698,9 @@ pub struct Session {
     /// leave that tree alone. Teardown's preflight would refuse a dirty or unpushed
     /// tree either way, but a clean worktree of yours is not the agent's to remove.
     pub spawn_cut_worktree: bool,
+    /// The model and effort it was spawned on (`orch new --model --effort`), handed
+    /// to the agent again on every resume ([`crate::agent::Launch`]).
+    pub launch: crate::agent::Launch,
     /// A one-off message for the agent, delivered as the refusal of its next tool
     /// call (`pre_edit`).
     ///
@@ -798,6 +801,7 @@ impl Session {
             prs: Vec::new(),
             spawned_by: None,
             spawn_cut_worktree: false,
+            launch: Default::default(),
             outside_grants: Vec::new(),
             outside_ask: None,
             pending_prompt: None,

@@ -29,6 +29,7 @@ enforces it, so this file does not repeat it and cannot be out of date with it.
 ## Before you spawn
 
 A workspace is a git index, so it holds one session, and yours is taken by you.
-`orch new` cuts a worktree for the new session unless you name a free one. Read
+`orch new` cuts a worktree for the new session unless you name a free one, and
+takes `--model` and `--effort` when the work wants a different one than yours. Read
 `orch ls` before you touch a branch: the same branch in two rows means one
 branch.

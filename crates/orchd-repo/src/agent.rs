@@ -31,6 +31,48 @@ pub enum Agent {
     Codex,
 }
 
+/// The model and effort a session was asked to run on, `None` for the agent's
+/// own default.
+///
+/// **On the record, because neither agent keeps it across a resume.** Claude
+/// Code's `--resume` comes back on the configured model, so a spawn asked for
+/// `haiku` would silently be the default after the next restart.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Launch {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+}
+
+impl Launch {
+    /// Why `agent` would refuse this, checked before the spawn.
+    ///
+    /// A value the agent rejects ends the session the moment it starts, and a
+    /// spawn reports only that the pty came up, so a bad effort would be a session
+    /// that died with nobody told. The model is not a closed set (an alias, a full
+    /// name, a provider's own), so it is held to the characters a model name uses,
+    /// and a leading dash is refused so it can never read as a flag.
+    pub fn check(&self, agent: Agent) -> Result<(), String> {
+        if let Some(m) = &self.model {
+            let fine = |c: char| c.is_ascii_alphanumeric() || "._-:/@[]".contains(c);
+            if m.is_empty() || m.starts_with('-') || m.len() > 100 || !m.chars().all(fine) {
+                return Err(format!("{m:?} is not a model name"));
+            }
+        }
+        if let Some(e) = &self.effort {
+            let known = agent.efforts();
+            if !known.contains(&e.as_str()) {
+                return Err(format!(
+                    "{agent} takes an effort of {}, not {e:?}",
+                    known.join(", ")
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// What a spawn continues, in the agent's own ids.
 #[derive(Debug, Clone, Copy)]
 pub enum Start<'a> {
@@ -120,6 +162,42 @@ impl Agent {
     /// `flags`, and the first prompt when [`Self::hooks_wait_for_a_prompt`].
     ///
     /// `id` is the daemon's id, which Claude Code is told to use; Codex ignores it.
+    /// The effort levels each agent accepts. Claude Code's from `claude --help`;
+    /// Codex's are its `model_reasoning_effort` values.
+    pub fn efforts(self) -> &'static [&'static str] {
+        match self {
+            Agent::Claude => &["low", "medium", "high", "xhigh", "max"],
+            Agent::Codex => &["minimal", "low", "medium", "high", "xhigh"],
+        }
+    }
+
+    /// The flags that put a session on `launch`'s model and effort.
+    ///
+    /// Codex has no effort flag, so it is a config override, quoted as a TOML
+    /// string: `-c` parses its value as TOML first.
+    pub fn launch_flags(self, launch: &Launch) -> Vec<String> {
+        let mut out = Vec::new();
+        if let Some(m) = &launch.model {
+            out.extend([
+                match self {
+                    Agent::Claude => "--model",
+                    Agent::Codex => "-m",
+                }
+                .to_string(),
+                m.clone(),
+            ]);
+        }
+        if let Some(e) = &launch.effort {
+            match self {
+                Agent::Claude => out.extend(["--effort".to_string(), e.clone()]),
+                Agent::Codex => {
+                    out.extend(["-c".to_string(), format!("model_reasoning_effort=\"{e}\"")])
+                }
+            }
+        }
+        out
+    }
+
     pub fn argv(
         self,
         id: uuid::Uuid,
@@ -181,6 +259,65 @@ impl std::fmt::Display for Agent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each agent's spelling of the same request, and nothing for a default.
+    #[test]
+    fn the_model_and_effort_are_each_agents_own_flags() {
+        let both = Launch {
+            model: Some("haiku".into()),
+            effort: Some("low".into()),
+        };
+        assert_eq!(
+            Agent::Claude.launch_flags(&both),
+            ["--model", "haiku", "--effort", "low"]
+        );
+        assert_eq!(
+            Agent::Codex.launch_flags(&both),
+            ["-m", "haiku", "-c", "model_reasoning_effort=\"low\""]
+        );
+        assert!(Agent::Claude.launch_flags(&Launch::default()).is_empty());
+        // Codex's flags go before its positionals, so a resume still reads its id.
+        assert_eq!(
+            Agent::Codex.argv(
+                uuid::Uuid::nil(),
+                Start::Resume("p"),
+                Agent::Codex.launch_flags(&both),
+                None
+            ),
+            [
+                "codex",
+                "resume",
+                "-m",
+                "haiku",
+                "-c",
+                "model_reasoning_effort=\"low\"",
+                "--",
+                "p"
+            ]
+        );
+    }
+
+    /// Refused before the spawn: an effort the agent does not take, and a model
+    /// that could read as a flag.
+    #[test]
+    fn a_launch_the_agent_would_refuse_is_refused_first() {
+        let with = |model: Option<&str>, effort: Option<&str>| Launch {
+            model: model.map(String::from),
+            effort: effort.map(String::from),
+        };
+        assert!(with(Some("claude-sonnet-5-5"), Some("max"))
+            .check(Agent::Claude)
+            .is_ok());
+        assert!(with(None, Some("minimal")).check(Agent::Codex).is_ok());
+        assert!(with(None, Some("minimal")).check(Agent::Claude).is_err());
+        assert!(with(None, Some("max")).check(Agent::Codex).is_err());
+        assert!(with(Some("--dangerously-skip-permissions"), None)
+            .check(Agent::Claude)
+            .is_err());
+        assert!(with(Some("opus; rm -rf"), None)
+            .check(Agent::Claude)
+            .is_err());
+    }
 
     fn flags() -> Vec<String> {
         vec!["-x".to_string()]

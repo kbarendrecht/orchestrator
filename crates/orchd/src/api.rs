@@ -1344,6 +1344,11 @@ pub struct SpawnBody {
     /// Typed into the new session once it is up. Without one it sits at a prompt.
     #[serde(default)]
     pub prompt: Option<String>,
+    /// The model and effort to run on, the agent's default when absent.
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub effort: Option<String>,
 }
 
 /// One session starts another.
@@ -1371,6 +1376,22 @@ pub async fn spawn_from_session(
             .map(|s| s.agent)
             .ok_or_else(|| crate::state::no_such_session(id))?
     };
+
+    let trimmed = |v: &Option<String>| {
+        v.as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(String::from)
+    };
+    let launch = crate::agent::Launch {
+        model: trimmed(&body.model),
+        effort: trimmed(&body.effort),
+    };
+    // Before anything is cut: a value the agent refuses is a session that exits
+    // the moment it starts, and nothing here would say so.
+    if let Err(why) = launch.check(agent) {
+        refuse!("{why}");
+    }
 
     let named = body
         .workspace
@@ -1413,9 +1434,9 @@ pub async fn spawn_from_session(
     let child = match named {
         Some(w) => {
             refuse_if_occupied(&app, w, None).await?;
-            spawn::spawn_session(&app, w, None, spawn::Source::New(agent)).await?
+            spawn::spawn_session_with(&app, w, None, spawn::Source::New(agent), launch).await?
         }
-        None => spawn::spawn_worktree_session(&app, name, agent, None).await?,
+        None => spawn::spawn_worktree_session_with(&app, name, agent, None, launch).await?,
     };
     {
         let mut inner = app.inner.write().await;
