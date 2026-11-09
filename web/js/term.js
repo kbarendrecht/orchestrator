@@ -65,6 +65,16 @@ export function onPathMenu(/** @type {NonNullable<typeof pathMenu>} */ fn) {
   pathMenu = fn;
 }
 
+/** Told when a `! command` an agent printed is clicked (`pathlink.commandsIn`).
+ *  Set from `app.js`, for the reason `onPathClick` is: which workspace's drawer
+ *  gets the shell is a question about the snapshot, not the terminal.
+ *
+ *  @type {((hit: { checkout: string, target: string, cmd: string }) => void) | null} */
+let commandClick = null;
+export function onCommandClick(/** @type {NonNullable<typeof commandClick>} */ fn) {
+  commandClick = fn;
+}
+
 /** Asked which of a line's paths are files, before any of them is underlined.
  *  Set from `app.js`, for the reason `onPathClick` is: the answer is the
  *  workspace's file list, and a terminal does not know which workspace it is in.
@@ -284,12 +294,14 @@ function linkPaths(term, checkout, target) {
       /** @param {ReturnType<typeof linksIn>} hits */
       const answer = (hits) => {
         const links = hits.map((h) => ({
-          text: h.kind === 'url' ? h.url : h.kind === 'ref' ? h.ref : h.kind === 'git' ? h.name : h.path,
+          text: h.kind === 'url' ? h.url : h.kind === 'ref' ? h.ref : h.kind === 'git' ? h.name
+            : h.kind === 'cmd' ? h.cmd : h.path,
           // `end` is the last cell rather than one past it, which is xterm's own
           // convention — read from the OSC-8 provider in the vendored build.
           range: { start: cell(h.start, map, from), end: cell(h.end - 1, map, from) },
           hover: (/** @type {MouseEvent} */ ev) => {
-            const said = h.kind === 'path' && pathHover?.({ checkout: checkout.path, target, path: h.path });
+            const said = h.kind === 'path' ? pathHover?.({ checkout: checkout.path, target, path: h.path })
+              : h.kind === 'cmd' ? 'type it into a new shell in the drawer' : null;
             if (said) showTip(said, ev);
           },
           leave: hideTip,
@@ -300,6 +312,7 @@ function linkPaths(term, checkout, target) {
             if (h.kind === 'url') { openUrl(checkout, h.url); return; }
             if (h.kind === 'ref') { openRef(checkout, h.ref); return; }
             if (h.kind === 'git') { openGit(checkout, h); return; }
+            if (h.kind === 'cmd') { commandClick?.({ checkout: checkout.path, target, cmd: h.cmd }); return; }
             pathClick?.({
               checkout: checkout.path, target, path: h.path, line: h.line, last: h.last, col: h.col, ev,
             });
@@ -314,7 +327,8 @@ function linkPaths(term, checkout, target) {
       /* The story prefix is this pane's checkout's: two projects can track
          their work in two places, and a ref means what its own repo says. */
       const story = snapshotOf(checkout.path)?.story_prefix ?? null;
-      const hits = linksIn(text, { story }).filter((h) => h.kind !== 'path' || pathClick);
+      const hits = linksIn(text, { story })
+        .filter((h) => (h.kind !== 'path' || pathClick) && (h.kind !== 'cmd' || commandClick));
       /* A bare host is asked about as a file too, and a file of that name wins:
          `notes.io` in the workspace is the file, not a website. */
       const asked = hits.filter((h) => h.kind === 'path' || (h.kind === 'url' && h.bare && pathClick));
@@ -509,6 +523,15 @@ function openTerm(checkout, target, parent) {
       openMenu(e, [
         [`Open ${ref}`, null, () => openRef(checkout, ref)],
         [`Copy ${ref}`, null, () => void copyText(ref).then((ok) => { if (ok) toast(`copied ${ref}`); })],
+      ]);
+      return;
+    }
+    if (found.kind === 'cmd') {
+      e.stopPropagation();
+      const cmd = found.cmd;
+      openMenu(e, [
+        ['Type it into a new shell', null, commandClick ? () => commandClick?.({ checkout: checkout.path, target, cmd }) : null],
+        ['Copy command', null, () => void copyText(cmd).then((ok) => { if (ok) toast('copied the command'); })],
       ]);
       return;
     }

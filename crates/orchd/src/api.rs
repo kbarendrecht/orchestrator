@@ -2007,11 +2007,54 @@ async fn revive(app: &Arc<AppState>, id: Uuid) -> ApiResult<serde_json::Value> {
 // Processes
 // ---------------------------------------------------------------------------
 
+#[derive(Deserialize)]
+pub struct ShellBody {
+    /// Typed into the new shell once it is up, and not run: a `! command` an agent
+    /// printed and you clicked.
+    #[serde(default)]
+    pub input: Option<String>,
+}
+
 pub async fn new_shell(
     State(app): State<Arc<AppState>>,
     Path(workspace): Path<String>,
+    body: Option<Json<ShellBody>>,
 ) -> ApiResult<serde_json::Value> {
+    let input = body
+        .and_then(|Json(b)| b.input)
+        .filter(|i| !i.trim().is_empty());
+    /* **Typed, never run, and the refusal is what holds that.** A newline or a
+    carriage return is Enter to a shell, so a command carrying one would run the
+    moment it landed, from a plain click on a line of agent output. Every control
+    character goes with them: an escape sequence is keys too. */
+    if let Some(i) = &input {
+        if i.chars().any(char::is_control) {
+            refuse!("a command with a line break or a control character in it is not typed");
+        }
+        if i.len() > 2000 {
+            refuse!("that is not one command");
+        }
+    }
     let id = crate::managed::spawn_shell(&app, &workspace).await?;
+    if let Some(text) = input {
+        let pty = {
+            let inner = app.inner.read().await;
+            inner
+                .workspaces
+                .get(&workspace)
+                .and_then(|w| w.processes.iter().find(|p| p.id == id))
+                .and_then(|p| p.pty.clone())
+        };
+        if let Some(pty) = pty {
+            // After the shell has drawn its prompt: typed into a shell still
+            // reading its rc files, the line lands before the prompt and reads as
+            // output rather than as what you are about to run.
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                let _ = pty.write(text.as_bytes());
+            });
+        }
+    }
     Ok(Json(json!({ "process": id })))
 }
 

@@ -1079,6 +1079,18 @@ Term.onPathClick(({ checkout, target, path, line, last, ev }) => {
   });
 });
 
+/* **A `! command` goes to a new shell in this pane's drawer**, typed and not run.
+   The drawer shows the current workspace, so a pane from any other one (which a
+   visible pane never is today) is refused rather than given a shell you cannot
+   see. */
+Term.onCommandClick(({ checkout, target, cmd }) => {
+  const where = ptyRoot(snapshotOf(checkout) ?? snap, target);
+  if (!where || where.workspace !== currentWorkspaceId()) {
+    return toast('that pane is not in the workspace the drawer shows', true);
+  }
+  void newShell(cmd);
+});
+
 /* **And a path is underlined only where the click would find a file.** A slash
    alone used to be enough, so a branch name and a slash command both drew a link
    that answered "no such file". Resolved the way the click resolves it, through
@@ -1313,7 +1325,8 @@ window.addEventListener('blur', () => document.body.classList.remove('modheld'))
 // same question again, so the module wires them rather than five lines here.
 Find.init();
 FileView.init();
-$('addshell').onclick = newShell;
+// Not `onclick = newShell`: the click event would arrive as the text to type.
+$('addshell').onclick = () => void newShell();
 $('keyhelpx').onclick = () => closeLegend();
 /* The help's two halves, driven the way the settings tabs are: a click, or the
    arrow keys along the column. */

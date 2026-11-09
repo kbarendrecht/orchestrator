@@ -2998,6 +2998,42 @@ try {
   check(closed, 'and with a drawer shell focused, it closes that shell')
   await t.api('POST', `/api/process/${spareShell}/close`).catch(() => {})
 
+  /* --- a `! command` an agent printed goes to a new shell, typed and not run - */
+
+  /* **Typed, not run, and that is the half worth a browser.** The click is a plain
+     click on a line of output, so a command that ran on it would run whatever an
+     agent printed. The backticks are printed as `\x60`, so the echoed command line
+     never matches and the row found is the output. */
+  await focusTerm()
+  await page.keyboard.type("printf 'run \\x60! echo typed-%s\\x60 now\\n' in")
+  await page.keyboard.press('Enter')
+  const shellsOf = async () => ((await t.state()).workspaces
+    .find((/** @type {any} */ w) => w.id === ws)?.processes ?? [])
+    .filter((/** @type {any} */ p) => p.kind.kind === 'shell').map((/** @type {any} */ p) => p.id)
+  const shellsBefore = await shellsOf()
+  const cmdAt = await pointAt('run `! echo typed-in` now', 8, 15)
+  await hoverLink(cmdAt)
+  await page.mouse.click(cmdAt.x, cmdAt.y)
+  let typedShell = null
+  for (let i = 0; i < 40 && !typedShell; i++) {
+    typedShell = (await shellsOf()).find((id) => !shellsBefore.includes(id)) ?? null
+    if (!typedShell) await page.waitForTimeout(250)
+  }
+  check(!!typedShell, 'a click on a `! command` opens a new shell in the drawer')
+  const rowsNow = () => page.$$eval('#drawerbody .termhost:not([hidden]) .xterm-rows > *',
+    (rs) => rs.map((r) => (r.textContent ?? '').trim()))
+  const typedLine = await page.waitForFunction(() => [...document.querySelectorAll(
+    '#drawerbody .termhost:not([hidden]) .xterm-rows > *')].some((r) => (r.textContent ?? '').includes('echo typed-in')),
+  null, { timeout: 10_000 }).then(() => true).catch(() => false)
+  check(typedLine, 'with the command typed on its prompt line')
+  await page.waitForTimeout(800)
+  check(!(await rowsNow()).includes('typed-in'), 'and not run: no output under it')
+  if (typedShell) await t.api('POST', `/api/process/${typedShell}/close`).catch(() => {})
+  // A line break is Enter, so the daemon refuses one rather than run it.
+  const refusedNewline = await t.api('POST', `/api/workspace/${ws}/shell`, { input: 'echo a\necho b' })
+    .then(() => false, (e) => /line break/.test(e.message))
+  check(refusedNewline, 'a command with a line break in it is refused, not typed')
+
   await t.api('POST', `/api/process/${shell}/close`)
 
   /* --- a restart puts the pane back on the new process (#35) ----------------- */

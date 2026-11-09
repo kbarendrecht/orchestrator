@@ -187,6 +187,28 @@ function trimTail(/** @type {string} */ run) {
   return url;
 }
 
+/** The shell commands in `text` that Claude Code's `!` prefix would run, as an
+ *  agent writes them when it wants you to run one: `` `! gcloud auth login` ``.
+ *
+ *  **Backticks only.** That is the form Claude Code's own instructions give the
+ *  agent, and a bare `! ` at the start of a line is also its footer hint
+ *  ("! for bash mode"), which would underline as a command called `for`. Inside
+ *  the backticks the `!` and one space are dropped; what is left is the command.
+ *
+ *  @param {string} text
+ *  @returns {{ kind: 'cmd', start: number, end: number, cmd: string }[]} */
+export function commandsIn(text) {
+  /** @type {{ kind: 'cmd', start: number, end: number, cmd: string }[]} */
+  const out = [];
+  for (const m of text.matchAll(/`!\s?([^`]+)`/g)) {
+    const cmd = (m[1] ?? '').trim();
+    if (!cmd) continue;
+    const start = m.index ?? 0;
+    out.push({ kind: 'cmd', start, end: start + m[0].length, cmd });
+  }
+  return out;
+}
+
 /** Everything in `text` worth offering as a link, in the order it is written.
  *
  *  **A URL wins every overlap, and that is not a tie-breaker — it is the fix for a
@@ -198,20 +220,25 @@ function trimTail(/** @type {string} */ run) {
  *  Refs come last and give way to both: `#3` inside `…/pull/3#issuecomment` is
  *  the URL's, and a path never has a `#` to lose. A sha gives way to all three.
  *
+ *  **A `! command` comes before all of them**: the path or URL inside it is an
+ *  argument, and the click you meant was the command.
+ *
  *  @param {string} text
  *  @param {{ story?: string | null }} [opts] the story ref prefix, see [`refsIn`]
  *  @returns {({ kind: 'path', start: number, end: number, path: string, line: number,
  *               last: number, col: number }
  *           | { kind: 'url', start: number, end: number, url: string, bare?: boolean }
  *           | { kind: 'ref', start: number, end: number, ref: string }
- *           | { kind: 'git', start: number, end: number, name: string, sha: boolean })[]}
+ *           | { kind: 'git', start: number, end: number, name: string, sha: boolean }
+ *           | { kind: 'cmd', start: number, end: number, cmd: string })[]}
  */
 export function linksIn(text, opts = {}) {
   /** @typedef {{ start: number, end: number }} Span */
   const free = (/** @type {Span[]} */ taken) => (/** @type {Span} */ p) =>
     !taken.some((u) => p.start < u.end && u.start < p.end);
-  const urls = urlsIn(text);
-  const taken = [...urls, ...pathsIn(text).filter(free(urls))];
+  const cmds = commandsIn(text);
+  const urls = urlsIn(text).filter(free(cmds));
+  const taken = [...cmds, ...urls, ...pathsIn(text).filter(free([...cmds, ...urls]))];
   const all = [...taken, ...refsIn(text, opts.story).filter(free(taken))];
   return [...all, ...shasIn(text).filter(free(all))].sort((a, b) => a.start - b.start);
 }

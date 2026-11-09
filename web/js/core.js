@@ -2110,7 +2110,12 @@ export async function newWorktree(named, where, agent) {
   });
 }
 
-export async function newShell() {
+/** Open a shell in the current workspace's drawer, with `input` typed into it
+ *  when given: a `! command` an agent asked you to run. Typed, not run: Enter is
+ *  yours, because the click that got here is a plain click on a line of output.
+ *
+ *  @param {string} [input] */
+export async function newShell(input) {
   const wsId = currentWorkspaceId();
   if (!wsId) return;
   drawerTouched = true;
@@ -2118,7 +2123,7 @@ export async function newShell() {
   // just asked for.
   if (drawerCollapsed) setDrawerCollapsed(false);
   try {
-    const r = await call(`/api/workspace/${encodeURIComponent(wsId)}/shell`);
+    const r = await call(`/api/workspace/${encodeURIComponent(wsId)}/shell`, input ? { input } : undefined);
     selectedProc[wsKey(wsId)] = r.process;
     // You pressed + to type in it. The pty does not exist until the daemon says
     // so, so this is claimed here and spent when the terminal appears.

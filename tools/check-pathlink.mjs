@@ -185,6 +185,18 @@ check(link('#36356') === 'ref:#36356', 'and a ref is one link')
 
 /* Shas. Candidates only, git decides; the refusals keep numbers, words, colours
    and UUID pieces from being asked about at all. */
+// A command the agent wants you to run, in the backticks Claude Code tells it to use.
+const cmds = (text) => linksIn(text).filter((h) => h.kind === 'cmd').map((h) => h.cmd).join(' | ')
+check(cmds('run `! gcloud auth login` and come back') === 'gcloud auth login', 'a `! command` in backticks is a command')
+check(cmds('`!npm test`') === 'npm test', 'with no space after the bang too')
+check(cmds('! for bash mode') === '', 'a bare bang is the footer hint, not a command')
+check(cmds('Done! `ls` is fine') === '', 'and backticks with no bang are code, not a command')
+check(cmds('`! ` alone') === '', 'an empty command is nothing')
+{
+  const hits = linksIn('try `! cat web/js/find.js` now')
+  check(hits.length === 1 && hits[0].kind === 'cmd', 'the path inside a command is its argument, not a second link')
+}
+
 const shas = (text) => linksIn(text).filter((h) => h.kind === 'git').map((h) => h.name).join(' ')
 check(shas('see dd7f04da118, and c624391.') === 'dd7f04da118 c624391', 'a short sha and a longer one')
 check(shas('1234567 deadbeef #c624391 x-c624391 a/c624391') === '', 'not a number, a word, a colour or glued on')
