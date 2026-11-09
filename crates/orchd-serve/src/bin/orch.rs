@@ -7,7 +7,7 @@
 //! It needs no configuration. A session's environment already says where the
 //! daemon is (`ORCH_URL`), who the session is (`ORCH_SESSION_ID`) and what it is
 //! allowed to do (`ORCH_ASK_TOKEN`). That token opens asking, spawning, starting a
-//! declared process, undoing your own spawns and tearing down a clean worktree,
+//! declared process, undoing or naming your own spawns and tearing down a clean worktree,
 //! and nothing else: this is not a remote control for the daemon, it is what an
 //! agent legitimately needs.
 //!
@@ -32,13 +32,16 @@ orch — talk to the orchestrator you are running inside
       Undo one of your own spawns: end it, drop its row, and remove the
       worktree if that spawn cut one.
 
+  orch rename <id> <name>
+      Name one of your own spawns, so the human can find it in the app.
+
   orch teardown <workspace>
       Remove a worktree nobody is working in, through the same checks as the
       app's button. Refuses one holding a live session or unpushed work.
 
   orch ls [--state <state>] [--all]
-      The sessions the daemon knows about, one per line. Archived ones are
-      hidden unless you ask.
+      The sessions the daemon knows about, one per line, with their name last.
+      Archived ones are hidden unless you ask.
 
   orch ask --question <text> --option <value>:<label> ...
       Ask the human something and block until they answer.
@@ -124,6 +127,20 @@ uncommitted or unpushed work is kept and says why. The session is gone either
 way.
 ";
 
+const HELP_RENAME: &str = "\
+orch rename <id> <name>
+
+Name a session you spawned. The name replaces the title the agent would give it,
+in the app's rail and in `orch ls`, and it stays when the agent finishes a turn.
+Quote a name with spaces in it. An empty name (\"\") clears it, and the title
+goes back to the agent's own.
+
+**Only sessions you spawned yourself.** Anything else is refused, your own
+session included: those are the human's to name, in the app.
+
+A name is one line in the rail, so it is cut at 80 characters.
+";
+
 const HELP_TEARDOWN: &str = "\
 orch teardown <workspace>
 
@@ -144,7 +161,11 @@ worktree and is never torn down.
 const HELP_LS: &str = "\
 orch ls [--state <state>] [--all]
 
-One line per session: `id  workspace  state  branch  path`.
+One line per session: `id  workspace  state  branch  path  name`.
+
+The name is the one the human or `orch rename` gave it, else the agent's own
+title. It is last because it holds spaces; every column before it splits on
+whitespace.
 
 The last two answer the question the first three could not — whether two sessions
 can safely work in parallel. A shared path means one git index; the same branch
@@ -272,6 +293,7 @@ fn help_for(cmd: &str) -> Option<&'static str> {
     Some(match cmd {
         "new" => HELP_NEW,
         "kill" => HELP_KILL,
+        "rename" => HELP_RENAME,
         "teardown" => HELP_TEARDOWN,
         "ls" => HELP_LS,
         "ask" => HELP_ASK,
@@ -318,6 +340,7 @@ fn spec(cmd: &str) -> Option<&'static [(&'static str, Arity)]> {
             ("--effort", Arity::Value),
         ],
         "kill" => &[],
+        "rename" => &[],
         "teardown" => &[],
         "ls" => &[("--state", Arity::Value), ("--all", Arity::Flag)],
         "ask" => &[
@@ -346,6 +369,13 @@ fn spec(cmd: &str) -> Option<&'static [(&'static str, Arity)]> {
 fn words_wanted(cmd: &str) -> (usize, &'static str) {
     match cmd {
         "kill" => (1, "kill needs the id of a session you spawned"),
+        // Two, so an unquoted name with a space is refused rather than cut to
+        // its first word — a name that is silently half of what you typed is
+        // worse than a refusal that says to quote it.
+        "rename" => (
+            2,
+            "rename needs the id of a session you spawned and a name (quoted, if it has spaces)",
+        ),
         "teardown" => (
             1,
             "teardown needs the name of a worktree — `orch ls` prints them",
@@ -1133,6 +1163,20 @@ fn run(cmd: &str, a: &Parsed) -> Result<String, Failure> {
             }
             Ok(said)
         }
+        "rename" => {
+            let child = &a.words[0];
+            let out = http(
+                "POST",
+                &format!("{base}/api/session/{me}/spawned/{child}/name"),
+                &token,
+                Some(&json!({ "name": a.words[1] }).to_string()),
+            )?;
+            let v = reply(&out)?;
+            Ok(match v.get("name").and_then(Value::as_str) {
+                Some(name) => format!("renamed {child} to {name}"),
+                None => format!("cleared the name of {child}"),
+            })
+        }
         "teardown" => {
             let workspace = &a.words[0];
             let out = http(
@@ -1162,7 +1206,7 @@ fn run(cmd: &str, a: &Parsed) -> Result<String, Failure> {
                 .and_then(Value::as_array)
                 .ok_or("the daemon's state has no sessions")?;
 
-            let mut rows: Vec<[String; 5]> = Vec::new();
+            let mut rows: Vec<[String; 6]> = Vec::new();
             for s in sessions {
                 let st = s
                     .get("state")
@@ -1182,19 +1226,25 @@ fn run(cmd: &str, a: &Parsed) -> Result<String, Failure> {
                     st.to_string(),
                     str_at(s, "branch"),
                     str_at(s, "cwd"),
+                    // The name you gave it, else the agent's title — the label the
+                    // rail shows. Last, because it holds spaces: every column
+                    // before it still splits on whitespace.
+                    str_at(s, "title"),
                 ]);
             }
             // Padded rather than tab-separated: the columns stay splittable on
             // whitespace for a shell loop, and readable when a human runs it.
             let width = |col: usize| rows.iter().map(|r| r[col].len()).max().unwrap_or(0);
-            let (w1, w2, w3) = (width(1), width(2), width(3));
+            let (w1, w2, w3, w4) = (width(1), width(2), width(3), width(4));
             Ok(rows
                 .iter()
                 .map(|r| {
                     format!(
-                        "{}  {:w1$}  {:w2$}  {:w3$}  {}",
-                        r[0], r[1], r[2], r[3], r[4]
+                        "{}  {:w1$}  {:w2$}  {:w3$}  {:w4$}  {}",
+                        r[0], r[1], r[2], r[3], r[4], r[5]
                     )
+                    .trim_end()
+                    .to_string()
                 })
                 .collect::<Vec<_>>()
                 .join("\n"))
@@ -1303,7 +1353,9 @@ mod tests {
         assert!(e.contains("unknown flag --nonsense"), "{e}");
         // And on every command, not just the one that bit: a tolerated flag on
         // `ask` sends a question nobody meant to ask.
-        for cmd in ["ask", "ls", "run", "kill", "teardown", "outside", "guard"] {
+        for cmd in [
+            "ask", "ls", "run", "kill", "rename", "teardown", "outside", "guard",
+        ] {
             assert!(
                 parse(cmd, &argv(&["--nonsense"])).is_err(),
                 "{cmd} tolerated it"
@@ -1349,6 +1401,16 @@ mod tests {
         assert!(e.contains("needs the name of a process"), "{e}");
         let e = parse("kill", &argv(&[])).expect_err("kill needs an id");
         assert!(e.contains("needs the id"), "{e}");
+        // A name left unquoted arrives as several words, and must not be cut
+        // to the first one.
+        let e = parse("rename", &argv(&["abc", "story", "42"])).expect_err("unquoted");
+        assert!(e.contains("does not take `42`"), "{e}");
+        let e = parse("rename", &argv(&["abc"])).expect_err("no name");
+        assert!(e.contains("quoted"), "{e}");
+        assert_eq!(
+            parse("rename", &argv(&["abc", "story 42"])).unwrap().words,
+            vec!["abc", "story 42"]
+        );
         assert_eq!(
             parse("run", &argv(&["docker"])).unwrap().words,
             vec!["docker"]
@@ -1361,7 +1423,7 @@ mod tests {
     #[test]
     fn every_command_documents_its_own_flags() {
         for cmd in [
-            "new", "kill", "teardown", "ls", "ask", "run", "outside", "guard",
+            "new", "kill", "rename", "teardown", "ls", "ask", "run", "outside", "guard",
         ] {
             let h = help_for(cmd).unwrap_or_else(|| panic!("{cmd} has no help"));
             let flags = spec(cmd).unwrap_or_else(|| panic!("{cmd} has no flag spec"));

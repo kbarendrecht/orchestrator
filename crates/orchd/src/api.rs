@@ -145,7 +145,7 @@ pub fn origin_ok(
 /// A list rather than a growing chain of `ends_with`, because it has been
 /// outgrown once already — see the note in [`guard`].
 fn is_ask_route(path: &str) -> bool {
-    const ASK_ROUTES: [&str; 8] = [
+    const ASK_ROUTES: [&str; 9] = [
         "/ask",
         "/wait",
         // The worktree grant, asked by the agent and read by the push guard —
@@ -158,6 +158,9 @@ fn is_ask_route(path: &str) -> bool {
         // any session — a suffix matcher cannot tell those apart from a narrower
         // verb spelled the same way.
         "/discard",
+        // `orch rename`. Not `/rename`, the SPA's own route on any session; and
+        // `/rename` does not end in `/name`, so the suffix match keeps them apart.
+        "/name",
         // `orch teardown`. Safe as a suffix only because the SPA's own teardown is
         // `/api/workspace/:id/teardown`, outside the `/api/session/` prefix.
         "/teardown",
@@ -553,14 +556,7 @@ pub async fn rename_session(
     Path(id): Path<Uuid>,
     Json(body): Json<Rename>,
 ) -> ApiResult<serde_json::Value> {
-    let name = body
-        .name
-        .as_deref()
-        .map(str::trim)
-        .filter(|n| !n.is_empty())
-        // A rail row is one line: a name long enough to push the state out of it
-        // makes the row useless, and nothing else would ever say so.
-        .map(|n| n.chars().take(80).collect::<String>());
+    let name = clean_name(body.name.as_deref());
     {
         let mut inner = app.inner.write().await;
         let s = inner
@@ -572,6 +568,52 @@ pub async fn rename_session(
     // Persists on the way out: `notify` writes `sessions.json` before it pushes.
     app.notify().await;
     Ok(Json(json!({ "session": id, "name": name })))
+}
+
+/// The one rule for what a name may be, so the rail's rename and `orch rename`
+/// cannot drift into storing different things for the same input.
+///
+/// Blank clears it, which hands the row back to the ai-title.
+fn clean_name(given: Option<&str>) -> Option<String> {
+    given
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        // A rail row is one line: a name long enough to push the state out of it
+        // makes the row useless, and nothing else would ever say so.
+        .map(|n| n.chars().take(80).collect::<String>())
+}
+
+/// `orch rename` — name a session you spawned.
+///
+/// A manager spawns before the work has a shape, one session per story or PR, and
+/// the ai-title is whatever the first prompt read like. The name is how the human
+/// finds that session on the rail later, and the manager is the one who knows it.
+///
+/// **Only the sessions this caller spawned**, the same rule as [`discard_spawned`]
+/// and for the same reason: this route is on the ask token, and the SPA's own
+/// [`rename_session`] reaches every session, including the one you are sitting in.
+/// The check reads `spawned_by` from the record, never from the body.
+pub async fn name_spawned(
+    State(app): State<Arc<AppState>>,
+    Path((id, child)): Path<(Uuid, Uuid)>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<Rename>,
+) -> ApiResult<serde_json::Value> {
+    ask_token_ok(&app, id, &headers).await?;
+    let name = clean_name(body.name.as_deref());
+    {
+        let mut inner = app.inner.write().await;
+        let s = inner
+            .sessions
+            .get_mut(&child)
+            .ok_or_else(|| crate::state::no_such_session(child))?;
+        if s.spawned_by != Some(id) {
+            refuse!("{child} is not a session you spawned; rename it in the app");
+        }
+        s.name = name.clone();
+    }
+    app.notify().await;
+    Ok(Json(json!({ "session": child, "name": name })))
 }
 
 /// Open Claude Code's own rewind picker in this session.
@@ -4007,6 +4049,97 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// `orch rename` reaches the caller's own spawns and nothing else, and a blank
+    /// name clears it. Driven to the end, unlike the discard test above: a rename
+    /// only writes a field, so the accepting path is cheap to prove.
+    #[tokio::test]
+    async fn rename_reaches_only_the_sessions_the_caller_spawned() {
+        use crate::model::{Session, MAIN};
+
+        let (app, dir) = crate::testutil::app("name-spawned");
+
+        let caller = Uuid::new_v4();
+        let mine = Uuid::new_v4();
+        let someone_elses = Uuid::new_v4();
+        {
+            let mut inner = app.inner.write().await;
+            for id in [caller, mine, someone_elses] {
+                let s = Session::new(id, MAIN.to_string(), dir.clone(), None);
+                inner.sessions.insert(id, s);
+            }
+            inner.sessions.get_mut(&someone_elses).unwrap().spawned_by = Some(Uuid::new_v4());
+            inner.sessions.get_mut(&mine).unwrap().spawned_by = Some(caller);
+        }
+
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("x-orch-token", "t".parse().unwrap());
+        let named = |n: &str| {
+            Json(Rename {
+                name: Some(n.to_string()),
+            })
+        };
+
+        for (child, want) in [
+            (someone_elses, "is not a session you spawned"),
+            // Yourself included: nobody spawned you, so your own row stays the
+            // human's to name.
+            (caller, "is not a session you spawned"),
+            (Uuid::new_v4(), "no such session"),
+        ] {
+            let said = format!(
+                "{:#}",
+                name_spawned(
+                    State(app.clone()),
+                    Path((caller, child)),
+                    headers.clone(),
+                    named("story 42"),
+                )
+                .await
+                .expect_err("must refuse")
+                .0
+            );
+            assert!(
+                said.contains(want),
+                "{child} said {said:?}, wanted {want:?}"
+            );
+        }
+
+        let out = name_spawned(
+            State(app.clone()),
+            Path((caller, mine)),
+            headers.clone(),
+            named("  story 42: invoice totals  "),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("its own spawn: {:#}", e.0))
+        .0;
+        assert_eq!(out["name"], "story 42: invoice totals");
+        {
+            let inner = app.inner.read().await;
+            assert_eq!(
+                inner.sessions[&mine].name.as_deref(),
+                Some("story 42: invoice totals")
+            );
+            // The refusals wrote nothing.
+            assert_eq!(inner.sessions[&someone_elses].name, None);
+            assert_eq!(inner.sessions[&caller].name, None);
+        }
+
+        // Blank clears it, so the row falls back to the ai-title.
+        let cleared = name_spawned(
+            State(app.clone()),
+            Path((caller, mine)),
+            headers,
+            named(" "),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("clearing is a rename too: {:#}", e.0))
+        .0;
+        assert!(cleared["name"].is_null(), "{cleared}");
+        assert_eq!(app.inner.read().await.sessions[&mine].name, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn every_route_the_vendored_prompts_call_on_the_ask_token_is_exempt() {
         // The literal paths the vendored prompts curl.
@@ -4021,6 +4154,8 @@ mod tests {
             // enforces from the record — the exemption is what lets it be called at
             // all, not what decides which sessions it reaches.
             "/api/session/<id>/spawned/<child>/discard",
+            // `orch rename`. The caller's own spawns, which `name_spawned` checks.
+            "/api/session/<id>/spawned/<child>/name",
             // `orch teardown`. Any worktree, through the ordinary preflight.
             "/api/session/<id>/teardown",
             // `orch outside`, and the push guard's read of what it granted. The
@@ -4039,6 +4174,9 @@ mod tests {
             // The unrestricted delete the rail's own button uses. `/discard` above
             // exists *because* this one must stay out of the agent's reach.
             "/api/session/<id>/delete",
+            // The rail's rename, which reaches any session. `orch rename` is
+            // `/spawned/<child>/name` precisely so this one stays out of reach.
+            "/api/session/<id>/rename",
             "/api/state",
             // The drawer's own button, which restarts a *running* process. Named
             // the same thing, deliberately not the agent's.

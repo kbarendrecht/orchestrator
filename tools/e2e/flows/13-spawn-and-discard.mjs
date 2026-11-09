@@ -1,4 +1,4 @@
-// What `orch new` and `orch kill` do, from the daemon's side.
+// What `orch new`, `orch rename` and `orch kill` do, from the daemon's side.
 //
 // The CLI's own tests cover the argv guard; nothing they can do proves the round
 // trip, because the thing worth checking is a *worktree*: whether the spawn cut a
@@ -89,6 +89,20 @@ export async function run(t) {
   await t.settled(fixer.session)
   assert.match(t.agentLog(), new RegExp(`${fixer.session.slice(0, 8)} new in .* model haiku effort low`),
     'the agent was started on the model and effort asked for')
+
+  // `orch rename`: the manager names the spawn once its work is clear, and the
+  // name is what the snapshot's title now says — the rail and `orch ls` both
+  // read that field.
+  const named = await t.api('POST', `/api/session/${parent}/spawned/${fixer.session}/name`, {
+    name: 'story 42: invoice totals',
+  })
+  assert.equal(named.name, 'story 42: invoice totals')
+  assert.equal((await t.session(fixer.session)).title, 'story 42: invoice totals')
+  // Your own row is the human's to name, by the same rule as the discard.
+  await assert.rejects(
+    () => t.api('POST', `/api/session/${parent}/spawned/${parent}/name`, { name: 'me' }),
+    /is not a session you spawned/,
+  )
 
   // 4. And the undo takes the tree with it, so a spawn you regret leaves no
   //    checkout on disk with nothing in the rail pointing at it.

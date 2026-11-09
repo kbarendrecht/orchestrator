@@ -766,6 +766,12 @@ fn daemon_router(app: Arc<AppState>) -> Router {
             "/api/session/:id/spawned/:child/discard",
             post(api::discard_spawned),
         )
+        // `/name` for the same reason as `/discard`: `/rename` is the rail's, and
+        // reaches every session.
+        .route(
+            "/api/session/:id/spawned/:child/name",
+            post(api::name_spawned),
+        )
         .route("/api/session/:id/process", post(api::process_from_session))
         // The workspace travels in the body, not the path, for the same suffix
         // reason: `/api/session/:id/teardown/:workspace` would end in a name the
