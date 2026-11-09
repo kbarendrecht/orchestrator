@@ -2477,7 +2477,7 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
 name = "orchd"
-version = "2026.10.15"
+version = "2026.10.16"
 dependencies = [
  "anyhow",
  "axum",
@@ -2495,7 +2495,7 @@ dependencies = [
 
 [[package]]
 name = "orchd-base"
-version = "2026.10.15"
+version = "2026.10.16"
 dependencies = [
  "anyhow",
  "bytes",
@@ -2511,7 +2511,7 @@ dependencies = [
 
 [[package]]
 name = "orchd-repo"
-version = "2026.10.15"
+version = "2026.10.16"
 dependencies = [
  "anyhow",
  "grep-matcher",
@@ -2538,7 +2538,7 @@ dependencies = [
 
 [[package]]
 name = "orchd-serve"
-version = "2026.10.15"
+version = "2026.10.16"
 dependencies = [
  "anyhow",
  "axum",
@@ -2556,7 +2556,7 @@ dependencies = [
 
 [[package]]
 name = "orchestrator-desktop"
-version = "2026.10.15"
+version = "2026.10.16"
 dependencies = [
  "anyhow",
  "gtk",
