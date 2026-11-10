@@ -752,7 +752,6 @@ fn daemon_router(app: Arc<AppState>) -> Router {
         .route("/api/session/:id/spawn", post(api::spawn_from_session))
         .route("/api/session/:id/message", post(api::message_session))
         .route("/api/session/:id/deliver-inbox", post(api::deliver_inbox))
-        .route("/api/session/:id/restack", post(api::ask_restack))
         // Both halves of the worktree grant on one path: the agent asks with a
         // POST, the push guard reads with a GET before it refuses anything.
         .route(
@@ -1380,6 +1379,8 @@ fn start_pr_poller(app: Arc<AppState>) {
                                         for id in rebase {
                                             app.deliver_inbox(id).await;
                                         }
+                                        app.restack_after_merge().await;
+                                        app.notify().await;
                                     }
                                     // Still open to the forge: the search lagged, or
                                     // the PR is no longer yours. It stays queued

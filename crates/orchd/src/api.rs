@@ -992,6 +992,7 @@ pub async fn answer(
     Path(id): Path<Uuid>,
     Json(body): Json<AnswerBody>,
 ) -> ApiResult<serde_json::Value> {
+    let restack_yes;
     {
         let mut inner = app.inner.write().await;
         let s = inner
@@ -1043,13 +1044,25 @@ pub async fn answer(
                 }
             }
         }
-        // Answered, so it is going again. `Stop` will correct this if the turn
-        // ends for real a moment later.
-        s.set_state(crate::model::State::Working);
+        /* orchd's own restack question, by its id: nothing was blocked on it, so
+        the session goes back to what it was doing, and a yes is acted on once
+        the lock is down. */
+        let restack = s.restack_ask.take_if(|r| r.id == body.ask);
+        match &restack {
+            Some(r) => s.set_state(r.before.clone()),
+            // Answered, so it is going again. `Stop` will correct this if the turn
+            // ends for real a moment later.
+            None => s.set_state(crate::model::State::Working),
+        }
+        restack_yes = restack.filter(|_| body.answer == crate::restack::RESTACK_YES);
         // The end of a Handle: the strategy the user confirmed, for the card.
         AppState::record_overlap_plan(&mut inner, id, &body.answer, &label);
     }
     app.answered.notify_waiters();
+    if let Some(what) = restack_yes {
+        let app = app.clone();
+        tokio::spawn(async move { app.answer_restack(id, what).await });
+    }
     app.notify().await;
     Ok(Json(json!({ "answered": body.answer })))
 }
@@ -1435,16 +1448,6 @@ pub async fn deliver_inbox(
     app.deliver_inbox_now(id).await?;
     app.notify().await;
     Ok(Json(json!({ "delivered": true })))
-}
-
-/// The card's "Ask it to restack". See [`AppState::ask_restack`].
-pub async fn ask_restack(
-    State(app): State<Arc<AppState>>,
-    Path(id): Path<Uuid>,
-) -> ApiResult<serde_json::Value> {
-    let delivered = app.ask_restack(id).await?;
-    app.notify().await;
-    Ok(Json(json!({ "delivered": delivered })))
 }
 
 /// One session starts another.

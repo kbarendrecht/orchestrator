@@ -82,7 +82,7 @@ crates/orchd-repo/    one checkout, described. No session state lives here.
   forge/          the Forge seam, reads only: trait + dispatch (mod.rs), agnostic
                   model (model.rs), the GitHub impl (github.rs)
   diff.rs         numstat, hunk parsing, word-level LCS
-  overlap.rs      files two workspaces both changed, and whether git can merge them
+  overlap.rs      files two workspaces both changed, and whether git can merge them, or a tree with upstream
   patch.rs        what git says changed: the numstat parser and the dirty list
   skills.rs       the vendored skills in skills/: a plugin dir for Claude Code's
                   --plugin-dir, the same set as instructions for Codex
@@ -101,6 +101,7 @@ crates/orchd/         the runtime core: the `orchd` library, what the daemon kno
   carry.rs        every other move of main's branch — parking, a PR flow freeing
                   main, a switch onto a PR — and the steps all moves share
   locate.rs       where a PR's branch is: someone else's, a worktree, main, nowhere
+  restack.rs      the upper branch of a stack follows the one under it, and leaves it on a merge
   restart.rs      respawn sessions in place on the installed agent, each when idle
   review_api.rs   the PR routes that start work, and the file pane's reads and
                   writes

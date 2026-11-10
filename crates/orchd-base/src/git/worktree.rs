@@ -537,7 +537,92 @@ pub fn operation_in_progress(cwd: &Path) -> Option<&'static str> {
 /// stopped — that is the state you resolve from — and reported rather than
 /// silently aborted.
 pub fn rebase_onto(cwd: &Path, upstream: &str) -> Result<()> {
-    let out = run(cwd, &["rebase", upstream]).context("running git rebase")?;
+    rebase_with(cwd, &["rebase", upstream])
+}
+
+/// Rebase onto `onto`, or put the tree back as it was.
+///
+/// For a rebase nobody asked for (the daemon's own restack), where a stop would
+/// leave a tree mid-rebase under an agent that did not start it. A stop is
+/// aborted here, and the error says why it stopped.
+///
+/// `from` is `--onto`'s cut: replay only the commits after it. A stack whose
+/// lower branch was squash-merged needs it, because the squash has a change no
+/// lower commit has, so git cannot tell those commits are already in.
+pub fn rebase_or_abort(cwd: &Path, onto: &str, from: Option<&str>) -> Result<()> {
+    let done = match from {
+        Some(from) => rebase_with(cwd, &["rebase", "--onto", onto, from]),
+        None => rebase_with(cwd, &["rebase", onto]),
+    };
+    if done.is_err() && rebase_in_progress(cwd) {
+        let _ = run(cwd, &["rebase", "--abort"]);
+    }
+    done
+}
+
+/// [`rebase_or_abort`] for a branch that is pushed: all of it or none of it.
+///
+/// The branch is fetched first and must be exactly what origin has, so nothing
+/// unpushed rides along and nobody else's push is replaced. The push is
+/// `--force-with-lease` on the commit that was checked, never a plain force, and
+/// a refused push puts the branch back where it was, so the tree and origin never
+/// disagree. Answers the commit the branch was on.
+pub fn restack_pushed(
+    cwd: &Path,
+    branch: &str,
+    onto: &str,
+    from: Option<&str>,
+    base: Option<&str>,
+) -> Result<String> {
+    if base == Some(branch) {
+        bail!("{branch} is the base branch");
+    }
+    let tracking = format!("+refs/heads/{branch}:refs/remotes/origin/{branch}");
+    git_net_ok(
+        cwd,
+        &["fetch", "--no-tags", "origin", &tracking],
+        "the branch fetch",
+    )?;
+    let head = git(cwd, &["rev-parse", "HEAD"])?.trim().to_string();
+    let remote = git(
+        cwd,
+        &["rev-parse", &format!("refs/remotes/origin/{branch}")],
+    )?;
+    if remote.trim() != head {
+        bail!("{branch} here is not what origin has, so it was left alone");
+    }
+    if rebase_in_progress(cwd) || !is_clean(cwd).unwrap_or(false) {
+        bail!("the tree is not clean");
+    }
+    rebase_or_abort(cwd, onto, from)?;
+    let lease = format!("--force-with-lease=refs/heads/{branch}:{head}");
+    let target = format!("HEAD:refs/heads/{branch}");
+    let pushed = git_net(
+        cwd,
+        &["push", &lease, "origin", &target],
+        "the restack push",
+    );
+    let refused = match &pushed {
+        Ok(out) if out.status.success() => None,
+        Ok(out) => Some(
+            String::from_utf8_lossy(&out.stderr)
+                .lines()
+                .find(|l| !l.trim().is_empty())
+                .unwrap_or("no output")
+                .to_string(),
+        ),
+        Err(e) => Some(format!("{e:#}")),
+    };
+    if let Some(why) = refused {
+        // Clean before the rebase, so a hard reset loses nothing but the rebase.
+        let _ = git(cwd, &["reset", "-q", "--hard", &head]);
+        bail!("the push was refused, so the branch is back where it was: {why}");
+    }
+    Ok(head)
+}
+
+fn rebase_with(cwd: &Path, args: &[&str]) -> Result<()> {
+    let out = run(cwd, args).context("running git rebase")?;
     if out.status.success() {
         return Ok(());
     }

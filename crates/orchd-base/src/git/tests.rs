@@ -2523,3 +2523,149 @@ fn a_printed_name_is_what_git_says_it_is() {
     }
     let _ = std::fs::remove_dir_all(&repo);
 }
+
+/// The daemon's own restack moves a branch onto the one under it, and a rebase
+/// that stops leaves the tree exactly as it was rather than mid-rebase.
+#[test]
+fn a_restack_either_lands_or_leaves_the_tree_as_it_was() {
+    let main = bank_fixture("restack");
+    let commit = |file: &str, body: &str, msg: &str| {
+        std::fs::write(main.join(file), body).unwrap();
+        git(&main, &["commit", "-qam", msg]).unwrap();
+    };
+    let head = || {
+        git(&main, &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string()
+    };
+    git(&main, &["checkout", "-qb", "lower"]).unwrap();
+    commit("f.txt", "lower 1\n", "lower 1");
+    git(&main, &["checkout", "-qb", "upper"]).unwrap();
+    commit("g.txt", "upper\n", "upper");
+    git(&main, &["checkout", "-q", "lower"]).unwrap();
+    commit("f.txt", "lower 2\n", "lower 2");
+    let tip = head();
+
+    git(&main, &["checkout", "-q", "upper"]).unwrap();
+    rebase_or_abort(&main, &tip, None).unwrap();
+    assert!(
+        git(&main, &["merge-base", "--is-ancestor", &tip, "HEAD"]).is_ok(),
+        "the upper branch carries the new lower commit"
+    );
+    assert_eq!(
+        std::fs::read_to_string(main.join("g.txt")).unwrap(),
+        "upper\n"
+    );
+
+    // The lower branch now changes the line the upper one changed.
+    git(&main, &["checkout", "-q", "lower"]).unwrap();
+    commit("g.txt", "lower takes g\n", "lower 3");
+    let clash = head();
+    git(&main, &["checkout", "-q", "upper"]).unwrap();
+    let before = head();
+    assert!(rebase_or_abort(&main, &clash, None).is_err());
+    assert!(!rebase_in_progress(&main), "not left mid-rebase");
+    assert_eq!(head(), before, "and the branch is where it was");
+    assert!(is_clean(&main).unwrap());
+}
+
+/// A pushed restack lands on origin with a lease, and a push somebody else made
+/// in the meantime is never replaced: the branch goes back where it was.
+#[test]
+fn a_pushed_restack_lands_on_origin_or_puts_the_branch_back() {
+    let main = bank_fixture("restack-pushed");
+    let root = main.parent().unwrap().to_path_buf();
+    git(&root, &["clone", "-q", "--bare", "repo", "origin.git"]).unwrap();
+    git(
+        &main,
+        &[
+            "remote",
+            "add",
+            "origin",
+            root.join("origin.git").to_str().unwrap(),
+        ],
+    )
+    .unwrap();
+    let commit = |file: &str, body: &str, msg: &str| {
+        std::fs::write(main.join(file), body).unwrap();
+        git(&main, &["commit", "-qam", msg]).unwrap();
+    };
+    let sha = |r: &str| git(&main, &["rev-parse", r]).unwrap().trim().to_string();
+    git(&main, &["checkout", "-qb", "lower"]).unwrap();
+    commit("f.txt", "lower 1\n", "lower 1");
+    git(&main, &["checkout", "-qb", "upper"]).unwrap();
+    commit("g.txt", "upper\n", "upper");
+    git(&main, &["push", "-q", "origin", "upper"]).unwrap();
+    git(&main, &["checkout", "-q", "lower"]).unwrap();
+    commit("f.txt", "lower 2\n", "lower 2");
+    let tip = sha("HEAD");
+    git(&main, &["checkout", "-q", "upper"]).unwrap();
+
+    let was = restack_pushed(&main, "upper", &tip, None, Some("main")).unwrap();
+    assert_ne!(sha("HEAD"), was, "rebased");
+    let on_origin = git(&root.join("origin.git"), &["rev-parse", "upper"]).unwrap();
+    assert_eq!(on_origin.trim(), sha("HEAD"), "and pushed");
+
+    // Somebody pushes to it from elsewhere; the local branch is then not what
+    // origin has, and nothing happens.
+    git(&root, &["clone", "-q", "origin.git", "other"]).unwrap();
+    let other = root.join("other");
+    git(&other, &["checkout", "-q", "upper"]).unwrap();
+    std::fs::write(other.join("h.txt"), "theirs\n").unwrap();
+    git(&other, &["add", "-A"]).unwrap();
+    git(
+        &other,
+        &[
+            "-c",
+            "user.email=o@o",
+            "-c",
+            "user.name=o",
+            "commit",
+            "-qm",
+            "theirs",
+        ],
+    )
+    .unwrap();
+    git(&other, &["push", "-q", "origin", "upper"]).unwrap();
+    let before = sha("HEAD");
+    assert!(restack_pushed(&main, "upper", &tip, None, Some("main")).is_err());
+    assert_eq!(sha("HEAD"), before, "left where it was");
+    assert!(
+        restack_pushed(&main, "main", &tip, None, Some("main")).is_err(),
+        "never the base"
+    );
+}
+
+/// After a squash merge of the lower branch, `--onto` from the last lower commit
+/// keeps only the upper branch's own commits.
+#[test]
+fn a_restack_after_a_squash_merge_keeps_only_its_own_commits() {
+    let main = bank_fixture("restack-squash");
+    let commit = |file: &str, body: &str, msg: &str| {
+        std::fs::write(main.join(file), body).unwrap();
+        git(&main, &["add", "-A"]).unwrap();
+        git(&main, &["commit", "-qm", msg]).unwrap();
+    };
+    git(&main, &["checkout", "-qb", "lower"]).unwrap();
+    commit("f.txt", "lower 1\n", "lower 1");
+    commit("f.txt", "lower 2\n", "lower 2");
+    let last_lower = git(&main, &["rev-parse", "HEAD"])
+        .unwrap()
+        .trim()
+        .to_string();
+    git(&main, &["checkout", "-qb", "upper"]).unwrap();
+    commit("g.txt", "upper\n", "upper");
+    git(&main, &["checkout", "-q", "main"]).unwrap();
+    git(&main, &["merge", "-q", "--squash", "lower"]).unwrap();
+    git(&main, &["commit", "-qm", "lower (#1)"]).unwrap();
+    git(&main, &["checkout", "-q", "upper"]).unwrap();
+
+    rebase_or_abort(&main, "main", Some(&last_lower)).unwrap();
+    let mine = git(&main, &["log", "--format=%s", "main..HEAD"]).unwrap();
+    assert_eq!(mine.trim(), "upper", "only its own commit is left on top");
+    assert_eq!(
+        std::fs::read_to_string(main.join("f.txt")).unwrap(),
+        "lower 2\n"
+    );
+}

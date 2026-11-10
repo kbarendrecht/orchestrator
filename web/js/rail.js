@@ -2032,6 +2032,10 @@ function forkBadge(/** @type {import('../snapshot').SessionView} */ s) {
   return s.forked_from ? el('span', 'forked', 'fork') : null;
 }
 
+/** The stack mark: two sheets, one on the other. It was an up arrow, and git
+ *  tools print "\u21912" for commits to push, so it read as "ahead". */
+const LAYERS = ['M8 2.5 14 5.5 8 8.5 2 5.5Z', 'M2 9 8 12 14 9'];
+
 /** Whether a row gets the overlap mark: nothing, or which files another
  *  workspace in the same checkout also changed, and whether git cannot merge them.
  *  What the card shows is read again when it opens (`fillOverlapCard`); this is
@@ -2046,7 +2050,10 @@ function overlapMark(state, workspace) {
   const w = state.workspaces.find((x) => x.id === workspace);
   const list = w?.overlaps ?? [];
   const stack = w?.stacked_on ?? null;
-  return list.length || stack ? { conflict: list.length > 0, stack } : null;
+  // A conflict with upstream wears the same mark: it is the same question, asked
+  // of the branch every PR lands on.
+  const conflict = list.length > 0 || (w?.upstream_conflicts.length ?? 0) > 0;
+  return conflict || stack ? { conflict, stack } : null;
 }
 
 function sessionRow(/** @type {import('../snapshot').SessionView} */ s, /** @type {{ id: string | null } | undefined} */ w, /** @type {boolean} */ fromMain = false, /** @type {{ conflict: boolean, stack: import('../snapshot').StackView | null } | null} */ overlap = null) {
@@ -2077,12 +2084,12 @@ function sessionRow(/** @type {import('../snapshot').SessionView} */ s, /** @typ
      cannot merge gets one: the same file merging cleanly is nothing to act on.
      No `title`: the card below says which files and with whom, and a native
      tooltip on top of it would be a second answer arriving a second later. */
-  /* **A stack is not a conflict**, so it wears its own mark: an arrow up, for
+  /* **A stack is not a conflict**, so it wears its own mark: layers, for
      "built on another branch", grey unless the branch under it moved. A row that
      is both gets both, the stack first: which branch it is built on can matter
      more than a conflict with a third one. Either opens the same card. */
   if (overlap?.stack) {
-    const up = row.appendChild(el('span', 'sess-overlap stack' + (overlap.stack.behind ? ' behind' : ''), '\u2191'));
+    const up = row.appendChild(icon('sess-overlap stack' + (overlap.stack.behind ? ' behind' : ''), 1.6, ...LAYERS));
     up.dataset.session = s.id;
   }
   if (overlap?.conflict) {
@@ -2749,6 +2756,8 @@ const OV_FILES = 3;
 /** The groups opened past that, by the other workspace. Forgotten when the card
  *  closes, so the next hover starts short again. */
 const ovOpen = new Set();
+/** The key of the upstream group in `ovOpen`, which no workspace id can be. */
+const UPSTREAM_GROUP = '\0upstream';
 
 function overlapCard() {
   if (!ovCard) {
@@ -2768,20 +2777,22 @@ function fillOverlapCard(/** @type {string} */ sid) {
   const mine = s ? state.workspaces.find((w) => w.id === s.workspace) : undefined;
   const list = mine?.overlaps ?? [];
   const stack = mine?.stacked_on ?? null;
-  if (!s || (!list.length && !stack)) return false;
+  const upstream = mine?.upstream_conflicts ?? [];
+  if (!s || (!list.length && !stack && !upstream.length)) return false;
   /** @type {Map<string, import('../snapshot').OverlapView[]>} */
   const groups = new Map();
   for (const o of list) groups.set(o.with, [...(groups.get(o.with) ?? []), o]);
   const there = (/** @type {string} */ ws) => state.sessions.filter((x) => x.workspace === ws && !isArchived(x));
-  const sig = paintSig([list, stack, stack ? there(stack.on).map((x) => [x.id, railName(x, { id: stack.on })]) : null,
+  const sig = paintSig([list, stack, upstream, stack ? there(stack.on).map((x) => [x.id, railName(x, { id: stack.on })]) : null,
     [...ovOpen], s.inbox, [...groups.keys()].map((ws) => there(ws).map((x) => [x.id, railName(x, { id: ws }), stateLabel(x), sessionDot(x), x.inbox]))]);
   if (sig === ovSig) return true;
   ovSig = sig;
   const card = overlapCard();
   card.replaceChildren();
   /* **The stack first**: what this branch is built on, and whether it has to
-     catch up. Restacking is the agent's job (`TODO.md`), so the button only asks
-     it to; nothing here touches git. */
+     catch up. No button: orchd restacks an idle, clean, unpushed branch itself
+     (`restack_when_safe`), and the agent hears about anything else on its next
+     prompt. */
   if (stack) {
     const under = there(stack.on)[0];
     const g = card.appendChild(el('div', 'ovc-grp'));
@@ -2790,19 +2801,40 @@ function fillOverlapCard(/** @type {string} */ sid) {
       ? `${stack.behind} new commit${stack.behind === 1 ? '' : 's'} under it${stack.conflicts
         ? `, ${stack.conflicts} file${stack.conflicts === 1 ? '' : 's'} will conflict` : ''}`
       : 'up to date with it'));
-    if (stack.behind) {
-      const r = g.appendChild(el('button', 'ovc-act', 'Ask it to restack'));
-      r.type = 'button';
-      r.onclick = async () => {
-        closeOverlapCard();
-        try {
-          const a = await callFor(sid, `/api/session/${sid}/restack`);
-          toast(a?.delivered ? 'asked it to restack' : 'it is mid-turn: it reads it when the turn ends');
-        } catch (e) {
-          toast(reason(e), true);
-        }
+    if (stack.asking) {
+      const q = g.appendChild(el('button', 'ovc-who', 'Asking you on the session: restack and push?'));
+      q.type = 'button';
+      q.onclick = () => { closeOverlapCard(); setSelected(sid); };
+    } else if (stack.behind) {
+      g.appendChild(el('div', 'ovc-plan',
+        'Orchestrator restacks it when it is idle, and asks you first if it is pushed. Either way, its next prompt says what happened.'));
+    }
+  }
+  /* **Then upstream**: files git cannot merge with the branch every PR lands on.
+     No button, like the conflicts below: the agent hears it on its next prompt,
+     except on the upper half of a stack, which the stack note covers. */
+  if (upstream.length) {
+    const g = card.appendChild(el('div', 'ovc-grp'));
+    const n = upstream.length;
+    g.appendChild(el('div', 'ovc-head', `${n === 1 ? '1 file conflicts' : `${n} files conflict`} with ${state.upstream_ref}`));
+    const shown = ovOpen.has(UPSTREAM_GROUP) ? upstream : upstream.slice(0, OV_FILES);
+    for (const path of shown) {
+      const f = g.appendChild(el('button', 'ovc-file'));
+      f.type = 'button';
+      f.appendChild(el('span', 'ovc-path', path));
+      f.onclick = () => { closeOverlapCard(); setSelected(sid); void Diff.open(path); };
+    }
+    if (n > OV_FILES) {
+      const more = g.appendChild(el('button', 'ovc-more',
+        ovOpen.has(UPSTREAM_GROUP) ? 'show less' : `show ${n - OV_FILES} more`));
+      more.type = 'button';
+      more.onclick = () => {
+        if (!ovOpen.delete(UPSTREAM_GROUP)) ovOpen.add(UPSTREAM_GROUP);
+        fillOverlapCard(sid);
+        clampOverlapCard();
       };
     }
+    if (!stack) g.appendChild(el('div', 'ovc-plan', 'it is told to rebase on its next prompt'));
   }
   if (list.length) card.appendChild(el('div', 'ovc-head', `${list.length === 1 ? '1 file conflicts' : `${list.length} files conflict`} with another session`));
   /* **A message the daemon could not deliver is shown, not kept quiet.** It waits

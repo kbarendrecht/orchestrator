@@ -340,6 +340,17 @@ pub struct Inner {
     /// overwrote its own record on every refresh and was told all four again
     /// each time, about 1,500 times in an hour.
     pub stack_told: HashMap<(String, String), String>,
+    /// The files git cannot merge between a workspace and the upstream ref, with
+    /// what its tree measured when that was asked ([`UpstreamStamp`]). Only for a
+    /// workspace somebody works in that is behind. Memory only, like the overlaps.
+    pub upstream_conflicts: HashMap<String, (UpstreamStamp, Vec<String>)>,
+    /// The lower head each upper workspace was last restacked onto, or tried:
+    /// one attempt per head, so a rebase that stops is not retried on every
+    /// refresh. Memory only.
+    pub restack_tried: HashMap<String, String>,
+    /// Branches stacked on a PR that just merged, waiting to be moved onto the
+    /// base (`AppState::restack_after_merge`).
+    pub merged_under: Vec<crate::model::MergedUnder>,
     /// PRs whose head is **not** the local branch of the same name, with why —
     /// `git::HeadCheck::refusal` as the last PR poll found it, and kept in step by
     /// every fresh read ([`AppState::pr_head`]).
@@ -763,14 +774,14 @@ impl Inner {
 
     /// What `workspace` should hear about the stacks it is in, as one note per
     /// pair it has not been told about at this lower head; the pair is marked
-    /// told. `force` says it again regardless (the card's "Ask it to restack").
+    /// told.
     ///
     /// **Both sides hear it**, so the two agents can agree who updates which PR
     /// when the stack needs it: the upper one restacks, and the lower one has to
     /// say when it pushes or rewrites, which nothing else tells the upper one.
     /// Only the nearest stack of an upper branch is spoken about, and only with a
     /// running session on the other side to talk to.
-    pub fn stack_notes(&mut self, workspace: &str, force: bool) -> Vec<String> {
+    pub fn stack_notes(&mut self, workspace: &str) -> Vec<String> {
         let nearest = self.stacked_on(workspace).map(|(lower, _)| lower);
         let mut due = Vec::new();
         for ((a, b), st) in &self.stacks {
@@ -786,22 +797,23 @@ impl Inner {
                 continue;
             }
             let key = (workspace.to_string(), other.clone());
-            if !force && self.stack_told.get(&key) == Some(&st.lower_tip) {
+            if self.stack_told.get(&key) == Some(&st.lower_tip) {
                 continue;
             }
             due.push((me_upper, other.clone(), st.clone(), key));
         }
         let mut notes = Vec::new();
         for (me_upper, other, st, key) in due {
-            let Some(x) = self
+            // The upper half hears about a lower branch in review with nobody in
+            // it too; the lower half only about an upper somebody works in.
+            let x = self
                 .sessions
                 .values()
-                .find(|x| x.workspace == other && x.state.is_live())
-            else {
+                .find(|x| x.workspace == other && x.state.is_live());
+            if x.is_none() && !me_upper {
                 continue;
-            };
-            let name = x.label().unwrap_or(&x.workspace).to_string();
-            let id = x.id;
+            }
+            let who = x.map(|x| (x.label().unwrap_or(&x.workspace).to_string(), x.id));
             let branch = self
                 .workspaces
                 .get(&other)
@@ -820,18 +832,25 @@ impl Inner {
                     (n, 0) => format!(" It has {n} commit{} you do not have yet; restacking should apply cleanly.", if n == 1 { "" } else { "s" }),
                     (n, c) => format!(" It has {n} commit{} you do not have yet, and {c} file{} will conflict when you restack.", if n == 1 { "" } else { "s" }, if c == 1 { "" } else { "s" }),
                 };
+                let whose = match &who {
+                    Some((name, id)) => format!(", the branch of session `{name}` (id {id})"),
+                    None => ", which is in review".to_string(),
+                };
                 format!(
-                    "orchd: your branch is stacked on `{branch}`, the branch of session `{name}` \
-                     (id {id}): its commits are in yours.{behind} When it changes you restack \
-                     onto it. Agree with that session who updates which PR, with `orch tell {id} \
-                     --text \"...\"`, rather than both doing it."
+                    "orchd: your branch is stacked on `{branch}`{whose}: its commits are in \
+                     yours.{behind} orchd restacks your branch onto it by itself while you are \
+                     idle, and asks the user first when your branch is pushed; when it merges, \
+                     orchd moves your branch onto the base. You only need to act when a restack \
+                     stops on a conflict: then rebase onto `{branch}` and settle it."
                 )
             } else {
+                let Some((name, id)) = who else { continue };
                 format!(
                     "orchd: session `{name}` (id {id}, branch `{branch}`) is stacked on your \
-                     branch: your commits are in its branch. When you push new commits or \
-                     rewrite yours, tell it with `orch tell {id} --text \"...\"` so it can \
-                     restack, and agree with it who updates which PR."
+                     branch: your commits are in its branch, and yours merges first. orchd keeps \
+                     it up to date with what you commit and push, so you do not need to tell it. \
+                     Only if you drop or reorder commits it already has, say so with \
+                     `orch tell {id} --text \"...\"`."
                 )
             };
             self.stack_told.insert(key, st.lower_tip.clone());
@@ -865,13 +884,32 @@ impl Inner {
             return Vec::new();
         };
         let mut told = Vec::new();
+        /* **A branch stacked on it moves onto the base**, which is a restack with
+        an exact cut rather than a "rebase now" to work out: queued here and done
+        off this lock (`AppState::restack_after_merge`), so it is not in the note
+        below either. */
+        let uppers: Vec<crate::model::MergedUnder> = self
+            .stacks
+            .iter()
+            .filter_map(|((a, b), st)| {
+                let (lower, upper) = if st.lower_is_a { (a, b) } else { (b, a) };
+                (lower == &merged).then(|| crate::model::MergedUnder {
+                    upper: upper.clone(),
+                    number: ended.number,
+                    stack: st.clone(),
+                })
+            })
+            .collect();
+        let queued: std::collections::HashSet<String> =
+            uppers.iter().map(|m| m.upper.clone()).collect();
+        self.merged_under.extend(uppers);
         let others: Vec<String> = self
             .overlaps
             .iter()
-            // A file that merges cleanly is not a reason to stop and rebase, unless
-            // the merged branch is the one this is stacked on.
-            .filter(|p| (p.found.conflict || self.stacked(p)) && p.involves(&merged))
+            // A file that merges cleanly is not a reason to stop and rebase.
+            .filter(|p| p.found.conflict && p.involves(&merged))
             .map(|p| p.other(&merged).to_string())
+            .filter(|ws| !queued.contains(ws))
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
             .collect();
@@ -879,11 +917,7 @@ impl Inner {
             let files: Vec<String> = self
                 .overlaps
                 .iter()
-                .filter(|p| {
-                    (p.found.conflict || self.stacked(p))
-                        && p.involves(&merged)
-                        && p.other(&merged) == ws
-                })
+                .filter(|p| p.found.conflict && p.involves(&merged) && p.other(&merged) == ws)
                 .map(|p| format!("- {}", p.found.path))
                 .collect();
             for s in self
@@ -1055,19 +1089,36 @@ impl Inner {
     /// On a branch built on two (on one that is itself built on another), the
     /// nearer one: the lower branch with the most commits.
     ///
-    /// **Only among lower branches somebody is working in.** Idle worktrees carry
-    /// the same commits (the tree a branch was first written in, an old copy of
-    /// it), and one of those was picked as "nearer" and then dropped by the
-    /// snapshot's live check: the row showed no stack although a live one was
-    /// there, on all three sessions it was reported on.
+    /// **Only among lower branches somebody is working in, or that are in
+    /// review.** Idle worktrees carry the same commits (the tree a branch was first
+    /// written in, an old copy of it), and one of those was picked as "nearer" and
+    /// then dropped by the snapshot's live check: the row showed no stack although
+    /// a live one was there, on all three sessions it was reported on. A branch
+    /// with an open PR is the other exception: its session is often closed while
+    /// it waits for review, and that is when the merge order matters most.
     pub fn stacked_on(&self, workspace: &str) -> Option<(String, &crate::overlap::Stack)> {
         self.stacks
             .iter()
             .filter_map(|((a, b), s)| {
                 let (lower, upper) = if s.lower_is_a { (a, b) } else { (b, a) };
-                (upper == workspace && self.has_live_session(lower)).then(|| (lower.clone(), s))
+                (upper == workspace && self.counts_as_lower(lower)).then(|| (lower.clone(), s))
             })
             .max_by_key(|(_, s)| s.lower_commits)
+    }
+
+    /// Whether `workspace` can be the branch a stack is shown on: somebody works
+    /// in it, or its branch has an open PR. See [`Self::stacked_on`].
+    pub fn counts_as_lower(&self, workspace: &str) -> bool {
+        self.has_live_session(workspace)
+            || self
+                .workspaces
+                .get(workspace)
+                .and_then(|w| w.tree.branch.as_deref())
+                .is_some_and(|b| {
+                    self.prs
+                        .iter()
+                        .any(|p| p.head_ref == b && !self.foreign_heads.contains_key(&p.number))
+                })
     }
 
     /// Whether a session that is not archived works in this workspace.
@@ -1464,6 +1515,9 @@ impl AppState {
                 overlap_plans: HashMap::new(),
                 stacks: HashMap::new(),
                 stack_told: HashMap::new(),
+                upstream_conflicts: HashMap::new(),
+                restack_tried: HashMap::new(),
+                merged_under: Vec::new(),
                 foreign_heads: HashMap::new(),
                 spare: Default::default(),
                 viewer: None,
@@ -2065,7 +2119,7 @@ impl AppState {
                 stacked_on: inner
                     .stacked_on(&w.id)
                     .filter(|(lower, _)| {
-                        live_ids.contains(w.id.as_str()) && live_ids.contains(lower.as_str())
+                        live_ids.contains(w.id.as_str()) && inner.counts_as_lower(lower)
                     })
                     .map(|(lower, s)| StackView {
                         conflicts: inner
@@ -2077,7 +2131,17 @@ impl AppState {
                             .count() as u32,
                         on: lower,
                         behind: s.behind,
+                        asking: inner
+                            .sessions
+                            .values()
+                            .any(|x| x.workspace == w.id && x.restack_ask.is_some()),
                     }),
+                upstream_conflicts: inner
+                    .upstream_conflicts
+                    .get(&w.id)
+                    .filter(|_| live_ids.contains(w.id.as_str()))
+                    .map(|(_, files)| files.clone())
+                    .unwrap_or_default(),
             })
             .collect();
         workspaces.sort_by(|a, b| b.is_main.cmp(&a.is_main).then(a.id.cmp(&b.id)));
@@ -2230,14 +2294,51 @@ impl AppState {
         let ws = inner.sessions.get(&session)?.workspace.clone();
         // The stacks first, on this prompt like the conflicts and never a turn of
         // their own: a note typed in as a turn is what flooded six sessions.
-        let stacks = inner.stack_notes(&ws, false).join("\n\n");
+        let stacks = inner.stack_notes(&ws).join("\n\n");
         let conflicts = Self::conflict_note(&mut inner, session, &ws);
-        match (stacks.is_empty(), conflicts) {
-            (true, None) => None,
-            (true, Some(c)) => Some(c),
-            (false, None) => Some(stacks),
-            (false, Some(c)) => Some(format!("{stacks}\n\n{c}")),
+        let upstream = self.upstream_note(&mut inner, session, &ws);
+        let restacked = inner.sessions.get_mut(&session)?.restacked.take();
+        let parts: Vec<String> = [
+            restacked,
+            Some(stacks).filter(|s| !s.is_empty()),
+            conflicts,
+            upstream,
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        (!parts.is_empty()).then(|| parts.join("\n\n"))
+    }
+
+    /// The upstream half of [`Self::overlap_note`]: which files will not merge
+    /// with the upstream ref, said when that list changes.
+    ///
+    /// **Not to the upper half of a stack.** Its branch carries the lower one's
+    /// commits, so rebasing it onto upstream on its own is the wrong fix; the
+    /// lower session hears about its own conflicts, and the stack note covers
+    /// the rest.
+    fn upstream_note(&self, inner: &mut Inner, session: SessionId, ws: &str) -> Option<String> {
+        let files = inner
+            .upstream_conflicts
+            .get(ws)
+            .map(|(_, f)| f.clone())
+            .unwrap_or_default();
+        let s = inner.sessions.get_mut(&session)?;
+        if files == s.told_upstream {
+            return None;
         }
+        s.told_upstream.clone_from(&files);
+        if files.is_empty() || inner.stacked_on(ws).is_some() {
+            return None;
+        }
+        let upstream = &self.cfg.upstream_ref;
+        let list: Vec<String> = files.iter().map(|p| format!("- {p}")).collect();
+        Some(format!(
+            "orchd: {upstream} has moved on, and git cannot merge your changes with it in:\n{}\n\
+             A PR from this branch will conflict. Rebase onto {upstream} and resolve these \
+             before you push, or tell the user if the conflict is not yours to settle.",
+            list.join("\n")
+        ))
     }
 
     /// The conflict half of [`Self::overlap_note`]: the brief for the first side
@@ -2348,10 +2449,16 @@ impl AppState {
                 anyhow::bail!("{} is not running", crate::model::short_id(&to));
             }
             let (mine, theirs) = (me.workspace.clone(), them.workspace.clone());
+            // A pair warned at an edit counts too: the warning tells the agent to
+            // talk before it writes, which is before the overlap exists.
+            let warned =
+                |a: &crate::model::Session, ws: &str| a.edit_warned.iter().any(|(_, w)| w == ws);
             if !inner
                 .overlaps
                 .iter()
                 .any(|p| p.involves(&mine) && p.other(&mine) == theirs)
+                && !warned(me, &theirs)
+                && !warned(them, &mine)
             {
                 anyhow::bail!(
                     "{} has changed no file you changed; `orch tell` is for settling an overlap",
@@ -2389,36 +2496,6 @@ impl AppState {
             tracing::info!(%from, %to, left, "queued a message between overlapping sessions");
         }
         Ok(self.deliver_inbox(to).await)
-    }
-
-    /// The card's "Ask it to restack": tell `session` about the branch it is
-    /// stacked on again, now, even if it was told about this head already.
-    pub async fn ask_restack(&self, session: SessionId) -> anyhow::Result<bool> {
-        {
-            let mut inner = self.inner.write().await;
-            let ws = inner
-                .sessions
-                .get(&session)
-                .map(|s| s.workspace.clone())
-                .ok_or_else(|| no_such_session(session))?;
-            match inner.stacked_on(&ws) {
-                Some((_, s)) if s.behind > 0 => {}
-                Some(_) => anyhow::bail!("it already has every commit of the branch under it"),
-                None => anyhow::bail!("this session's branch is not stacked on another"),
-            }
-            let notes = inner.stack_notes(&ws, true);
-            let Some(x) = inner.sessions.get_mut(&session) else {
-                anyhow::bail!("that session is gone");
-            };
-            // Only its own half: the button is about this row.
-            if let Some(note) = notes
-                .into_iter()
-                .find(|n| n.starts_with("orchd: your branch is stacked"))
-            {
-                x.inbox.push(note);
-            }
-        }
-        Ok(self.deliver_inbox(session).await)
     }
 
     /// Record the user's answer to an overlap's `orch ask` as the plan for the
@@ -2545,6 +2622,159 @@ impl AppState {
              after you last read it. Re-read {} before writing, or you will overwrite that change.",
             real.display()
         ))
+    }
+
+    /// Whether this session should be stopped once before writing `path`, because
+    /// another session that is still running changed that file first.
+    ///
+    /// **Before the conflict, not after it.** The overlap check finds a conflict
+    /// once both sides have written it; this is the moment one side is about to,
+    /// so the two can agree who changes what. Once per file and other workspace,
+    /// because the warning is a refused edit and a retry has to go through.
+    ///
+    /// Not between the two halves of a stack, where sharing a file is the point,
+    /// and not for a generated file, which is regenerated rather than merged.
+    pub async fn claim_overlap_warning(&self, session: SessionId, path: &Path) -> Option<String> {
+        // Who else changed it, under a read lock: the answer for nearly every edit
+        // is nobody, and that has to cost no git.
+        let (root, rel, others) = {
+            let inner = self.inner.read().await;
+            let me = inner.sessions.get(&session)?;
+            let ws = me.workspace.clone();
+            let root = inner.workspaces.get(&ws)?.path.clone();
+            let rel = path
+                .strip_prefix(&root)
+                .ok()?
+                .to_string_lossy()
+                .into_owned();
+            let others: Vec<(String, SessionId, String)> = inner
+                .workspaces
+                .values()
+                .filter(|w| w.id != ws && w.tree.changed.iter().any(|f| f.path == rel))
+                .filter(|w| !me.edit_warned.contains(&(rel.clone(), w.id.clone())))
+                .filter(|w| {
+                    let key = if ws < w.id {
+                        (ws.clone(), w.id.clone())
+                    } else {
+                        (w.id.clone(), ws.clone())
+                    };
+                    !inner.stacks.contains_key(&key)
+                })
+                .filter_map(|w| {
+                    let x = inner
+                        .sessions
+                        .values()
+                        .find(|x| x.workspace == w.id && x.state.is_live())?;
+                    Some((w.id.clone(), x.id, x.label().unwrap_or(&w.id).to_string()))
+                })
+                .collect();
+            (root, rel, others)
+        };
+        if others.is_empty() {
+            return None;
+        }
+        let (r, p) = (root.clone(), rel.clone());
+        let generated = orchd_base::proc::run_blocking("reading attributes", move || {
+            crate::diff::is_generated(&r, &p)
+        })
+        .await
+        .unwrap_or(false);
+        if generated {
+            return None;
+        }
+        {
+            let mut inner = self.inner.write().await;
+            let me = inner.sessions.get_mut(&session)?;
+            // Two edits of one file can both get here; only the first is held.
+            let fresh: Vec<bool> = others
+                .iter()
+                .map(|(w, _, _)| me.edit_warned.insert((rel.clone(), w.clone())))
+                .collect();
+            if !fresh.contains(&true) {
+                return None;
+            }
+        }
+        let who: Vec<String> = others
+            .iter()
+            .map(|(_, id, name)| format!("- `{name}` (id {id})"))
+            .collect();
+        let first = others.first().map(|(_, id, _)| *id)?;
+        Some(format!(
+            "orchd: {rel} is also changed by another session that is still running:\n{}\n\
+             If you change the same lines, both PRs will conflict. Agree on who changes what \
+             with `orch tell {first} --text \"...\"` first if that is likely. This edit was \
+             held once so you see this; retry it when you are ready.",
+            who.join("\n")
+        ))
+    }
+
+    /// What an agent on the upper half of a stack should know before it opens a
+    /// PR with `command`, or `None` when the command is not that or says it.
+    ///
+    /// **A stacked PR targets the branch under it**, so it shows only its own
+    /// commits, and GitHub moves it onto the base when the lower PR merges and its
+    /// branch is deleted. That needs both branches in the repository the PR is
+    /// in: from a fork, a base cannot name the fork's branch, and the next best
+    /// thing is a description that says what to review first. Once per stack,
+    /// because the hint is a held command.
+    pub async fn claim_pr_base_hint(&self, session: SessionId, command: &str) -> Option<String> {
+        if !command.contains("gh pr create") {
+            return None;
+        }
+        let mut inner = self.inner.write().await;
+        let ws = inner.sessions.get(&session)?.workspace.clone();
+        let (lower, _) = inner
+            .stacked_on(&ws)
+            .filter(|(lower, _)| inner.has_live_session(lower))?;
+        let branch = inner.workspaces.get(&lower)?.tree.branch.clone()?;
+        let words: Vec<&str> = command.split_whitespace().collect();
+        let names_it = words.windows(2).any(|w| {
+            matches!(w, [flag, b] if (*flag == "--base" || *flag == "-B") && b.trim_matches(['"', '\'']) == branch)
+        }) || words.contains(&format!("--base={branch}").as_str());
+        if names_it {
+            return None;
+        }
+        let pr = inner
+            .prs
+            .iter()
+            .find(|p| p.head_ref == branch && !inner.foreign_heads.contains_key(&p.number))
+            .map(|p| {
+                // `https://github.com/<owner>/<name>/pull/<n>`: the repository the PR is in.
+                let home = p
+                    .url
+                    .split('/')
+                    .skip(3)
+                    .take(2)
+                    .collect::<Vec<_>>()
+                    .join("/");
+                (p.number, p.head_repo.as_deref() == Some(home.as_str()))
+            });
+        if !inner
+            .sessions
+            .get_mut(&session)?
+            .base_hinted
+            .insert(branch.clone())
+        {
+            return None;
+        }
+        let held = "This command was held once so you see this; run it again, changed or as it is.";
+        Some(match pr {
+            Some((n, true)) => format!(
+                "orchd: your branch is stacked on `{branch}` (PR #{n}). Open this PR with \
+                 `--base {branch}`, so it shows only your own commits; GitHub moves it onto the \
+                 base when #{n} merges and its branch is deleted. {held}"
+            ),
+            Some((n, false)) => format!(
+                "orchd: your branch is stacked on `{branch}` (PR #{n}), which is in a fork, so \
+                 this PR cannot target it and will show #{n}'s commits until #{n} merges. Start \
+                 the description with \"Stacked on #{n}, review that one first.\" {held}"
+            ),
+            None => format!(
+                "orchd: your branch is stacked on `{branch}`, which has no PR yet. Open that one \
+                 first, then target it with `--base {branch}` if both branches are in the same \
+                 repository, or name it at the top of this description if not. {held}"
+            ),
+        })
     }
 
     // -----------------------------------------------------------------------
@@ -3236,11 +3466,22 @@ impl AppState {
     pub async fn refresh_overlaps(&self, workspace: &str) {
         type Tree = (String, PathBuf, Option<String>, Vec<crate::model::DiffFile>);
         let upstream = self.cfg.upstream_ref.clone();
-        let (me, others, known, known_stacks) = {
+        let (me, others, known, known_stacks, upstream_ask) = {
             let inner = self.inner.read().await;
             let Some(w) = inner.workspaces.get(workspace) else {
                 return;
             };
+            /* **Against upstream: only behind, only live, only when it moved.** A
+            branch that has every upstream commit merges into it by definition, and
+            a tree nobody works in has nobody to tell. */
+            let stamp = upstream_stamp(&w.tree);
+            let upstream_ask = (w.tree.divergence.0 > 0
+                && !w.tree.changed.is_empty()
+                && inner.has_live_session(workspace))
+            .then(|| match inner.upstream_conflicts.get(workspace) {
+                Some((s, known)) if *s == stamp => Err(known.clone()),
+                _ => Ok(stamp),
+            });
             let tree = |w: &crate::model::Workspace| -> Tree {
                 (
                     w.id.clone(),
@@ -3267,7 +3508,21 @@ impl AppState {
                 .filter(|((a, b), _)| a == workspace || b == workspace)
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
-            (tree(w), others, known, known_stacks)
+            (tree(w), others, known, known_stacks, upstream_ask)
+        };
+        let upstream_unchanged = matches!(upstream_ask, Some(Err(_)));
+        let upstream_skipped = upstream_ask.is_none();
+        let upstream_tree = me.1.clone();
+        let upstream_for = upstream.clone();
+        let upstream_found: Option<(UpstreamStamp, Vec<String>)> = match upstream_ask {
+            None | Some(Err(_)) => None,
+            Some(Ok(stamp)) => orchd_base::proc::run_blocking("merging with upstream", move || {
+                crate::overlap::upstream_conflicts(&upstream_tree, &upstream_for)
+            })
+            .await
+            .ok()
+            .flatten()
+            .map(|files| (stamp, files)),
         };
         let (fresh, stacks) = if me.3.is_empty() {
             (Vec::new(), Vec::new())
@@ -3295,8 +3550,17 @@ impl AppState {
                     five git calls, and a reconcile runs every few seconds. */
                     let key = (a.0.clone(), b.0.clone());
                     if !found.is_empty() {
+                        /* **And again when the lower head moved**, which the shared
+                        files cannot be trusted to say: a commit that rewrites a line
+                        keeps the counts, and "behind" stayed 0 under a lower branch
+                        two commits ahead. One `rev-parse` per known stack. */
+                        let moved = |st: &crate::overlap::Stack| {
+                            let lower = if st.lower_is_a { &a.1 } else { &b.1 };
+                            orchd_base::git::git(lower, &["rev-parse", "HEAD"])
+                                .map_or(true, |h| h.trim() != st.lower_tip)
+                        };
                         let stack = match known_stacks.get(&key) {
-                            Some(s) if found == before => Some(s.clone()),
+                            Some(s) if found == before && !moved(s) => Some(s.clone()),
                             prev => crate::overlap::stack_of(&a.1, &b.1, &upstream, prev),
                         };
                         if let Some(s) = stack {
@@ -3323,6 +3587,21 @@ impl AppState {
             .stacks
             .retain(|(a, b), _| a != workspace && b != workspace);
         inner.stacks.extend(stacks);
+        match upstream_found {
+            Some(found) => {
+                inner
+                    .upstream_conflicts
+                    .insert(workspace.to_string(), found);
+            }
+            // Asked and unchanged keeps the answer; not asked (up to date, nobody
+            // in it) drops it; asked and failed keeps the last one rather than
+            // calling a conflict gone because git could not answer.
+            None if upstream_unchanged => {}
+            None if upstream_skipped => {
+                inner.upstream_conflicts.remove(workspace);
+            }
+            None => {}
+        }
         inner
             .overlaps
             .sort_by(|x, y| (&x.found.path, &x.a, &x.b).cmp(&(&y.found.path, &y.a, &y.b)));
@@ -3330,6 +3609,8 @@ impl AppState {
         on every refresh, to a session the check wrongly found stacked on four
         branches: about 1,500 in an hour. Stack notes ride on the next prompt now
         (`overlap_note`), once per pair and lower head. */
+        drop(inner);
+        self.restack_when_safe(workspace).await;
     }
 }
 
@@ -3716,6 +3997,25 @@ pub struct WorkspaceView {
     pub overlaps: Vec<OverlapView>,
     /// What this workspace is stacked on, when it is the upper half of a stack.
     pub stacked_on: Option<StackView>,
+    /// Files git cannot merge between this workspace and the upstream ref, sorted.
+    /// Only while somebody works in it: see `Inner::upstream_conflicts`.
+    pub upstream_conflicts: Vec<String>,
+}
+
+/// What a tree measured when it was merged with upstream: behind, ahead, the
+/// added and deleted line totals, and how many files changed. The merge is asked
+/// again only when one of them moves, because a reconcile runs every few seconds.
+pub type UpstreamStamp = [u32; 5];
+
+fn upstream_stamp(t: &crate::model::Tree) -> UpstreamStamp {
+    let sum = |f: fn(&crate::model::DiffFile) -> u32| t.changed.iter().map(f).sum::<u32>();
+    [
+        t.divergence.0,
+        t.divergence.1,
+        sum(|f| f.added),
+        sum(|f| f.deleted),
+        t.changed_total,
+    ]
 }
 
 /// How many messages one session may send another through `orch tell`.
@@ -3753,6 +4053,9 @@ pub struct StackView {
     pub behind: u32,
     /// Files a restack onto it will stop on.
     pub conflicts: u32,
+    /// Whether orchd is asking the user on this workspace's session to restack
+    /// it and force-push.
+    pub asking: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -5236,16 +5539,16 @@ mod tests {
             .stacks
             .insert(("middle".into(), "top".into()), stack(true, "m1", 6));
 
-        let top = inner.stack_notes("top", false);
+        let top = inner.stack_notes("top");
         assert_eq!(
             top.len(),
             1,
             "only the nearer of its two lower branches: {top:?}"
         );
         assert!(top[0].contains("stacked on `middle`"));
-        assert!(inner.stack_notes("top", false).is_empty(), "and only once");
+        assert!(inner.stack_notes("top").is_empty(), "and only once");
 
-        let base = inner.stack_notes("base", false);
+        let base = inner.stack_notes("base");
         assert_eq!(
             base.len(),
             2,
@@ -5259,8 +5562,234 @@ mod tests {
             .get_mut(&("middle".to_string(), "top".to_string()))
             .unwrap()
             .lower_tip = "m2".into();
-        assert_eq!(inner.stack_notes("top", false).len(), 1);
-        assert!(inner.stack_notes("top", false).is_empty());
+        assert_eq!(inner.stack_notes("top").len(), 1);
+        assert!(inner.stack_notes("top").is_empty());
+    }
+
+    /// A worktree workspace at `path` that changed `files`, with a live session.
+    async fn live_worktree(app: &Arc<AppState>, id: &str, path: &str, files: &[&str]) -> SessionId {
+        let mut inner = app.inner.write().await;
+        let mut w = crate::model::Workspace {
+            id: id.into(),
+            path: path.into(),
+            kind: crate::model::WorkspaceKind::Worktree { name: id.into() },
+            branches: Default::default(),
+            processes: Vec::new(),
+            occupant: None,
+            tree: Default::default(),
+            banked: None,
+        };
+        w.tree.changed = files
+            .iter()
+            .map(|p| crate::model::DiffFile {
+                path: (*p).into(),
+                status: "M".into(),
+                added: 1,
+                deleted: 1,
+                binary: false,
+                eager: false,
+                old_path: None,
+                staged: false,
+                unstaged: true,
+            })
+            .collect();
+        inner.workspaces.insert(id.into(), w);
+        let s = Uuid::new_v4();
+        inner
+            .sessions
+            .insert(s, Session::new(s, id.into(), path.into(), None));
+        s
+    }
+
+    /// An edit to a file another running session changed is held once, names
+    /// that session, and opens `orch tell` between the two. A file nobody else
+    /// changed, and one shared with the other half of a stack, go through.
+    #[tokio::test]
+    async fn an_edit_to_a_file_another_session_changed_is_held_once() {
+        let app = app().await;
+        let me = live_worktree(&app, "mine", "/tmp/mine", &[]).await;
+        let them = live_worktree(&app, "theirs", "/tmp/theirs", &["src/a.rs", "src/s.rs"]).await;
+        let file = Path::new("/tmp/mine/src/a.rs");
+
+        let held = app.claim_overlap_warning(me, file).await.expect("held");
+        assert!(
+            held.contains("src/a.rs") && held.contains(&them.to_string()),
+            "{held}"
+        );
+        assert_eq!(app.claim_overlap_warning(me, file).await, None, "said once");
+        assert_eq!(
+            app.claim_overlap_warning(me, Path::new("/tmp/mine/src/b.rs"))
+                .await,
+            None,
+            "nobody else changed it"
+        );
+        assert!(
+            app.message_session(me, them, "you take a.rs?")
+                .await
+                .is_ok(),
+            "the warning says to talk, so talking is allowed"
+        );
+
+        app.inner.write().await.stacks.insert(
+            ("mine".into(), "theirs".into()),
+            crate::overlap::Stack {
+                lower_is_a: false,
+                behind: 0,
+                lower_tip: String::new(),
+                anchor: String::new(),
+                lower_commits: 1,
+            },
+        );
+        assert_eq!(
+            app.claim_overlap_warning(me, Path::new("/tmp/mine/src/s.rs"))
+                .await,
+            None,
+            "a stack shares files on purpose"
+        );
+    }
+
+    /// A `gh pr create` on the upper half of a stack is held once, and says
+    /// `--base` only when the lower PR is in the same repository.
+    #[tokio::test]
+    async fn a_stacked_pr_is_opened_on_the_branch_under_it() {
+        let app = app().await;
+        let upper = live_worktree(&app, "upper", "/tmp/upper", &[]).await;
+        let _lower = live_worktree(&app, "lower", "/tmp/lower", &[]).await;
+        {
+            let mut inner = app.inner.write().await;
+            inner
+                .workspaces
+                .get_mut("lower")
+                .expect("lower")
+                .tree
+                .branch = Some("story-1".into());
+            inner.stacks.insert(
+                ("lower".into(), "upper".into()),
+                crate::overlap::Stack {
+                    lower_is_a: true,
+                    behind: 0,
+                    lower_tip: String::new(),
+                    anchor: String::new(),
+                    lower_commits: 1,
+                },
+            );
+        }
+        let create = "gh pr create --title x --web";
+        assert_eq!(
+            app.claim_pr_base_hint(upper, "gh pr list").await,
+            None,
+            "not a create"
+        );
+        assert_eq!(
+            app.claim_pr_base_hint(upper, "gh pr create --base story-1 --web")
+                .await,
+            None,
+            "already on the branch under it"
+        );
+
+        let none = app.claim_pr_base_hint(upper, create).await.expect("held");
+        assert!(none.contains("no PR yet"), "{none}");
+        assert_eq!(
+            app.claim_pr_base_hint(upper, create).await,
+            None,
+            "once per stack"
+        );
+
+        let same = |repo: &str| crate::forge::Pr {
+            head_ref: "story-1".into(),
+            head_repo: Some(repo.into()),
+            url: "https://github.com/acme/repo/pull/7".into(),
+            ..crate::testutil::pr(7)
+        };
+        for (repo, says) in [
+            ("acme/repo", "`--base story-1`"),
+            ("me/repo", "Stacked on #7"),
+        ] {
+            {
+                let mut inner = app.inner.write().await;
+                inner.prs = vec![same(repo)];
+                inner
+                    .sessions
+                    .get_mut(&upper)
+                    .expect("upper")
+                    .base_hinted
+                    .clear();
+            }
+            let hint = app.claim_pr_base_hint(upper, create).await.expect("held");
+            assert!(hint.contains(says), "{repo}: {hint}");
+        }
+    }
+
+    /// A merged lower PR queues the branch stacked on it for a restack onto the
+    /// base, and leaves it out of the general "rebase now" note.
+    #[tokio::test]
+    async fn a_merge_under_a_stack_queues_the_branch_on_top() {
+        let app = app().await;
+        let _low = live_worktree(&app, "low", "/tmp/low", &["src/a.rs"]).await;
+        let up = live_worktree(&app, "up", "/tmp/up", &["src/a.rs"]).await;
+        let mut inner = app.inner.write().await;
+        inner.workspaces.get_mut("low").expect("low").tree.branch = Some("story-1".into());
+        let stack = crate::overlap::Stack {
+            lower_is_a: true,
+            behind: 0,
+            lower_tip: "abc".into(),
+            anchor: "abc".into(),
+            lower_commits: 1,
+        };
+        inner
+            .stacks
+            .insert(("low".into(), "up".into()), stack.clone());
+        inner.overlaps = vec![crate::overlap::Pair {
+            a: "low".into(),
+            b: "up".into(),
+            found: crate::overlap::Found {
+                path: "src/a.rs".into(),
+                conflict: true,
+                stamp: [0; 5],
+            },
+        }];
+        let ended = crate::forge::EndedPr {
+            number: 12,
+            title: "the lower half".into(),
+            url: String::new(),
+            head_ref: "story-1".into(),
+            outcome: crate::forge::PrOutcome::Merged,
+        };
+        let told = inner.tell_overlaps_merged(&ended, "upstream/develop");
+        assert!(
+            !told.contains(&up),
+            "the stacked branch gets the restack, not the note"
+        );
+        assert_eq!(inner.merged_under.len(), 1);
+        assert_eq!(inner.merged_under[0].upper, "up");
+        assert_eq!(inner.merged_under[0].stack, stack);
+    }
+
+    /// The agent hears which files will not merge with upstream when that list
+    /// changes, and not again for the same list.
+    #[tokio::test]
+    async fn a_conflict_with_upstream_is_said_once_per_list() {
+        let app = app().await;
+        let me = live_worktree(&app, "mine", "/tmp/mine", &["src/a.rs"]).await;
+        app.inner
+            .write()
+            .await
+            .upstream_conflicts
+            .insert("mine".into(), ([1, 1, 1, 1, 1], vec!["src/a.rs".into()]));
+
+        let note = app.overlap_note(me).await.expect("told");
+        assert!(
+            note.contains("src/a.rs") && note.contains("Rebase onto"),
+            "{note}"
+        );
+        assert_eq!(app.overlap_note(me).await, None, "same list, said once");
+
+        app.inner.write().await.upstream_conflicts.insert(
+            "mine".into(),
+            ([2, 1, 1, 1, 1], vec!["src/a.rs".into(), "src/b.rs".into()]),
+        );
+        let again = app.overlap_note(me).await.expect("a new list is said");
+        assert!(again.contains("src/b.rs"), "{again}");
     }
 
     /// A merge tells the other side of each overlap to rebase, and nobody else.

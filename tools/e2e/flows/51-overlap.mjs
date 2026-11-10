@@ -10,7 +10,7 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
-import { until } from '../harness.mjs'
+import { git, until } from '../harness.mjs'
 
 export const name = 'two workspaces that change one file are told so'
 
@@ -119,6 +119,37 @@ export async function run(t) {
   const plans = (await overlaps(right.workspace)).map((o) => o.plan)
   assert.ok(plans.length && plans.every((p) => p === 'left merges first, right rebases'),
     `both sides of the pair carry the plan: ${JSON.stringify(plans)}`)
+
+  // **Before the conflict**: an edit to a file only the other side changed so far
+  // is held once, naming who changed it, and the retry goes through.
+  fs.writeFileSync(path.join(right.cwd, 'only-right.txt'), 'theirs\n')
+  await t.api('POST', `/api/workspace/${right.workspace}/reconcile`)
+  const edit = () => t.api('POST', '/hooks/pre-edit', {
+    session_id: left.id, hook_event_name: 'PreToolUse', tool_name: 'Edit',
+    tool_input: { file_path: path.join(left.cwd, 'only-right.txt') },
+  })
+  const held = (await edit())?.hookSpecificOutput ?? {}
+  assert.equal(held.permissionDecision, 'deny', `the first edit is held: ${JSON.stringify(held)}`)
+  assert.ok(held.permissionDecisionReason.includes('only-right.txt') && held.permissionDecisionReason.includes(right.id),
+    `and says who changed it: ${held.permissionDecisionReason}`)
+  assert.equal((await edit())?.hookSpecificOutput, undefined, 'the retry goes through')
+
+  // **Against upstream**: a colleague's merge to README.md, which both trees
+  // changed, is a conflict the left tree is marked with and its agent told about.
+  git(t.root, ['clone', '-q', path.join(t.root, 'origin.git'), 'colleague'])
+  const colleague = path.join(t.root, 'colleague')
+  fs.writeFileSync(path.join(colleague, 'README.md'), 'merged upstream\n')
+  git(colleague, ['-c', 'user.email=c@c', '-c', 'user.name=c', 'commit', '-qam', 'upstream moved'])
+  git(colleague, ['push', '-q', 'origin', 'main'])
+  git(t.repo, ['fetch', '-q', 'origin'])
+  await t.api('POST', `/api/workspace/${left.workspace}/reconcile`)
+  const upstream = (await t.state()).workspaces.find((w) => w.id === left.workspace)?.upstream_conflicts
+  assert.deepEqual(upstream, ['README.md'], `the left tree conflicts with origin/main: ${JSON.stringify(upstream)}`)
+  const rebase = (await promptAs(left.id))?.hookSpecificOutput?.additionalContext ?? ''
+  assert.ok(rebase.includes('README.md') && rebase.includes('Rebase onto origin/main'),
+    `and its next prompt says to rebase: ${JSON.stringify(rebase)}`)
+  await t.api('POST', '/hooks/stop', { session_id: left.id, hook_event_name: 'Stop' })
+  await t.settled(left.id)
 
   // And only inside an overlap: main changed nothing.
   const { session: inMain } = await t.api('POST', '/api/session', { workspace: 'main' })

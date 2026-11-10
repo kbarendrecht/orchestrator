@@ -491,6 +491,33 @@ pub struct OutsideAsk {
     pub path: PathBuf,
 }
 
+/// An outstanding "restack this pushed branch and force-push it?" question,
+/// and what a yes does. Like [`OutsideAsk`], the id is what tells the daemon's
+/// own question from one an agent wrote.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RestackAsk {
+    pub id: Uuid,
+    /// The commit to rebase onto, fixed when asked: a yes is about what you read.
+    pub onto: String,
+    /// `--onto`'s cut, when only the commits after it are this branch's own.
+    pub from: Option<String>,
+    pub branch: String,
+    /// What the agent is told it was moved onto: a branch name, or the base.
+    pub onto_name: String,
+    /// The state before the question, put back on the answer: no agent is
+    /// blocked on this one, so "answered" does not mean "working again".
+    pub before: State,
+}
+
+/// A merged lower PR whose upper branch still carries its commits: the restack
+/// onto the base that is owed, queued by the PR poll and done off its lock.
+#[derive(Debug, Clone)]
+pub struct MergedUnder {
+    pub upper: String,
+    pub number: u64,
+    pub stack: crate::overlap::Stack,
+}
+
 /// What one preview token may read. See `preview`.
 ///
 /// Here rather than beside the handler because [`crate::state::AppState`] holds
@@ -720,6 +747,21 @@ pub struct Session {
     /// is said again. Memory only: after a restart an agent is told once more,
     /// which costs a line of context and loses nothing.
     pub told_overlaps: HashSet<(String, String, bool)>,
+    /// The files this session was warned about at an edit, as `(path, other
+    /// workspace)`: another live session had changed the file first. Said once,
+    /// because the warning is a refused edit. Memory only.
+    pub edit_warned: HashSet<(String, String)>,
+    /// The files git could not merge with upstream when this session was last
+    /// told, so a list it has heard is not said again. Memory only.
+    pub told_upstream: Vec<String>,
+    /// The lower branches this session was told how to open a stacked PR on, so
+    /// a `gh pr create` is held once per stack. Memory only.
+    pub base_hinted: HashSet<String>,
+    /// What orchd did, or could not do, about restacking this session's branch,
+    /// said on its next prompt. See `crate::restack`.
+    pub restacked: Option<String>,
+    /// The restack orchd is asking the user about on this session, if any.
+    pub restack_ask: Option<RestackAsk>,
     /// Messages from other agents (`orch tell`), typed in as one turn once this
     /// session is idle, so a message never lands in the middle of a turn.
     ///
@@ -802,6 +844,11 @@ impl Session {
             branch: None,
             arrival_notice: None,
             told_overlaps: HashSet::new(),
+            edit_warned: HashSet::new(),
+            told_upstream: Vec::new(),
+            base_hinted: HashSet::new(),
+            restacked: None,
+            restack_ask: None,
             inbox: Vec::new(),
             told: HashMap::new(),
             handling: Vec::new(),

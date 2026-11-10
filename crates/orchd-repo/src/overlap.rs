@@ -362,6 +362,86 @@ fn copied_stack(
     )
 }
 
+/// The commit in the upper tree's own history where its own commits start: the
+/// last lower commit it carries. What `git rebase --onto <base> <this>` cuts at
+/// once the lower branch is squash-merged.
+///
+/// The anchor itself on a stack the graph found. On a copied stack the anchor is
+/// the lower branch's commit and the upper one carries a copy of it, found by
+/// its subject among the upper's commits past `upstream`. `None` when neither is
+/// there, and the caller says so rather than guessing a cut. Blocking.
+pub fn restack_point(upper: &Path, stack: &Stack, upstream: &str) -> Option<String> {
+    if git(
+        upper,
+        &["merge-base", "--is-ancestor", &stack.anchor, "HEAD"],
+    )
+    .is_ok()
+    {
+        return Some(stack.anchor.clone());
+    }
+    let subject = git(upper, &["log", "-1", "--format=%s", &stack.anchor]).ok()?;
+    let subject = subject.trim();
+    git(
+        upper,
+        &["log", "--format=%H%x09%s", &format!("{upstream}..HEAD")],
+    )
+    .ok()?
+    .lines()
+    .filter_map(|l| l.split_once('\t'))
+    .find(|(_, s)| *s == subject)
+    .map(|(id, _)| id.to_string())
+}
+
+/// The lower branch's pushed head, when the upper tree lacks something in it.
+///
+/// What a pushed upper branch follows: only what the lower one pushed, because
+/// its unpushed commits are not in the lower PR and would show up in the upper
+/// one. A commit the upper tree already has a copy of does not count. Blocking.
+pub fn pushed_lower_ahead(upper: &Path, lower_branch: &str) -> Option<String> {
+    let tip = git(
+        upper,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/remotes/origin/{lower_branch}"),
+        ],
+    )
+    .ok()?
+    .trim()
+    .to_string();
+    let missing = git(
+        upper,
+        &[
+            "rev-list",
+            "--count",
+            "--cherry-pick",
+            "--right-only",
+            &format!("HEAD...{tip}"),
+        ],
+    )
+    .ok()?;
+    (missing.trim() != "0").then_some(tip)
+}
+
+/// The files git cannot merge between the tree at `tree` as it stands and
+/// `upstream`, or `None` when it could not be asked.
+///
+/// **What a PR or CI would find out later**, asked while the agent can still act
+/// on it. Two git runs, so the caller asks only for a tree that is behind and
+/// whose changes moved since it last asked.
+pub fn upstream_conflicts(tree: &Path, upstream: &str) -> Option<Vec<String>> {
+    use orchd_base::git::{merge_conflicts, snapshot_commit};
+    let mine = snapshot_commit(tree).ok()?;
+    match merge_conflicts(tree, &mine, upstream) {
+        Ok(paths) => Some(paths),
+        Err(e) => {
+            tracing::debug!("no merge-tree for {} and {upstream}: {e:#}", tree.display());
+            None
+        }
+    }
+}
+
 /// The files git cannot merge between the two trees as they stand, or `None`
 /// when it could not be asked (an older git, a tree mid-rebase).
 fn real_conflicts(a: &Path, b: &Path) -> Option<HashSet<String>> {
@@ -454,6 +534,49 @@ mod tests {
 
     /// Two real trees off one base: a shared file changed on the same line, one
     /// changed far apart, a lockfile both touched, and a file only one changed.
+    /// A tree that changed a line upstream also changed conflicts with it; one
+    /// that changed a different file does not.
+    #[test]
+    fn a_tree_is_merged_with_upstream_as_it_stands() {
+        let root = std::env::temp_dir().join(format!("orchd-upstream-{}", uuid::Uuid::new_v4()));
+        let main = root.join("main");
+        std::fs::create_dir_all(&main).unwrap();
+        let g = |cwd: &Path, args: &[&str]| {
+            git(cwd, args).unwrap_or_else(|e| panic!("git {args:?}: {e}"));
+        };
+        g(&main, &["init", "-q", "-b", "main"]);
+        g(&main, &["config", "user.email", "t@t"]);
+        g(&main, &["config", "user.name", "t"]);
+        std::fs::write(main.join("a.txt"), "one\n").unwrap();
+        std::fs::write(main.join("b.txt"), "one\n").unwrap();
+        g(&main, &["add", "-A"]);
+        g(&main, &["commit", "-qm", "base"]);
+        let tree = root.join("tree");
+        g(
+            &main,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "work",
+                tree.to_str().unwrap(),
+            ],
+        );
+        std::fs::write(main.join("a.txt"), "upstream\n").unwrap();
+        g(&main, &["commit", "-qam", "moved on"]);
+
+        // Uncommitted, which is the state an agent is usually in.
+        std::fs::write(tree.join("b.txt"), "mine\n").unwrap();
+        assert_eq!(upstream_conflicts(&tree, "main"), Some(vec![]));
+        std::fs::write(tree.join("a.txt"), "mine\n").unwrap();
+        assert_eq!(
+            upstream_conflicts(&tree, "main"),
+            Some(vec!["a.txt".to_string()])
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn two_trees_are_compared_by_file_and_then_by_line() {
         let root = std::env::temp_dir().join(format!("orchd-overlap-{}", uuid::Uuid::new_v4()));

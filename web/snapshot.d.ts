@@ -644,7 +644,12 @@ behind: number,
 /**
  * Files a restack onto it will stop on.
  */
-conflicts: number, };
+conflicts: number, 
+/**
+ * Whether orchd is asking the user on this workspace's session to restack
+ * it and force-push.
+ */
+asking: boolean, };
 
 export type State = { "state": "starting" } | { "state": "working" } | { "state": "your_turn", since: { secs_since_epoch: number, nanos_since_epoch: number }, reason: TurnReason, } | { "state": "build_failing", summary: string, 
 /**
@@ -823,4 +828,9 @@ overlaps: Array<OverlapView>,
 /**
  * What this workspace is stacked on, when it is the upper half of a stack.
  */
-stacked_on: StackView | null, };
+stacked_on: StackView | null, 
+/**
+ * Files git cannot merge between this workspace and the upstream ref, sorted.
+ * Only while somebody works in it: see `Inner::upstream_conflicts`.
+ */
+upstream_conflicts: Array<string>, };

@@ -1077,6 +1077,31 @@ pub async fn pre_edit(
             return deny(reason);
         }
     }
+    // A stacked PR opened against the base shows the lower branch's commits as
+    // its own; said at the command, which is the one moment it can be fixed.
+    // Not `apply_patch`, whose `command` is a patch that may only mention one.
+    if payload.agent_id.is_none() && payload.tool_name.as_deref() != Some("apply_patch") {
+        if let Some(command) = payload
+            .tool_input
+            .as_ref()
+            .and_then(|v| v.get("command"))
+            .and_then(|v| v.as_str())
+        {
+            if let Some(reason) = app.claim_pr_base_hint(id, command).await {
+                return deny(reason);
+            }
+        }
+    }
+    // Only the session's own agent. The warning is said once per session, and a
+    // subagent's copy of it would end with the subagent, unheard by the agent
+    // that has to settle it.
+    if payload.agent_id.is_none() {
+        for path in edited_paths(&payload) {
+            if let Some(reason) = app.claim_overlap_warning(id, &path).await {
+                return deny(reason);
+            }
+        }
+    }
     // An empty body leaves the decision alone; this hook is otherwise an
     // observer and must never gate an ordinary edit.
     ok()

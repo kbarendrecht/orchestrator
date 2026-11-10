@@ -448,6 +448,7 @@ button.ctx-btn:hover{color:var(--text)}
 .sess-overlap.conflict{color:var(--attn)}
 /* A stack: grey, and the settled colour once the branch under it moved. */
 .sess-overlap.stack{color:var(--faint-solid)}
+.sess-overlap.stack svg{display:block}
 .sess-overlap.stack.behind{color:var(--done)}
 /* The spotlight while the pointer is on a mark (`spotlight` in rail.js): the two
    sides stay lit, every other row steps back. */
@@ -479,9 +480,6 @@ button.ovc-who:hover,.ovc-file:hover{background:var(--hover)}
 .ovc-send{flex:none;padding:1px 6px;border:1px solid var(--line);border-radius:var(--r);font-size:calc(11px * var(--fs));color:var(--text)}
 .ovc-send:hover{background:var(--hover)}
 .ovc-plan{padding:3px 12px 3px 26px;font-size:calc(11px * var(--fs));color:var(--dim)}
-.ovc-act{display:block;margin:4px 12px 2px 26px;padding:3px 8px;border:1px solid var(--line);border-radius:var(--r);
-  font-size:calc(11px * var(--fs));color:var(--text)}
-.ovc-act:hover{background:var(--hover);border-color:var(--faint-solid)}
 
 /* The checkout a block of sessions belongs to. Drawn only when there is more than
    one, so a single-checkout rail is exactly what it always was.

@@ -35,6 +35,7 @@ pub mod model;
 pub mod names;
 pub mod preview;
 pub mod relocate;
+pub mod restack;
 pub mod restart;
 pub mod review_api;
 pub mod spare;

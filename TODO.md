@@ -232,8 +232,13 @@ this file, which churned it from every build; that feature is gone.
 - **A session that opens several PRs: what is left.** This replaces the
   stacked-PR entry. Stacking is not orchd's job: the agents cut a branch off their
   own PR and restack it well enough, and a `stack` action plus a `/restack` skill
-  would be the daemon doing their work. What orchd owns is *showing* what an agent
-  did. A session now keeps every branch it held and every PR opened on them
+  would be the daemon doing their work. **The exception, since November, is the
+  restack with no decision in it** (`crates/orchd/src/restack.rs`): an idle, clean
+  upper branch follows the one under it, done when unpushed and asked about with
+  `orch ask` when pushed (force-push with a lease), and moves onto the base with
+  `--onto` when the lower PR merges. A restack that stops on a conflict is still
+  the agents', and they hear about it on the next prompt. What orchd owns is
+  *showing* what an agent did. A session now keeps every branch it held and every PR opened on them
   (`Session::branches`, `Session::prs`), the rail names the worst PR with a count
   of the rest, and the pane header draws one chip per PR. A PR that ended while
   the daemon was down is asked about once per run, by number or by its branch.
