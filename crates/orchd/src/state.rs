@@ -344,6 +344,11 @@ pub struct Inner {
     /// Workspaces a stack rebase is working through right now, which the
     /// one-branch restack leaves alone until it is done.
     pub stack_rebasing: HashSet<String>,
+    /// Which branch of a pair is the lower one, by branch names in order:
+    /// remembered across restarts (`store::StackDirection`), because once both
+    /// branches have moved past their shared commit git cannot tell again.
+    /// `None` until read at the first refresh.
+    pub stack_dirs: Option<HashMap<(String, String), String>>,
     /// Branches stacked on a PR that just merged, waiting to be moved onto the
     /// base (`AppState::restack_after_merge`).
     pub merged_under: Vec<crate::model::MergedUnder>,
@@ -1467,6 +1472,7 @@ impl AppState {
                 restack_tried: HashMap::new(),
                 stack_rebase_tried: HashMap::new(),
                 stack_rebasing: HashSet::new(),
+                stack_dirs: None,
                 merged_under: Vec::new(),
                 foreign_heads: HashMap::new(),
                 spare: Default::default(),
@@ -3287,6 +3293,23 @@ impl AppState {
     /// mean the same thing whichever side refreshed. Git runs on a blocking
     /// thread, bounded by [`crate::overlap::LINE_BUDGET`] per refresh.
     pub async fn refresh_overlaps(&self, workspace: &str) {
+        if self.inner.read().await.stack_dirs.is_none() {
+            let loaded = orchd_base::proc::run_blocking(
+                "reading the stack directions",
+                crate::store::load_stack_directions,
+            )
+            .await
+            .unwrap_or_default();
+            let mut inner = self.inner.write().await;
+            if inner.stack_dirs.is_none() {
+                inner.stack_dirs = Some(
+                    loaded
+                        .into_iter()
+                        .map(|d| ((d.branches[0].clone(), d.branches[1].clone()), d.lower))
+                        .collect(),
+                );
+            }
+        }
         type Tree = (String, PathBuf, Option<String>, Vec<crate::model::DiffFile>);
         let upstream = self.cfg.upstream_ref.clone();
         let (me, others, known, known_stacks, upstream_ask) = {
@@ -3332,12 +3355,50 @@ impl AppState {
                 .filter(|p| p.involves(workspace))
                 .cloned()
                 .collect();
-            let known_stacks: HashMap<(String, String), crate::overlap::Stack> = inner
+            let mut known_stacks: HashMap<(String, String), crate::overlap::Stack> = inner
                 .stacks
                 .iter()
                 .filter(|((a, b), _)| a == workspace || b == workspace)
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
+            /* A pair with no stack in memory, but a direction remembered from
+            before a restart: handed in as a `before` that carries only that, so
+            `stack_of` reads the stack the right way up when git cannot say. */
+            let branch_of = |id: &str| inner.workspaces.get(id).and_then(|w| w.tree.branch.clone());
+            if let (Some(dirs), Some(mine)) = (inner.stack_dirs.as_ref(), branch_of(workspace)) {
+                for o in &others {
+                    let Some(theirs) = branch_of(&o.0) else {
+                        continue;
+                    };
+                    let key = if workspace < o.0.as_str() {
+                        (workspace.to_string(), o.0.clone())
+                    } else {
+                        (o.0.clone(), workspace.to_string())
+                    };
+                    if known_stacks.contains_key(&key) {
+                        continue;
+                    }
+                    let pair = sorted_pair(&mine, &theirs);
+                    let Some(lower) = dirs.get(&pair) else {
+                        continue;
+                    };
+                    let lower_ws = if *lower == mine {
+                        workspace.to_string()
+                    } else {
+                        o.0.clone()
+                    };
+                    known_stacks.insert(
+                        key.clone(),
+                        crate::overlap::Stack {
+                            lower_is_a: lower_ws == key.0,
+                            behind: 0,
+                            lower_tip: String::new(),
+                            anchor: String::new(),
+                            lower_commits: 0,
+                        },
+                    );
+                }
+            }
             (tree(w), others, known, known_stacks, upstream_ask)
         };
         let upstream_unchanged = matches!(upstream_ask, Some(Err(_)));
@@ -3416,7 +3477,40 @@ impl AppState {
         inner
             .stacks
             .retain(|(a, b), _| a != workspace && b != workspace);
+        // Remember each direction by its branches, for after a restart.
+        let mut learned = false;
+        for ((a, b), st) in &stacks {
+            let branch = |id: &str| inner.workspaces.get(id).and_then(|w| w.tree.branch.clone());
+            let (Some(ba), Some(bb)) = (branch(a), branch(b)) else {
+                continue;
+            };
+            let lower = if st.lower_is_a {
+                ba.clone()
+            } else {
+                bb.clone()
+            };
+            let dirs = inner.stack_dirs.get_or_insert_with(HashMap::new);
+            if dirs.insert(sorted_pair(&ba, &bb), lower.clone()).as_ref() != Some(&lower) {
+                learned = true;
+            }
+        }
         inner.stacks.extend(stacks);
+        if learned {
+            let all: Vec<crate::store::StackDirection> = inner
+                .stack_dirs
+                .iter()
+                .flatten()
+                .map(|((x, y), lower)| crate::store::StackDirection {
+                    branches: [x.clone(), y.clone()],
+                    lower: lower.clone(),
+                })
+                .collect();
+            tokio::task::spawn_blocking(move || {
+                if let Err(e) = crate::store::save_stack_directions(&all) {
+                    tracing::warn!("could not keep the stack directions: {e:#}");
+                }
+            });
+        }
         match upstream_found {
             Some(found) => {
                 inner
@@ -3893,6 +3987,15 @@ impl Progress {
             (Some(x), Some(y)) if x != y => Some(x < y),
             _ => None,
         }
+    }
+}
+
+/// Two branch names in order, the key a stack's direction is kept under.
+fn sorted_pair(x: &str, y: &str) -> (String, String) {
+    if x < y {
+        (x.to_string(), y.to_string())
+    } else {
+        (y.to_string(), x.to_string())
     }
 }
 

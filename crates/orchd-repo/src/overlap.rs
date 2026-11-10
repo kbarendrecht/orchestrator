@@ -246,8 +246,15 @@ pub fn stack_of(a: &Path, b: &Path, upstream: &str, before: Option<&Stack>) -> O
     branch cut on 4 November and rebased onto one cut on 9 November is stacked
     on the newer one, and reading the reflog first named it the lower branch.
     That turned the stack upside down, hid it, and brought back as conflicts the
-    files it shares with its siblings. Once both have moved past the shared
-    commit, the stack as it was last known still knows; age is the last resort. */
+    files it shares with its siblings.
+
+    **Once both have moved past the shared commit, git cannot say.** A lower
+    branch rewritten after the upper one was cut leaves the upper one with old
+    copies of its commits and the lower one with new ones, and the copies match
+    both ways: measured, 4 and 4. Neither reflog had the shared commit either
+    (rebases, a rename, a reset to origin). What it was last known as does
+    know, so the caller hands that in, remembered across restarts per branch
+    pair (`Inner::stack_dirs`); age is for a pair never seen the right way up. */
     let lower_is_a = if ha == shared {
         true
     } else if hb == shared {
@@ -384,15 +391,51 @@ fn copied_stack(
     )
 }
 
-/// The commit in the upper tree's own history where its own commits start: the
-/// last lower commit it carries. What `git rebase --onto <base> <this>` cuts at
-/// once the lower branch is squash-merged.
+/// The commit in the upper tree's own history where its own commits start: what
+/// `git rebase --onto <lower> <this>` cuts at, so only the upper branch's own
+/// commits are replayed.
 ///
-/// The anchor itself on a stack the graph found. On a copied stack the anchor is
-/// the lower branch's commit and the upper one carries a copy of it, found by
-/// its subject among the upper's commits past `upstream`. `None` when neither is
-/// there, and the caller says so rather than guessing a cut. Blocking.
+/// **The last copy of a lower commit, or the shared commit.** Past the lower
+/// head, the upper branch starts with whatever it carries of the lower one: old
+/// versions of commits the lower branch has since rewritten, found by subject.
+/// The cut is the last of that run, so the old copies are dropped rather than
+/// replayed onto their new versions. With no copies (an upper branch built on the
+/// lower one, which then only grew) it is the anchor, the shared commit, or by
+/// its subject on a stack a rebase copied whole. `None` when neither is there,
+/// and the caller says so rather than guessing a cut. Blocking.
 pub fn restack_point(upper: &Path, stack: &Stack, upstream: &str) -> Option<String> {
+    let lower_subjects: HashSet<String> = git(
+        upper,
+        &[
+            "log",
+            "--format=%s",
+            &format!("{upstream}..{}", stack.lower_tip),
+        ],
+    )
+    .unwrap_or_default()
+    .lines()
+    .map(str::to_string)
+    .collect();
+    let mine = git(
+        upper,
+        &[
+            "log",
+            "--reverse",
+            "--format=%H%x09%s",
+            &format!("{}..HEAD", stack.lower_tip),
+        ],
+    )
+    .unwrap_or_default();
+    let mut cut = None;
+    for (id, subject) in mine.lines().filter_map(|l| l.split_once('\t')) {
+        if !lower_subjects.contains(subject) {
+            break;
+        }
+        cut = Some(id.to_string());
+    }
+    if cut.is_some() {
+        return cut;
+    }
     if git(
         upper,
         &["merge-base", "--is-ancestor", &stack.anchor, "HEAD"],
@@ -627,6 +670,105 @@ mod tests {
                 .expect("a stack")
                 .lower_is_a,
             "whichever side asks"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A lower branch rewritten from its second commit on, after an older branch
+    /// was cut from it: the known direction says which is under which, and the
+    /// cut drops the old copies so only the upper branch's own commit replays.
+    #[test]
+    fn a_partly_rewritten_lower_branch_is_still_the_lower_one() {
+        let root = std::env::temp_dir().join(format!("orchd-partial-{}", uuid::Uuid::new_v4()));
+        let main = root.join("main");
+        std::fs::create_dir_all(&main).unwrap();
+        let at = |cwd: &Path, when: &str, args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(cwd)
+                .env("GIT_COMMITTER_DATE", when)
+                .env("GIT_AUTHOR_DATE", when)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        let (d1, d2, d3) = (
+            "2026-11-04T10:00:00Z",
+            "2026-11-09T10:00:00Z",
+            "2026-11-10T10:00:00Z",
+        );
+        let commit = |cwd: &Path, when: &str, file: &str, body: &str, msg: &str| {
+            std::fs::write(cwd.join(file), body).unwrap();
+            at(cwd, when, &["add", "-A"]);
+            at(cwd, when, &["commit", "-qm", msg]);
+        };
+        at(&main, d1, &["init", "-q", "-b", "develop"]);
+        at(&main, d1, &["config", "user.email", "t@t"]);
+        at(&main, d1, &["config", "user.name", "t"]);
+        commit(&main, d1, "base.txt", "base\n", "base");
+        // The upper branch is made first, then pointed at the lower one's work.
+        let upper = root.join("upper");
+        at(
+            &main,
+            d1,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "upper",
+                upper.to_str().unwrap(),
+            ],
+        );
+        let lower = root.join("lower");
+        at(
+            &main,
+            d2,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "lower",
+                lower.to_str().unwrap(),
+                "develop",
+            ],
+        );
+        commit(&lower, d2, "one.txt", "one\n", "lower one");
+        commit(&lower, d2, "two.txt", "two\n", "lower two");
+        at(&upper, d2, &["reset", "-q", "--hard", "lower"]);
+        commit(&upper, d2, "mine.txt", "mine\n", "upper work");
+        // The lower branch rewrites its second commit and adds one.
+        at(&lower, d3, &["reset", "-q", "--hard", "HEAD~1"]);
+        commit(&lower, d3, "two.txt", "two, again\n", "lower two");
+        commit(&lower, d3, "three.txt", "three\n", "lower three");
+        let tip = git(&lower, &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
+
+        // Git alone cannot tell; the direction known from before can.
+        let known = Stack {
+            lower_is_a: false,
+            behind: 0,
+            lower_tip: String::new(),
+            anchor: String::new(),
+            lower_commits: 0,
+        };
+        let s = stack_of(&upper, &lower, "develop", Some(&known)).expect("a stack");
+        assert!(!s.lower_is_a, "the direction it was last known in");
+        let point = restack_point(&upper, &s, "develop").expect("a cut");
+        orchd_base::git::rebase_or_abort(&upper, &tip, Some(&point))
+            .expect("only its own commit replays");
+        let own = git(&upper, &["log", "--format=%s", &format!("{tip}..HEAD")]).unwrap();
+        assert_eq!(own.trim(), "upper work");
+        assert_eq!(
+            std::fs::read_to_string(upper.join("two.txt")).unwrap(),
+            "two, again\n"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
