@@ -469,9 +469,11 @@ button.ctx-btn:hover{color:var(--text)}
 /* The Stacked card's ladder: one rung per branch, top of the stack first, and
    the gap under each one says how far the branch below it moved. */
 .ovc-ladder{display:flex;flex-direction:column;padding:2px 0 4px}
-.ovc-rung{display:grid;grid-template-columns:22px minmax(0,1fr) auto;align-items:center;width:100%;padding:4px 12px 4px 8px;
-  font-size:calc(12px * var(--fs));text-align:left;color:var(--text)}
-button.ovc-rung:hover{background:var(--hover)}
+.ovc-rung{display:flex;align-items:center;gap:6px;width:100%;padding-right:2px;font-size:calc(12px * var(--fs));color:var(--text)}
+.ovc-rname{flex:1;min-width:0;display:grid;grid-template-columns:22px minmax(0,1fr);align-items:center;padding:4px 0 4px 8px;
+  text-align:left;color:var(--text)}
+button.ovc-rname:hover{background:var(--hover)}
+.ovc-rung .ovc-state{margin-right:10px}
 .ovc-rung.me{background:color-mix(in srgb, var(--done) 10%, transparent)}
 .ovc-node{justify-self:center;width:8px;height:8px;border-radius:50%;border:1.5px solid var(--faint-solid)}
 .ovc-node.fill{background:var(--done);border-color:var(--done)}
@@ -481,9 +483,6 @@ button.ovc-rung:hover{background:var(--hover)}
 .ovc-gap.behind{color:var(--done)}
 .ovc-gap.behind::before{background:repeating-linear-gradient(var(--done) 0 3px,transparent 3px 6px)}
 .ovc-gap span{padding:1px 0 1px 8px}
-.ovc-chip{flex:none;font-family:var(--sans);font-size:calc(10.5px * var(--fs));padding:0 6px;border-radius:999px;
-  border:1px solid var(--line);color:var(--dim)}
-.ovc-chip.up{border-color:color-mix(in srgb, var(--attn) 40%, transparent);color:var(--attn)}
 /* When the agents hear about it: a statement, with the sooner way as a quiet link. */
 .ovc-line{padding:6px 12px 2px;font-size:calc(11px * var(--fs));color:var(--dim)}
 .ovc-now{color:var(--faint-solid);text-decoration:underline;text-decoration-color:var(--line);text-underline-offset:3px}
@@ -492,16 +491,17 @@ button.ovc-rung:hover{background:var(--hover)}
 .ovc-ask:hover{color:var(--text)}
 .ovc-grp{padding:4px 0}
 .ovc-grp + .ovc-grp{border-top:1px solid var(--line)}
-.ovc-who,.ovc-file{display:flex;align-items:center;gap:8px;width:100%;text-align:left;color:var(--text)}
+.ovc-who{display:flex;align-items:center;gap:8px;width:100%;min-width:0;text-align:left;color:var(--text)}
 .ovc-who{padding:5px 12px;font-size:calc(12px * var(--fs))}
-button.ovc-who:hover,.ovc-file:hover{background:var(--hover)}
+button.ovc-who:hover{background:var(--hover)}
+/* One other side of a conflict: the session, and its PR beside it. */
+.ovc-cfl{display:flex;align-items:center;min-width:0}
+.ovc-cfl .ovc-who{flex:1}
+.ovc-prn{flex:none;margin-right:10px;padding:0 6px;border:1px solid var(--line);border-radius:999px;
+  font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--dim)}
+.ovc-prn:hover{color:var(--text);border-color:var(--faint-solid)}
 .ovc-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ovc-state{margin-left:auto;flex:none;font-size:calc(11px * var(--fs));color:var(--faint-solid)}
-.ovc-file{padding:3px 12px 3px 26px;font-family:var(--mono);font-size:calc(11px * var(--fs));color:var(--dim)}
-.ovc-file:hover{color:var(--text)}
-.ovc-path{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.ovc-more{display:block;padding:3px 12px 3px 26px;font-size:calc(11px * var(--fs));color:var(--faint-solid)}
-.ovc-more:hover{color:var(--text);background:var(--hover)}
 .ovc-wait{display:flex;align-items:center;gap:8px;padding:3px 12px 3px 26px;font-size:calc(11px * var(--fs));color:var(--done)}
 .ovc-wait>span{flex:1;min-width:0}
 .ovc-send{flex:none;padding:1px 6px;border:1px solid var(--line);border-radius:var(--r);font-size:calc(11px * var(--fs));color:var(--text)}

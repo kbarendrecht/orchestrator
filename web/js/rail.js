@@ -2,7 +2,6 @@
 // Twenty-four names, three out; the rest is how a row decides what it says.
 
 import { $, activeCheckout, AGENT_LABEL, ageLabel, bandOf, byNewest, call, callFor, callHost, callOn, caret, checkoutBadge, checkoutOf, CHECKOUTS, chooseBox, clock, confirmBox, promptBox, copyText, creating, creatingIn, creatingIntoMain, dotClass, el, enterCheckout, icon, iconLabel, getHost, getOn, handedToPr, hasPr, inTrouble, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, QUEUE_MAX, reason, refreshButton, repoSummary, safeHref, selected, sessionDot, sessionsOf, sessionOrder, setPendingSelect, setSelected, setSessionOrder, snap, snapshotFor, snapshotOf, startingShown, stateClass, stateLabel, terms, toast, paintSig, reconcile, unchanged, watchStarting } from './core.js';
-import * as Diff from './diff.js';
 import * as Open from './open.js';
 import * as Term from './term.js';
 
@@ -2208,7 +2207,7 @@ function sessionRow(/** @type {import('../snapshot').SessionView} */ s, /** @typ
      is both gets both, the stack first: which branch it is built on can matter
      more than a conflict with a third one. Each opens a card of its own. */
   if (overlap?.stack) {
-    const up = row.appendChild(icon('sess-overlap stack' + (overlap.stack.behind ? ' behind' : ''), 1.6, ...LAYERS));
+    const up = row.appendChild(icon('sess-overlap stack' + (overlap.stack.behind || overlap.stack.stale ? ' behind' : ''), 1.6, ...LAYERS));
     up.dataset.session = s.id;
     up.dataset.kind = 'stack';
   }
@@ -2872,12 +2871,6 @@ let ovFor = null;
 let ovSig = '';
 let ovOpenT = 0;
 let ovCloseT = 0;
-/** Files a group shows before its "more" button: a branch that touched forty of
- *  the same files would otherwise be a card taller than the window. */
-const OV_FILES = 3;
-/** Whether the file list is opened past that. Forgotten when the card closes,
- *  so the next hover starts short again. */
-let ovOpen = false;
 
 function overlapCard() {
   if (!ovCard) {
@@ -2889,6 +2882,11 @@ function overlapCard() {
   }
   return ovCard;
 }
+
+/** Show PR `n` on the forge, the way a `#n` link in a pane does, through the
+ *  daemon of `sid`'s checkout. */
+const showPr = (/** @type {string} */ sid, /** @type {number} */ n) =>
+  void callFor(sid, '/api/open/ref', { ref: `#${n}` }).catch((/** @type {unknown} */ e) => toast(reason(e), true));
 
 /** The session and the kind of a mark key. */
 const keyParts = (/** @type {string} */ key) => {
@@ -2958,35 +2956,50 @@ function fillStackCard(
   head.append(el('b', '', 'Stacked'), el('span', 'ovc-meta', `${rows.length} branches · merges bottom first`));
   const ladder = card.appendChild(el('div', 'ovc-ladder'));
   const gap = (/** @type {import('../snapshot').StackView | null} */ link) => {
-    const g = el('div', 'ovc-gap' + (link?.behind ? ' behind' : ''));
+    const g = el('div', 'ovc-gap' + (link?.behind || link?.stale ? ' behind' : ''));
     const n = link?.behind ?? 0;
     const c = link?.conflicts ?? 0;
-    g.appendChild(el('span', '', !link ? '' : n === 0 ? 'up to date'
+    g.appendChild(el('span', '', !link ? ''
+      : link.stale ? `an older version of it, ${c} file${c === 1 ? '' : 's'} differ`
+      : n === 0 ? 'up to date'
       : `${n} new commit${n === 1 ? '' : 's'} under it, ${c ? `${c} file${c === 1 ? '' : 's'} will conflict` : 'applies cleanly'}`));
     return g;
   };
   rows.forEach((w, i) => {
     const who = liveIn(state, w.id)[0];
-    const r = ladder.appendChild(el(who ? 'button' : 'div', 'ovc-rung' + (w.id === mine.id ? ' me' : '')));
-    if (r instanceof HTMLButtonElement) {
-      r.type = 'button';
-      r.onclick = () => { closeOverlapCard(); setSelected(who.id); };
-    }
     const pr = prOf(w.id);
-    r.append(el('span', 'ovc-node' + (w.id === mine.id ? ' fill' : '')), el('span', 'ovc-name', who ? railName(who, { id: w.id }) : w.id),
-      el('span', 'ovc-state', w.id === mine.id ? 'this one' : pr ? `#${pr}` : who ? stateLabel(who) : 'in review'));
+    const me = w.id === mine.id;
+    const r = ladder.appendChild(el('div', 'ovc-rung' + (me ? ' me' : '')));
+    /* The name goes to the session, or to the PR when nobody works in the branch
+       any more (a lower branch in review); the number always goes to the PR. */
+    const name = r.appendChild(el('button', 'ovc-rname'));
+    name.type = 'button';
+    name.append(el('span', 'ovc-node' + (me ? ' fill' : '')), el('span', 'ovc-name', who ? railName(who, { id: w.id }) : w.id));
+    name.onclick = () => {
+      closeOverlapCard();
+      if (who) setSelected(who.id);
+      else if (pr) showPr(s.id, pr);
+    };
+    if (pr) {
+      const n = r.appendChild(el('button', 'ovc-prn', `#${pr}`));
+      n.type = 'button';
+      n.onclick = () => { closeOverlapCard(); showPr(s.id, pr); };
+    } else {
+      r.appendChild(el('span', 'ovc-state', me ? 'this one' : who ? stateLabel(who) : ''));
+    }
     if (i < rows.length - 1) ladder.appendChild(gap(w.stacked_on));
   });
   ladder.appendChild(gap(null));
   const base = ladder.appendChild(el('div', 'ovc-rung'));
-  base.append(el('span', 'ovc-node base'), el('span', 'ovc-name', state.upstream_ref), el('span', 'ovc-state', ''));
+  const baseName = base.appendChild(el('span', 'ovc-rname'));
+  baseName.append(el('span', 'ovc-node base'), el('span', 'ovc-name', state.upstream_ref));
   if (stack.asking) {
     const q = card.appendChild(el('button', 'ovc-ask', 'Asking you on the session: restack and push?'));
     q.type = 'button';
     q.onclick = () => { closeOverlapCard(); setSelected(s.id); };
   } else {
     card.appendChild(el('div', 'ovc-line',
-      'Orchestrator restacks it when it is idle, and asks you first if it is pushed. Either way, its next prompt says what happened.'));
+      'Orchestrator restacks it when it is idle, and asks you first if it is pushed already. All sessions will be informed by appending to their next prompt.'));
   }
   return true;
 }
@@ -3003,40 +3016,16 @@ function fillConflictCard(
   if (!list.length && !upstream.length) return false;
   const partners = [...new Set(list.map((o) => o.with))];
   const theirs = partners.flatMap((ws) => (state.workspaces.find((w) => w.id === ws)?.overlaps ?? []).filter((o) => o.with === mine.id));
-  const sig = paintSig(['conflict', list, upstream, theirs, ovOpen, s.inbox, state.upstream_ref,
+  const sig = paintSig(['conflict', list, upstream, theirs, s.inbox, state.upstream_ref, state.prs.map((p) => [p.workspace, p.number]),
     partners.map((ws) => liveIn(state, ws).map((x) => [x.id, railName(x, { id: ws }), stateLabel(x), sessionDot(x), x.inbox]))]);
   if (sig === ovSig) return true;
   ovSig = sig;
   const card = overlapCard();
   card.replaceChildren();
 
-  /** @type {Map<string, { name: string, up: boolean }[]>} */
-  const files = new Map();
-  const add = (/** @type {string} */ path, /** @type {string} */ name, /** @type {boolean} */ up) =>
-    files.set(path, [...(files.get(path) ?? []), { name, up }]);
-  for (const p of upstream) add(p, state.upstream_ref.replace(/^[^/]+\//, ''), true);
-  for (const o of list) {
-    const x = liveIn(state, o.with)[0];
-    add(o.path, x ? railName(x, { id: o.with }) : o.with, false);
-  }
-  const n = files.size;
+  const n = new Set([...list.map((o) => o.path), ...upstream]).size;
   const head = card.appendChild(el('div', 'ovc-title warn'));
   head.append(el('b', '', 'Conflicts'), el('span', 'ovc-meta', `${n} file${n === 1 ? '' : 's'} will not merge`));
-  const g = card.appendChild(el('div', 'ovc-grp'));
-  const all = [...files];
-  for (const [path, with_] of ovOpen ? all : all.slice(0, OV_FILES)) {
-    const f = g.appendChild(el('button', 'ovc-file'));
-    f.type = 'button';
-    f.appendChild(el('span', 'ovc-path', path));
-    for (const w of with_) f.appendChild(el('span', 'ovc-chip' + (w.up ? ' up' : ''), w.name));
-    // This row's own diff of the file: the other side is a press on its session.
-    f.onclick = () => { closeOverlapCard(); setSelected(s.id); void Diff.open(path); };
-  }
-  if (all.length > OV_FILES) {
-    const more = g.appendChild(el('button', 'ovc-more', ovOpen ? 'show less' : `show ${all.length - OV_FILES} more`));
-    more.type = 'button';
-    more.onclick = () => { ovOpen = !ovOpen; fillOverlapCard(/** @type {string} */ (ovFor)); clampOverlapCard(); };
-  }
 
   /* **A message the daemon could not deliver is shown, not kept quiet.** It waits
      for the session's turn to end, and a turn that ended on an escape never says
@@ -3057,34 +3046,48 @@ function fillConflictCard(
     return row;
   };
   if (s.inbox) card.appendChild(waiting(s, 'this session'));
-  if (partners.length) {
-    const who = card.appendChild(el('div', 'ovc-grp'));
-    for (const ws of partners) {
-      const live = liveIn(state, ws);
-      if (!live.length) who.appendChild(el('div', 'ovc-who', ws));
-      for (const x of live) {
-        const b = who.appendChild(el('button', 'ovc-who'));
-        b.type = 'button';
-        b.append(el('span', sessionDot(x)), el('span', 'ovc-name', railName(x, { id: ws })), el('span', 'ovc-state', stateLabel(x)));
-        b.onclick = () => { closeOverlapCard(); setSelected(x.id); };
-        if (x.inbox) who.appendChild(waiting(x, railName(x, { id: ws })));
+
+  /* **One row per other side**: the session, how many files, and its PR. The
+     files themselves are in the agents' notes and in each side's changes pane;
+     here the question is only with whom. */
+  const files = (/** @type {number} */ k) => `${k} file${k === 1 ? '' : 's'}`;
+  const prOf = (/** @type {string} */ ws) => state.prs.find((p) => p.workspace === ws)?.number ?? null;
+  const rows = card.appendChild(el('div', 'ovc-grp'));
+  for (const ws of partners) {
+    const k = list.filter((o) => o.with === ws).length;
+    const pr = prOf(ws);
+    for (const x of liveIn(state, ws)) {
+      const r = rows.appendChild(el('div', 'ovc-cfl'));
+      const b = r.appendChild(el('button', 'ovc-who'));
+      b.type = 'button';
+      b.append(el('span', sessionDot(x)), el('span', 'ovc-name', railName(x, { id: ws })), el('span', 'ovc-state', files(k)));
+      b.onclick = () => { closeOverlapCard(); setSelected(x.id); };
+      if (pr) {
+        const p = r.appendChild(el('button', 'ovc-prn', `#${pr}`));
+        p.type = 'button';
+        p.onclick = () => { closeOverlapCard(); showPr(s.id, pr); };
       }
+      if (x.inbox) rows.appendChild(waiting(x, railName(x, { id: ws })));
     }
-    // What you confirmed when the two settled it, in the words of the option.
-    const plan = list.find((o) => o.plan)?.plan;
-    if (plan) who.appendChild(el('div', 'ovc-plan', `plan: ${plan}`));
   }
+  if (upstream.length) {
+    const r = rows.appendChild(el('div', 'ovc-cfl'));
+    const u = r.appendChild(el('div', 'ovc-who'));
+    u.append(el('span', 'ovc-node base'), el('span', 'ovc-name', state.upstream_ref), el('span', 'ovc-state', files(upstream.length)));
+  }
+  // What you confirmed when the two settled it, in the words of the option.
+  const plan = list.find((o) => o.plan)?.plan;
+  if (plan) rows.appendChild(el('div', 'ovc-plan', `plan: ${plan}`));
 
   /* **When the agents hear it, and a way to make it now.** The note rides on
      each side's next prompt by itself; the link types it in at once, mid-turn
      or not, for when waiting for the next prompt is too long. */
   const told = list.every((o) => o.told) && theirs.every((o) => o.told);
   const line = card.appendChild(el('div', 'ovc-line'));
-  const many = partners.length > 1 ? 'All' : 'Both';
   if (partners.length && told) {
-    line.append(`${many} have been told.`);
+    line.append('Each session has been told.');
   } else {
-    line.append(partners.length ? `${many} are told on their next prompt. ` : 'It is told on its next prompt. ');
+    line.append(partners.length ? 'Each session is told on its next prompt. ' : 'This session is told on its next prompt. ');
     const now = line.appendChild(el('button', 'ovc-now', partners.length ? 'Tell them now' : 'Tell it now'));
     now.type = 'button';
     now.onclick = async () => {
@@ -3131,7 +3134,6 @@ function closeOverlapCard() {
   ovOpenT = 0;
   ovCloseT = 0;
   ovFor = null;
-  ovOpen = false;
   if (ovCard) ovCard.hidden = true;
   spotlight(null);
 }

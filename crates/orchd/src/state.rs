@@ -907,7 +907,7 @@ impl Inner {
             .overlaps
             .iter()
             // A file that merges cleanly is not a reason to stop and rebase.
-            .filter(|p| p.found.conflict && p.involves(&merged))
+            .filter(|p| self.real_conflict(p) && p.involves(&merged))
             .map(|p| p.other(&merged).to_string())
             .filter(|ws| !queued.contains(ws))
             .collect::<std::collections::BTreeSet<_>>()
@@ -917,7 +917,7 @@ impl Inner {
             let files: Vec<String> = self
                 .overlaps
                 .iter()
-                .filter(|p| p.found.conflict && p.involves(&merged) && p.other(&merged) == ws)
+                .filter(|p| self.real_conflict(p) && p.involves(&merged) && p.other(&merged) == ws)
                 .map(|p| format!("- {}", p.found.path))
                 .collect();
             for s in self
@@ -1028,9 +1028,7 @@ impl Inner {
             let paths: Vec<&str> = self
                 .overlaps
                 .iter()
-                .filter(|p| {
-                    p.found.conflict && !self.stacked(p) && p.involves(mine) && p.other(mine) == ws
-                })
+                .filter(|p| self.real_conflict(p) && p.involves(mine) && p.other(mine) == ws)
                 .map(|p| p.found.path.as_str())
                 .collect();
             let name = b.label().unwrap_or(&b.workspace).to_string();
@@ -1077,6 +1075,55 @@ impl Inner {
             if several { " with each of them" } else { "" },
         );
         (brief, partners)
+    }
+
+    /// Every branch `workspace` is built on, through each stack it is the upper
+    /// half of and theirs in turn.
+    fn lowers_of(&self, workspace: &str) -> HashSet<String> {
+        let mut found = HashSet::new();
+        let mut next = vec![workspace.to_string()];
+        while let Some(ws) = next.pop() {
+            for ((a, b), st) in &self.stacks {
+                let (lower, upper) = if st.lower_is_a { (a, b) } else { (b, a) };
+                if upper == &ws && found.insert(lower.clone()) {
+                    next.push(lower.clone());
+                }
+            }
+        }
+        found
+    }
+
+    /// Whether the overlap `p` is a conflict the two sides have to settle.
+    ///
+    /// **Not within a stack**, which is a restack. **And not on a file of a
+    /// branch both are built on**: two branches stacked on one lower branch
+    /// carry its files, and when that branch moves on, the two hold different
+    /// versions of them. Measured: three sessions on one lower branch showed 12
+    /// and 24 conflicting files, every one of them the lower branch's. That is
+    /// two stale copies, which a restack of each fixes, not a dispute between
+    /// the two.
+    pub fn real_conflict(&self, p: &crate::overlap::Pair) -> bool {
+        if !p.found.conflict || self.stacked(p) {
+            return false;
+        }
+        let (la, lb) = (self.lowers_of(&p.a), self.lowers_of(&p.b));
+        !la.intersection(&lb).any(|l| {
+            self.workspaces
+                .get(l)
+                .is_some_and(|w| w.tree.changed.iter().any(|f| f.path == p.found.path))
+        })
+    }
+
+    /// How many files git cannot merge between `upper` and the branch it is
+    /// stacked on, `lower`: what a restack onto it would stop on, or, with
+    /// nothing new under it, what an older copy of the lower branch disagrees on.
+    pub fn stack_conflicts(&self, upper: &str, lower: &str) -> u32 {
+        let n = self
+            .overlaps
+            .iter()
+            .filter(|p| p.found.conflict && p.involves(upper) && p.other(upper) == lower)
+            .count();
+        u32::try_from(n).unwrap_or(u32::MAX)
     }
 
     /// Whether the overlap `p` is between two branches of one stack, which is a
@@ -2100,7 +2147,7 @@ impl AppState {
                 overlaps: inner
                     .overlaps
                     .iter()
-                    .filter(|p| p.found.conflict && !inner.stacked(p))
+                    .filter(|p| inner.real_conflict(p))
                     .filter(|p| p.involves(&w.id) && live_ids.contains(w.id.as_str()))
                     .filter(|p| live_ids.contains(p.other(&w.id)))
                     .map(|p| OverlapView {
@@ -2130,20 +2177,18 @@ impl AppState {
                     .filter(|(lower, _)| {
                         live_ids.contains(w.id.as_str()) && inner.counts_as_lower(lower)
                     })
-                    .map(|(lower, s)| StackView {
-                        conflicts: inner
-                            .overlaps
-                            .iter()
-                            .filter(|p| {
-                                p.found.conflict && p.involves(&w.id) && p.other(&w.id) == lower
-                            })
-                            .count() as u32,
-                        on: lower,
-                        behind: s.behind,
-                        asking: inner
-                            .sessions
-                            .values()
-                            .any(|x| x.workspace == w.id && x.restack_ask.is_some()),
+                    .map(|(lower, s)| {
+                        let conflicts = inner.stack_conflicts(&w.id, &lower);
+                        StackView {
+                            conflicts,
+                            stale: s.behind == 0 && conflicts > 0,
+                            on: lower,
+                            behind: s.behind,
+                            asking: inner
+                                .sessions
+                                .values()
+                                .any(|x| x.workspace == w.id && x.restack_ask.is_some()),
+                        }
                     }),
                 upstream_conflicts: inner
                     .upstream_conflicts
@@ -2359,8 +2404,7 @@ impl AppState {
             .iter()
             .filter(|p| {
                 // Only a conflict is worth the agent's attention, as on the board.
-                p.found.conflict
-                    && !inner.stacked(p)
+                inner.real_conflict(p)
                     && p.involves(&ws)
                     && inner.workspaces.contains_key(p.other(&ws))
                     && inner.has_live_session(p.other(&ws))
@@ -2561,7 +2605,7 @@ impl AppState {
             let theirs: std::collections::HashSet<&str> = inner
                 .overlaps
                 .iter()
-                .filter(|p| p.found.conflict && !inner.stacked(p) && p.involves(&ws))
+                .filter(|p| inner.real_conflict(p) && p.involves(&ws))
                 .map(|p| p.other(&ws))
                 .collect();
             inner
@@ -4108,6 +4152,10 @@ pub struct StackView {
     /// Whether orchd is asking the user on this workspace's session to restack
     /// it and force-push.
     pub asking: bool,
+    /// Whether this branch carries an older version of the one under it: no new
+    /// commits under it, but files the two do not agree on. The lower branch was
+    /// rewritten, and a restack drops the old copies.
+    pub stale: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -5815,6 +5863,48 @@ mod tests {
         assert_eq!(inner.merged_under.len(), 1);
         assert_eq!(inner.merged_under[0].upper, "up");
         assert_eq!(inner.merged_under[0].stack, stack);
+    }
+
+    /// Two branches stacked on one lower branch disagree on its files when they
+    /// carry two versions of it. That is two stale copies, not a conflict; a
+    /// file of their own still is one.
+    #[tokio::test]
+    async fn siblings_on_one_lower_branch_conflict_only_on_their_own_files() {
+        let app = app().await;
+        let _base = live_worktree(&app, "base", "/tmp/base", &["src/lower.rs"]).await;
+        let _one = live_worktree(&app, "one", "/tmp/one", &["src/lower.rs", "src/own.rs"]).await;
+        let _two = live_worktree(&app, "two", "/tmp/two", &["src/lower.rs", "src/own.rs"]).await;
+        let mut inner = app.inner.write().await;
+        let on_base = crate::overlap::Stack {
+            lower_is_a: true,
+            behind: 0,
+            lower_tip: "t".into(),
+            anchor: "t".into(),
+            lower_commits: 1,
+        };
+        inner
+            .stacks
+            .insert(("base".into(), "one".into()), on_base.clone());
+        inner.stacks.insert(("base".into(), "two".into()), on_base);
+        let pair = |path: &str| crate::overlap::Pair {
+            a: "one".into(),
+            b: "two".into(),
+            found: crate::overlap::Found {
+                path: path.into(),
+                conflict: true,
+                stamp: [0; 5],
+            },
+        };
+        assert!(
+            !inner.real_conflict(&pair("src/lower.rs")),
+            "the lower branch's file"
+        );
+        assert!(inner.real_conflict(&pair("src/own.rs")), "their own file");
+        inner.stacks.clear();
+        assert!(
+            inner.real_conflict(&pair("src/lower.rs")),
+            "with no stack it is a conflict"
+        );
     }
 
     /// The agent hears which files will not merge with upstream when that list

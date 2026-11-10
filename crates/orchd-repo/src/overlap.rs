@@ -534,6 +534,61 @@ mod tests {
 
     /// Two real trees off one base: a shared file changed on the same line, one
     /// changed far apart, a lockfile both touched, and a file only one changed.
+    /// A lower branch rewritten after the upper one copied it: the cut is the
+    /// upper's copy of the last lower commit, found by its subject, and a rebase
+    /// from there keeps only the upper's own commit on the new version.
+    #[test]
+    fn a_stale_copy_of_the_lower_branch_is_cut_at_its_copy() {
+        let root = std::env::temp_dir().join(format!("orchd-stale-{}", uuid::Uuid::new_v4()));
+        let main = root.join("main");
+        std::fs::create_dir_all(&main).unwrap();
+        let g = |args: &[&str]| git(&main, args).unwrap_or_else(|e| panic!("git {args:?}: {e}"));
+        g(&["init", "-q", "-b", "main"]);
+        g(&["config", "user.email", "t@t"]);
+        g(&["config", "user.name", "t"]);
+        let commit = |file: &str, body: &str, msg: &str| {
+            std::fs::write(main.join(file), body).unwrap();
+            g(&["add", "-A"]);
+            g(&["commit", "-qm", msg]);
+        };
+        commit("base.txt", "base\n", "base");
+        g(&["checkout", "-qb", "lower"]);
+        commit("lower.txt", "one\n", "lower work");
+        g(&["checkout", "-qb", "upper"]);
+        commit("upper.txt", "mine\n", "upper work");
+        // The lower branch is rewritten: same subject, new content.
+        g(&["checkout", "-q", "lower"]);
+        std::fs::write(main.join("lower.txt"), "two\n").unwrap();
+        g(&["commit", "-qa", "--amend", "--no-edit"]);
+        let tip = git(&main, &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
+        g(&["checkout", "-q", "upper"]);
+
+        let stack = Stack {
+            lower_is_a: true,
+            behind: 0,
+            lower_tip: tip.clone(),
+            anchor: tip.clone(),
+            lower_commits: 1,
+        };
+        let point = restack_point(&main, &stack, "main").expect("the copy is found by its subject");
+        assert_ne!(
+            point, tip,
+            "the cut is the upper's copy, not the new lower commit"
+        );
+        orchd_base::git::rebase_or_abort(&main, &tip, Some(&point)).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(main.join("lower.txt")).unwrap(),
+            "two\n",
+            "the new version"
+        );
+        let own = git(&main, &["log", "--format=%s", &format!("{tip}..HEAD")]).unwrap();
+        assert_eq!(own.trim(), "upper work", "and only its own commit on top");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// A tree that changed a line upstream also changed conflicts with it; one
     /// that changed a different file does not.
     #[test]

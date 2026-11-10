@@ -128,13 +128,29 @@ impl AppState {
     /// Follow the branch under it, for the upper half of every stack
     /// `workspace` is in: done when unpushed, asked when pushed. One attempt per
     /// lower head, so a rebase that stops is not retried on every refresh.
+    ///
+    /// **Two reasons to follow**: new commits under it, or a lower branch that
+    /// was rewritten. The second has no new commits to count (its subjects are
+    /// all carried) and shows only as files the two disagree on, so the cut is
+    /// `restack_point`, the upper branch's copy of the last lower commit, and
+    /// the old copies are dropped rather than replayed onto their new versions.
     pub(crate) async fn restack_when_safe(&self, workspace: &str) {
-        let due: Vec<(String, PathBuf, String, String, String, u32)> = {
+        struct Due {
+            upper: String,
+            path: PathBuf,
+            branch: String,
+            lower_branch: String,
+            stack: crate::overlap::Stack,
+        }
+        let due: Vec<Due> = {
             let inner = self.inner.read().await;
             let mut due = Vec::new();
             for ((a, b), st) in &inner.stacks {
                 let (lower, upper) = if st.lower_is_a { (a, b) } else { (b, a) };
-                if (lower != workspace && upper != workspace) || st.behind == 0 {
+                if lower != workspace && upper != workspace {
+                    continue;
+                }
+                if st.behind == 0 && inner.stack_conflicts(upper, lower) == 0 {
                     continue;
                 }
                 if inner.stacked_on(upper).map(|(l, _)| l).as_deref() != Some(lower.as_str()) {
@@ -156,32 +172,52 @@ impl AppState {
                     .get(lower)
                     .and_then(|l| l.tree.branch.clone())
                     .unwrap_or_else(|| lower.clone());
-                due.push((
-                    upper.clone(),
+                due.push(Due {
+                    upper: upper.clone(),
                     path,
                     branch,
                     lower_branch,
-                    st.lower_tip.clone(),
-                    st.behind,
-                ));
+                    stack: st.clone(),
+                });
             }
             due
         };
-        for (upper, path, branch, lower_branch, tip, behind) in due {
+        let upstream = self.cfg.upstream_ref.clone();
+        for d in due {
             // Pushed or not decides what is followed: the lower head, or what the
-            // lower branch pushed.
-            let (p, b, lb) = (path.clone(), branch.clone(), lower_branch.clone());
-            let target = orchd_base::proc::run_blocking("reading the stack", move || {
-                match crate::git::pushed_ref(&p, &b) {
-                    None => Some((false, tip)),
+            // lower branch pushed. The cut is read in the same trip.
+            let (p, b, lb, st, up) = (
+                d.path.clone(),
+                d.branch.clone(),
+                d.lower_branch.clone(),
+                d.stack.clone(),
+                upstream.clone(),
+            );
+            let probe = orchd_base::proc::run_blocking("reading the stack", move || {
+                let point = crate::overlap::restack_point(&p, &st, &up);
+                let target = match crate::git::pushed_ref(&p, &b) {
+                    None => Some((false, st.lower_tip.clone())),
                     Some(_) => crate::overlap::pushed_lower_ahead(&p, &lb).map(|t| (true, t)),
-                }
+                };
+                target.map(|t| (t, point))
             })
             .await
             .ok()
             .flatten();
-            let Some((pushed, target)) = target else {
+            let Some(((pushed, target), point)) = probe else {
                 continue;
+            };
+            let Due {
+                upper,
+                path,
+                branch,
+                lower_branch,
+                stack,
+            } = d;
+            let what = match stack.behind {
+                0 => "was rewritten".to_string(),
+                1 => "got 1 new commit".to_string(),
+                n => format!("got {n} new commits"),
             };
             {
                 let mut inner = self.inner.write().await;
@@ -199,7 +235,7 @@ impl AppState {
                     let asked = ask(
                         &mut inner,
                         &upper,
-                        format!("`{lower_branch}`, the branch this one is stacked on, pushed new commits. Restack `{branch}` onto them and force-push it?"),
+                        format!("`{lower_branch}`, the branch this one is stacked on, {what}. Restack `{branch}` onto it and force-push it?"),
                         format!(
                             "The push uses --force-with-lease, so a push somebody else made in the \
                              meantime is never overwritten, and if the rebase stops nothing changes.{pr}"
@@ -207,7 +243,7 @@ impl AppState {
                         RestackAsk {
                             id: uuid::Uuid::new_v4(),
                             onto: target.clone(),
-                            from: None,
+                            from: point,
                             branch: branch.clone(),
                             onto_name: format!("`{lower_branch}`"),
                             before: State::Exited,
@@ -227,7 +263,7 @@ impl AppState {
                 {
                     anyhow::bail!("the tree is not clean any more");
                 }
-                crate::git::rebase_or_abort(&p, &onto, None)
+                crate::git::rebase_or_abort(&p, &onto, point.as_deref())
             })
             .await;
             match done {
@@ -238,9 +274,8 @@ impl AppState {
                         &upper,
                         &format!(
                             "orchd: while you were idle, `{lower_branch}` (the branch yours is \
-                             stacked on) got {behind} new commit{}, and orchd rebased your branch \
-                             onto it. Your commits are the same; their ids changed.",
-                            if behind == 1 { "" } else { "s" }
+                             stacked on) {what}, and orchd rebased your branch onto it. Your \
+                             commits are the same; their ids changed."
                         ),
                     );
                     // The snapshot follows with whoever reconciles next; the

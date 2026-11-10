@@ -968,15 +968,18 @@ try {
      and Esc gives the rail back. */
   await page.click('#rail .ws-add .arctoggle')
   check(await page.locator('#rail .arcbox .sess.arc').count() >= 1, 'the archive opens on the conversation that was killed')
-  const railBefore = await page.evaluate(() => [...document.querySelectorAll('#rail .sess')].map((r) => r.outerHTML).join(''))
+  // Rows, their order and their classes: what "nothing fades, nothing moves"
+  // means. Not their HTML, which carries age clocks that tick on their own.
+  const railRows = () => page.evaluate(() => [...document.querySelectorAll('#rail .sess')]
+    .map((r) => `${/** @type {HTMLElement} */ (r).dataset.id}:${r.className}`).join('|'))
+  const railBefore = await railRows()
   await page.fill('#rail .arcfilter .arcq', 'zzzznothinglikethis')
   const nothing = await page.waitForFunction(() => {
     const sheet = document.querySelector('.srch:not([hidden])')
     return sheet?.querySelector('.srch-empty')?.textContent ?? null
   }, null, { timeout: 5000 }).then((h) => h.jsonValue()).catch(() => null)
   check(nothing === 'nobody said that', `a query nothing matches opens the sheet and says so, got ${JSON.stringify(nothing)}`)
-  check(await page.evaluate((before) => [...document.querySelectorAll('#rail .sess')].map((r) => r.outerHTML).join('') === before, railBefore),
-    'and the rail under it is exactly as it was')
+  check(await railRows() === railBefore, 'and the rail under it is exactly as it was')
   await page.keyboard.press('Escape')
   check(await page.evaluate(() => !document.querySelector('.srch:not([hidden])') && document.querySelector('#rail .arcfilter .arcq')?.value === ''),
     'Esc closes the sheet and empties the field')
@@ -3380,13 +3383,13 @@ try {
     if (!c) return null
     return {
       title: c.querySelector('.ovc-title b')?.textContent,
-      files: [...c.querySelectorAll('.ovc-file')].map((f) => f.querySelector('.ovc-path')?.textContent),
+      rows: [...c.querySelectorAll('.ovc-cfl button.ovc-who')].map((b) => b.querySelector('.ovc-state')?.textContent),
       who: c.querySelectorAll('button.ovc-who').length,
       now: c.querySelector('.ovc-now')?.textContent ?? null,
     }
   }, null, { timeout: 5000 }).then((h) => h.jsonValue()).catch(() => null)
-  check(!!card && card.title === 'Conflicts' && card.who === 1 && card.files.includes('both-made.txt'),
-    `hovering the mark opens the Conflicts card with the other session and the shared file, got ${JSON.stringify(card)}`)
+  check(!!card && card.title === 'Conflicts' && card.who === 1 && card.rows[0] === '1 file',
+    `hovering the mark opens the Conflicts card with one row for the other session and its file count, got ${JSON.stringify(card)}`)
   check(card?.now === 'Tell them now', `and it offers to tell them now, got ${JSON.stringify(card?.now)}`)
   await page.click('.ovcard button.ovc-who')
   check(await page.evaluate(async () => (await import('/js/core.js')).selected) === session,

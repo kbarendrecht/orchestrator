@@ -654,7 +654,13 @@ conflicts: number,
  * Whether orchd is asking the user on this workspace's session to restack
  * it and force-push.
  */
-asking: boolean, };
+asking: boolean, 
+/**
+ * Whether this branch carries an older version of the one under it: no new
+ * commits under it, but files the two do not agree on. The lower branch was
+ * rewritten, and a restack drops the old copies.
+ */
+stale: boolean, };
 
 export type State = { "state": "starting" } | { "state": "working" } | { "state": "your_turn", since: { secs_since_epoch: number, nanos_since_epoch: number }, reason: TurnReason, } | { "state": "build_failing", summary: string, 
 /**
