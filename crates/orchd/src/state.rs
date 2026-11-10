@@ -907,7 +907,7 @@ impl Inner {
             .overlaps
             .iter()
             // A file that merges cleanly is not a reason to stop and rebase.
-            .filter(|p| self.real_conflict(p) && p.involves(&merged))
+            .filter(|p| p.involves(&merged) && self.real_conflict(p))
             .map(|p| p.other(&merged).to_string())
             .filter(|ws| !queued.contains(ws))
             .collect::<std::collections::BTreeSet<_>>()
@@ -917,7 +917,7 @@ impl Inner {
             let files: Vec<String> = self
                 .overlaps
                 .iter()
-                .filter(|p| self.real_conflict(p) && p.involves(&merged) && p.other(&merged) == ws)
+                .filter(|p| p.involves(&merged) && p.other(&merged) == ws && self.real_conflict(p))
                 .map(|p| format!("- {}", p.found.path))
                 .collect();
             for s in self
@@ -1028,7 +1028,7 @@ impl Inner {
             let paths: Vec<&str> = self
                 .overlaps
                 .iter()
-                .filter(|p| self.real_conflict(p) && p.involves(mine) && p.other(mine) == ws)
+                .filter(|p| p.involves(mine) && p.other(mine) == ws && self.real_conflict(p))
                 .map(|p| p.found.path.as_str())
                 .collect();
             let name = b.label().unwrap_or(&b.workspace).to_string();
@@ -2147,9 +2147,12 @@ impl AppState {
                 overlaps: inner
                     .overlaps
                     .iter()
-                    .filter(|p| inner.real_conflict(p))
+                    // The cheap tests first: `real_conflict` walks the stacks, and
+                    // run over every pair for every workspace it made one snapshot
+                    // of a 306-workspace checkout take 8.7 seconds.
                     .filter(|p| p.involves(&w.id) && live_ids.contains(w.id.as_str()))
                     .filter(|p| live_ids.contains(p.other(&w.id)))
+                    .filter(|p| inner.real_conflict(p))
                     .map(|p| OverlapView {
                         path: p.found.path.clone(),
                         with: p.other(&w.id).to_string(),
@@ -2404,10 +2407,10 @@ impl AppState {
             .iter()
             .filter(|p| {
                 // Only a conflict is worth the agent's attention, as on the board.
-                inner.real_conflict(p)
-                    && p.involves(&ws)
+                p.involves(&ws)
                     && inner.workspaces.contains_key(p.other(&ws))
                     && inner.has_live_session(p.other(&ws))
+                    && inner.real_conflict(p)
             })
             .map(|p| (p.found.path.clone(), p.other(&ws).to_string(), true))
             .filter(|k| {
@@ -2605,7 +2608,7 @@ impl AppState {
             let theirs: std::collections::HashSet<&str> = inner
                 .overlaps
                 .iter()
-                .filter(|p| inner.real_conflict(p) && p.involves(&ws))
+                .filter(|p| p.involves(&ws) && inner.real_conflict(p))
                 .map(|p| p.other(&ws))
                 .collect();
             inner
