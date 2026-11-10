@@ -2216,6 +2216,10 @@ impl AppState {
                         StackView {
                             conflicts,
                             stale: s.behind == 0 && conflicts > 0,
+                            upstream: inner
+                                .upstream_conflicts
+                                .get(&w.id)
+                                .map_or(0, |(_, f)| u32::try_from(f.len()).unwrap_or(u32::MAX)),
                             on: lower,
                             behind: s.behind,
                             asking: inner
@@ -2224,10 +2228,17 @@ impl AppState {
                                 .any(|x| x.workspace == w.id && x.restack_ask.is_some()),
                         }
                     }),
+                /* **Not on the upper half of a stack**, where it is the stack's to
+                settle from the bottom, and its agent is never told to rebase onto
+                upstream alone (`upstream_note`). Shown there as a conflict, it
+                offered "Tell it now" for a note that does not exist, and the press
+                answered "nothing new to tell". The Stacked card carries the count
+                instead (`StackView::upstream`). */
                 upstream_conflicts: inner
                     .upstream_conflicts
                     .get(&w.id)
                     .filter(|_| live_ids.contains(w.id.as_str()))
+                    .filter(|_| inner.stacked_on(&w.id).is_none())
                     .map(|(_, files)| files.clone())
                     .unwrap_or_default(),
             })
@@ -4194,6 +4205,10 @@ pub struct StackView {
     /// commits under it, but files the two do not agree on. The lower branch was
     /// rewritten, and a restack drops the old copies.
     pub stale: bool,
+    /// Files of this branch git cannot merge with the upstream ref. A question
+    /// for the whole stack, settled from its lowest branch, so it is shown here
+    /// and not as a conflict of this branch.
+    pub upstream: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -6064,6 +6079,47 @@ mod tests {
         eprintln!(
             "snapshot of {WORKSPACES} workspaces, {} overlaps: {took:?}",
             inner.overlaps.len()
+        );
+    }
+
+    /// An upper branch's conflict with upstream is the stack's question: it shows
+    /// on the stack, where no tell link promises a note its agent is never sent.
+    #[tokio::test]
+    async fn a_stacked_branch_shows_its_upstream_conflict_on_the_stack() {
+        let app = app().await;
+        let up = live_worktree(&app, "up", "/tmp/up", &["src/a.rs"]).await;
+        let _low = live_worktree(&app, "low", "/tmp/low", &["src/a.rs"]).await;
+        {
+            let mut inner = app.inner.write().await;
+            inner.stacks.insert(
+                ("low".into(), "up".into()),
+                crate::overlap::Stack {
+                    lower_is_a: true,
+                    behind: 0,
+                    lower_tip: "t".into(),
+                    anchor: "t".into(),
+                    lower_commits: 1,
+                },
+            );
+            inner
+                .upstream_conflicts
+                .insert("up".into(), ([1, 1, 1, 1, 1], vec!["src/a.rs".into()]));
+        }
+        let snap = app.snapshot().await;
+        let w = snap.workspaces.iter().find(|w| w.id == "up").expect("up");
+        assert!(
+            w.upstream_conflicts.is_empty(),
+            "not as a conflict of its own"
+        );
+        assert_eq!(
+            w.stacked_on.as_ref().map(|s| s.upstream),
+            Some(1),
+            "but on the stack"
+        );
+        let note = app.overlap_note(up).await.unwrap_or_default();
+        assert!(
+            !note.contains("Rebase onto"),
+            "and its agent is not told to rebase onto upstream alone: {note}"
         );
     }
 

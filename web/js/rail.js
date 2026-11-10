@@ -2989,9 +2989,15 @@ function fillStackCard(
     }
     if (i < rows.length - 1) ladder.appendChild(gap(w.stacked_on));
   });
-  ladder.appendChild(gap(null));
-  const base = ladder.appendChild(el('div', 'ovc-rung'));
-  const baseName = base.appendChild(el('span', 'ovc-rname'));
+  /* The stack against the base: a question for the whole stack, settled from
+     its bottom, so it is here and not a conflict with a tell link that has no
+     note behind it. */
+  const base = ladder.appendChild(el('div', 'ovc-gap' + (stack.upstream ? ' warn' : '')));
+  base.appendChild(el('span', '', stack.upstream
+    ? `${state.upstream_ref.replace(/^[^/]+\//, '')} moved on, ${stack.upstream} file${stack.upstream === 1 ? '' : 's'} will not merge`
+    : ''));
+  const bottom = ladder.appendChild(el('div', 'ovc-rung'));
+  const baseName = bottom.appendChild(el('span', 'ovc-rname'));
   baseName.append(el('span', 'ovc-node base'), el('span', 'ovc-name', state.upstream_ref));
   if (stack.asking) {
     const q = card.appendChild(el('button', 'ovc-ask', 'Asking you on the session: restack and push?'));

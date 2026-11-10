@@ -660,7 +660,13 @@ asking: boolean,
  * commits under it, but files the two do not agree on. The lower branch was
  * rewritten, and a restack drops the old copies.
  */
-stale: boolean, };
+stale: boolean, 
+/**
+ * Files of this branch git cannot merge with the upstream ref. A question
+ * for the whole stack, settled from its lowest branch, so it is shown here
+ * and not as a conflict of this branch.
+ */
+upstream: number, };
 
 export type State = { "state": "starting" } | { "state": "working" } | { "state": "your_turn", since: { secs_since_epoch: number, nanos_since_epoch: number }, reason: TurnReason, } | { "state": "build_failing", summary: string, 
 /**

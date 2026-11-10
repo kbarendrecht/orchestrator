@@ -483,6 +483,7 @@ button.ovc-rname:hover{background:var(--hover)}
 .ovc-gap.behind{color:var(--done)}
 .ovc-gap.behind::before{background:repeating-linear-gradient(var(--done) 0 3px,transparent 3px 6px)}
 .ovc-gap span{padding:1px 0 1px 8px}
+.ovc-gap.warn{color:var(--attn)}
 /* When the agents hear about it: a statement, with the sooner way as a quiet link. */
 .ovc-line{padding:6px 12px 2px;font-size:calc(11px * var(--fs));color:var(--dim)}
 .ovc-now{color:var(--faint-solid);text-decoration:underline;text-decoration-color:var(--line);text-underline-offset:3px}
