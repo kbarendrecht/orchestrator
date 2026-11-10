@@ -2392,6 +2392,11 @@ mod tests {
             };
             w.tree.branch = Some("x-branch".into());
             inner.workspaces.insert(other.clone(), w);
+            // Main on a branch, as it is outside a test: a detached tree is no
+            // party to a conflict (`Inner::real_conflict`).
+            if let Some(m) = inner.workspaces.get_mut(MAIN) {
+                m.tree.branch = Some("develop".into());
+            }
         }
         let set = |lines: bool| {
             let app = app.clone();

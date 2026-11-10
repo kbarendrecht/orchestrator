@@ -241,11 +241,24 @@ pub fn stack_of(a: &Path, b: &Path, upstream: &str, before: Option<&Stack>) -> O
     if git(a, &["merge-base", "--is-ancestor", &shared, upstream]).is_ok() {
         return copied_stack(a, &ha, &hb, upstream, before);
     }
-    let lower_is_a = match (born(a), born(b)) {
-        (Some(x), Some(y)) if x != y => x < y,
-        _ if ha == shared => true,
-        _ if hb == shared => false,
-        _ => return None,
+    /* **Which way up: containment, then what it was, then age.** A branch whose
+    head is the shared commit is the one under the other, whatever its age: a
+    branch cut on 4 November and rebased onto one cut on 9 November is stacked
+    on the newer one, and reading the reflog first named it the lower branch.
+    That turned the stack upside down, hid it, and brought back as conflicts the
+    files it shares with its siblings. Once both have moved past the shared
+    commit, the stack as it was last known still knows; age is the last resort. */
+    let lower_is_a = if ha == shared {
+        true
+    } else if hb == shared {
+        false
+    } else if let Some(b4) = before {
+        b4.lower_is_a
+    } else {
+        match (born(a), born(b)) {
+            (Some(x), Some(y)) if x != y => x < y,
+            _ => return None,
+        }
     };
     let (lower, upper) = if lower_is_a { (&ha, &hb) } else { (&hb, &ha) };
     let count = |range: String| -> u32 {
@@ -543,6 +556,81 @@ mod tests {
 
     /// Two real trees off one base: a shared file changed on the same line, one
     /// changed far apart, a lockfile both touched, and a file only one changed.
+    /// A branch made first and later rebased onto a newer one is the upper one:
+    /// which contains which decides, not which is older.
+    #[test]
+    fn an_older_branch_rebased_onto_a_newer_one_is_stacked_on_it() {
+        let root = std::env::temp_dir().join(format!("orchd-flip-{}", uuid::Uuid::new_v4()));
+        let main = root.join("main");
+        std::fs::create_dir_all(&main).unwrap();
+        // A fixed clock per call, so the reflog says the old branch is older.
+        let at = |cwd: &Path, when: &str, args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(cwd)
+                .env("GIT_COMMITTER_DATE", when)
+                .env("GIT_AUTHOR_DATE", when)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        let (d1, d2, d3) = (
+            "2026-11-04T10:00:00Z",
+            "2026-11-09T10:00:00Z",
+            "2026-11-10T10:00:00Z",
+        );
+        at(&main, d1, &["init", "-q", "-b", "develop"]);
+        at(&main, d1, &["config", "user.email", "t@t"]);
+        at(&main, d1, &["config", "user.name", "t"]);
+        std::fs::write(main.join("base.txt"), "base\n").unwrap();
+        at(&main, d1, &["add", "-A"]);
+        at(&main, d1, &["commit", "-qm", "base"]);
+        let old = root.join("old");
+        at(
+            &main,
+            d1,
+            &["worktree", "add", "-q", "-b", "old", old.to_str().unwrap()],
+        );
+        std::fs::write(old.join("mine.txt"), "mine\n").unwrap();
+        at(&old, d1, &["add", "-A"]);
+        at(&old, d1, &["commit", "-qm", "old work"]);
+        let new = root.join("new");
+        at(
+            &main,
+            d2,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "new",
+                new.to_str().unwrap(),
+                "develop",
+            ],
+        );
+        std::fs::write(new.join("under.txt"), "under\n").unwrap();
+        at(&new, d2, &["add", "-A"]);
+        at(&new, d2, &["commit", "-qm", "new work"]);
+        at(&old, d3, &["rebase", "-q", "new"]);
+
+        let s = stack_of(&old, &new, "develop", None).expect("a stack");
+        assert!(
+            !s.lower_is_a,
+            "the newer branch is under the older one it was rebased onto"
+        );
+        assert!(
+            stack_of(&new, &old, "develop", None)
+                .expect("a stack")
+                .lower_is_a,
+            "whichever side asks"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// A lower branch rewritten after the upper one copied it: the cut is the
     /// upper's copy of the last lower commit, found by its subject, and a rebase
     /// from there keeps only the upper's own commit on the new version.

@@ -1106,6 +1106,18 @@ impl Inner {
         if !p.found.conflict || self.stacked(p) {
             return false;
         }
+        /* **Not with a detached checkout**: it has no branch, so it opens no PR
+        and has no merge to fail. A QA checkout of a story was told it conflicted
+        with another session's PR, about work it will never merge. */
+        let on_branch = |id: &str| {
+            self.workspaces
+                .get(id)
+                .and_then(|w| w.tree.branch.as_deref())
+                .is_some_and(|b| b != "HEAD")
+        };
+        if !on_branch(&p.a) || !on_branch(&p.b) {
+            return false;
+        }
         let (la, lb) = (self.lowers_of(&p.a), self.lowers_of(&p.b));
         !la.intersection(&lb).any(|l| {
             self.workspaces
@@ -5735,6 +5747,7 @@ mod tests {
             tree: Default::default(),
             banked: None,
         };
+        w.tree.branch = Some(format!("branch-{id}"));
         w.tree.changed = files
             .iter()
             .map(|p| crate::model::DiffFile {
@@ -5956,6 +5969,13 @@ mod tests {
             "the lower branch's file"
         );
         assert!(inner.real_conflict(&pair("src/own.rs")), "their own file");
+        // A detached checkout, such as a QA copy, has no PR to conflict.
+        inner.workspaces.get_mut("two").expect("two").tree.branch = Some("HEAD".into());
+        assert!(
+            !inner.real_conflict(&pair("src/own.rs")),
+            "not with a detached tree"
+        );
+        inner.workspaces.get_mut("two").expect("two").tree.branch = Some("branch-two".into());
         inner.stacks.clear();
         assert!(
             inner.real_conflict(&pair("src/lower.rs")),
@@ -6169,7 +6189,10 @@ mod tests {
                 branches: Default::default(),
                 processes: Vec::new(),
                 occupant: None,
-                tree: Default::default(),
+                tree: crate::model::Tree {
+                    branch: Some("feature-x".into()),
+                    ..Default::default()
+                },
                 banked: None,
             },
         );
