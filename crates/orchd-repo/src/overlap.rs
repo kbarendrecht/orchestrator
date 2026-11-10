@@ -207,6 +207,15 @@ pub fn stack_of(a: &Path, b: &Path, upstream: &str, before: Option<&Stack>) -> O
             .map(|s| s.trim().to_string())
     };
     let (ha, hb) = (head(a)?, head(b)?);
+    /* **Two branches, two heads, or no stack.** A detached checkout has no branch
+    to build on or to stack, and two trees on one commit are the same work twice.
+    A QA checkout of a story branch was both: detached at the story's own head,
+    it had no reflog date, so the fallback below named it the lower branch and
+    the story's row wore a stack mark on its own copy. */
+    let on_branch = |p: &Path| git(p, &["symbolic-ref", "-q", "HEAD"]).is_ok();
+    if ha == hb || !on_branch(a) || !on_branch(b) {
+        return None;
+    }
     let shared = git(a, &["merge-base", &ha, &hb]).ok()?.trim().to_string();
     // When the branch was made: the oldest reflog entry's own date. Not `%ct`,
     // which is the commit's, and a branch cut from another starts on the very
@@ -846,6 +855,37 @@ mod tests {
             stack_of(&lower, &upper, "develop", None)
                 .expect("a stack")
                 .lower_is_a
+        );
+
+        // A QA checkout: detached at the upper branch's own head. The same work,
+        // so no stack with it, and no stack with what it was cut from either.
+        let qa = root.join("qa");
+        at(
+            &main,
+            later,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "--detach",
+                qa.to_str().unwrap(),
+                "upper",
+            ],
+        );
+        assert_eq!(
+            stack_of(&qa, &upper, "develop", None),
+            None,
+            "the same commit twice"
+        );
+        assert_eq!(
+            stack_of(&upper, &qa, "develop", None),
+            None,
+            "whichever side asks"
+        );
+        assert_eq!(
+            stack_of(&qa, &lower, "develop", None),
+            None,
+            "a detached tree is no branch"
         );
 
         // **Restacked onto a newer `develop`**, the way an agent does it: the

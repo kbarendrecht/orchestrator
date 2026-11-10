@@ -174,6 +174,14 @@ pub struct SessionRecord {
     pub agent: crate::agent::Agent,
     #[serde(default)]
     pub agent_session_id: Option<String>,
+    /// What the agent has been told about overlaps and upstream conflicts, so a
+    /// restart neither tells it again nor shows a card saying it still will be.
+    /// The conversation is resumed with everything it was told, so the record
+    /// keeps that too.
+    #[serde(default)]
+    pub told_overlaps: std::collections::HashSet<(String, String, bool)>,
+    #[serde(default)]
+    pub told_upstream: Vec<String>,
 }
 
 impl SessionRecord {
@@ -206,6 +214,8 @@ impl SessionRecord {
             launch: s.launch.clone(),
             agent: s.agent,
             agent_session_id: s.agent_session_id.clone(),
+            told_overlaps: s.told_overlaps.clone(),
+            told_upstream: s.told_upstream.clone(),
         }
     }
 
@@ -238,6 +248,8 @@ impl SessionRecord {
         s.launch = self.launch;
         s.agent = self.agent;
         s.agent_session_id = self.agent_session_id;
+        s.told_overlaps = self.told_overlaps;
+        s.told_upstream = self.told_upstream;
         // After the fields, not before: `resumable` reads `recovery` and
         // `had_a_turn`, so computing it on a half-built session answers about the
         // defaults.
@@ -1800,6 +1812,8 @@ mod tests {
                 launch: Default::default(),
                 agent: crate::agent::Agent::Claude,
                 agent_session_id: None,
+                told_overlaps: Default::default(),
+                told_upstream: Vec::new(),
             }
         };
 
@@ -2455,6 +2469,28 @@ mod tests {
         }))
         .expect("a record from before the field still loads");
         assert_eq!(old.restore().pr, None);
+    }
+
+    /// What a session was told survives the record, through JSON as it is
+    /// written, so a restart neither tells it again nor shows a card that says it
+    /// still will be.
+    #[test]
+    fn what_a_session_was_told_survives_the_record() {
+        let mut s = crate::model::Session::new(
+            uuid::Uuid::new_v4(),
+            "wt".into(),
+            std::path::Path::new("/tmp").to_path_buf(),
+            None,
+        );
+        s.told_overlaps
+            .insert(("src/a.rs".into(), "other".into(), true));
+        s.told_upstream = vec!["src/b.rs".into()];
+        let json = serde_json::to_value(SessionRecord::of(&s)).expect("serialises");
+        let back = serde_json::from_value::<SessionRecord>(json)
+            .expect("loads")
+            .restore();
+        assert_eq!(back.told_overlaps, s.told_overlaps);
+        assert_eq!(back.told_upstream, s.told_upstream);
     }
 
     /// A restart brings a session back in its recorded *directory*, so the branch

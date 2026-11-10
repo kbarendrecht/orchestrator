@@ -467,6 +467,10 @@ struct Carried {
     /// fork cuts its own branches and opens its own PRs.
     branches: Vec<String>,
     prs: Vec<crate::model::SessionPr>,
+    /// What the conversation was told about overlaps and upstream, on both: a
+    /// resume continues it and a fork replays it, so either already knows.
+    told_overlaps: std::collections::HashSet<(String, String, bool)>,
+    told_upstream: Vec<String>,
     /// When this conversation actually began, which a resume otherwise loses.
     ///
     /// `Session::new` stamps it with *now*, and a resume rebuilds the record under
@@ -524,6 +528,8 @@ impl Carried {
                 prev.branches.clone()
             },
             prs: if fork { Vec::new() } else { prev.prs.clone() },
+            told_overlaps: prev.told_overlaps.clone(),
+            told_upstream: prev.told_upstream.clone(),
             // Resume only. A fork is a new conversation and started when it was
             // forked, so the files you rewrote before it existed are news to it.
             created_at: (!fork).then_some(prev.created_at),
@@ -566,6 +572,8 @@ impl Carried {
         session.pr = self.pr;
         session.branches = self.branches;
         session.prs = self.prs;
+        session.told_overlaps = self.told_overlaps;
+        session.told_upstream = self.told_upstream;
         session.agent = self.agent;
         session.agent_session_id = self.agent_session_id;
         if self.transcript.is_some() {

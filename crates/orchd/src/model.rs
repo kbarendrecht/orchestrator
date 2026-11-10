@@ -744,15 +744,16 @@ pub struct Session {
     /// workspace, conflict)`, so each is said once.
     ///
     /// An overlap that grows from the same file to a conflict is a new entry and
-    /// is said again. Memory only: after a restart an agent is told once more,
-    /// which costs a line of context and loses nothing.
+    /// is said again. Persisted (`SessionRecord`) and carried on a resume: a card
+    /// that said "is told on its next prompt" after every restart, about sessions
+    /// that had been told, read as if they had not.
     pub told_overlaps: HashSet<(String, String, bool)>,
     /// The files this session was warned about at an edit, as `(path, other
     /// workspace)`: another live session had changed the file first. Said once,
     /// because the warning is a refused edit. Memory only.
     pub edit_warned: HashSet<(String, String)>,
     /// The files git could not merge with upstream when this session was last
-    /// told, so a list it has heard is not said again. Memory only.
+    /// told, so a list it has heard is not said again. Persisted, like the above.
     pub told_upstream: Vec<String>,
     /// The lower branches this session was told how to open a stacked PR on, so
     /// a `gh pr create` is held once per stack. Memory only.
