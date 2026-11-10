@@ -12,19 +12,20 @@ import * as Term from './term.js';
 /** @type {Record<string, boolean>} */
 const showArchived = { main: false, worktrees: false };
 
-/* The archive filter, per checkout, and the two halves of its answer.
+/* The conversation search, per checkout, and the two halves of its answer.
  *
  * **Names are free and transcripts are not**, which is the whole shape of this:
- * `arcQuery` filters the rows the snapshot already carries, on every keystroke,
+ * `arcQuery` matches the names the snapshot already carries, on every keystroke,
  * with no request at all; `arcHits` is what `/api/archive/search` came back with
- * for that same query, and it arrives when it arrives. Keyed by checkout path,
- * because the archive is one checkout's and so is its filter.
+ * for that same query, live conversations and past ones, and it arrives when it
+ * arrives. Keyed by checkout path, because the field is one checkout's.
  *
- * `busy` is what draws the spinner, and it is the *last* row: hits land above it,
- * so nothing already on screen moves when the slow half lands. */
+ * `busy` is what draws the spinner, and it is the *last* row of the results:
+ * hits land above it, so nothing already on screen moves when the slow half
+ * lands. */
 /** @type {Record<string, string>} */
 const arcQuery = {};
-/** @type {Record<string, { q: string, busy: boolean, hits: Record<string, string> }>} */
+/** @type {Record<string, { q: string, busy: boolean, hits: Record<string, { line: string, who: string }> }>} */
 const arcHits = {};
 /** @type {Record<string, ReturnType<typeof setTimeout>>} */
 const arcTimer = {};
@@ -197,6 +198,7 @@ function renderRail() {
   reconcile($('railfoot'), [{ key: 'addco', sig: addco.outerHTML, build: () => addco }]);
   reconcile(rail, items);
   if (spotFor) spotlight(spotFor);
+  renderSearch();
 
   // Its own pane below the scroller, so it stays put while sessions scroll. It
   // describes one repository, so it follows the checkout you are in.
@@ -1246,28 +1248,19 @@ function fillSessions(/** @type {HTMLElement} */ group, /** @type {import('./cor
     }
   }
 
-  /* **The filter, over the whole list**: live rows and past ones answer the same
-     box. Built once and kept, whatever else moves: it holds the caret and the
-     focus, and a rebuilt input loses both. Its count is written in `fill`
-     instead, which is the one part of it that changes. */
+  /* **The search field, over the whole list.** Its results open in a sheet over
+     the rail (`renderSearch`) rather than filtering the rows under it, so the
+     rail does not move while you type. Built once and kept, whatever else moves:
+     it holds the caret and the focus, and a rebuilt input loses both. Its count
+     is written in `fill` instead, which is the one part of it that changes. */
   if (mainActive.length + treeActive.length + archived.length + external.length) {
     items.push({
       key: 'filter',
       sig: 'filter',
-      build: () => archiveFilter(c),
+      build: () => searchField(c),
       fill: (/** @type {HTMLElement} */ f) => {
-        const { q } = filterOf(c);
-        const live = [...mainActive, ...treeActive];
-        const { byName, byText } = pastMatches(c, archived, external);
-        const shownLive = live.filter((s) => !liveFilter(c, s, { id: s.workspace }).off).length;
         const n = f.querySelector('.arcn');
-        if (n) n.textContent = q ? `${shownLive + byName.length + byText.length} of ${live.length + archived.length + external.length}` : '';
-        if (focusFilterOf === c.path) {
-          focusFilterOf = null;
-          const input = f.querySelector('input');
-          // After the frame that puts it in the page: a detached input takes no focus.
-          requestAnimationFrame(() => input?.focus());
-        }
+        if (n) n.textContent = searchQuery(c) ? String(searchResults(c, state).length) : '';
       },
     });
   }
@@ -1360,26 +1353,12 @@ function fillSessions(/** @type {HTMLElement} */ group, /** @type {import('./cor
      from the drawing again. */
   const rowSig = (/** @type {import('../snapshot').SessionView} */ s, /** @type {any} */ w, /** @type {boolean} */ fromMain) =>
     paintSig([s, w, s.id === selected, startingShown(), fromMain, order, c.path,
-      stateLabel(s), stateClass(s), dotClass(s), hasPr(s), overlapMark(state, s.workspace), liveFilter(c, s, w)], NOT_DRAWN);
-  /** A live row as the filter leaves it: faded, or saying the line it matched.
-   *  @param {HTMLElement} row @param {import('../snapshot').SessionView} s @param {{ id: string | null }} w */
-  const filtered = (row, s, w) => {
-    const f = liveFilter(c, s, w);
-    if (f.off) row.classList.add('arcoff');
-    const sub = f.said ? row.querySelector('.sess-sub') : null;
-    if (sub && f.said) {
-      sub.replaceChildren(f.said);
-      sub.classList.add('said');
-      sub.setAttribute('title', f.said);
-    }
-    return row;
-  };
-
+      stateLabel(s), stateClass(s), dotClass(s), hasPr(s), overlapMark(state, s.workspace)], NOT_DRAWN);
   for (const s of mainRows) {
     items.push({
       key: `s:${s.id}`,
       sig: rowSig(s, main, true),
-      build: () => draggable(filtered(sessionRow(s, main, true, overlapMark(state, s.workspace)), s, main ?? { id: null }), s, 'main'),
+      build: () => draggable(sessionRow(s, main, true, overlapMark(state, s.workspace)), s, 'main'),
     });
   }
   if (starting && !creatingIntoMain()) items.push(placeholder);
@@ -1388,7 +1367,7 @@ function fillSessions(/** @type {HTMLElement} */ group, /** @type {import('./cor
     items.push({
       key: `s:${s.id}`,
       sig: rowSig(s, { id: s.workspace }, false),
-      build: () => draggable(filtered(sessionRow(s, { id: s.workspace }, false, overlapMark(state, s.workspace)), s, { id: s.workspace }), s, 'tree'),
+      build: () => draggable(sessionRow(s, { id: s.workspace }, false, overlapMark(state, s.workspace)), s, 'tree'),
     });
   }
 
@@ -1409,8 +1388,7 @@ function fillSessions(/** @type {HTMLElement} */ group, /** @type {import('./cor
 
      Keyed inside it, because an archived row is hovered and clicked like a live
      one and has the same claim on surviving a repaint. */
-  // Open while something is typed, too: the box above searches it.
-  if ((archived.length || external.length) && (archiveOpen(c, 'sessions', archived).open || filterOf(c).q)) {
+  if ((archived.length || external.length) && archiveOpen(c, 'sessions', archived).open) {
     items.push({
       key: 'arcbox',
       sig: 'arcbox',
@@ -1421,17 +1399,14 @@ function fillSessions(/** @type {HTMLElement} */ group, /** @type {import('./cor
   reconcile(group, items);
 }
 
-/** The archive, filtered.
+/** The archive: past conversations, grouped by week.
  *
- *  **One field, one list, two waves.** The names are in the snapshot this page
- *  already holds, so they filter on the keystroke with no request at all; the
- *  transcripts are megabytes on disk, so they are asked for on a debounce and
- *  appended when they come back. Names first is not a preference: anything drawn
- *  above the wait would be pushed down when the slow half lands, and the row you
- *  were reaching for would move under the pointer.
- *
- *  No divider between the two. A transcript hit says what it is by carrying the
- *  line it matched, where a name hit shows its state.
+ *  **Not filtered any more.** The search field over the list answers in a sheet
+ *  of its own (`renderSearch`), so this is the list you scan weeks later and
+ *  nothing else: a run of rows that all say "12d" is not something you can scan,
+ *  so it is grouped. The outside conversations follow under their own heading,
+ *  since the two lists are kept apart on purpose: an archived row knows its
+ *  branch and rebuilds its worktree, an outside row knows a file and a directory.
  *
  *  @param {HTMLElement} box
  *  @param {import('./core.js').Target} c
@@ -1439,98 +1414,21 @@ function fillSessions(/** @type {HTMLElement} */ group, /** @type {import('./cor
  *  @param {import('../snapshot').ExternalView[]} external
  */
 function fillArchive(box, c, archived, external) {
-  const { q, hits, busy } = filterOf(c);
-  const { byName, byText } = pastMatches(c, archived, external);
-
-  /* **Grouped by week while nothing is typed**, because this is the list you scan
-     weeks later and a run of rows that all say "12d" is not something you can
-     scan. Not while filtering: a query answers which rows, and the answer is
-     short enough to read whole. The outside conversations follow under their own
-     heading, since the two lists are kept apart on purpose (above). */
-  const grouped = !q;
   /** @type {any[]} */
   const listed = [];
   let week = '';
-  for (const r of byName) {
-    if (grouped) {
-      const label = 'last_used_ms' in r ? 'outside orchd' : weekLabel(weekOf(r.created_ms));
-      if (label !== week) {
-        week = label;
-        listed.push({ key: `wk:${label}`, sig: `wk:${label}`, build: () => el('div', 'arcweek', label) });
-      }
+  // Already newest-first, and capped, by the daemon that found them.
+  for (const r of [...[...archived].sort(byNewest), ...external]) {
+    const label = 'last_used_ms' in r ? 'outside orchd' : weekLabel(weekOf(r.created_ms));
+    if (label !== week) {
+      week = label;
+      listed.push({ key: `wk:${label}`, sig: `wk:${label}`, build: () => el('div', 'arcweek', label) });
     }
-    listed.push(r);
+    listed.push('last_used_ms' in r
+      ? { key: `ext:${r.id}`, sig: paintSig([r, c.path], NOT_DRAWN), build: () => externalRow(c, r) }
+      : { key: `arc:${r.id}`, sig: paintSig([r, r.id === selected], NOT_DRAWN), build: () => archivedRow(r) });
   }
-
-  const row = (/** @type {any} */ r, /** @type {string | undefined} */ said) => ('last_used_ms' in r
-    ? { key: `ext:${r.id}`, sig: paintSig([r, c.path, said ?? ''], NOT_DRAWN), build: () => externalRow(c, r, said) }
-    : { key: `arc:${r.id}`, sig: paintSig([r, r.id === selected, said ?? ''], NOT_DRAWN), build: () => archivedRow(r, said) });
-
-  reconcile(box, [
-    ...listed.map((r) => ('build' in r ? r : row(r, undefined))),
-    ...byText.map((r) => row(r, hits[r.id])),
-    // Last, always: hits land above it as they arrive, so nothing already drawn
-    // moves when the slow half of the search finishes.
-    ...(busy ? [{ key: 'arcbusy', sig: 'arcbusy', build: () => searchingRow() }] : []),
-  ]);
-}
-
-/** The rail filter's query for checkout `c`, and the transcript answer to it.
- *  Only the answer to the query in the box: an older one is about a word that is
- *  no longer in there, and showing it is worse than showing nothing.
- *  @param {import('./core.js').Target} c */
-function filterOf(c) {
-  const q = (arcQuery[c.path] || '').trim().toLowerCase();
-  const answer = arcHits[c.path];
-  /** @type {Record<string, string>} */
-  const hits = answer && answer.q === q ? answer.hits : {};
-  return { q, hits, busy: !!answer && answer.q === q && answer.busy };
-}
-
-/** The past conversations the filter lets through: by name, then by what was
- *  said in them.
- *
- *  The daemon's own first, then the outside ones. Two lists rather than one merged
- *  by age, because the two rows do not offer the same thing: an archived row knows
- *  its branch and rebuilds its worktree, an outside row knows a file and a
- *  directory. Interleaving them would make which of those you get depend on when
- *  you last spoke to it.
- *
- *  @param {import('./core.js').Target} c
- *  @param {import('../snapshot').SessionView[]} archived
- *  @param {import('../snapshot').ExternalView[]} external */
-function pastMatches(c, archived, external) {
-  const { q, hits } = filterOf(c);
-  const named = (/** @type {string} */ text) => !q || text.toLowerCase().includes(q);
-  const byName = [
-    ...[...archived].sort(byNewest)
-      .filter((/** @type {import('../snapshot').SessionView} */ s) => named(railName(s, { id: s.workspace }))),
-    // Already newest-first, and capped, by the daemon that found them.
-    ...external.filter((/** @type {import('../snapshot').ExternalView} */ x) => named(x.title || '')),
-  ];
-  // A session the name already listed must not appear twice: the name hit wins,
-  // because it is the one that is certainly about this conversation.
-  const shownIds = new Set(byName.map((r) => r.id));
-  const byText = [
-    ...[...archived].sort(byNewest)
-      .filter((/** @type {import('../snapshot').SessionView} */ s) => !shownIds.has(s.id) && hits[s.id]),
-    ...external.filter((/** @type {import('../snapshot').ExternalView} */ x) => !shownIds.has(x.id) && hits[x.id]),
-  ];
-  return { byName, byText };
-}
-
-/** What the filter does to a live row: nothing while it is empty; a row that
- *  matches by name stays as it is, one that matches by what was said shows that
- *  line instead of its state, and the rest fade. Fading waits for the transcript
- *  answer, so a row does not fade and come back while it is on its way.
- *  @param {import('./core.js').Target} c
- *  @param {import('../snapshot').SessionView} s @param {{ id: string | null } | undefined} w */
-function liveFilter(c, s, w) {
-  const { q, hits, busy } = filterOf(c);
-  if (!q) return { off: false, said: null };
-  if (railName(s, w).toLowerCase().includes(q)) return { off: false, said: null };
-  if (hits[s.id]) return { off: false, said: hits[s.id] };
-  return { off: !busy && q.length >= ARC_MIN, said: null };
+  reconcile(box, listed);
 }
 
 /** The Monday, at midnight, that starts the week a session began in.
@@ -1557,36 +1455,47 @@ function weekLabel(/** @type {Date} */ monday) {
   return `week of ${date}`;
 }
 
-/** The checkout whose archive was just opened from the rail, so its filter is
- *  given the keyboard when it is drawn. Kept by path rather than by element,
- *  because the press that opens it also redraws the row it came from. */
-/** @type {string | null} */
-let focusFilterOf = null;
-
-/** The filter line, at the top of a checkout's list.
+/** The search field, at the top of a checkout's list.
  *
- *  It used to sit inside the archive box and read past conversations only. It
- *  is over the whole list now, because "which session was that" is asked of the
- *  running ones as often, and the archive opens by itself while it has a query.
+ *  It used to sit inside the archive box and filter the rows under it. It
+ *  searches every conversation now, live and past, and answers in a sheet over
+ *  the rail, so the rows you are working in never move while you type. ↑ and ↓
+ *  move through the results, Enter opens one, Esc closes it all.
  *
  *  @param {import('./core.js').Target} c
  */
-function archiveFilter(c) {
+function searchField(c) {
   const wrap = el('div', 'arcfilter');
+  wrap.dataset.checkout = c.path;
   /* A field with a glass in it, so the one thing in the rail you type into looks
      like one. A label, so a click anywhere in it reaches the input. */
   const field = el('label', 'arcfield');
   const input = /** @type {HTMLInputElement} */ (el('input', 'arcq'));
   input.type = 'search';
-  input.placeholder = 'filter conversations';
+  input.placeholder = 'search conversations';
   input.value = arcQuery[c.path] || '';
   input.oninput = () => {
     arcQuery[c.path] = input.value;
+    srch.path = c.path;
+    srch.sel = 0;
     askTranscripts(c);
     renderRail();
   };
+  input.onkeydown = (ev) => {
+    if (ev.key === 'Escape') { ev.preventDefault(); closeSearch(); return; }
+    const n = searchResults(c, snapshotOf(c.path)).length;
+    if (!n) return;
+    if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+      ev.preventDefault();
+      srch.sel = (srch.sel + (ev.key === 'ArrowDown' ? 1 : n - 1)) % n;
+      renderSearch();
+    } else if (ev.key === 'Enter') {
+      ev.preventDefault();
+      openResult(c, searchResults(c, snapshotOf(c.path))[srch.sel]);
+    }
+  };
   field.append(icon('arcglass', 1.5, 'M7 2.8a4.2 4.2 0 1 0 0 8.4a4.2 4.2 0 1 0 0-8.4', 'M10.2 10.2 13.5 13.5'), input);
-  // Written by `fillArchive`, because it counts what that pass drew.
+  // How many results, written by the list's `fill` each pass.
   field.appendChild(el('span', 'arcn'));
   wrap.appendChild(field);
   return wrap;
@@ -1601,7 +1510,7 @@ function archiveFilter(c) {
  *  @param {import('./core.js').Target} c
  */
 function askTranscripts(c) {
-  const q = (arcQuery[c.path] || '').trim().toLowerCase();
+  const q = searchQuery(c);
   clearTimeout(arcTimer[c.path]);
   if (q.length < ARC_MIN) {
     delete arcHits[c.path];
@@ -1615,26 +1524,188 @@ function askTranscripts(c) {
       .then((/** @type {any} */ r) => {
         // The query moved on while this was in flight. Its answer is about a word
         // that is no longer in the box.
-        if ((arcQuery[c.path] || '').trim().toLowerCase() !== q) return;
-        /** @type {Record<string, string>} */
+        if (searchQuery(c) !== q) return;
+        /** @type {Record<string, { line: string, who: string }>} */
         const hits = {};
-        for (const h of r.hits || []) hits[h.id] = h.line;
+        for (const h of r.hits || []) hits[h.id] = { line: h.line, who: h.who ?? '' };
         arcHits[c.path] = { q, busy: false, hits };
       })
       .catch(() => {
-        if ((arcQuery[c.path] || '').trim().toLowerCase() === q) arcHits[c.path] = { q, busy: false, hits: {} };
+        if (searchQuery(c) === q) arcHits[c.path] = { q, busy: false, hits: {} };
       })
       .finally(() => renderRail());
   }, ARC_DEBOUNCE);
 }
 
-/** The last row of the archive while the transcripts are being read. */
+/** The last row of the results while the transcripts are being read. */
 function searchingRow() {
   const row = el('div', 'arcbusy');
   row.appendChild(el('span', 'arcspin'));
   row.appendChild(el('span', null, 'searching transcripts'));
   return row;
 }
+
+/* --- the results sheet ------------------------------------------------------
+
+   **Over the rail, never in it.** It opens under the field at the rail's width
+   and covers the rows below, which stay exactly as they were: nothing fades,
+   nothing moves, and Esc gives the rail back. On `document.body` like the
+   overlap card, because the rail rebuilds rows under the pointer and a sheet
+   inside it would go with them. Rebuilt only when what it says changed, the
+   guard against a snapshot replacing a row between its press and its release. */
+/** @type {{ path: string | null, sel: number, sig: string, el: HTMLElement | null }} */
+const srch = { path: null, sel: 0, sig: '', el: null };
+
+/** The query in checkout `c`'s field, as it is matched. */
+const searchQuery = (/** @type {import('./core.js').Target} */ c) => (arcQuery[c.path] || '').trim().toLowerCase();
+
+/** One result: a conversation, and the line that matched when it was its words
+ *  rather than its name.
+ *  @typedef {{ kind: 'live' | 'arc', s: import('../snapshot').SessionView, hit: { line: string, who: string } | null }
+ *    | { kind: 'ext', x: import('../snapshot').ExternalView, hit: { line: string, who: string } | null }} Result */
+
+/** What checkout `c`'s query finds: live conversations first, then past ones,
+ *  each newest first, by name or by what was said in it.
+ *  @param {import('./core.js').Target} c @param {import('../snapshot').Snapshot | null} state
+ *  @returns {Result[]} */
+function searchResults(c, state) {
+  const q = searchQuery(c);
+  if (!q || !state) return [];
+  const answer = arcHits[c.path];
+  // Only the answer to the query in the box: an older one is about another word.
+  const hits = answer && answer.q === q ? answer.hits : {};
+  const { mainActive, treeActive, archived, external } = checkoutFacts(c, state);
+  const named = (/** @type {string} */ text) => text.toLowerCase().includes(q);
+  /** @type {Result[]} */
+  const out = [];
+  for (const s of [...mainActive, ...treeActive].sort(byNewest)) {
+    if (named(railName(s, { id: s.workspace })) || hits[s.id]) out.push({ kind: 'live', s, hit: hits[s.id] ?? null });
+  }
+  for (const s of [...archived].sort(byNewest)) {
+    if (named(railName(s, { id: s.workspace })) || hits[s.id]) out.push({ kind: 'arc', s, hit: hits[s.id] ?? null });
+  }
+  for (const x of external) {
+    if (named(x.title || '') || hits[x.id]) out.push({ kind: 'ext', x, hit: hits[x.id] ?? null });
+  }
+  return out;
+}
+
+/** `text` with the first `q` in it marked. */
+function marked(/** @type {string} */ text, /** @type {string} */ q, /** @type {string} */ cls) {
+  const span = el('span', cls);
+  const at = q ? text.toLowerCase().indexOf(q) : -1;
+  if (at < 0) {
+    span.textContent = text;
+    return span;
+  }
+  span.append(text.slice(0, at), el('mark', 'srch-mark', text.slice(at, at + q.length)), text.slice(at + q.length));
+  return span;
+}
+
+/** Go to a result, and give the rail back. */
+function openResult(/** @type {import('./core.js').Target} */ c, /** @type {Result | undefined} */ r) {
+  if (!r) return;
+  closeSearch();
+  if (r.kind === 'ext') void openExternal(c, r.x);
+  else if (r.kind === 'live') setSelected(r.s.id);
+  else void openArchived(r.s);
+}
+
+/** Empty the field and close the sheet. */
+function closeSearch() {
+  const path = srch.path;
+  srch.path = null;
+  srch.sel = 0;
+  if (path) {
+    arcQuery[path] = '';
+    delete arcHits[path];
+    const input = /** @type {HTMLInputElement | null} */ (document.querySelector(`#rail .arcfilter[data-checkout="${CSS.escape(path)}"] .arcq`));
+    if (input) input.value = '';
+  }
+  if (srch.el) srch.el.hidden = true;
+  srch.sig = '';
+  renderRail();
+}
+
+/** Draw the sheet for the checkout being searched, or take it down. Called at
+ *  the end of every rail render, so hits that land and snapshots that move it
+ *  both reach it. */
+function renderSearch() {
+  const c = srch.path ? CHECKOUTS.find((x) => x.path === srch.path) : undefined;
+  const fieldEl = c ? document.querySelector(`#rail .arcfilter[data-checkout="${CSS.escape(c.path)}"]`) : null;
+  if (!c || !fieldEl || !searchQuery(c)) {
+    if (srch.el) srch.el.hidden = true;
+    srch.sig = '';
+    return;
+  }
+  if (!srch.el) {
+    srch.el = el('div', 'srch');
+    // A press here must not take the keyboard from the field.
+    srch.el.onmousedown = (ev) => ev.preventDefault();
+    document.body.appendChild(srch.el);
+  }
+  const sheet = srch.el;
+  const rail = $('rail').getBoundingClientRect();
+  const under = fieldEl.getBoundingClientRect();
+  sheet.style.left = `${rail.left}px`;
+  sheet.style.width = `${rail.width}px`;
+  sheet.style.top = `${under.bottom}px`;
+  sheet.style.height = `${Math.max(120, rail.bottom - under.bottom)}px`;
+  sheet.hidden = false;
+
+  const q = searchQuery(c);
+  const state = snapshotOf(c.path);
+  const results = searchResults(c, state);
+  const answer = arcHits[c.path];
+  const busy = !!answer && answer.q === q && answer.busy;
+  if (srch.sel >= results.length) srch.sel = Math.max(0, results.length - 1);
+  const sig = paintSig([q, busy, srch.sel, results.map((r) => r.kind === 'ext'
+    ? [r.x.id, r.x.title, r.hit]
+    : [r.s.id, railName(r.s, { id: r.s.workspace }), r.kind === 'live' ? [stateLabel(r.s), sessionDot(r.s)] : r.s.created_ms, r.hit])]);
+  if (sig === srch.sig) return;
+  srch.sig = sig;
+
+  const list = el('div', 'srch-list');
+  for (const [label, kinds] of /** @type {const} */ ([['Live', ['live']], ['Past', ['arc', 'ext']]])) {
+    const part = results.filter((r) => /** @type {readonly string[]} */ (kinds).includes(r.kind));
+    if (!part.length) continue;
+    const head = list.appendChild(el('div', 'srch-group'));
+    head.append(el('span', '', label), el('span', 'srch-n', String(part.length)));
+    for (const r of part) {
+      const at = results.indexOf(r);
+      const b = list.appendChild(el('button', 'srch-row' + (at === srch.sel ? ' sel' : '')));
+      b.type = 'button';
+      const top = b.appendChild(el('div', 'srch-top'));
+      if (r.kind === 'ext') {
+        top.append(el('span', 'dot archived'), marked(r.x.title || 'untitled', q, 'srch-name'), el('span', 'srch-when', `${ageLabel(r.x.last_used_ms)} ago`));
+      } else {
+        top.append(el('span', r.kind === 'live' ? sessionDot(r.s) : 'dot archived'), marked(railName(r.s, { id: r.s.workspace }), q, 'srch-name'),
+          el('span', 'srch-when', r.kind === 'live' ? stateLabel(r.s) : `${ageLabel(r.s.created_ms)} ago`));
+      }
+      if (r.hit) {
+        const said = b.appendChild(el('div', 'srch-said'));
+        said.append(el('span', 'srch-who', r.hit.who), marked(r.hit.line, q, 'srch-line'));
+      }
+      b.onclick = () => openResult(c, r);
+    }
+  }
+  if (busy) list.appendChild(searchingRow());
+  else if (!results.length) list.appendChild(el('div', 'srch-empty', q.length < ARC_MIN ? 'type two letters or more' : 'nobody said that'));
+  const foot = el('div', 'srch-foot');
+  foot.append(el('span', '', '↑↓ move'), el('span', '', '↵ open'), el('span', '', 'esc close'));
+  sheet.replaceChildren(list, foot);
+  sheet.querySelector('.srch-row.sel')?.scrollIntoView({ block: 'nearest' });
+}
+
+/* A press anywhere but the field and the sheet puts the rail back: the search
+   is a question, and doing something else is the answer to it. */
+document.addEventListener('pointerdown', (ev) => {
+  if (!srch.path) return;
+  const t = ev.target;
+  if (t instanceof Node && (srch.el?.contains(t) || (t instanceof Element && t.closest('#rail .arcfilter')))) return;
+  closeSearch();
+}, true);
+window.addEventListener('resize', () => { srch.sig = ''; renderSearch(); });
 
 /** A session that has been asked for and does not exist yet.
  *
@@ -1882,8 +1953,6 @@ function archivedToggle(/** @type {import('./core.js').Target} */ c, /** @type {
     const now = !!showArchived[held];
     if (!now) void callOn(liveTarget(c), '/api/external/refresh').catch(() => undefined);
     showArchived[held] = !now;
-    // Opening it is going to look for something, so the filter takes the keys.
-    if (!now) focusFilterOf = c.path;
     renderRail();
   };
   return btn;
@@ -1893,7 +1962,7 @@ function archivedToggle(/** @type {import('./core.js').Target} */ c, /** @type {
  *
  *  No state word — `archived` is the state, and the section it sits in already
  *  says it. Clicking rebuilds what it needs and resumes it. */
-function archivedRow(/** @type {import('../snapshot').SessionView} */ s, /** @type {string | undefined} */ said) {
+function archivedRow(/** @type {import('../snapshot').SessionView} */ s) {
   const btn = el('button', 'sess arc');
   btn.setAttribute('aria-current', String(s.id === selected));
   // So a rename can find this row's name span again after any re-render.
@@ -1911,12 +1980,7 @@ function archivedRow(/** @type {import('../snapshot').SessionView} */ s, /** @ty
   row.appendChild(clock('sess-id', s.created_ms, ' ago', '', s));
   btn.appendChild(row);
 
-  if (said) {
-    /* This row is here because of what was said in it, not because of its name, so
-       the line it matched is what the row has to show — the state is the answer to
-       a question nobody asked of this row. */
-    btn.appendChild(el('div', 'sess-sub said', said, said));
-  } else if (!s.resumable) {
+  if (!s.resumable) {
     // The transcript is readable, the conversation cannot be continued (§2).
     btn.appendChild(el('div', 'sess-sub', 'transcript only'));
   } else if (!snapshotFor(s.id).workspaces.some((w) => w.id === s.workspace)) {
@@ -1993,7 +2057,7 @@ async function openArchived(/** @type {import('../snapshot').SessionView} */ s) 
  *  to mean deleting Claude Code's own file, which `api::delete_session` is explicit
  *  about never doing.
  */
-function externalRow(/** @type {import('./core.js').Target} */ c, /** @type {import('../snapshot').ExternalView} */ x, /** @type {string | undefined} */ said) {
+function externalRow(/** @type {import('./core.js').Target} */ c, /** @type {import('../snapshot').ExternalView} */ x) {
   const btn = el('button', 'sess arc');
   btn.dataset.id = x.id;
   const row = el('div', 'sess-row');
@@ -2006,10 +2070,8 @@ function externalRow(/** @type {import('./core.js').Target} */ c, /** @type {imp
   row.appendChild(clock('sess-id', x.last_used_ms, ' ago'));
   btn.appendChild(row);
   /* Where it ran, when that is not the obvious answer. `outside` is the word for
-     what makes this row different: the daemon never started it — unless the row is
-     a transcript hit, and then the line it matched is why it is here at all. */
-  if (said) btn.appendChild(el('div', 'sess-sub said', said, said));
-  else btn.appendChild(el('div', 'sess-sub', x.workspace === 'main' ? 'outside' : `outside · ${x.workspace}`));
+     what makes this row different: the daemon never started it. */
+  btn.appendChild(el('div', 'sess-sub', x.workspace === 'main' ? 'outside' : `outside · ${x.workspace}`));
   btn.onclick = () => openExternal(c, x);
   return btn;
 }

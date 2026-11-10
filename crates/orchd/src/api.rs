@@ -2516,8 +2516,8 @@ pub async fn search_archive(
         files
             .into_iter()
             .filter_map(|(id, path)| {
-                crate::store::first_spoken_match(&path, &needle)
-                    .map(|line| json!({ "id": id, "line": line }))
+                crate::store::first_spoken_hit(&path, &needle)
+                    .map(|(who, line)| json!({ "id": id, "line": line, "who": who }))
             })
             .collect::<Vec<_>>()
     })

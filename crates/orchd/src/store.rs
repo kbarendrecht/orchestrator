@@ -1285,6 +1285,20 @@ fn contains_ci(hay: &str, needle_lower: &str) -> bool {
 /// typed turn or the output of the tool the agent just ran, and the second kind is
 /// most of the file. Only `text` blocks count, so a hit means "this was discussed"
 /// rather than "this scrolled past once".
+/// Who said a record [`spoken_text`] read: the person, or the agent. A Claude
+/// record says it in `type`, a Codex one in its payload's `role`.
+fn speaker(v: &serde_json::Value) -> &'static str {
+    let role = v
+        .pointer("/payload/role")
+        .or_else(|| v.get("type"))
+        .and_then(|t| t.as_str());
+    if role == Some("user") {
+        "you"
+    } else {
+        "agent"
+    }
+}
+
 fn spoken_text(v: &serde_json::Value) -> Vec<&str> {
     let kind = v.get("type").and_then(|t| t.as_str()).unwrap_or_default();
     // A Codex rollout says it as a `response_item` message, whose user turns
@@ -1351,6 +1365,11 @@ fn spoken_text(v: &serde_json::Value) -> Vec<&str> {
 /// Streamed rather than read whole, and one hit ends the file: the archive row
 /// wants a line to show, not every line that matched.
 pub fn first_spoken_match(path: &Path, needle_lower: &str) -> Option<String> {
+    first_spoken_hit(path, needle_lower).map(|(_, line)| line)
+}
+
+/// [`first_spoken_match`], with who said it: `"you"` or `"agent"`.
+pub fn first_spoken_hit(path: &Path, needle_lower: &str) -> Option<(&'static str, String)> {
     use std::io::{BufRead, BufReader};
     let mut r = BufReader::new(std::fs::File::open(path).ok()?);
     let mut raw = Vec::new();
@@ -1374,7 +1393,7 @@ pub fn first_spoken_match(path: &Path, needle_lower: &str) -> Option<String> {
         };
         for said in spoken_text(&v) {
             if contains_ci(said, needle_lower) {
-                return Some(snippet(said, needle_lower));
+                return Some((speaker(&v), snippet(said, needle_lower)));
             }
         }
     }
@@ -2018,6 +2037,22 @@ mod tests {
         let hit = super::first_spoken_match(&said, "rebase").unwrap();
         // Case-insensitive, and it hands back the turn rather than the word.
         assert!(hit.contains("Rebase this onto develop"), "{hit}");
+        assert_eq!(
+            super::first_spoken_hit(&said, "rebase").map(|(who, _)| who),
+            Some("you"),
+            "a user turn is yours"
+        );
+        let answered = dir.join("answered.jsonl");
+        std::fs::write(
+            &answered,
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"I will rebase it now"}]}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            super::first_spoken_hit(&answered, "rebase").map(|(who, _)| who),
+            Some("agent"),
+            "and an assistant turn is the agent's"
+        );
 
         // A plain-string `content` is the other shape Claude Code writes.
         let plain = dir.join("plain.jsonl");

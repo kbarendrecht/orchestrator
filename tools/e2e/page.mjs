@@ -959,41 +959,39 @@ try {
   check(/@container \(max-width:265px\)\{\s*\.prage\{display:none\}/.test(css),
     'and the poll age leaves below 265px rather than clipping')
 
-  /* --- one filter over live and past conversations ------------------------------ */
+  /* --- the search answers in a sheet over the rail ----------------------------- */
 
-  /* The filter sits at the top of the list and answers in two waves: the names
-     out of the snapshot, then whatever the daemon finds in the transcripts, live
-     ones included. Only the first is asserted here — the second is one `getOn`
-     away and flow 33 holds it — but the count is the contract both waves write
-     to, and a filter that matched nothing while claiming otherwise is the failure
-     worth catching. */
+  /* The field searches live and past conversations and answers in a sheet over
+     the rail, so the rows under it never move. The transcript half is one
+     `getOn` away and flow 33 holds it; this is the half only a page can show:
+     the sheet opens, the rail underneath is untouched, Enter goes to a result
+     and Esc gives the rail back. */
   await page.click('#rail .ws-add .arctoggle')
-  await page.waitForSelector('#rail .arcfilter .arcq', { timeout: 10_000 })
-  // Opening the archive is going to look for something, so the filter has the keyboard.
-  check(await page.waitForFunction(() => document.activeElement?.classList.contains('arcq'), null,
-    { timeout: 2000 }).then(() => true).catch(() => false), 'opening the archive puts the keyboard in the filter')
-  const arcRows = () => page.locator('#rail .arcbox .sess.arc').count()
-  check(await arcRows() >= 1, 'the archive opens on the conversation that was killed')
+  check(await page.locator('#rail .arcbox .sess.arc').count() >= 1, 'the archive opens on the conversation that was killed')
+  const railBefore = await page.evaluate(() => [...document.querySelectorAll('#rail .sess')].map((r) => r.outerHTML).join(''))
   await page.fill('#rail .arcfilter .arcq', 'zzzznothinglikethis')
-  await page.waitForFunction(() => document.querySelectorAll('#rail .arcbox .sess.arc').length === 0,
-    null, { timeout: 5000 })
-  const counted = await page.waitForFunction(() => {
-    const t = document.querySelector('#rail .arcfilter .arcn')?.textContent ?? ''
-    return /^0 of [1-9]/.test(t) ? t : null
-  }, null, { timeout: 5000 }).then((h) => h.jsonValue()).catch(async () => page.textContent('#rail .arcfilter .arcn'))
-  check(/^0 of [1-9]/.test(counted ?? ''),
-    `and a query nothing matches says so against the total, live rows included, got "${counted}"`)
-  const faded = await page.evaluate(() => {
-    const live = [...document.querySelectorAll('#rail .sess:not(.arc)')]
-    return live.length > 0 && live.every((r) => r.classList.contains('arcoff'))
-  })
-  check(faded, 'and the live rows it does not match fade rather than vanish')
-  await page.fill('#rail .arcfilter .arcq', '')
-  await page.waitForFunction(() => document.querySelectorAll('#rail .arcbox .sess.arc').length >= 1,
-    null, { timeout: 5000 })
-  check(await page.textContent('#rail .arcfilter .arcn') === '',
-    'and clearing it puts the archive back with no count to explain')
-  check(await page.evaluate(() => !document.querySelector('#rail .sess.arcoff')), 'and no live row stays faded')
+  const nothing = await page.waitForFunction(() => {
+    const sheet = document.querySelector('.srch:not([hidden])')
+    return sheet?.querySelector('.srch-empty')?.textContent ?? null
+  }, null, { timeout: 5000 }).then((h) => h.jsonValue()).catch(() => null)
+  check(nothing === 'nobody said that', `a query nothing matches opens the sheet and says so, got ${JSON.stringify(nothing)}`)
+  check(await page.evaluate((before) => [...document.querySelectorAll('#rail .sess')].map((r) => r.outerHTML).join('') === before, railBefore),
+    'and the rail under it is exactly as it was')
+  await page.keyboard.press('Escape')
+  check(await page.evaluate(() => !document.querySelector('.srch:not([hidden])') && document.querySelector('#rail .arcfilter .arcq')?.value === ''),
+    'Esc closes the sheet and empties the field')
+
+  const liveName = await page.textContent(`#rail .sess[data-id="${session}"] .sess-name`)
+  await page.fill('#rail .arcfilter .arcq', liveName ?? '')
+  const foundLive = await page.waitForFunction((name) => {
+    const rows = [...document.querySelectorAll('.srch:not([hidden]) .srch-row .srch-name')].map((n) => n.textContent)
+    return rows.includes(name) ? rows : null
+  }, liveName, { timeout: 5000 }).then((h) => h.jsonValue()).catch(() => null)
+  check(!!foundLive, `a live session is found by its name, got ${JSON.stringify(foundLive)}`)
+  await page.keyboard.press('Enter')
+  check(await page.evaluate(async () => (await import('/js/core.js')).selected) === session
+    && await page.evaluate(() => !document.querySelector('.srch:not([hidden])')),
+    'Enter goes to the result and gives the rail back')
 
   /* --- Backspace is not a way out of the board -------------------------------- */
 
