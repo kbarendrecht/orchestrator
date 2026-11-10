@@ -415,6 +415,7 @@ together: same entries, same order, same groups.
 - The page's own boot timing is not visible from Rust.
 - Measure a release build, or do not quote the number.
 - Creating a worktree is 4.7 seconds; claiming a pre-cut one is 84 milliseconds.
+- A snapshot is built per hook, so it is timed, logged when slow, and tested at the size of a real checkout.
 
 ### macOS, and the tooling around the build
 

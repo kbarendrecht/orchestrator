@@ -182,3 +182,36 @@ spare, which is what `spare_worktrees: 0` is for.
 **The broken-symlink scan is cheap for the same reason it must not follow links**:
 `find -xtype l` over that tree is 30ms across 29 links, because the heavy trees
 *are* the links and nothing descends into them.
+
+## A snapshot is built per hook, so it is timed, logged when slow, and tested at the size of a real checkout.
+
+**Every slow git call was logged, and the slowest thing in the daemon was not a git
+call.** A rule added to the overlap view (`Inner::real_conflict`, which leaves out a
+lower branch's files) ran for every overlap pair of every workspace, before the cheap
+test of whether the pair was about that workspace at all. On the checkout this is
+used against, 306 workspaces and 381 sessions, one snapshot took **8.7 seconds**, and
+one is built after every hook and every state change: the daemon held a core at
+95% with no child process running, and the log said nothing, because nothing timed
+work inside the daemon. Putting the cheap tests first made it 3 to 5ms, measured on
+the release build against the same checkout.
+
+**Every test passed throughout**, because every other test builds two or three
+workspaces, and a cost that grows with the square of the checkout is invisible at
+three. So there are two tools now, one for each half of that:
+
+- `AppState::snapshot` times the wait for the lock and the build apart, and logs
+  `slow snapshot` with the sizes once the two together pass 50ms
+  (`SLOW_SNAPSHOT`). The sizes are in the line because the size of the checkout is
+  what makes a snapshot slow, and the wait apart because a slow holder of the lock
+  and a slow snapshot have different fixes.
+- `a_snapshot_of_a_checkout_this_size_stays_fast` builds one over 300 workspaces in
+  groups that share a module (14,250 overlap entries), stacks in each group and a
+  tenth of the sessions live, and allows 2 seconds. It takes 103ms in a debug build.
+  **Checked against the breakage it is for**: with the old order put back, it took
+  7.7s and failed. The budget is about twenty times the normal figure, so a slow
+  runner does not fail it, while a cost of that kind fails it by far.
+
+**Not done, and why**: the time the state lock is *held*. A slow holder stalls every
+request and hook just as surely, but measuring it means a guard around the lock at
+its 67 call sites. The snapshot line's `waiting for the lock` figure is the cheap
+first look; the guard is for when that figure is the large one.

@@ -2034,8 +2034,39 @@ impl AppState {
             .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
+    /// What the SPA receives, built after every hook and every state change.
+    ///
+    /// **Timed, and logged when slow.** Nothing else measured work inside the
+    /// daemon: every slow git call was logged, while one snapshot of a
+    /// 306-workspace checkout took 8.7 seconds and the log said nothing at all.
+    /// The line names the sizes, because the size of the checkout is what makes
+    /// a snapshot slow, and the wait for the lock apart from the work, because a
+    /// slow holder of the lock and a slow snapshot have different fixes.
     pub async fn snapshot(&self) -> Snapshot {
+        let asked = std::time::Instant::now();
         let inner = self.inner.read().await;
+        let waited = asked.elapsed();
+        let started = std::time::Instant::now();
+        let snapshot = self.snapshot_from(&inner);
+        let built = started.elapsed();
+        if waited + built >= SLOW_SNAPSHOT {
+            tracing::info!(
+                workspaces = inner.workspaces.len(),
+                sessions = inner.sessions.len(),
+                overlaps = inner.overlaps.len(),
+                stacks = inner.stacks.len(),
+                "slow snapshot: built in {}ms, after {}ms waiting for the lock",
+                built.as_millis(),
+                waited.as_millis()
+            );
+        }
+        snapshot
+    }
+
+    /// The snapshot, over state the caller holds. Split from [`Self::snapshot`] so
+    /// the time spent building it can be told from the time spent waiting for the
+    /// lock, and so a test can time the work alone.
+    pub fn snapshot_from(&self, inner: &Inner) -> Snapshot {
         let now = SystemTime::now();
 
         let mut sessions: Vec<SessionView> = inner
@@ -2077,7 +2108,7 @@ impl AppState {
                 is_main: w.is_main(),
                 occupant: w.occupant,
                 held_by: if w.is_main() {
-                    self.main_holder(&inner)
+                    self.main_holder(inner)
                 } else {
                     None
                 },
@@ -2283,7 +2314,7 @@ impl AppState {
             pr_error: inner.pr_error.clone(),
             agent_error: inner.agent_error.clone(),
             agents: inner.agents.clone(),
-            default_agent: self.default_agent(&inner),
+            default_agent: self.default_agent(inner),
             forge: self.cfg.forge,
             machine: inner.machine.clone(),
             pr_age_ms: inner
@@ -4114,6 +4145,10 @@ fn upstream_stamp(t: &crate::model::Tree) -> UpstreamStamp {
     ]
 }
 
+/// A snapshot slower than this is logged ([`AppState::snapshot`]). One is built
+/// per hook, so at this cost a few busy agents already keep a core warm.
+const SLOW_SNAPSHOT: std::time::Duration = std::time::Duration::from_millis(50);
+
 /// How many messages one session may send another through `orch tell`.
 pub const TELL_CAP: u32 = 3;
 
@@ -5670,6 +5705,9 @@ mod tests {
     }
 
     /// A worktree workspace at `path` that changed `files`, with a live session.
+    /// What [`a_snapshot_of_a_checkout_this_size_stays_fast`] allows.
+    const SNAPSHOT_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
+
     async fn live_worktree(app: &Arc<AppState>, id: &str, path: &str, files: &[&str]) -> SessionId {
         let mut inner = app.inner.write().await;
         let mut w = crate::model::Workspace {
@@ -5907,6 +5945,125 @@ mod tests {
         assert!(
             inner.real_conflict(&pair("src/lower.rs")),
             "with no stack it is a conflict"
+        );
+    }
+
+    /// A snapshot is built after every hook, so it has to stay cheap at the size
+    /// of a real checkout, not only at the two or three workspaces every other test
+    /// uses. One in this repo's own use has 306 workspaces and 381 sessions, and a
+    /// rule that ran per pair for every workspace made each snapshot take 8.7s
+    /// there while passing every test here. The fixture is that size: workspaces
+    /// in groups that share a module, so the overlaps grow the way real ones do,
+    /// stacks inside each group, and a tenth of the sessions live.
+    #[tokio::test]
+    async fn a_snapshot_of_a_checkout_this_size_stays_fast() {
+        const WORKSPACES: usize = 300;
+        const GROUPS: usize = 15;
+        const FILES: usize = 20;
+        let app = app().await;
+        let mut inner = app.inner.write().await;
+        let file = |path: String| crate::model::DiffFile {
+            path,
+            status: "M".into(),
+            added: 3,
+            deleted: 1,
+            binary: false,
+            eager: false,
+            old_path: None,
+            staged: false,
+            unstaged: false,
+        };
+        for i in 0..WORKSPACES {
+            let id = format!("wt-{i}");
+            let mut w = crate::model::Workspace {
+                id: id.clone(),
+                path: format!("/tmp/wt-{i}").into(),
+                kind: crate::model::WorkspaceKind::Worktree { name: id.clone() },
+                branches: Default::default(),
+                processes: Vec::new(),
+                occupant: None,
+                tree: Default::default(),
+                banked: None,
+            };
+            w.tree.measured = true;
+            w.tree.branch = Some(format!("branch-{i}"));
+            w.tree.changed = (0..FILES)
+                .map(|f| file(format!("src/module{}/file{f}.rs", i % GROUPS)))
+                .collect();
+            inner.workspaces.insert(id, w);
+        }
+        for i in 0..400 {
+            let id = Uuid::new_v4();
+            let ws = format!("wt-{}", i % WORKSPACES);
+            let mut s = Session::new(id, ws.clone(), format!("/tmp/{ws}").into(), None);
+            s.set_state(if i % 10 == 0 {
+                State::Working
+            } else {
+                State::Archived { resumable: true }
+            });
+            inner.sessions.insert(id, s);
+        }
+        // Every pair in a group shares five files, half of them conflicting.
+        let members = |g: usize| (0..WORKSPACES).filter(move |i| i % GROUPS == g);
+        for g in 0..GROUPS {
+            let ids: Vec<usize> = members(g).collect();
+            for (n, &a) in ids.iter().enumerate() {
+                for &b in &ids[n + 1..] {
+                    let (a, b) = (format!("wt-{a}"), format!("wt-{b}"));
+                    let (a, b) = if a < b { (a, b) } else { (b, a) };
+                    for f in 0..5 {
+                        inner.overlaps.push(crate::overlap::Pair {
+                            a: a.clone(),
+                            b: b.clone(),
+                            found: crate::overlap::Found {
+                                path: format!("src/module{g}/file{f}.rs"),
+                                conflict: f % 2 == 0,
+                                stamp: [0; 5],
+                            },
+                        });
+                    }
+                }
+            }
+            // A chain of three stacks in each group.
+            for w in ids.windows(2).take(3) {
+                let (lower, upper) = (format!("wt-{}", w[0]), format!("wt-{}", w[1]));
+                let lower_is_a = lower < upper;
+                let key = if lower_is_a {
+                    (lower, upper)
+                } else {
+                    (upper, lower)
+                };
+                inner.stacks.insert(
+                    key,
+                    crate::overlap::Stack {
+                        lower_is_a,
+                        behind: 1,
+                        lower_tip: "t".into(),
+                        anchor: "t".into(),
+                        lower_commits: 1,
+                    },
+                );
+            }
+        }
+
+        let started = std::time::Instant::now();
+        let snap = app.snapshot_from(&inner);
+        let took = started.elapsed();
+        assert_eq!(
+            snap.workspaces.len(),
+            WORKSPACES + 1,
+            "main and the fixture"
+        );
+        // About 20 times what it takes, in a debug build, so a slow runner does
+        // not fail it and a cost that grows with the square of the checkout does.
+        assert!(
+            took < SNAPSHOT_BUDGET,
+            "a snapshot of {WORKSPACES} workspaces and {} overlaps took {took:?}",
+            inner.overlaps.len()
+        );
+        eprintln!(
+            "snapshot of {WORKSPACES} workspaces, {} overlaps: {took:?}",
+            inner.overlaps.len()
         );
     }
 
