@@ -192,6 +192,17 @@ check(cmds('`!npm test`') === 'npm test', 'with no space after the bang too')
 check(cmds('! for bash mode') === '', 'a bare bang is the footer hint, not a command')
 check(cmds('Done! `ls` is fine') === '', 'and backticks with no bang are code, not a command')
 check(cmds('`! ` alone') === '', 'an empty command is nothing')
+// What an agent pane shows once Claude Code has drawn the markdown away.
+check(cmds('  ! bash /tmp/x/scratchpad/claude-to-devtools.sh') === 'bash /tmp/x/scratchpad/claude-to-devtools.sh',
+  'a code block of one `! command` is a line that starts with the bang')
+check(cmds('\u23fa ! git status') === 'git status', 'after the reply bullet too')
+check(cmds('Done! nothing to run') === '', 'a bang inside a sentence is not a command')
+{
+  const line = '  ! bash /tmp/x/run.sh'
+  const hits = linksIn(line)
+  check(hits.length === 1 && hits[0].kind === 'cmd' && line.slice(hits[0].start, hits[0].end) === '! bash /tmp/x/run.sh',
+    `the underline covers the bang and the command and not the indent, got ${JSON.stringify(hits)}`)
+}
 {
   const hits = linksIn('try `! cat web/js/find.js` now')
   check(hits.length === 1 && hits[0].kind === 'cmd', 'the path inside a command is its argument, not a second link')

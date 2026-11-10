@@ -188,12 +188,20 @@ function trimTail(/** @type {string} */ run) {
 }
 
 /** The shell commands in `text` that Claude Code's `!` prefix would run, as an
- *  agent writes them when it wants you to run one: `` `! gcloud auth login` ``.
+ *  agent writes them when it wants you to run one.
  *
- *  **Backticks only.** That is the form Claude Code's own instructions give the
- *  agent, and a bare `! ` at the start of a line is also its footer hint
- *  ("! for bash mode"), which would underline as a command called `for`. Inside
- *  the backticks the `!` and one space are dropped; what is left is the command.
+ *  **Two forms, because the pane never shows the one the agent typed.** It writes
+ *  `` `! gcloud auth login` ``, or the command alone in a code block, and Claude
+ *  Code draws the markdown away before the terminal sees it: inline code is a
+ *  colour and a code block is an indent, so what reaches this is a line that
+ *  starts with `! `. The backticks are kept for raw text (a log, a pane that does
+ *  not render), and the line form is what an agent pane actually shows. A command
+ *  on a line of its own takes the rest of the line.
+ *
+ *  **Not the footer hint**: "! for bash mode" is also a line that starts with a
+ *  bang, and would underline as a command called `for`. Nor a bang inside a
+ *  sentence ("Done! ..."): only the start of a line, after the indent and the
+ *  bullet Claude Code puts before a reply.
  *
  *  @param {string} text
  *  @returns {{ kind: 'cmd', start: number, end: number, cmd: string }[]} */
@@ -205,6 +213,12 @@ export function commandsIn(text) {
     if (!cmd) continue;
     const start = m.index ?? 0;
     out.push({ kind: 'cmd', start, end: start + m[0].length, cmd });
+  }
+  if (out.length) return out;
+  const line = /^[\s\u23fa\u25cf]*(!\s?)([\w./~$-][^\n]*?)\s*$/.exec(text);
+  if (line && !/^for bash mode\b/.test(line[2])) {
+    const start = (line.index ?? 0) + line[0].indexOf('!');
+    out.push({ kind: 'cmd', start, end: start + line[1].length + line[2].length, cmd: line[2] });
   }
   return out;
 }
