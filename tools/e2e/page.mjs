@@ -3372,12 +3372,15 @@ try {
     const c = document.querySelector('.ovcard:not([hidden])')
     if (!c) return null
     return {
+      title: c.querySelector('.ovc-title b')?.textContent,
       files: [...c.querySelectorAll('.ovc-file')].map((f) => f.querySelector('.ovc-path')?.textContent),
       who: c.querySelectorAll('button.ovc-who').length,
+      now: c.querySelector('.ovc-now')?.textContent ?? null,
     }
   }, null, { timeout: 5000 }).then((h) => h.jsonValue()).catch(() => null)
-  check(!!card && card.who === 1 && card.files.includes('both-made.txt'),
-    `hovering the mark opens a card with the other session and the shared file, got ${JSON.stringify(card)}`)
+  check(!!card && card.title === 'Conflicts' && card.who === 1 && card.files.includes('both-made.txt'),
+    `hovering the mark opens the Conflicts card with the other session and the shared file, got ${JSON.stringify(card)}`)
+  check(card?.now === 'Tell them now', `and it offers to tell them now, got ${JSON.stringify(card?.now)}`)
   await page.click('.ovcard button.ovc-who')
   check(await page.evaluate(async () => (await import('/js/core.js')).selected) === session,
     'and pressing the session in it goes there')

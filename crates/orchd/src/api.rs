@@ -1450,6 +1450,16 @@ pub async fn deliver_inbox(
     Ok(Json(json!({ "delivered": true })))
 }
 
+/// The Conflicts card's "Tell them now". See [`AppState::tell_overlaps_now`].
+pub async fn tell_overlaps_now(
+    State(app): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> ApiResult<serde_json::Value> {
+    let told = app.tell_overlaps_now(id).await?;
+    app.notify().await;
+    Ok(Json(json!({ "told": told })))
+}
+
 /// One session starts another.
 ///
 /// Authenticated by the caller's own ask token, so the daemon knows who asked and

@@ -752,6 +752,10 @@ fn daemon_router(app: Arc<AppState>) -> Router {
         .route("/api/session/:id/spawn", post(api::spawn_from_session))
         .route("/api/session/:id/message", post(api::message_session))
         .route("/api/session/:id/deliver-inbox", post(api::deliver_inbox))
+        .route(
+            "/api/session/:id/tell-overlaps",
+            post(api::tell_overlaps_now),
+        )
         // Both halves of the worktree grant on one path: the agent asks with a
         // POST, the push guard reads with a GET before it refuses anything.
         .route(

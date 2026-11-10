@@ -39,8 +39,8 @@ export async function run(t) {
   assert.deepEqual(
     seen,
     [
-      { path: 'README.md', with: right.workspace, conflict: true, plan: null },
-      { path: 'both-new.txt', with: right.workspace, conflict: true, plan: null },
+      { path: 'README.md', with: right.workspace, conflict: true, plan: null, told: false },
+      { path: 'both-new.txt', with: right.workspace, conflict: true, plan: null, told: false },
     ],
     `the left tree is told about both shared files and not its own: ${JSON.stringify(seen)}`,
   )

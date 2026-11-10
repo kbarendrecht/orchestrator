@@ -2111,6 +2111,15 @@ impl AppState {
                             .overlap_plans
                             .get(&(p.a.clone(), p.b.clone()))
                             .cloned(),
+                        told: inner.sessions.values().any(|x| {
+                            x.workspace == w.id
+                                && x.state.is_live()
+                                && x.told_overlaps.contains(&(
+                                    p.found.path.clone(),
+                                    p.other(&w.id).to_string(),
+                                    true,
+                                ))
+                        }),
                     })
                     .collect(),
                 // The upper side of a stack: what it is built on, and how far the
@@ -2536,6 +2545,46 @@ impl AppState {
     /// on a question or a permission prompt. The state is the daemon's guess, and
     /// a turn that ended on an escape leaves it guessing wrong with nothing to
     /// correct it; the person can see the prompt, so the person decides.
+    /// "Tell them now" on the Conflicts card: what this session and every
+    /// session it conflicts with would hear on their next prompt, typed in at
+    /// once, mid-turn or not. This side first, so it is the one that leads.
+    /// Answers how many sessions were told.
+    pub async fn tell_overlaps_now(&self, session: SessionId) -> anyhow::Result<usize> {
+        let partners: Vec<SessionId> = {
+            let inner = self.inner.read().await;
+            let ws = inner
+                .sessions
+                .get(&session)
+                .ok_or_else(|| no_such_session(session))?
+                .workspace
+                .clone();
+            let theirs: std::collections::HashSet<&str> = inner
+                .overlaps
+                .iter()
+                .filter(|p| p.found.conflict && !inner.stacked(p) && p.involves(&ws))
+                .map(|p| p.other(&ws))
+                .collect();
+            inner
+                .sessions
+                .values()
+                .filter(|x| x.state.is_live() && theirs.contains(x.workspace.as_str()))
+                .map(|x| x.id)
+                .collect()
+        };
+        let mut told = 0;
+        for id in std::iter::once(session).chain(partners) {
+            if let Some(note) = self.overlap_note(id).await {
+                if let Some(x) = self.inner.write().await.sessions.get_mut(&id) {
+                    x.inbox.push(note);
+                }
+            }
+            if self.deliver_inbox_now(id).await.is_ok() {
+                told += 1;
+            }
+        }
+        Ok(told)
+    }
+
     pub async fn deliver_inbox_now(&self, id: SessionId) -> anyhow::Result<()> {
         let (pty, waiting) = {
             let mut inner = self.inner.write().await;
@@ -4037,6 +4086,9 @@ pub struct OverlapView {
     pub conflict: bool,
     /// What the user confirmed for this pair, when the two agents settled it.
     pub plan: Option<String>,
+    /// Whether this side's agent has been told about this file, so the card
+    /// stops promising it will be.
+    pub told: bool,
 }
 
 /// The branch a workspace is built on, when it is the upper half of a stack.

@@ -214,7 +214,12 @@ conflict: boolean,
 /**
  * What the user confirmed for this pair, when the two agents settled it.
  */
-plan: string | null, };
+plan: string | null, 
+/**
+ * Whether this side's agent has been told about this file, so the card
+ * stops promising it will be.
+ */
+told: boolean, };
 
 /**
  * The PR pass a session was started to run, when it was started as one.

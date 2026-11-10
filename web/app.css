@@ -453,8 +453,8 @@ button.ctx-btn:hover{color:var(--text)}
 /* The spotlight while the pointer is on a mark (`spotlight` in rail.js): the two
    sides stay lit, every other row steps back. */
 #rail.ov-spot .sess:not(.ov-lit){opacity:.3}
-/* What the ⇄ mark opens (`fillOverlapCard` in rail.js): each other session, then
-   the files it shares with this one. Floats like `.ctxmenu`, so it wears its fill,
+/* What the two marks open (`fillOverlapCard` in rail.js): the Stacked card for
+   the layers mark, the Conflicts card for ⇄. Floats like `.ctxmenu`, so it wears its fill,
    border and corner; fixed, because it lives on the body and not in the rail. */
 .ovcard{
   position:fixed;z-index:90;width:300px;max-width:calc(100vw - 12px);padding:6px 0;
@@ -462,7 +462,34 @@ button.ctx-btn:hover{color:var(--text)}
   background:var(--raised);border:1px solid var(--line);border-radius:var(--r-lg);
   box-shadow:0 6px 18px rgba(0,0,0,.45);
 }
-.ovc-head{font-size:calc(11px * var(--fs));color:var(--faint-solid);padding:2px 12px 6px}
+.ovc-title{display:flex;align-items:baseline;gap:8px;padding:2px 12px 6px}
+.ovc-title b{font-size:calc(12.5px * var(--fs));font-weight:600;color:var(--text)}
+.ovc-title.warn b{color:var(--attn)}
+.ovc-meta{margin-left:auto;font-size:calc(11px * var(--fs));color:var(--faint-solid)}
+/* The Stacked card's ladder: one rung per branch, top of the stack first, and
+   the gap under each one says how far the branch below it moved. */
+.ovc-ladder{display:flex;flex-direction:column;padding:2px 0 4px}
+.ovc-rung{display:grid;grid-template-columns:22px minmax(0,1fr) auto;align-items:center;width:100%;padding:4px 12px 4px 8px;
+  font-size:calc(12px * var(--fs));text-align:left;color:var(--text)}
+button.ovc-rung:hover{background:var(--hover)}
+.ovc-rung.me{background:color-mix(in srgb, var(--done) 10%, transparent)}
+.ovc-node{justify-self:center;width:8px;height:8px;border-radius:50%;border:1.5px solid var(--faint-solid)}
+.ovc-node.fill{background:var(--done);border-color:var(--done)}
+.ovc-node.base{border-radius:2px;transform:rotate(45deg);width:7px;height:7px}
+.ovc-gap{display:grid;grid-template-columns:22px minmax(0,1fr);padding:0 12px 0 8px;font-size:calc(11px * var(--fs));color:var(--faint-solid)}
+.ovc-gap::before{content:"";justify-self:center;width:1.5px;min-height:12px;background:var(--line)}
+.ovc-gap.behind{color:var(--done)}
+.ovc-gap.behind::before{background:repeating-linear-gradient(var(--done) 0 3px,transparent 3px 6px)}
+.ovc-gap span{padding:1px 0 1px 8px}
+.ovc-chip{flex:none;font-family:var(--sans);font-size:calc(10.5px * var(--fs));padding:0 6px;border-radius:999px;
+  border:1px solid var(--line);color:var(--dim)}
+.ovc-chip.up{border-color:color-mix(in srgb, var(--attn) 40%, transparent);color:var(--attn)}
+/* When the agents hear about it: a statement, with the sooner way as a quiet link. */
+.ovc-line{padding:6px 12px 2px;font-size:calc(11px * var(--fs));color:var(--dim)}
+.ovc-now{color:var(--faint-solid);text-decoration:underline;text-decoration-color:var(--line);text-underline-offset:3px}
+.ovc-now:hover{color:var(--text)}
+.ovc-ask{display:block;width:100%;padding:6px 12px 2px;font-size:calc(11px * var(--fs));color:var(--done);text-align:left}
+.ovc-ask:hover{color:var(--text)}
 .ovc-grp{padding:4px 0}
 .ovc-grp + .ovc-grp{border-top:1px solid var(--line)}
 .ovc-who,.ovc-file{display:flex;align-items:center;gap:8px;width:100%;text-align:left;color:var(--text)}
