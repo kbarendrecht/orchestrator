@@ -1215,6 +1215,15 @@ const TITLE_MAX: usize = 120;
 /// mirrored into an ai-title either — a renamed session measured here carried
 /// none at all — so reading only the ai-title missed a rename entirely.
 ///
+/// **Unless Claude Code wrote it itself.** It also names a session for its
+/// messaging between sessions, as a `custom-title` with an `agent-name` of the
+/// same text beside it, and that name can be wrong: right after a cross-session
+/// message about another session, the expert session that received it was
+/// named after the worker the message was about, and the rail followed. Measured
+/// on this machine: 35 transcripts with a `custom-title`, none from a typed
+/// `/rename`, 25 with the `agent-name` beside it. So a title that is also an
+/// agent name gives way to the ai-title, and is used only when there is none.
+///
 /// None is a normal answer, not a failure — the entry only appears after the
 /// first exchange, and the format is Claude Code's own and undocumented. The
 /// caller falls back to the workspace name, which is what the rail showed before
@@ -1233,10 +1242,11 @@ pub fn ai_title(id: uuid::Uuid, cwd: &Path, recorded: Option<&Path>) -> Option<S
     lines.next();
     let mut ai = None;
     let mut custom = None;
+    let mut agent = None;
     for line in lines {
         // Most of a tail is tool results, tens of KB each; parsing those to learn
         // they are not the title was the cost of every `Stop`.
-        if !line.contains("-title\"") {
+        if !line.contains("-title\"") && !line.contains("\"agent-name\"") {
             continue;
         }
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
@@ -1245,6 +1255,7 @@ pub fn ai_title(id: uuid::Uuid, cwd: &Path, recorded: Option<&Path>) -> Option<S
         let (slot, field) = match v.get("type").and_then(|t| t.as_str()) {
             Some("ai-title") => (&mut ai, "aiTitle"),
             Some("custom-title") => (&mut custom, "customTitle"),
+            Some("agent-name") => (&mut agent, "agentName"),
             _ => continue,
         };
         if let Some(t) = v.get(field).and_then(|t| t.as_str()) {
@@ -1254,7 +1265,14 @@ pub fn ai_title(id: uuid::Uuid, cwd: &Path, recorded: Option<&Path>) -> Option<S
             }
         }
     }
-    custom.or(ai)
+    // Claude Code's own name for the session is the weakest answer; a title you
+    // gave it the strongest.
+    let automatic = custom.is_some() && custom == agent;
+    if automatic {
+        ai.or(custom)
+    } else {
+        custom.or(ai)
+    }
 }
 
 /// The longest record a search will look inside.
@@ -1886,6 +1904,53 @@ mod tests {
 
         let got = ai_title(uuid::Uuid::new_v4(), Path::new("/nonexistent"), Some(&file));
         assert_eq!(got.as_deref(), Some("the name I typed"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn claude_codes_own_agent_name_gives_way_to_the_ai_title() {
+        // The shape found in a real transcript: a cross-session message arrives,
+        // and Claude Code names the session after what the message was about.
+        let dir = std::env::temp_dir().join(format!("orchd-agentname-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let named = dir.join("named.jsonl");
+        std::fs::write(
+            &named,
+            concat!(
+                r#"{"type":"user","message":"hi"}"#,
+                "\n",
+                r#"{"type":"ai-title","aiTitle":"Sc-55692 AI judge domain expert"}"#,
+                "\n",
+                r#"{"type":"custom-title","customTitle":"sc-55701 AI-chat zegt"}"#,
+                "\n",
+                r#"{"type":"agent-name","agentName":"sc-55701 AI-chat zegt"}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        let got = ai_title(
+            uuid::Uuid::new_v4(),
+            Path::new("/nonexistent"),
+            Some(&named),
+        );
+        assert_eq!(got.as_deref(), Some("Sc-55692 AI judge domain expert"));
+
+        // With no ai-title, its own name is still better than none.
+        let only = dir.join("only.jsonl");
+        std::fs::write(
+            &only,
+            concat!(
+                r#"{"type":"user","message":"hi"}"#,
+                "\n",
+                r#"{"type":"custom-title","customTitle":"a peer name"}"#,
+                "\n",
+                r#"{"type":"agent-name","agentName":"a peer name"}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        let got = ai_title(uuid::Uuid::new_v4(), Path::new("/nonexistent"), Some(&only));
+        assert_eq!(got.as_deref(), Some("a peer name"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
