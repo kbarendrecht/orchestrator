@@ -27,11 +27,15 @@ use crate::state::AppState;
 pub async fn pr_handle_review(
     State(app): State<Arc<AppState>>,
     Path(number): Path<u64>,
+    body: Option<Json<crate::triage::RunBody>>,
 ) -> ApiResult<serde_json::Value> {
     let pr = {
         let inner = app.inner.read().await;
         pr_from_poll(&inner.prs, number)?
     };
+    if let Some(how) = body.and_then(|b| b.0.dirty) {
+        crate::triage::settle_dirty(&app, number, &pr.head_ref, how).await?;
+    }
     let session =
         crate::triage::spawn_command_session(&app, number, &pr.head_ref, Pass::HANDLE_REVIEW)
             .await?;

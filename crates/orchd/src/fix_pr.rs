@@ -158,7 +158,7 @@ pub async fn start(
     changes no tree: the session there is yours, and its own skill stops on a
     dirty tree. */
     if let Some(g) = crate::triage::tree_gate(&located).await? {
-        anyhow::bail!("{}", g.say());
+        return Err(g.refusal());
     }
 
     // Recorded *before* the process can exist, under the id it will spawn with:

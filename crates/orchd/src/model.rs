@@ -1055,6 +1055,29 @@ impl std::fmt::Display for Refusal {
 
 impl std::error::Error for Refusal {}
 
+/// A refusal the person can settle with a choice, carrying what the page needs
+/// to offer it: the run gate that stopped it, as JSON beside the sentence.
+///
+/// **A refusal you can only read is a dead end when the fix is one click.** A
+/// review of a PR whose tree had uncommitted files said "commit or stash first"
+/// and nothing else, and the page has the two ways out as buttons
+/// (`dirty: "bank" | "commit"` on the run routes). Here rather than in `triage`
+/// for the reason [`Refusal`] is: `api` reads it, and `api` must not import the
+/// modules that raise it.
+#[derive(Debug)]
+pub struct Settleable {
+    pub message: String,
+    pub gate: serde_json::Value,
+}
+
+impl std::fmt::Display for Settleable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for Settleable {}
+
 // ---------------------------------------------------------------------------
 // Interaction
 // ---------------------------------------------------------------------------

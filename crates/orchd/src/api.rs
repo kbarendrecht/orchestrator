@@ -37,6 +37,16 @@ impl IntoResponse for ApiError {
                 Refusal::Missing(_) => StatusCode::NOT_FOUND,
                 Refusal::Busy(_) => StatusCode::CONFLICT,
             });
+        // A refusal with a way out carries the gate beside the sentence, so the
+        // page can ask rather than only say.
+        if let Some(s) = self
+            .0
+            .chain()
+            .find_map(|e| e.downcast_ref::<crate::model::Settleable>())
+        {
+            let body = json!({ "error": format!("{:#}", self.0), "gate": s.gate });
+            return (StatusCode::CONFLICT, Json(body)).into_response();
+        }
         (status, Json(json!({ "error": format!("{:#}", self.0) }))).into_response()
     }
 }
@@ -3408,7 +3418,15 @@ pub(crate) fn pr_from_poll(
 pub async fn fix_pr(
     State(app): State<Arc<AppState>>,
     Path(number): Path<u64>,
+    body: Option<Json<crate::triage::RunBody>>,
 ) -> ApiResult<serde_json::Value> {
+    if let Some(how) = body.and_then(|b| b.0.dirty) {
+        let head = {
+            let inner = app.inner.read().await;
+            pr_from_poll(&inner.prs, number)?.head_ref
+        };
+        crate::triage::settle_dirty(&app, number, &head, how).await?;
+    }
     let session = crate::fix_pr::start(&app, number).await?;
     Ok(Json(json!({ "session": session })))
 }

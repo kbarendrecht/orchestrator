@@ -45,6 +45,18 @@ pub enum Gate {
 }
 
 impl Gate {
+    /// The refusal for this gate: the sentence, and for a dirty tree the gate
+    /// itself, so the page can offer the two ways out ([`settle_dirty`]).
+    pub fn refusal(self) -> anyhow::Error {
+        match &self {
+            Gate::Dirty { .. } => anyhow::Error::new(crate::model::Settleable {
+                message: self.say(),
+                gate: serde_json::to_value(&self).unwrap_or_default(),
+            }),
+            _ => anyhow::anyhow!("{}", self.say()),
+        }
+    }
+
     /// One line, for the refusal the spawn toasts.
     pub fn say(&self) -> String {
         match self {
@@ -114,6 +126,83 @@ pub async fn tree_gate(located: &Located) -> Result<Option<Gate>> {
     })
     .await?;
     gate
+}
+
+/// What a run route takes: how to settle a dirty tree before it starts, when the
+/// person picked one.
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct RunBody {
+    #[serde(default)]
+    pub dirty: Option<Dirty>,
+}
+
+/// The two ways out of [`Gate::Dirty`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Dirty {
+    /// Set the files aside on the workspace's bank, where the changes pane puts
+    /// them back or drops them. New files too: the bank keeps tracked changes
+    /// only, so they are staged first, or they stay behind and the gate refuses
+    /// again.
+    Bank,
+    /// Keep them in the branch, as a commit of their own.
+    Commit,
+}
+
+/// The message of a [`Dirty::Commit`]: plain about what it is, since it lands
+/// on a PR branch where a reviewer reads it.
+const KEPT_MESSAGE: &str = "work in progress, kept before a run on this PR";
+
+/// Settle a dirty PR tree the way the person picked, so the run's gate passes.
+///
+/// Refused while a session is working in that tree (the files may be its, mid
+/// edit), and banking is refused over an earlier bank, which `bank_wip` would
+/// overwrite and lose. Nothing to do when no worktree holds the branch.
+pub async fn settle_dirty(app: &Arc<AppState>, pr: u64, head_ref: &str, how: Dirty) -> Result<()> {
+    let located = locate_pr(app, pr, head_ref).await?;
+    let (ws, path) = match &located.place {
+        PrPlace::Worktree { ws, path } if path.is_dir() => (ws.clone(), path.clone()),
+        _ => return Ok(()),
+    };
+    // Clean already (settled in another window, or by the agent): nothing to do,
+    // and no refusal about a bank that this would not touch.
+    let p = path.clone();
+    let dirty =
+        crate::proc::run_blocking("reading the tree", move || crate::patch::dirty_paths(&p))
+            .await??;
+    if dirty.is_empty() {
+        return Ok(());
+    }
+    if let Some(who) = app.busy_session_in(&ws).await {
+        bail!("{who} is working in that tree, so its files may be mid-edit; let it finish first");
+    }
+    match how {
+        Dirty::Bank => {
+            if app.workspace_banked(&ws).await.is_some() {
+                bail!(
+                    "that tree already has work set aside; put it back or drop it in its changes pane first"
+                );
+            }
+            let (p, w) = (path.clone(), ws.clone());
+            let bank = crate::proc::run_blocking("setting the tree's work aside", move || {
+                crate::git::git(&p, &["add", "-A"])?;
+                crate::git::bank_wip(&p, &w)
+            })
+            .await??;
+            app.set_banked(&ws, bank).await;
+        }
+        Dirty::Commit => {
+            let p = path.clone();
+            crate::proc::run_blocking("committing the tree's work", move || {
+                crate::git::git(&p, &["add", "-A"])?;
+                crate::git::git(&p, &["commit", "-q", "-m", KEPT_MESSAGE])?;
+                anyhow::Ok(())
+            })
+            .await??;
+        }
+    }
+    app.notify().await;
+    Ok(())
 }
 
 /// Refuse a PR whose branch you may not rewrite, before anything is spawned or cut.
@@ -268,7 +357,7 @@ pub async fn spawn_command_session(
     `ensure_pr_worktree`, so the tree it reuses is asked about before anything
     is written into it rather than after. */
     if let Some(g) = gate(app, pr, &located).await? {
-        bail!("{}", g.say());
+        return Err(g.refusal());
     }
 
     // Reuse the worktree holding the branch, or pin one to it. `git worktree add`
@@ -500,6 +589,57 @@ mod tests {
             "the tree's work went somewhere"
         );
         assert!(app.inner.read().await.automation.get(4).is_none());
+
+        // The refusal carries the gate, so the page can ask rather than only say.
+        let err = spawn_command_session(&app, 4, "feature/x", Pass::HANDLE_REVIEW)
+            .await
+            .expect_err("still dirty");
+        let gate = err
+            .chain()
+            .find_map(|e| e.downcast_ref::<crate::model::Settleable>())
+            .map(|s| s.gate.clone())
+            .expect("a settleable refusal");
+        assert_eq!(gate["gate"], "dirty");
+        assert_eq!(gate["files"].as_array().map(Vec::len), Some(1));
+
+        // Set aside: a clean tree, new files included, and the work on the bank.
+        std::fs::write(tree.join("new.txt"), "untracked\n").unwrap();
+        settle_dirty(&app, 4, "feature/x", Dirty::Bank)
+            .await
+            .expect("banked");
+        assert!(!tree.join("wip.txt").exists() && !tree.join("new.txt").exists());
+        assert!(
+            app.workspace_banked("pr-4").await.is_some(),
+            "the bank holds it"
+        );
+        assert_eq!(
+            tree_gate(&locate_pr(&app, 4, "feature/x").await.unwrap())
+                .await
+                .unwrap(),
+            None
+        );
+        assert!(
+            settle_dirty(&app, 4, "feature/x", Dirty::Bank)
+                .await
+                .is_ok(),
+            "a clean tree has nothing to set aside, and banks nothing over the bank"
+        );
+
+        // Commit: the files stay, as a commit on the branch.
+        std::fs::write(tree.join("kept.txt"), "kept\n").unwrap();
+        app.set_banked("pr-4", None).await;
+        settle_dirty(&app, 4, "feature/x", Dirty::Commit)
+            .await
+            .expect("committed");
+        assert!(tree.join("kept.txt").exists());
+        let subject = crate::testutil::git(&tree, &["log", "-1", "--format=%s"]);
+        assert_eq!(subject.trim(), KEPT_MESSAGE);
+        assert_eq!(
+            tree_gate(&locate_pr(&app, 4, "feature/x").await.unwrap())
+                .await
+                .unwrap(),
+            None
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

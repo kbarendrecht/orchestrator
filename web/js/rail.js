@@ -1,7 +1,7 @@
 // The rail: what is running, what is waiting on you, and the PRs beside it.
 // Twenty-four names, three out; the rest is how a row decides what it says.
 
-import { $, activeCheckout, AGENT_LABEL, ageLabel, bandOf, byNewest, call, callFor, callHost, callOn, caret, checkoutBadge, checkoutOf, CHECKOUTS, chooseBox, clock, confirmBox, promptBox, copyText, creating, creatingIn, creatingIntoMain, dotClass, el, enterCheckout, icon, iconLabel, getHost, getOn, handedToPr, hasPr, inTrouble, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, QUEUE_MAX, reason, refreshButton, repoSummary, safeHref, selected, sessionDot, sessionsOf, sessionOrder, setPendingSelect, setSelected, setSessionOrder, snap, snapshotFor, snapshotOf, startingShown, stateClass, stateLabel, terms, toast, paintSig, reconcile, unchanged, watchStarting } from './core.js';
+import { $, activeCheckout, gateOf, AGENT_LABEL, ageLabel, bandOf, byNewest, call, callFor, callHost, callOn, caret, checkoutBadge, checkoutOf, CHECKOUTS, chooseBox, clock, confirmBox, promptBox, copyText, creating, creatingIn, creatingIntoMain, dotClass, el, enterCheckout, icon, iconLabel, getHost, getOn, handedToPr, hasPr, inTrouble, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, QUEUE_MAX, reason, refreshButton, repoSummary, safeHref, selected, sessionDot, sessionsOf, sessionOrder, setPendingSelect, setSelected, setSessionOrder, snap, snapshotFor, snapshotOf, startingShown, stateClass, stateLabel, terms, toast, paintSig, reconcile, unchanged, watchStarting } from './core.js';
 import * as Open from './open.js';
 import * as Term from './term.js';
 
@@ -870,10 +870,37 @@ async function openPr(/** @type {number} */ number, /** @type {string} */ where)
 }
 
 /** Start the pane pass on a PR, and land on the session doing it. */
+/** Start a run on a PR, and ask what to do with a dirty tree rather than only
+ *  refuse: set the files aside on the bank, or commit them. Resolves the
+ *  daemon's answer, or null when the question was dismissed.
+ *
+ *  **Both ways out are one click**, because the refusal alone ("commit or
+ *  stash first") sent you to a terminal to do what the daemon can do for you.
+ *  @param {number} number @param {string} action */
+async function startPrRun(number, action) {
+  try {
+    return await call(`/api/pr/${number}/${action}`);
+  } catch (e) {
+    const gate = gateOf(e);
+    if (gate?.gate !== 'dirty') throw e;
+    const n = gate.files.length;
+    const files = `${n} uncommitted file${n === 1 ? '' : 's'}`;
+    const pick = await chooseBox(
+      `The tree of #${number} has ${files}, and the run writes into it. Set them aside (you can put them back from its changes pane), or commit them to the branch?`,
+      { ok: 'Set them aside', other: 'Commit them' },
+    );
+    if (pick === null) return null;
+    const r = await call(`/api/pr/${number}/${action}`, { dirty: pick ? 'bank' : 'commit' });
+    toast(pick ? `${files} set aside` : `${files} committed`);
+    return r;
+  }
+}
+
 async function startHandleReview(/** @type {number} */ number, /** @type {HTMLButtonElement | null} */ btn) {
   if (btn) btn.disabled = true;
   try {
-    const r = await call(`/api/pr/${number}/handle-review`);
+    const r = await startPrRun(number, 'handle-review');
+    if (!r) return;
     setPendingSelect(r.session);
     toast(`handling #${number}`);
   } catch (e) {
@@ -924,7 +951,8 @@ function actionButton(/** @type {import('../snapshot').PrView} */ p, /** @type {
     ev.stopPropagation();
     b.disabled = true;
     try {
-      const r = await call(`/api/pr/${p.number}/${action}`);
+      const r = await startPrRun(p.number, action);
+      if (!r) return;
       setPendingSelect(r.session);
       toast(`${label} ${p.number}`);
     } catch (e) {

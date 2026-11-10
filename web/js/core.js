@@ -981,9 +981,16 @@ export async function callOn(c, path, body) {
     body: JSON.stringify(body ?? {}),
   });
   const json = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(json.error || res.statusText);
+  // The gate rides along when the daemon names one, so a refusal the person can
+  // settle with a click is told apart from one they can only read (`gateOf`).
+  if (!res.ok) throw Object.assign(new Error(json.error || res.statusText), { gate: json.gate ?? null });
   return json;
 }
+
+/** The run gate a refused call named, or null: what `callOn` attached.
+ *  @param {unknown} e
+ *  @returns {any} */
+export const gateOf = (e) => (e instanceof Error && 'gate' in e ? /** @type {any} */ (e).gate : null);
 
 /** POST raw bytes to one checkout's daemon: a dropped file, which JSON would
  *  only make three times larger.
