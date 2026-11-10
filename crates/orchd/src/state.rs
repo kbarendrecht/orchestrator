@@ -1077,6 +1077,20 @@ impl Inner {
         (brief, partners)
     }
 
+    /// How far `workspace`'s branch is toward merging, from its PR in the poll.
+    pub fn progress(&self, workspace: &str) -> Progress {
+        let branch = self
+            .workspaces
+            .get(workspace)
+            .and_then(|w| w.tree.branch.as_deref());
+        let pr = branch.and_then(|b| {
+            self.prs
+                .iter()
+                .find(|p| p.head_ref == b && !self.foreign_heads.contains_key(&p.number))
+        });
+        Progress::of(pr)
+    }
+
     /// Every branch `workspace` is built on, through each stack it is the upper
     /// half of and theirs in turn.
     fn lowers_of(&self, workspace: &str) -> HashSet<String> {
@@ -2482,6 +2496,75 @@ impl AppState {
             .get_mut(&session)?
             .told_overlaps
             .extend(new.iter().cloned());
+
+        /* **The path of least resistance first**: when one PR is further along,
+        it goes first and the other adapts after it merges, and nobody has to
+        negotiate that. Both sides compute the same order from the same facts, so
+        each reads its own half whichever reaches a prompt first. Only a tie (no
+        PR on either side, or two equal ones) is left to the two agents. */
+        let partner_ws: Vec<String> = new
+            .iter()
+            .map(|(_, w, _)| w.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let mine = inner.progress(&ws);
+        let mut ordered = Vec::new();
+        let mut open = Vec::new();
+        for other in partner_ws {
+            let theirs = inner.progress(&other);
+            let Some(we_lead) = Progress::ahead(&mine, &theirs) else {
+                open.push(other);
+                continue;
+            };
+            let Some(x) = inner
+                .sessions
+                .values()
+                .find(|x| x.workspace == other && x.state.is_live())
+            else {
+                continue;
+            };
+            let (id, name) = (x.id, x.label().unwrap_or(&x.workspace).to_string());
+            let files: Vec<&str> = new
+                .iter()
+                .filter(|(_, w, _)| *w == other)
+                .map(|(p, _, _)| p.as_str())
+                .collect();
+            let files = files.join(", ");
+            ordered.push(if we_lead {
+                format!(
+                    "orchd: git cannot merge {files} with session `{name}` (id {id}). Yours goes \
+                     first: {}, and theirs {}. Keep going as you are; they adapt after yours \
+                     merges, and orchd gives them the exact rebase. Only if you are about to change \
+                     these files in a way they must know, tell them with `orch tell {id} --text \"...\"`.",
+                    mine.says, theirs.says
+                )
+            } else {
+                format!(
+                    "orchd: git cannot merge {files} with session `{name}` (id {id}). Theirs goes \
+                     first: {}, and yours {}. Leave these files as they are unless your task needs \
+                     them; when theirs merges, orchd gives you the exact rebase, and you settle the \
+                     conflict then, not now.",
+                    theirs.says, mine.says
+                )
+            });
+        }
+        if open.is_empty() {
+            return (!ordered.is_empty()).then(|| ordered.join("\n\n"));
+        }
+        let new: Vec<(String, String, bool)> = new
+            .into_iter()
+            .filter(|(_, w, _)| open.contains(w))
+            .collect();
+        let ordered = ordered.join("\n\n");
+        let with_ordered = |note: String| {
+            Some(if ordered.is_empty() {
+                note
+            } else {
+                format!("{ordered}\n\n{note}")
+            })
+        };
+
         /* **Somebody is already settling it: follow.** Two agents each told to
         lead would both open the negotiation and defer to each other politely; the
         first to reach a prompt leads, and this is the other one. */
@@ -2492,7 +2575,7 @@ impl AppState {
             .map(|x| (x.id, x.label().unwrap_or(&x.workspace).to_string()));
         if let Some((id, name)) = leader {
             let files: Vec<String> = new.iter().map(|(p, _, _)| format!("- {p}")).collect();
-            return Some(format!(
+            return with_ordered(format!(
                 "orchd: git cannot merge files you changed with session `{name}` (id {id}):\n{}\n\
                  That session is settling it with you and leads. Answer its `orch tell` \
                  messages with `orch tell {id} --text \"...\"`, and do not start a plan of your \
@@ -2500,15 +2583,9 @@ impl AppState {
                 files.join("\n")
             ));
         }
-        let partner_ws: Vec<String> = new
-            .iter()
-            .map(|(_, w, _)| w.clone())
-            .collect::<std::collections::BTreeSet<_>>()
-            .into_iter()
-            .collect();
-        let (brief, partners) = inner.solve_brief(&ws, &partner_ws);
+        let (brief, partners) = inner.solve_brief(&ws, &open);
         if partners.is_empty() {
-            return None;
+            return (!ordered.is_empty()).then_some(ordered);
         }
         for &partner in &partners {
             if let Some(x) = inner.sessions.get_mut(&partner) {
@@ -2526,7 +2603,7 @@ impl AppState {
                 }
             }
         }
-        Some(brief)
+        with_ordered(brief)
     }
 
     /// Queue `text` from session `from` for session `to`, and type it in now if
@@ -4150,6 +4227,69 @@ pub struct WorkspaceView {
     /// Files git cannot merge between this workspace and the upstream ref, sorted.
     /// Only while somebody works in it: see `Inner::upstream_conflicts`.
     pub upstream_conflicts: Vec<String>,
+}
+
+/// How far a branch is toward merging, for deciding which side of a conflict
+/// goes first ([`Inner::progress`]).
+///
+/// **The PR that is further along goes first**, because it is the one closer to
+/// landing, and the other side adapting after it is the least work in total:
+/// one rebase, once, against a branch that has stopped moving. Measured in what
+/// the poll already knows: no PR, a draft, an open one, one with CI green and no
+/// open threads, and one GitHub says can merge now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Progress {
+    pub score: u8,
+    pub pr: Option<u64>,
+    /// The words for it, as the notes say them: "#41 can merge now".
+    pub says: String,
+}
+
+impl Progress {
+    pub fn of(pr: Option<&crate::forge::Pr>) -> Self {
+        let Some(p) = pr else {
+            return Progress {
+                score: 0,
+                pr: None,
+                says: "has no PR yet".into(),
+            };
+        };
+        let n = p.number;
+        let (score, says) = if p.is_draft {
+            (1, format!("#{n} is a draft"))
+        } else if p.merge_state == "CLEAN" {
+            (5, format!("#{n} can merge now"))
+        } else if p.checks == crate::forge::Checks::Passing
+            && !p.changes_requested
+            && p.unresolved == 0
+        {
+            (
+                4,
+                format!("#{n} is open, with CI green and no open threads"),
+            )
+        } else if p.checks == crate::forge::Checks::Passing {
+            (3, format!("#{n} is open, with CI green"))
+        } else {
+            (2, format!("#{n} is open"))
+        };
+        Progress {
+            score,
+            pr: Some(n),
+            says,
+        }
+    }
+
+    /// Whether `a` goes before `b`, or `None` when nothing tells them apart.
+    /// Two PRs at the same stage: the older one, which has waited longest.
+    pub fn ahead(a: &Progress, b: &Progress) -> Option<bool> {
+        if a.score != b.score {
+            return Some(a.score > b.score);
+        }
+        match (a.pr, b.pr) {
+            (Some(x), Some(y)) if x != y => Some(x < y),
+            _ => None,
+        }
+    }
 }
 
 /// What a tree measured when it was merged with upstream: behind, ahead, the
@@ -6140,6 +6280,58 @@ mod tests {
         assert!(
             !note.contains("Rebase onto"),
             "and its agent is not told to rebase onto upstream alone: {note}"
+        );
+    }
+
+    /// The PR further along goes first and the other adapts after it merges:
+    /// each side is told its own half, with no negotiation, whichever side
+    /// reaches a prompt first.
+    #[tokio::test]
+    async fn the_pr_further_along_goes_first_in_a_conflict() {
+        let app = app().await;
+        let ahead = live_worktree(&app, "ahead", "/tmp/ahead", &["src/a.rs"]).await;
+        let behind = live_worktree(&app, "behind", "/tmp/behind", &["src/a.rs"]).await;
+        {
+            let mut inner = app.inner.write().await;
+            inner.prs = vec![
+                crate::forge::Pr {
+                    head_ref: "branch-ahead".into(),
+                    merge_state: "CLEAN".into(),
+                    ..crate::testutil::pr(41)
+                },
+                crate::forge::Pr {
+                    head_ref: "branch-behind".into(),
+                    is_draft: true,
+                    ..crate::testutil::pr(42)
+                },
+            ];
+            inner.overlaps = vec![crate::overlap::Pair {
+                a: "ahead".into(),
+                b: "behind".into(),
+                found: crate::overlap::Found {
+                    path: "src/a.rs".into(),
+                    conflict: true,
+                    stamp: [0; 5],
+                },
+            }];
+        }
+        // The one behind reaches its prompt first, and still follows.
+        let follow = app.overlap_note(behind).await.expect("told");
+        assert!(
+            follow.contains("Theirs goes first: #41 can merge now"),
+            "{follow}"
+        );
+        assert!(!follow.contains("you lead"), "no negotiation: {follow}");
+        let lead = app.overlap_note(ahead).await.expect("told");
+        assert!(
+            lead.contains("Yours goes first: #41 can merge now, and theirs #42 is a draft"),
+            "{lead}"
+        );
+
+        // Nothing tells two PR-less sides apart: they settle it between them.
+        assert_eq!(
+            Progress::ahead(&Progress::of(None), &Progress::of(None)),
+            None
         );
     }
 

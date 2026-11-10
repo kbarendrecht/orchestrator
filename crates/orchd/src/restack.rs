@@ -52,13 +52,29 @@ fn quiet_tree(inner: &Inner, workspace: &str) -> Option<(PathBuf, String)> {
 }
 
 /// Say `note` to every live session in `workspace`, on its next prompt.
+///
+/// Added to what is already waiting rather than over it: a restack and a note
+/// about the stack's base can both be due before the next prompt.
 fn tell(inner: &mut Inner, workspace: &str, note: &str) {
     for s in inner
         .sessions
         .values_mut()
         .filter(|s| s.workspace == workspace && s.state.is_live())
     {
-        s.restacked = Some(note.to_string());
+        s.restacked = Some(match s.restacked.take() {
+            Some(before) if !before.contains(note) => format!("{before}\n\n{note}"),
+            _ => note.to_string(),
+        });
+    }
+}
+
+/// The command that finishes a restack by hand, for a note about one that
+/// stopped: what orchd ran, so the agent does exactly that and settles the files.
+fn by_hand(onto: &str, from: Option<&str>) -> String {
+    let short = |c: &str| c.get(..10).unwrap_or(c).to_string();
+    match from {
+        Some(f) => format!("git rebase --onto {} {}", short(onto), short(f)),
+        None => format!("git rebase {}", short(onto)),
     }
 }
 
@@ -256,14 +272,14 @@ impl AppState {
                     continue;
                 }
             }
-            let (p, onto) = (path.clone(), target.clone());
+            let (p, onto, cut) = (path.clone(), target.clone(), point.clone());
             let done = orchd_base::proc::run_blocking("restacking", move || {
                 // Checked again on disk, off the runtime: the snapshot is seconds old.
                 if crate::git::rebase_in_progress(&p) || !crate::git::is_clean(&p).unwrap_or(false)
                 {
                     anyhow::bail!("the tree is not clean any more");
                 }
-                crate::git::rebase_or_abort(&p, &onto, point.as_deref())
+                crate::git::rebase_or_abort(&p, &onto, cut.as_deref())
             })
             .await;
             match done {
@@ -284,6 +300,17 @@ impl AppState {
                 }
                 Ok(Err(e)) | Err(e) => {
                     tracing::info!(workspace = %upper, "not restacked, left to the agent: {e:#}");
+                    let cmd = by_hand(&target, point.as_deref());
+                    tell(
+                        &mut *self.inner.write().await,
+                        &upper,
+                        &format!(
+                            "orchd: `{lower_branch}` (the branch yours is stacked on) {what}, and \
+                             orchd could not restack your branch onto it: {e:#}. It is yours: \
+                             run `{cmd}`, settle those files, and continue the rebase. Your \
+                             branch is as it was until you do."
+                        ),
+                    );
                 }
             }
         }
@@ -445,8 +472,9 @@ impl AppState {
                 tracing::info!(%workspace, "restack the user agreed to did not land: {e:#}");
                 format!(
                     "orchd: the user agreed to restack your branch onto {onto} and force-push it, \
-                     and it did not work: {e:#}. Your branch is as it was; restack it yourself \
-                     when you can."
+                     and it did not work: {e:#}. Your branch is as it was. It is yours: run `{}`, \
+                     settle those files, continue the rebase, and push with --force-with-lease.",
+                    by_hand(&what.onto, what.from.as_deref())
                 )
             }
         };
