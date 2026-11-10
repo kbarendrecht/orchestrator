@@ -348,6 +348,12 @@ pub struct Inner {
     /// one attempt per head, so a rebase that stops is not retried on every
     /// refresh. Memory only.
     pub restack_tried: HashMap<String, String>,
+    /// What each stack's base looked like against upstream when its stack was
+    /// last rebased, asked about or told, so that happens once per move of either.
+    pub stack_rebase_tried: HashMap<String, String>,
+    /// Workspaces a stack rebase is working through right now, which the
+    /// one-branch restack leaves alone until it is done.
+    pub stack_rebasing: HashSet<String>,
     /// Branches stacked on a PR that just merged, waiting to be moved onto the
     /// base (`AppState::restack_after_merge`).
     pub merged_under: Vec<crate::model::MergedUnder>,
@@ -1091,6 +1097,41 @@ impl Inner {
         Progress::of(pr)
     }
 
+    /// Every branch built on `workspace`, through each stack it is the lower
+    /// half of and theirs in turn, nearest first: a branch always comes after
+    /// the one it is built on.
+    pub fn uppers_of(&self, workspace: &str) -> Vec<String> {
+        let mut found: Vec<String> = Vec::new();
+        let mut level = vec![workspace.to_string()];
+        while !level.is_empty() {
+            let mut next = Vec::new();
+            for ((a, b), st) in &self.stacks {
+                let (lower, upper) = if st.lower_is_a { (a, b) } else { (b, a) };
+                if level.contains(lower) && upper != workspace && !found.contains(upper) {
+                    found.push(upper.clone());
+                    next.push(upper.clone());
+                }
+            }
+            next.sort();
+            level = next;
+        }
+        found
+    }
+
+    /// The branch at the bottom of the stack `workspace` is in: itself when it
+    /// is built on nothing.
+    pub fn stack_bottom(&self, workspace: &str) -> String {
+        let mut at = workspace.to_string();
+        let mut seen = HashSet::new();
+        while let Some((lower, _)) = self.stacked_on(&at) {
+            if !seen.insert(at.clone()) {
+                break;
+            }
+            at = lower;
+        }
+        at
+    }
+
     /// Every branch `workspace` is built on, through each stack it is the upper
     /// half of and theirs in turn.
     fn lowers_of(&self, workspace: &str) -> HashSet<String> {
@@ -1590,6 +1631,8 @@ impl AppState {
                 stack_told: HashMap::new(),
                 upstream_conflicts: HashMap::new(),
                 restack_tried: HashMap::new(),
+                stack_rebase_tried: HashMap::new(),
+                stack_rebasing: HashSet::new(),
                 merged_under: Vec::new(),
                 foreign_heads: HashMap::new(),
                 spare: Default::default(),
@@ -3700,11 +3743,18 @@ impl AppState {
             };
             /* **Against upstream: only behind, only live, only when it moved.** A
             branch that has every upstream commit merges into it by definition, and
-            a tree nobody works in has nobody to tell. */
+            a tree nobody works in has nobody to tell. **Live includes the base of a
+            stack somebody works higher up in**: a base in review often has no
+            session, and it is the one branch whose conflict with upstream decides
+            what the whole stack does (`AppState::stack_upstream`). */
             let stamp = upstream_stamp(&w.tree);
             let upstream_ask = (w.tree.divergence.0 > 0
                 && !w.tree.changed.is_empty()
-                && inner.has_live_session(workspace))
+                && (inner.has_live_session(workspace)
+                    || inner
+                        .uppers_of(workspace)
+                        .iter()
+                        .any(|u| inner.has_live_session(u))))
             .then(|| match inner.upstream_conflicts.get(workspace) {
                 Some((s, known)) if *s == stamp => Err(known.clone()),
                 _ => Ok(stamp),
@@ -3838,6 +3888,7 @@ impl AppState {
         (`overlap_note`), once per pair and lower head. */
         drop(inner);
         self.restack_when_safe(workspace).await;
+        self.stack_upstream(workspace).await;
     }
 }
 
@@ -6333,6 +6384,63 @@ mod tests {
             Progress::ahead(&Progress::of(None), &Progress::of(None)),
             None
         );
+    }
+
+    /// A stack whose base conflicts with upstream: the lowest live session is
+    /// told to see to the base, and the one above it to wait rather than rebase
+    /// onto upstream itself, which would split the stack.
+    #[tokio::test]
+    async fn a_stack_behind_upstream_is_settled_from_the_bottom() {
+        let app = app().await;
+        let up1 = live_worktree(&app, "up1", "/tmp/up1", &["src/a.rs"]).await;
+        let up2 = live_worktree(&app, "up2", "/tmp/up2", &["src/a.rs"]).await;
+        let base_session = live_worktree(&app, "base", "/tmp/base", &["src/a.rs"]).await;
+        {
+            let mut inner = app.inner.write().await;
+            // The base: in review, nobody in it, behind upstream and conflicting.
+            inner.sessions.remove(&base_session);
+            let base = inner.workspaces.get_mut("base").expect("base");
+            base.tree.divergence = (5, 1);
+            inner.prs = vec![crate::forge::Pr {
+                head_ref: "branch-base".into(),
+                ..crate::testutil::pr(30)
+            }];
+            let stack = |lower_is_a| crate::overlap::Stack {
+                lower_is_a,
+                behind: 0,
+                lower_tip: "t".into(),
+                anchor: "t".into(),
+                lower_commits: 1,
+            };
+            inner
+                .stacks
+                .insert(("base".into(), "up1".into()), stack(true));
+            inner
+                .stacks
+                .insert(("up1".into(), "up2".into()), stack(true));
+            inner
+                .upstream_conflicts
+                .insert("base".into(), ([5, 1, 1, 1, 1], vec!["src/a.rs".into()]));
+        }
+        app.stack_upstream("up2").await;
+        let first = app.overlap_note(up1).await.unwrap_or_default();
+        assert!(
+            first.contains("the base of your stack, `branch-base` (#30)")
+                && first.contains("src/a.rs"),
+            "the lowest live session sees to the base: {first}"
+        );
+        let wait = app.overlap_note(up2).await.unwrap_or_default();
+        assert!(
+            wait.contains("sees to it") && wait.contains("do not rebase onto"),
+            "and the one above it waits: {wait}"
+        );
+        // Once per position of the base: no second round of notes.
+        app.stack_upstream("up2").await;
+        assert!(!app
+            .overlap_note(up1)
+            .await
+            .unwrap_or_default()
+            .contains("base of your stack"));
     }
 
     /// The agent hears which files will not merge with upstream when that list

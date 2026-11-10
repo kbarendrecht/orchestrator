@@ -54,6 +54,29 @@ export async function run(t) {
   await t.api('POST', '/hooks/stop', { session_id: upper.id, hook_event_name: 'Stop' })
   await t.settled(upper.id)
 
+  // **The base moves on, and the stack follows from the bottom**: a colleague's
+  // merge that touches neither branch, so the stack merges cleanly, and nothing
+  // in it is pushed, so nobody is asked.
+  git(t.root, ['clone', '-q', path.join(t.root, 'origin.git'), 'colleague'])
+  const colleague = path.join(t.root, 'colleague')
+  fs.writeFileSync(path.join(colleague, 'elsewhere.txt'), 'merged upstream\n')
+  git(colleague, ['add', '-A'])
+  git(colleague, ['-c', 'user.email=c@c', '-c', 'user.name=c', 'commit', '-qm', 'upstream moved'])
+  git(colleague, ['push', '-q', 'origin', 'main'])
+  git(t.repo, ['fetch', '-q', 'origin'])
+  const base = git(t.repo, ['rev-parse', 'origin/main']).trim()
+  await t.api('POST', `/api/workspace/${lower.workspace}/reconcile`)
+  await until('the stack to be rebased onto the moved base, bottom first', async () =>
+    git(lower.cwd, ['rev-list', '--count', `HEAD..${base}`]).trim() === '0'
+      && git(upper.cwd, ['rev-list', '--count', `HEAD..${git(lower.cwd, ['rev-parse', 'HEAD']).trim()}`]).trim() === '0')
+  assert.ok(fs.existsSync(path.join(upper.cwd, 'elsewhere.txt')), 'the upper branch has the new base too')
+  const rebased = (await t.api('POST', '/hooks/user-prompt-submit', {
+    session_id: upper.id, hook_event_name: 'UserPromptSubmit', prompt: 'go on',
+  }))?.hookSpecificOutput?.additionalContext ?? ''
+  assert.ok(rebased.includes('the whole stack was rebased'), `and its agent is told: ${JSON.stringify(rebased)}`)
+  await t.api('POST', '/hooks/stop', { session_id: upper.id, hook_event_name: 'Stop' })
+  await t.settled(upper.id)
+
   // **Pushed is asked about**, and only once the lower branch pushed: its
   // unpushed commits are in no PR and must not show up in the upper one.
   git(upper.cwd, ['push', '-q', 'origin', 'stacked-up'])

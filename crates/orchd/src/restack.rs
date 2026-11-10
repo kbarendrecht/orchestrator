@@ -51,6 +51,25 @@ fn quiet_tree(inner: &Inner, workspace: &str) -> Option<(PathBuf, String)> {
         .flatten()
 }
 
+/// A tree nobody is changing: no session in it busy (none at all is fine, which
+/// is a stack's base in review), clean, nothing banked, no rebase stopped. The
+/// path and branch.
+fn still_tree(inner: &Inner, workspace: &str) -> Option<(PathBuf, String)> {
+    let w = inner.workspaces.get(workspace)?;
+    let busy = inner
+        .sessions
+        .values()
+        .any(|s| s.workspace == workspace && s.state.is_busy());
+    let clean = w.tree.measured
+        && w.tree
+            .changed
+            .iter()
+            .all(|f| !f.staged && !f.unstaged && f.status != "?");
+    (!busy && clean && w.banked.is_none() && !w.tree.rebasing)
+        .then(|| Some((w.path.clone(), w.tree.branch.clone()?)))
+        .flatten()
+}
+
 /// Say `note` to every live session in `workspace`, on its next prompt.
 ///
 /// Added to what is already waiting rather than over it: a restack and a note
@@ -172,6 +191,10 @@ impl AppState {
                 if inner.stacked_on(upper).map(|(l, _)| l).as_deref() != Some(lower.as_str()) {
                     continue;
                 }
+                // A stack rebase is moving it already, bottom first.
+                if inner.stack_rebasing.contains(upper) {
+                    continue;
+                }
                 let Some((path, branch)) = quiet_tree(&inner, upper) else {
                     continue;
                 };
@@ -263,6 +286,7 @@ impl AppState {
                             branch: branch.clone(),
                             onto_name: format!("`{lower_branch}`"),
                             before: State::Exited,
+                            chain: Vec::new(),
                         },
                     );
                     if !asked {
@@ -312,6 +336,275 @@ impl AppState {
                         ),
                     );
                 }
+            }
+        }
+    }
+
+    /// A stack whose base is behind upstream: rebase it from the bottom, or tell
+    /// the one session that has to.
+    ///
+    /// **The path of least resistance is the order.** The base goes first and
+    /// every branch above it follows, so only the base ever settles a conflict
+    /// with upstream, and the branches above it only restack. A base that merges
+    /// cleanly is rebased by orchd, with the stack after it: by itself when
+    /// nothing in it is pushed, after one question to the user when something is
+    /// (the yes force-pushes with a lease, `rebase_stack`). A base that does not
+    /// is the lowest live session's to settle; the others are told to wait, not to
+    /// rebase onto upstream on their own, which would split the stack.
+    ///
+    /// Once per position of the base against upstream (`stack_rebase_tried`).
+    pub(crate) async fn stack_upstream(&self, workspace: &str) {
+        let upstream = self.cfg.upstream_ref.clone();
+        let (rungs, actor, bottom) = {
+            let mut inner = self.inner.write().await;
+            let bottom = inner.stack_bottom(workspace);
+            let uppers = inner.uppers_of(&bottom);
+            if uppers.is_empty() {
+                return;
+            }
+            let Some(w) = inner.workspaces.get(&bottom) else {
+                return;
+            };
+            let behind = w.tree.divergence.0;
+            if behind == 0 {
+                return;
+            }
+            let Some((_, files)) = inner.upstream_conflicts.get(&bottom).cloned() else {
+                return;
+            };
+            let stamp = format!("{:?}|{behind}|{}", w.tree.base, files.len());
+            if inner.stack_rebase_tried.get(&bottom) == Some(&stamp) {
+                return;
+            }
+            let chain: Vec<String> = std::iter::once(bottom.clone()).chain(uppers).collect();
+            let Some(actor) = chain.iter().find(|ws| inner.has_live_session(ws)).cloned() else {
+                return;
+            };
+            let branch_of = |ws: &str| {
+                inner
+                    .workspaces
+                    .get(ws)
+                    .and_then(|w| w.tree.branch.clone())
+                    .unwrap_or_else(|| ws.to_string())
+            };
+            let base_branch = branch_of(&bottom);
+            let actor_branch = branch_of(&actor);
+            if !files.is_empty() {
+                inner.stack_rebase_tried.insert(bottom.clone(), stamp);
+                let pr = inner
+                    .progress(&bottom)
+                    .pr
+                    .map(|n| format!(" (#{n})"))
+                    .unwrap_or_default();
+                let list: Vec<String> = files.iter().take(8).map(|f| format!("- {f}")).collect();
+                let above = chain.len() - 1;
+                let first = if actor == bottom {
+                    format!(
+                        "orchd: {above} branch{} {} stacked on yours, so yours goes first against \
+                         {upstream}: once you have rebased onto it and pushed, orchd restacks {}. \
+                         Nothing else in the stack has to move before you.",
+                        if above == 1 { "" } else { "es" },
+                        if above == 1 { "is" } else { "are" },
+                        if above == 1 { "it" } else { "them" },
+                    )
+                } else {
+                    format!(
+                        "orchd: the base of your stack, `{base_branch}`{pr}, is {behind} commits \
+                         behind {upstream}, and git cannot merge it in:\n{}\nIt goes first, and \
+                         nobody works in it. Ask the user with `orch ask` whether to open a session \
+                         on it, or whether you may rebase it in its worktree. Leave your own branch \
+                         as it is: orchd restacks it once the base has moved.",
+                        list.join("\n")
+                    )
+                };
+                let wait = format!(
+                    "orchd: the base of your stack, `{base_branch}`, has to be rebased onto \
+                     {upstream} first, and the session on `{actor_branch}` sees to it. Nothing to \
+                     do for you now: do not rebase onto {upstream} yourself, which would split the \
+                     stack. orchd restacks your branch after."
+                );
+                tell(&mut inner, &actor, &first);
+                for ws in &chain {
+                    if ws != &actor && inner.has_live_session(ws) {
+                        tell(&mut inner, ws, &wait);
+                    }
+                }
+                return;
+            }
+            // Clean: every branch in it has to hold still, or this waits.
+            let mut rungs = Vec::new();
+            for ws in &chain {
+                match still_tree(&inner, ws) {
+                    Some((path, branch)) => rungs.push((ws.clone(), path, branch)),
+                    None => return,
+                }
+            }
+            inner.stack_rebase_tried.insert(bottom.clone(), stamp);
+            (rungs, actor, base_branch)
+        };
+        let (main, up) = (self.cfg.main_checkout.clone(), upstream.clone());
+        let probe =
+            orchd_base::proc::run_blocking("reading the stack against upstream", move || {
+                let onto = crate::git::git(&main, &["rev-parse", &up])
+                    .ok()?
+                    .trim()
+                    .to_string();
+                let pushed = rungs
+                    .iter()
+                    .any(|(_, p, b)| crate::git::pushed_ref(p, b).is_some());
+                Some((onto, pushed, rungs))
+            })
+            .await
+            .ok()
+            .flatten();
+        let Some((onto, pushed, rungs)) = probe else {
+            return;
+        };
+        let chain: Vec<String> = rungs.into_iter().map(|(ws, _, _)| ws).collect();
+        if !pushed {
+            Box::pin(self.rebase_stack(chain, onto)).await;
+            return;
+        }
+        let n = chain.len();
+        let first = chain.first().cloned().unwrap_or_default();
+        let mut inner = self.inner.write().await;
+        let asked = ask(
+            &mut inner,
+            &actor,
+            format!(
+                "The stack of {n} on `{bottom}` is behind {upstream}, and it merges cleanly. Rebase \
+                 it onto {upstream}, bottom first, and force-push the branches that are pushed?"
+            ),
+            "Each branch is rebased onto the one under it after that one has moved, so nothing \
+             splits; pushes use --force-with-lease, and a branch that stops is left as it was, \
+             with the ones above it."
+                .to_string(),
+            RestackAsk {
+                id: uuid::Uuid::new_v4(),
+                onto,
+                from: None,
+                branch: bottom,
+                onto_name: upstream,
+                before: State::Exited,
+                chain,
+            },
+        );
+        if !asked {
+            // Somebody else's question is open: ask again on a later refresh.
+            inner.stack_rebase_tried.remove(&first);
+        }
+    }
+
+    /// Rebase a stack onto `onto`, bottom first: each branch onto the new head of
+    /// the one under it, cut at its copy of that one (`restack_point`). Pushed
+    /// branches go up with a lease. Stops at the first branch that does not land,
+    /// and says so to it and to every branch above it.
+    pub(crate) async fn rebase_stack(&self, chain: Vec<String>, onto: String) {
+        let upstream = self.cfg.upstream_ref.clone();
+        let base = self.base_branch();
+        self.inner
+            .write()
+            .await
+            .stack_rebasing
+            .extend(chain.iter().cloned());
+        let mut stopped: Option<String> = None;
+        for (i, ws) in chain.iter().enumerate() {
+            let rung = {
+                let inner = self.inner.read().await;
+                let lower = (i > 0)
+                    .then(|| inner.stacked_on(ws))
+                    .flatten()
+                    .and_then(|(l, st)| Some((inner.workspaces.get(&l)?.path.clone(), st.clone())));
+                still_tree(&inner, ws).map(|(p, b)| (p, b, lower))
+            };
+            let Some((path, branch, lower)) = rung else {
+                stopped = Some(ws.clone());
+                tell(
+                    &mut *self.inner.write().await,
+                    ws,
+                    "orchd: the stack was being rebased onto the base, and stopped at your branch \
+                     because it was busy or not clean. The branches under it are done; restack \
+                     yours onto the one under it when you can.",
+                );
+                break;
+            };
+            let (p, b, up, base, first) = (
+                path.clone(),
+                branch.clone(),
+                upstream.clone(),
+                base.clone(),
+                onto.clone(),
+            );
+            let done = orchd_base::proc::run_blocking("rebasing a stack", move || {
+                let (target, from) = match &lower {
+                    None => (first, None),
+                    Some((lower_path, st)) => (
+                        crate::git::git(lower_path, &["rev-parse", "HEAD"])?
+                            .trim()
+                            .to_string(),
+                        crate::overlap::restack_point(&p, st, &up),
+                    ),
+                };
+                let cmd = by_hand(&target, from.as_deref());
+                let landed = if crate::git::pushed_ref(&p, &b).is_some() {
+                    crate::git::restack_pushed(&p, &b, &target, from.as_deref(), base.as_deref())
+                        .map(|_| ())
+                } else {
+                    crate::git::rebase_or_abort(&p, &target, from.as_deref())
+                };
+                Ok::<_, anyhow::Error>(landed.map_err(|e| (cmd, e)))
+            })
+            .await
+            .and_then(|r| r);
+            match done {
+                Ok(Ok(())) => {
+                    let _ = Box::pin(self.reconcile(ws)).await;
+                }
+                Ok(Err((cmd, e))) => {
+                    tracing::info!(workspace = %ws, "stack rebase stopped: {e:#}");
+                    tell(
+                        &mut *self.inner.write().await,
+                        ws,
+                        &format!(
+                            "orchd: the stack was rebased onto {upstream}, bottom first, and stopped \
+                             at your branch: {e:#}. Your branch is as it was. It is yours: run \
+                             `{cmd}`, settle those files, continue the rebase, and push with \
+                             --force-with-lease. The branches above yours wait for it."
+                        ),
+                    );
+                    stopped = Some(ws.clone());
+                    break;
+                }
+                Err(e) => {
+                    tracing::info!(workspace = %ws, "stack rebase could not run: {e:#}");
+                    stopped = Some(ws.clone());
+                    break;
+                }
+            }
+        }
+        let mut inner = self.inner.write().await;
+        for ws in &chain {
+            inner.stack_rebasing.remove(ws);
+        }
+        let note = match &stopped {
+            None => format!(
+                "orchd: the whole stack was rebased onto {upstream}, bottom first, yours included, \
+                 and the pushed branches were force-pushed. Your commits are the same; their ids \
+                 changed."
+            ),
+            Some(at) => format!(
+                "orchd: the stack was being rebased onto {upstream} and stopped at `{at}`, under \
+                 yours. Leave your branch as it is: orchd restacks it once that one has moved."
+            ),
+        };
+        let mut above = false;
+        for ws in &chain {
+            if Some(ws) == stopped.as_ref() {
+                above = true;
+                continue;
+            }
+            if stopped.is_none() || above {
+                tell(&mut inner, ws, &note);
             }
         }
     }
@@ -411,6 +704,7 @@ impl AppState {
                         branch: branch.clone(),
                         onto_name: upstream.clone(),
                         before: State::Exited,
+                        chain: Vec::new(),
                     },
                 );
                 if !asked {
@@ -446,6 +740,11 @@ impl AppState {
         session: crate::model::SessionId,
         what: RestackAsk,
     ) {
+        if !what.chain.is_empty() {
+            self.rebase_stack(what.chain, what.onto).await;
+            self.notify().await;
+            return;
+        }
         let Some((workspace, path)) = ({
             let inner = self.inner.read().await;
             inner.sessions.get(&session).and_then(|s| {

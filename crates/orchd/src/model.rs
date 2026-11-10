@@ -507,6 +507,9 @@ pub struct RestackAsk {
     /// The state before the question, put back on the answer: no agent is
     /// blocked on this one, so "answered" does not mean "working again".
     pub before: State,
+    /// A whole stack rebased onto the base, bottom first: its workspaces in
+    /// order, when the question was about the stack rather than one branch.
+    pub chain: Vec<String>,
 }
 
 /// A merged lower PR whose upper branch still carries its commits: the restack

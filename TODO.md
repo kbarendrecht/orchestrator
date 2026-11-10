@@ -236,8 +236,11 @@ this file, which churned it from every build; that feature is gone.
   restack with no decision in it** (`crates/orchd/src/restack.rs`): an idle, clean
   upper branch follows the one under it, done when unpushed and asked about with
   `orch ask` when pushed (force-push with a lease), and moves onto the base with
-  `--onto` when the lower PR merges. A restack that stops on a conflict is still
-  the agents', and they hear about it on the next prompt. What orchd owns is
+  `--onto` when the lower PR merges. A stack whose base falls behind the base
+  branch is rebased bottom first (`stack_upstream`), and only its lowest live
+  session settles a conflict there; a conflict between two sessions goes to the PR
+  that is further along (`Progress`). A restack that stops on a conflict is still
+  the agents', and they hear about it on the next prompt, with the command. What orchd owns is
   *showing* what an agent did. A session now keeps every branch it held and every PR opened on them
   (`Session::branches`, `Session::prs`), the rail names the worst PR with a count
   of the rest, and the pane header draws one chip per PR. A PR that ended while
