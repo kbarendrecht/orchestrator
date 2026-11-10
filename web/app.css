@@ -488,8 +488,6 @@ button.ovc-rname:hover{background:var(--hover)}
 .ovc-line{padding:6px 12px 2px;font-size:calc(11px * var(--fs));color:var(--dim)}
 .ovc-now{color:var(--faint-solid);text-decoration:underline;text-decoration-color:var(--line);text-underline-offset:3px}
 .ovc-now:hover{color:var(--text)}
-.ovc-ask{display:block;width:100%;padding:6px 12px 2px;font-size:calc(11px * var(--fs));color:var(--done);text-align:left}
-.ovc-ask:hover{color:var(--text)}
 .ovc-grp{padding:4px 0}
 .ovc-grp + .ovc-grp{border-top:1px solid var(--line)}
 .ovc-who{display:flex;align-items:center;gap:8px;width:100%;min-width:0;text-align:left;color:var(--text)}
@@ -507,7 +505,6 @@ button.ovc-who:hover{background:var(--hover)}
 .ovc-wait>span{flex:1;min-width:0}
 .ovc-send{flex:none;padding:1px 6px;border:1px solid var(--line);border-radius:var(--r);font-size:calc(11px * var(--fs));color:var(--text)}
 .ovc-send:hover{background:var(--hover)}
-.ovc-plan{padding:3px 12px 3px 26px;font-size:calc(11px * var(--fs));color:var(--dim)}
 
 /* The checkout a block of sessions belongs to. Drawn only when there is more than
    one, so a single-checkout rail is exactly what it always was.

@@ -73,39 +73,37 @@ export async function run(t) {
   const rebased = (await t.api('POST', '/hooks/user-prompt-submit', {
     session_id: upper.id, hook_event_name: 'UserPromptSubmit', prompt: 'go on',
   }))?.hookSpecificOutput?.additionalContext ?? ''
-  assert.ok(rebased.includes('the whole stack was rebased'), `and its agent is told: ${JSON.stringify(rebased)}`)
+  assert.ok(rebased.includes('your stack was rebased'), `and its agent is told: ${JSON.stringify(rebased)}`)
   await t.api('POST', '/hooks/stop', { session_id: upper.id, hook_event_name: 'Stop' })
   await t.settled(upper.id)
 
-  // **Pushed is asked about**, and only once the lower branch pushed: its
-  // unpushed commits are in no PR and must not show up in the upper one.
+  // **Pushed is never done unasked, and nothing is asked**: the agent hears
+  // the restack at its next push, with the command, and the card can do it.
   git(upper.cwd, ['push', '-q', 'origin', 'stacked-up'])
   const before = git(upper.cwd, ['rev-parse', 'HEAD']).trim()
   commit(lower.cwd, 'shared.txt', 'lower 3\n', 'lower 3')
+  git(lower.cwd, ['push', '-q', 'origin', lowerBranch])
+  const pushedTip = git(lower.cwd, ['rev-parse', 'HEAD']).trim()
   await t.api('POST', `/api/workspace/${lower.workspace}/reconcile`)
   await until('the stack to see the new commit', async () =>
     (await t.state()).workspaces.find((w) => w.id === upper.workspace)?.stacked_on?.behind === 1)
   await t.api('POST', `/api/workspace/${upper.workspace}/reconcile`)
   assert.equal(git(upper.cwd, ['rev-parse', 'HEAD']).trim(), before, 'a pushed branch is not rebased by itself')
-  assert.equal((await t.session(upper.id)).interaction, null, 'nor asked about while the lower one is unpushed')
+  assert.equal((await t.session(upper.id)).interaction, null, 'and nobody is asked')
 
-  git(lower.cwd, ['push', '-q', 'origin', lowerBranch])
-  const pushedTip = git(lower.cwd, ['rev-parse', 'HEAD']).trim()
-  await t.api('POST', `/api/workspace/${upper.workspace}/reconcile`)
-  const asked = await until('the question on the upper session', async () => {
-    const i = (await t.session(upper.id)).interaction
-    return i && !i.answer ? i : null
+  const push = () => t.api('POST', '/hooks/pre-edit', {
+    session_id: upper.id, hook_event_name: 'PreToolUse', tool_name: 'Bash',
+    tool_input: { command: 'git push --force-with-lease' },
   })
-  assert.ok(asked.question.includes('force-push'), `it says what a yes does: ${asked.question}`)
-  assert.equal((await t.state()).workspaces.find((w) => w.id === upper.workspace)?.stacked_on?.asking, true,
-    'and the stack card can say so')
-  await t.api('POST', `/api/session/${upper.id}/answer`, { ask: asked.id, answer: 'restack-push' })
-  await until('the restack to land on origin', async () =>
-    git(upper.cwd, ['rev-list', '--count', `HEAD..${pushedTip}`]).trim() === '0'
-      && git(upper.cwd, ['ls-remote', 'origin', 'refs/heads/stacked-up']).split(/\s/)[0]
-        === git(upper.cwd, ['rev-parse', 'HEAD']).trim())
-  const told = (await t.api('POST', '/hooks/user-prompt-submit', {
-    session_id: upper.id, hook_event_name: 'UserPromptSubmit', prompt: 'go on',
-  }))?.hookSpecificOutput?.additionalContext ?? ''
-  assert.ok(told.includes('force-pushed'), `its next prompt says so: ${JSON.stringify(told)}`)
+  const held = (await push())?.hookSpecificOutput ?? {}
+  assert.equal(held.permissionDecision, 'deny', `its push is held once: ${JSON.stringify(held)}`)
+  assert.ok(held.permissionDecisionReason.includes('Restack first: `git rebase'),
+    `with the command: ${held.permissionDecisionReason}`)
+  assert.equal((await push())?.hookSpecificOutput, undefined, 'the retry goes through')
+
+  // The card's "Restack it now": a press, so a pushed branch goes up with a lease.
+  await t.api('POST', `/api/workspace/${upper.workspace}/restack`)
+  assert.equal(git(upper.cwd, ['rev-list', '--count', `HEAD..${pushedTip}`]).trim(), '0', 'restacked onto what it pushed')
+  assert.equal(git(upper.cwd, ['ls-remote', 'origin', 'refs/heads/stacked-up']).split(/\s/)[0],
+    git(upper.cwd, ['rev-parse', 'HEAD']).trim(), 'and on origin')
 }

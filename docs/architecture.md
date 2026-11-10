@@ -101,6 +101,7 @@ crates/orchd/         the runtime core: the `orchd` library, what the daemon kno
   carry.rs        every other move of main's branch — parking, a PR flow freeing
                   main, a switch onto a PR — and the steps all moves share
   locate.rs       where a PR's branch is: someone else's, a worktree, main, nowhere
+  push.rs         what an agent is told when it pushes: restack, order, upstream, base
   restack.rs      the upper branch of a stack follows the one under it, and leaves it on a merge
   restart.rs      respawn sessions in place on the installed agent, each when idle
   review_api.rs   the PR routes that start work, and the file pane's reads and

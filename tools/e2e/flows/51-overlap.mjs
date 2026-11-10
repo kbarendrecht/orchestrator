@@ -1,11 +1,10 @@
-// Two workspaces that changed the same file are told so, on the board and to the
-// agent.
+// Two workspaces that changed the same file are told so, on the board, and to the
+// agent at the moment it matters: its push.
 //
 // The unit tests in `overlap.rs` hold the comparison on two real trees. What only
 // a real daemon can say is that it is *wired*: that a reconcile recomputes the
-// pairs, that the snapshot carries them on both sides, and that the prompt hook
-// answers with the note rather than being answered before it ran — which is what
-// `hooks::detach` did to every observer route, and why the note had to move off it.
+// pairs, that the snapshot carries them on both sides, that a prompt carries none
+// of it, and that the push hook holds a `git push` once with the note.
 
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -39,8 +38,8 @@ export async function run(t) {
   assert.deepEqual(
     seen,
     [
-      { path: 'README.md', with: right.workspace, conflict: true, plan: null, told: false },
-      { path: 'both-new.txt', with: right.workspace, conflict: true, plan: null, told: false },
+      { path: 'README.md', with: right.workspace, conflict: true, told: false },
+      { path: 'both-new.txt', with: right.workspace, conflict: true, told: false },
     ],
     `the left tree is told about both shared files and not its own: ${JSON.stringify(seen)}`,
   )
@@ -51,22 +50,27 @@ export async function run(t) {
   )
   assert.deepEqual(await overlaps('main'), [], 'main changed nothing and is told nothing')
 
-  // **The first to reach a prompt leads**: the brief to settle it comes with
-  // that prompt, once, and nothing is pressed for it.
+  // **Said at the push, not on a prompt**: a session that is only reading hears
+  // nothing, and a push is held once with which file, with whom, and who goes
+  // first. No PR on either side here, so neither goes first.
   const promptAs = (id, text = 'go on') => t.api('POST', '/hooks/user-prompt-submit', {
     session_id: id, hook_event_name: 'UserPromptSubmit', prompt: text,
   })
-  const note = (await promptAs(left.id))?.hookSpecificOutput?.additionalContext ?? ''
-  assert.ok(
-    note.includes('README.md') && note.includes(`\`${right.workspace}\``) && note.includes('you lead'),
-    `the lead's prompt carries the brief: ${JSON.stringify(note)}`,
-  )
-  assert.equal((await promptAs(left.id))?.hookSpecificOutput, undefined, 'and says it once')
-  // The other side follows rather than opening a negotiation of its own.
-  const follow = (await promptAs(right.id))?.hookSpecificOutput?.additionalContext ?? ''
-  assert.ok(follow.includes('leads') && follow.includes(left.id) && !follow.includes('you lead'),
-    `the other side is told who leads: ${JSON.stringify(follow)}`)
-  await t.api('POST', '/hooks/stop', { session_id: right.id, hook_event_name: 'Stop' })
+  assert.equal((await promptAs(left.id))?.hookSpecificOutput, undefined, 'a prompt carries no conflict')
+  await t.api('POST', '/hooks/stop', { session_id: left.id, hook_event_name: 'Stop' })
+  const pushAs = (id) => t.api('POST', '/hooks/pre-edit', {
+    session_id: id, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'git push' },
+  })
+  const held = (await pushAs(left.id))?.hookSpecificOutput ?? {}
+  assert.equal(held.permissionDecision, 'deny', `the push is held: ${JSON.stringify(held)}`)
+  assert.ok(held.permissionDecisionReason.includes('README.md') && held.permissionDecisionReason.includes(right.id)
+    && held.permissionDecisionReason.includes('Neither PR is further along'),
+  `with the file, the other session and the order: ${held.permissionDecisionReason}`)
+  assert.equal((await pushAs(left.id))?.hookSpecificOutput, undefined, 'the retry goes through')
+  assert.equal((await pushAs(left.id))?.hookSpecificOutput, undefined, 'and it is said once')
+  const theirs = (await pushAs(right.id))?.hookSpecificOutput?.permissionDecisionReason ?? ''
+  assert.ok(theirs.includes(left.id), `the other side hears it at its own push: ${theirs}`)
+  assert.equal((await overlaps(left.workspace))[0]?.told, true, 'and the card says it was told')
 
   // One agent can tell the other, as a turn typed in once the other is idle.
   const tell = (from, to, text) => t.api('POST', `/api/session/${from}/message`, { to, text })
@@ -106,20 +110,6 @@ export async function run(t) {
     t.agentLog().split(`${left.id.slice(0, 8)} turn: orchd: a message`).length > before)
   await t.settled(left.id)
 
-  // It ends in an `orch ask`, and the answer is the plan the card shows.
-  const asked = await t.api('POST', `/api/session/${left.id}/ask`, {
-    question: 'How do we settle README.md?',
-    options: [
-      { value: 'overlap-merge-first', label: 'left merges first, right rebases' },
-      { value: 'overlap-adapt', label: 'right adapts' },
-    ],
-  })
-  const askId = asked.ask ?? asked.id ?? (await t.session(left.id)).interaction.id
-  await t.api('POST', `/api/session/${left.id}/answer`, { ask: askId, answer: 'overlap-merge-first' })
-  const plans = (await overlaps(right.workspace)).map((o) => o.plan)
-  assert.ok(plans.length && plans.every((p) => p === 'left merges first, right rebases'),
-    `both sides of the pair carry the plan: ${JSON.stringify(plans)}`)
-
   // **Before the conflict**: an edit to a file only the other side changed so far
   // is held once, naming who changed it, and the retry goes through.
   fs.writeFileSync(path.join(right.cwd, 'only-right.txt'), 'theirs\n')
@@ -128,10 +118,10 @@ export async function run(t) {
     session_id: left.id, hook_event_name: 'PreToolUse', tool_name: 'Edit',
     tool_input: { file_path: path.join(left.cwd, 'only-right.txt') },
   })
-  const held = (await edit())?.hookSpecificOutput ?? {}
-  assert.equal(held.permissionDecision, 'deny', `the first edit is held: ${JSON.stringify(held)}`)
-  assert.ok(held.permissionDecisionReason.includes('only-right.txt') && held.permissionDecisionReason.includes(right.id),
-    `and says who changed it: ${held.permissionDecisionReason}`)
+  const edited = (await edit())?.hookSpecificOutput ?? {}
+  assert.equal(edited.permissionDecision, 'deny', `the first edit is held: ${JSON.stringify(edited)}`)
+  assert.ok(edited.permissionDecisionReason.includes('only-right.txt') && edited.permissionDecisionReason.includes(right.id),
+    `and says who changed it: ${edited.permissionDecisionReason}`)
   assert.equal((await edit())?.hookSpecificOutput, undefined, 'the retry goes through')
 
   // **Against upstream**: a colleague's merge to README.md, which both trees
@@ -145,11 +135,9 @@ export async function run(t) {
   await t.api('POST', `/api/workspace/${left.workspace}/reconcile`)
   const upstream = (await t.state()).workspaces.find((w) => w.id === left.workspace)?.upstream_conflicts
   assert.deepEqual(upstream, ['README.md'], `the left tree conflicts with origin/main: ${JSON.stringify(upstream)}`)
-  const rebase = (await promptAs(left.id))?.hookSpecificOutput?.additionalContext ?? ''
-  assert.ok(rebase.includes('README.md') && rebase.includes('Rebase onto origin/main'),
-    `and its next prompt says to rebase: ${JSON.stringify(rebase)}`)
-  await t.api('POST', '/hooks/stop', { session_id: left.id, hook_event_name: 'Stop' })
-  await t.settled(left.id)
+  const rebase = (await pushAs(left.id))?.hookSpecificOutput?.permissionDecisionReason ?? ''
+  assert.ok(rebase.includes('README.md') && rebase.includes('Rebase onto it first'),
+    `and its next push says to rebase: ${JSON.stringify(rebase)}`)
 
   // And only inside an overlap: main changed nothing.
   const { session: inMain } = await t.api('POST', '/api/session', { workspace: 'main' })

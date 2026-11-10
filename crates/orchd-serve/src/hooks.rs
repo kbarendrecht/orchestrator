@@ -1077,9 +1077,10 @@ pub async fn pre_edit(
             return deny(reason);
         }
     }
-    // A stacked PR opened against the base shows the lower branch's commits as
-    // its own; said at the command, which is the one moment it can be fixed.
-    // Not `apply_patch`, whose `command` is a patch that may only mention one.
+    // **A push or a PR is the moment a conflict matters**, so it is said there and
+    // not on a prompt: held once with what that push should know (`orchd::push`),
+    // and the retry goes through. Not `apply_patch`, whose `command` is a patch
+    // that may only mention one.
     if payload.agent_id.is_none() && payload.tool_name.as_deref() != Some("apply_patch") {
         if let Some(command) = payload
             .tool_input
@@ -1087,7 +1088,7 @@ pub async fn pre_edit(
             .and_then(|v| v.get("command"))
             .and_then(|v| v.as_str())
         {
-            if let Some(reason) = app.claim_pr_base_hint(id, command).await {
+            if let Some(reason) = app.push_note(id, command).await {
                 return deny(reason);
             }
         }
@@ -2362,11 +2363,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The prompt hook hands the first agent to a prompt the brief to settle a
-    /// conflict, once, and the other side a note saying who leads; nothing about a
-    /// file that merges cleanly.
+    /// A conflict is said at the push, not on a prompt: the push is held once
+    /// with which file and with whom, the retry goes through, and the other side
+    /// hears it at its own push. Nothing about a file that merges cleanly.
     #[tokio::test]
-    async fn the_next_prompt_carries_an_overlap_once() {
+    async fn a_push_is_held_once_over_a_conflict() {
         let dir =
             std::env::temp_dir().join(format!("orchd-hooks-overlap-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -2434,10 +2435,32 @@ mod tests {
             )
         };
 
-        assert_eq!(note(prompt().await), None, "nothing to say yet");
+        let push = |who: HeaderMap| {
+            pre_edit(
+                AxState(app.clone()),
+                who,
+                Json(HookPayload {
+                    tool_name: Some("Bash".into()),
+                    tool_input: Some(serde_json::json!({ "command": "git push" })),
+                    ..HookPayload::default()
+                }),
+            )
+        };
+        let held = |r: HookResult| {
+            r.1 .0
+                .pointer("/hookSpecificOutput/permissionDecisionReason")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        };
+
+        assert_eq!(
+            held(push(headers.clone()).await),
+            None,
+            "nothing to say yet"
+        );
         set(false).await;
         assert_eq!(
-            note(prompt().await),
+            held(push(headers.clone()).await),
             None,
             "a workspace with no live session is nobody's to settle"
         );
@@ -2447,33 +2470,34 @@ mod tests {
             Session::new(there, other.clone(), dir.join("x"), None),
         );
         assert_eq!(
-            note(prompt().await),
+            held(push(headers.clone()).await),
             None,
             "a file that merges cleanly is nothing to say"
         );
         set(true).await;
-        let first = note(prompt().await).expect("a conflict is said");
+        assert_eq!(note(prompt().await), None, "a prompt carries no conflict");
+        let first = held(push(headers.clone()).await).expect("the push is held over it");
         assert!(
             first.contains("src/a.rs")
-                && first.contains("`feature-x`")
-                && first.contains("x-branch")
-                && first.contains("you lead"),
-            "the first to a prompt gets the brief and leads: {first}"
+                && first.contains("will conflict")
+                && !first.contains("orch tell"),
+            "it says which file and with whom, and asks for no negotiation: {first}"
         );
-        assert_eq!(note(prompt().await), None, "and said once");
-        // The other side, at its own prompt, follows.
+        assert_eq!(
+            held(push(headers.clone()).await),
+            None,
+            "the retry goes through"
+        );
+        assert_eq!(
+            held(push(headers.clone()).await),
+            None,
+            "and it is said once"
+        );
+        // The other side hears it at its own push.
         let mut theirs = HeaderMap::new();
         theirs.insert("x-orch-session", there.to_string().parse().unwrap());
-        let follow = note(
-            user_prompt_submit(AxState(app.clone()), theirs, Json(HookPayload::default())).await,
-        )
-        .expect("the other side is told too");
-        assert!(
-            follow.contains("leads")
-                && follow.contains(&id.to_string())
-                && !follow.contains("you lead"),
-            "and told who leads, not to lead as well: {follow}"
-        );
+        let follow = held(push(theirs).await).expect("the other side is told too");
+        assert!(follow.contains(&id.to_string()), "{follow}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

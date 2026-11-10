@@ -1002,7 +1002,6 @@ pub async fn answer(
     Path(id): Path<Uuid>,
     Json(body): Json<AnswerBody>,
 ) -> ApiResult<serde_json::Value> {
-    let restack_yes;
     {
         let mut inner = app.inner.write().await;
         let s = inner
@@ -1036,7 +1035,6 @@ pub async fn answer(
         if !picked.free && text.is_some() {
             refuse!("\"{}\" takes no words", picked.label);
         }
-        let label = picked.label.clone();
         open.answer = Some(body.answer.clone());
         open.answer_text = text.map(str::to_string);
         /* A yes to the daemon's own worktree question, and only to that one: the
@@ -1054,25 +1052,11 @@ pub async fn answer(
                 }
             }
         }
-        /* orchd's own restack question, by its id: nothing was blocked on it, so
-        the session goes back to what it was doing, and a yes is acted on once
-        the lock is down. */
-        let restack = s.restack_ask.take_if(|r| r.id == body.ask);
-        match &restack {
-            Some(r) => s.set_state(r.before.clone()),
-            // Answered, so it is going again. `Stop` will correct this if the turn
-            // ends for real a moment later.
-            None => s.set_state(crate::model::State::Working),
-        }
-        restack_yes = restack.filter(|_| body.answer == crate::restack::RESTACK_YES);
-        // The end of a Handle: the strategy the user confirmed, for the card.
-        AppState::record_overlap_plan(&mut inner, id, &body.answer, &label);
+        // Answered, so it is going again. `Stop` will correct this if the turn
+        // ends for real a moment later.
+        s.set_state(crate::model::State::Working);
     }
     app.answered.notify_waiters();
-    if let Some(what) = restack_yes {
-        let app = app.clone();
-        tokio::spawn(async move { app.answer_restack(id, what).await });
-    }
     app.notify().await;
     Ok(Json(json!({ "answered": body.answer })))
 }
@@ -1468,6 +1452,26 @@ pub async fn tell_overlaps_now(
     let told = app.tell_overlaps_now(id).await?;
     app.notify().await;
     Ok(Json(json!({ "told": told })))
+}
+
+/// The Stacked card's "Restack now": you asked, so a pushed branch is restacked
+/// and force-pushed with a lease too. See [`AppState::restack_now`].
+pub async fn restack_workspace(
+    State(app): State<Arc<AppState>>,
+    Path(workspace): Path<String>,
+) -> ApiResult<serde_json::Value> {
+    app.restack_now(&workspace).await?;
+    Ok(Json(json!({ "restacked": workspace })))
+}
+
+/// The Stacked card's "Rebase the stack": the whole stack onto the upstream
+/// ref, bottom first. See [`AppState::rebase_stack_of`].
+pub async fn rebase_stack(
+    State(app): State<Arc<AppState>>,
+    Path(workspace): Path<String>,
+) -> ApiResult<serde_json::Value> {
+    app.rebase_stack_of(&workspace).await?;
+    Ok(Json(json!({ "rebased": workspace })))
 }
 
 /// One session starts another.

@@ -491,27 +491,6 @@ pub struct OutsideAsk {
     pub path: PathBuf,
 }
 
-/// An outstanding "restack this pushed branch and force-push it?" question,
-/// and what a yes does. Like [`OutsideAsk`], the id is what tells the daemon's
-/// own question from one an agent wrote.
-#[derive(Debug, Clone, PartialEq)]
-pub struct RestackAsk {
-    pub id: Uuid,
-    /// The commit to rebase onto, fixed when asked: a yes is about what you read.
-    pub onto: String,
-    /// `--onto`'s cut, when only the commits after it are this branch's own.
-    pub from: Option<String>,
-    pub branch: String,
-    /// What the agent is told it was moved onto: a branch name, or the base.
-    pub onto_name: String,
-    /// The state before the question, put back on the answer: no agent is
-    /// blocked on this one, so "answered" does not mean "working again".
-    pub before: State,
-    /// A whole stack rebased onto the base, bottom first: its workspaces in
-    /// order, when the question was about the stack rather than one branch.
-    pub chain: Vec<String>,
-}
-
 /// A merged lower PR whose upper branch still carries its commits: the restack
 /// onto the base that is owed, queued by the PR poll and done off its lock.
 #[derive(Debug, Clone)]
@@ -758,14 +737,19 @@ pub struct Session {
     /// The files git could not merge with upstream when this session was last
     /// told, so a list it has heard is not said again. Persisted, like the above.
     pub told_upstream: Vec<String>,
-    /// The lower branches this session was told how to open a stacked PR on, so
-    /// a `gh pr create` is held once per stack. Memory only.
-    pub base_hinted: HashSet<String>,
-    /// What orchd did, or could not do, about restacking this session's branch,
-    /// said on its next prompt. See `crate::restack`.
+    /// What orchd did to this session's branch (a restack, a stack rebase),
+    /// said on its next prompt: its commit ids changed under it. The one note a
+    /// prompt still carries; everything about conflicts waits for a push.
     pub restacked: Option<String>,
-    /// The restack orchd is asking the user about on this session, if any.
-    pub restack_ask: Option<RestackAsk>,
+    /// What waits for this session's next `git push` or `gh pr create`, beside
+    /// what is worked out then (`crate::push`): a merge under its stack that it
+    /// has to move off, a stack base it has to see to.
+    pub push_notes: Vec<String>,
+    /// The push note this session was last held on, so the retry goes through.
+    pub push_held: Option<u64>,
+    /// Every point a push note has said to this session, so each is said once
+    /// and a later push is not held again over what it already knows.
+    pub push_said: HashSet<u64>,
     /// Messages from other agents (`orch tell`), typed in as one turn once this
     /// session is idle, so a message never lands in the middle of a turn.
     ///
@@ -776,10 +760,6 @@ pub struct Session {
     /// [`crate::state::TELL_CAP`] so two agents cannot talk until the budget is
     /// gone. Memory only, like the inbox.
     pub told: HashMap<SessionId, u32>,
-    /// The sessions this one was asked to settle its conflicts with ("Let the
-    /// agents solve it"), so the `orch ask` that ends it is read as the plan for
-    /// each of those pairs.
-    pub handling: Vec<SessionId>,
     /// Written into the pty once `SessionStart` fires.
     ///
     /// `initialUserMessage` is only honoured in non-interactive mode, and a
@@ -850,12 +830,12 @@ impl Session {
             told_overlaps: HashSet::new(),
             edit_warned: HashSet::new(),
             told_upstream: Vec::new(),
-            base_hinted: HashSet::new(),
             restacked: None,
-            restack_ask: None,
+            push_notes: Vec::new(),
+            push_held: None,
+            push_said: HashSet::new(),
             inbox: Vec::new(),
             told: HashMap::new(),
-            handling: Vec::new(),
             dirty_paths: HashSet::new(),
             boundary_violations: Vec::new(),
             last_reconcile: None,

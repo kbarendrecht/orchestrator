@@ -34,6 +34,7 @@ pub mod managed;
 pub mod model;
 pub mod names;
 pub mod preview;
+pub mod push;
 pub mod relocate;
 pub mod restack;
 pub mod restart;

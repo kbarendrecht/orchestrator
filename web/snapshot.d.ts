@@ -212,10 +212,6 @@ with: string,
  */
 conflict: boolean, 
 /**
- * What the user confirmed for this pair, when the two agents settled it.
- */
-plan: string | null, 
-/**
  * Whether this side's agent has been told about this file, so the card
  * stops promising it will be.
  */
@@ -651,10 +647,10 @@ behind: number,
  */
 conflicts: number, 
 /**
- * Whether orchd is asking the user on this workspace's session to restack
- * it and force-push.
+ * How far the base of this stack is behind the upstream ref: what the
+ * card's "Rebase the stack" would catch up on.
  */
-asking: boolean, 
+base_behind: number, 
 /**
  * Whether this branch carries an older version of the one under it: no new
  * commits under it, but files the two do not agree on. The lower branch was

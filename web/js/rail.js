@@ -3027,14 +3027,27 @@ function fillStackCard(
   const bottom = ladder.appendChild(el('div', 'ovc-rung'));
   const baseName = bottom.appendChild(el('span', 'ovc-rname'));
   baseName.append(el('span', 'ovc-node base'), el('span', 'ovc-name', state.upstream_ref));
-  if (stack.asking) {
-    const q = card.appendChild(el('button', 'ovc-ask', 'Asking you on the session: restack and push?'));
-    q.type = 'button';
-    q.onclick = () => { closeOverlapCard(); setSelected(s.id); };
-  } else {
-    card.appendChild(el('div', 'ovc-line',
-      'Orchestrator restacks it when it is idle, and asks you first if it is pushed already. All sessions will be informed by appending to their next prompt.'));
-  }
+  /* **Quiet unless you ask.** Orchestrator restacks an idle, unpushed branch by
+     itself; a pushed one is the agent's at its next push, or yours with a click
+     here, and nothing pops up for it. */
+  const line = card.appendChild(el('div', 'ovc-line'));
+  line.append('Orchestrator restacks it when it is idle and unpushed. A pushed branch is restacked by its agent when it next pushes. ');
+  const act = (/** @type {string} */ label, /** @type {string} */ route, /** @type {string} */ done) => {
+    const b = line.appendChild(el('button', 'ovc-now', label));
+    b.type = 'button';
+    b.onclick = async () => {
+      closeOverlapCard();
+      try {
+        await callFor(s.id, route);
+        toast(done);
+      } catch (e) {
+        toast(reason(e), true);
+      }
+    };
+    line.append(' ');
+  };
+  if (stack.behind || stack.stale) act('Restack it now', `/api/workspace/${encodeURIComponent(mine.id)}/restack`, 'restacked');
+  if (stack.base_behind) act(`Rebase the stack onto ${state.upstream_ref}`, `/api/workspace/${encodeURIComponent(mine.id)}/rebase-stack`, 'stack rebased');
   return true;
 }
 
@@ -3109,9 +3122,6 @@ function fillConflictCard(
     const u = r.appendChild(el('div', 'ovc-who'));
     u.append(el('span', 'ovc-node base'), el('span', 'ovc-name', state.upstream_ref), el('span', 'ovc-state', files(upstream.length)));
   }
-  // What you confirmed when the two settled it, in the words of the option.
-  const plan = list.find((o) => o.plan)?.plan;
-  if (plan) rows.appendChild(el('div', 'ovc-plan', `plan: ${plan}`));
 
   /* **When the agents hear it, and a way to make it now.** The note rides on
      each side's next prompt by itself; the link types it in at once, mid-turn
@@ -3121,7 +3131,7 @@ function fillConflictCard(
   if (partners.length && told) {
     line.append('Each session has been told.');
   } else {
-    line.append(partners.length ? 'Each session is told on its next prompt. ' : 'This session is told on its next prompt. ');
+    line.append(partners.length ? 'Each session is told when it pushes. ' : 'This session is told when it pushes. ');
     const now = line.appendChild(el('button', 'ovc-now', partners.length ? 'Tell them now' : 'Tell it now'));
     now.type = 'button';
     now.onclick = async () => {

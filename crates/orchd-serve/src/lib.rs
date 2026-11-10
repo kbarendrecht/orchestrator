@@ -756,6 +756,8 @@ fn daemon_router(app: Arc<AppState>) -> Router {
             "/api/session/:id/tell-overlaps",
             post(api::tell_overlaps_now),
         )
+        .route("/api/workspace/:ws/restack", post(api::restack_workspace))
+        .route("/api/workspace/:ws/rebase-stack", post(api::rebase_stack))
         // Both halves of the worktree grant on one path: the agent asks with a
         // POST, the push guard reads with a GET before it refuses anything.
         .route(
