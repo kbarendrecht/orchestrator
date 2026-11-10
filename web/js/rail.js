@@ -1246,6 +1246,32 @@ function fillSessions(/** @type {HTMLElement} */ group, /** @type {import('./cor
     }
   }
 
+  /* **The filter, over the whole list**: live rows and past ones answer the same
+     box. Built once and kept, whatever else moves: it holds the caret and the
+     focus, and a rebuilt input loses both. Its count is written in `fill`
+     instead, which is the one part of it that changes. */
+  if (mainActive.length + treeActive.length + archived.length + external.length) {
+    items.push({
+      key: 'filter',
+      sig: 'filter',
+      build: () => archiveFilter(c),
+      fill: (/** @type {HTMLElement} */ f) => {
+        const { q } = filterOf(c);
+        const live = [...mainActive, ...treeActive];
+        const { byName, byText } = pastMatches(c, archived, external);
+        const shownLive = live.filter((s) => !liveFilter(c, s, { id: s.workspace }).off).length;
+        const n = f.querySelector('.arcn');
+        if (n) n.textContent = q ? `${shownLive + byName.length + byText.length} of ${live.length + archived.length + external.length}` : '';
+        if (focusFilterOf === c.path) {
+          focusFilterOf = null;
+          const input = f.querySelector('input');
+          // After the frame that puts it in the page: a detached input takes no focus.
+          requestAnimationFrame(() => input?.focus());
+        }
+      },
+    });
+  }
+
   /* **The press shows before the daemon answers.** A worktree is a POST, the
      repo's hooks and a `claude` boot; a session in main is a spawn — ten seconds
      and four in which nothing appeared in the rail at all, so the button read as
@@ -1334,13 +1360,26 @@ function fillSessions(/** @type {HTMLElement} */ group, /** @type {import('./cor
      from the drawing again. */
   const rowSig = (/** @type {import('../snapshot').SessionView} */ s, /** @type {any} */ w, /** @type {boolean} */ fromMain) =>
     paintSig([s, w, s.id === selected, startingShown(), fromMain, order, c.path,
-      stateLabel(s), stateClass(s), dotClass(s), hasPr(s), overlapMark(state, s.workspace)], NOT_DRAWN);
+      stateLabel(s), stateClass(s), dotClass(s), hasPr(s), overlapMark(state, s.workspace), liveFilter(c, s, w)], NOT_DRAWN);
+  /** A live row as the filter leaves it: faded, or saying the line it matched.
+   *  @param {HTMLElement} row @param {import('../snapshot').SessionView} s @param {{ id: string | null }} w */
+  const filtered = (row, s, w) => {
+    const f = liveFilter(c, s, w);
+    if (f.off) row.classList.add('arcoff');
+    const sub = f.said ? row.querySelector('.sess-sub') : null;
+    if (sub && f.said) {
+      sub.replaceChildren(f.said);
+      sub.classList.add('said');
+      sub.setAttribute('title', f.said);
+    }
+    return row;
+  };
 
   for (const s of mainRows) {
     items.push({
       key: `s:${s.id}`,
       sig: rowSig(s, main, true),
-      build: () => draggable(sessionRow(s, main, true, overlapMark(state, s.workspace)), s, 'main'),
+      build: () => draggable(filtered(sessionRow(s, main, true, overlapMark(state, s.workspace)), s, main ?? { id: null }), s, 'main'),
     });
   }
   if (starting && !creatingIntoMain()) items.push(placeholder);
@@ -1349,7 +1388,7 @@ function fillSessions(/** @type {HTMLElement} */ group, /** @type {import('./cor
     items.push({
       key: `s:${s.id}`,
       sig: rowSig(s, { id: s.workspace }, false),
-      build: () => draggable(sessionRow(s, { id: s.workspace }, false, overlapMark(state, s.workspace)), s, 'tree'),
+      build: () => draggable(filtered(sessionRow(s, { id: s.workspace }, false, overlapMark(state, s.workspace)), s, { id: s.workspace }), s, 'tree'),
     });
   }
 
@@ -1370,7 +1409,8 @@ function fillSessions(/** @type {HTMLElement} */ group, /** @type {import('./cor
 
      Keyed inside it, because an archived row is hovered and clicked like a live
      one and has the same claim on surviving a repaint. */
-  if ((archived.length || external.length) && archiveOpen(c, 'sessions', archived).open) {
+  // Open while something is typed, too: the box above searches it.
+  if ((archived.length || external.length) && (archiveOpen(c, 'sessions', archived).open || filterOf(c).q)) {
     items.push({
       key: 'arcbox',
       sig: 'arcbox',
@@ -1399,33 +1439,8 @@ function fillSessions(/** @type {HTMLElement} */ group, /** @type {import('./cor
  *  @param {import('../snapshot').ExternalView[]} external
  */
 function fillArchive(box, c, archived, external) {
-  const q = (arcQuery[c.path] || '').trim().toLowerCase();
-  const answer = arcHits[c.path];
-  // Only the answer to the query in the box. An older one is about a word that is
-  // no longer in there, and showing it is worse than showing nothing.
-  const hits = answer && answer.q === q ? answer.hits : {};
-  const busy = !!answer && answer.q === q && answer.busy;
-
-  const named = (/** @type {string} */ text) => !q || text.toLowerCase().includes(q);
-  /* The daemon's own first, then the outside ones. Two lists rather than one
-     merged by age, because the two rows do not offer the same thing: an archived
-     row knows its branch and rebuilds its worktree, an outside row knows a file and
-     a directory. Interleaving them would make which of those you get depend on when
-     you last spoke to it. */
-  const byName = [
-    ...[...archived].sort(byNewest)
-      .filter((/** @type {import('../snapshot').SessionView} */ s) => named(railName(s, { id: s.workspace }))),
-    // Already newest-first, and capped, by the daemon that found them.
-    ...external.filter((/** @type {import('../snapshot').ExternalView} */ x) => named(x.title || '')),
-  ];
-  // A session the name already listed must not appear twice: the name hit wins,
-  // because it is the one that is certainly about this conversation.
-  const shownIds = new Set(byName.map((r) => r.id));
-  const byText = [
-    ...[...archived].sort(byNewest)
-      .filter((/** @type {import('../snapshot').SessionView} */ s) => !shownIds.has(s.id) && hits[s.id]),
-    ...external.filter((/** @type {import('../snapshot').ExternalView} */ x) => !shownIds.has(x.id) && hits[x.id]),
-  ];
+  const { q, hits, busy } = filterOf(c);
+  const { byName, byText } = pastMatches(c, archived, external);
 
   /* **Grouped by week while nothing is typed**, because this is the list you scan
      weeks later and a run of rows that all say "12d" is not something you can
@@ -1452,24 +1467,70 @@ function fillArchive(box, c, archived, external) {
     : { key: `arc:${r.id}`, sig: paintSig([r, r.id === selected, said ?? ''], NOT_DRAWN), build: () => archivedRow(r, said) });
 
   reconcile(box, [
-    {
-      /* Built once and kept, whatever else moves: it holds the caret and the
-         focus, and a rebuilt input loses both. Its count is written in `fill`
-         instead, which is the one part of it that changes. */
-      key: 'filter',
-      sig: 'filter',
-      build: () => archiveFilter(c),
-      fill: (/** @type {HTMLElement} */ f) => {
-        const n = f.querySelector('.arcn');
-        if (n) n.textContent = q ? `${byName.length + byText.length} of ${archived.length + external.length}` : '';
-      },
-    },
     ...listed.map((r) => ('build' in r ? r : row(r, undefined))),
     ...byText.map((r) => row(r, hits[r.id])),
     // Last, always: hits land above it as they arrive, so nothing already drawn
     // moves when the slow half of the search finishes.
     ...(busy ? [{ key: 'arcbusy', sig: 'arcbusy', build: () => searchingRow() }] : []),
   ]);
+}
+
+/** The rail filter's query for checkout `c`, and the transcript answer to it.
+ *  Only the answer to the query in the box: an older one is about a word that is
+ *  no longer in there, and showing it is worse than showing nothing.
+ *  @param {import('./core.js').Target} c */
+function filterOf(c) {
+  const q = (arcQuery[c.path] || '').trim().toLowerCase();
+  const answer = arcHits[c.path];
+  /** @type {Record<string, string>} */
+  const hits = answer && answer.q === q ? answer.hits : {};
+  return { q, hits, busy: !!answer && answer.q === q && answer.busy };
+}
+
+/** The past conversations the filter lets through: by name, then by what was
+ *  said in them.
+ *
+ *  The daemon's own first, then the outside ones. Two lists rather than one merged
+ *  by age, because the two rows do not offer the same thing: an archived row knows
+ *  its branch and rebuilds its worktree, an outside row knows a file and a
+ *  directory. Interleaving them would make which of those you get depend on when
+ *  you last spoke to it.
+ *
+ *  @param {import('./core.js').Target} c
+ *  @param {import('../snapshot').SessionView[]} archived
+ *  @param {import('../snapshot').ExternalView[]} external */
+function pastMatches(c, archived, external) {
+  const { q, hits } = filterOf(c);
+  const named = (/** @type {string} */ text) => !q || text.toLowerCase().includes(q);
+  const byName = [
+    ...[...archived].sort(byNewest)
+      .filter((/** @type {import('../snapshot').SessionView} */ s) => named(railName(s, { id: s.workspace }))),
+    // Already newest-first, and capped, by the daemon that found them.
+    ...external.filter((/** @type {import('../snapshot').ExternalView} */ x) => named(x.title || '')),
+  ];
+  // A session the name already listed must not appear twice: the name hit wins,
+  // because it is the one that is certainly about this conversation.
+  const shownIds = new Set(byName.map((r) => r.id));
+  const byText = [
+    ...[...archived].sort(byNewest)
+      .filter((/** @type {import('../snapshot').SessionView} */ s) => !shownIds.has(s.id) && hits[s.id]),
+    ...external.filter((/** @type {import('../snapshot').ExternalView} */ x) => !shownIds.has(x.id) && hits[x.id]),
+  ];
+  return { byName, byText };
+}
+
+/** What the filter does to a live row: nothing while it is empty; a row that
+ *  matches by name stays as it is, one that matches by what was said shows that
+ *  line instead of its state, and the rest fade. Fading waits for the transcript
+ *  answer, so a row does not fade and come back while it is on its way.
+ *  @param {import('./core.js').Target} c
+ *  @param {import('../snapshot').SessionView} s @param {{ id: string | null } | undefined} w */
+function liveFilter(c, s, w) {
+  const { q, hits, busy } = filterOf(c);
+  if (!q) return { off: false, said: null };
+  if (railName(s, w).toLowerCase().includes(q)) return { off: false, said: null };
+  if (hits[s.id]) return { off: false, said: hits[s.id] };
+  return { off: !busy && q.length >= ARC_MIN, said: null };
 }
 
 /** The Monday, at midnight, that starts the week a session began in.
@@ -1502,10 +1563,11 @@ function weekLabel(/** @type {Date} */ monday) {
 /** @type {string | null} */
 let focusFilterOf = null;
 
-/** The filter line, pinned at the top of the archive box.
+/** The filter line, at the top of a checkout's list.
  *
- *  Inside the box rather than above it, because the box is what the caret opens: a
- *  field over a closed archive is a control for something that is not on screen.
+ *  It used to sit inside the archive box and read past conversations only. It
+ *  is over the whole list now, because "which session was that" is asked of the
+ *  running ones as often, and the archive opens by itself while it has a query.
  *
  *  @param {import('./core.js').Target} c
  */
@@ -1515,13 +1577,8 @@ function archiveFilter(c) {
      like one. A label, so a click anywhere in it reaches the input. */
   const field = el('label', 'arcfield');
   const input = /** @type {HTMLInputElement} */ (el('input', 'arcq'));
-  if (focusFilterOf === c.path) {
-    focusFilterOf = null;
-    // After the frame that puts it in the page: a detached input takes no focus.
-    requestAnimationFrame(() => input.focus());
-  }
   input.type = 'search';
-  input.placeholder = 'filter past conversations';
+  input.placeholder = 'filter conversations';
   input.value = arcQuery[c.path] || '';
   input.oninput = () => {
     arcQuery[c.path] = input.value;

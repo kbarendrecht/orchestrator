@@ -1,4 +1,4 @@
-// Finding a past conversation by what was said in it.
+// Finding a conversation, live or past, by what was said in it.
 //
 // The rail's archive filter answers in two waves: the names come out of the
 // snapshot the page already holds, and this is the other one. `store.rs` holds
@@ -64,7 +64,7 @@ export async function run(t) {
   assert.deepEqual(await hits(t, 'hippopotamus'), [],
     'a word only a tool printed must not find the conversation')
 
-  // A live session is not in the archive, so it is not in the answer either.
+  // A live session is found too: the filter sits over the whole rail now.
   const { session: live } = await t.api('POST', '/api/worktree', { name: 'invoices' })
   await t.settled(live)
   fs.appendFileSync(
@@ -74,8 +74,8 @@ export async function run(t) {
       message: { role: 'user', content: [{ type: 'text', text: 'marmalade again' }] },
     })}\n`,
   )
-  assert.deepEqual((await hits(t, 'marmalade')).map((h) => h.id), [session],
-    'the box lists past conversations, so the search must not answer for a live one')
+  assert.deepEqual((await hits(t, 'marmalade')).map((h) => h.id).sort(), [session, live].sort(),
+    'the filter is over live and past conversations, so the search answers for both')
 
   // --- and one it never started --------------------------------------------
 
@@ -99,7 +99,7 @@ export async function run(t) {
   await t.api('POST', '/api/external/refresh')
 
   const both = (await hits(t, 'marmalade')).map((h) => h.id).sort()
-  assert.deepEqual(both, [session, outside].sort(),
+  assert.deepEqual(both, [session, live, outside].sort(),
     'the outside conversation is in the box, so it must be in the search')
 
   // --- what it refuses ------------------------------------------------------

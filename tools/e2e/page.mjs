@@ -959,32 +959,41 @@ try {
   check(/@container \(max-width:265px\)\{\s*\.prage\{display:none\}/.test(css),
     'and the poll age leaves below 265px rather than clipping')
 
-  /* --- the archive filters what is in it -------------------------------------- */
+  /* --- one filter over live and past conversations ------------------------------ */
 
-  /* The filter is inside the box the caret opens, and it answers in two waves:
-     the names out of the snapshot, then whatever the daemon finds in the
-     transcripts. Only the first is asserted here — the second is one `getOn` away
-     and needs a transcript with words in it — but the count is the contract both
-     waves write to, and a filter that matched nothing while claiming otherwise is
-     the failure worth catching. */
+  /* The filter sits at the top of the list and answers in two waves: the names
+     out of the snapshot, then whatever the daemon finds in the transcripts, live
+     ones included. Only the first is asserted here — the second is one `getOn`
+     away and flow 33 holds it — but the count is the contract both waves write
+     to, and a filter that matched nothing while claiming otherwise is the failure
+     worth catching. */
   await page.click('#rail .ws-add .arctoggle')
-  await page.waitForSelector('#rail .arcbox .arcq', { timeout: 10_000 })
-  // Opening it is going to look for something, so the filter has the keyboard.
+  await page.waitForSelector('#rail .arcfilter .arcq', { timeout: 10_000 })
+  // Opening the archive is going to look for something, so the filter has the keyboard.
   check(await page.waitForFunction(() => document.activeElement?.classList.contains('arcq'), null,
-    { timeout: 2000 }).then(() => true).catch(() => false), 'opening the archive puts the keyboard in its filter')
+    { timeout: 2000 }).then(() => true).catch(() => false), 'opening the archive puts the keyboard in the filter')
   const arcRows = () => page.locator('#rail .arcbox .sess.arc').count()
   check(await arcRows() >= 1, 'the archive opens on the conversation that was killed')
-  await page.fill('#rail .arcbox .arcq', 'zzzznothinglikethis')
+  await page.fill('#rail .arcfilter .arcq', 'zzzznothinglikethis')
   await page.waitForFunction(() => document.querySelectorAll('#rail .arcbox .sess.arc').length === 0,
     null, { timeout: 5000 })
-  const counted = await page.textContent('#rail .arcbox .arcn')
+  const counted = await page.waitForFunction(() => {
+    const t = document.querySelector('#rail .arcfilter .arcn')?.textContent ?? ''
+    return /^0 of [1-9]/.test(t) ? t : null
+  }, null, { timeout: 5000 }).then((h) => h.jsonValue()).catch(async () => page.textContent('#rail .arcfilter .arcn'))
   check(/^0 of [1-9]/.test(counted ?? ''),
-    `and a query nothing matches says so against the total, got "${counted}"`)
-  await page.fill('#rail .arcbox .arcq', '')
+    `and a query nothing matches says so against the total, live rows included, got "${counted}"`)
+  const faded = await page.evaluate(() => {
+    const live = [...document.querySelectorAll('#rail .sess:not(.arc)')]
+    return live.length > 0 && live.every((r) => r.classList.contains('arcoff'))
+  })
+  check(faded, 'and the live rows it does not match fade rather than vanish')
+  await page.fill('#rail .arcfilter .arcq', '')
   await page.waitForFunction(() => document.querySelectorAll('#rail .arcbox .sess.arc').length >= 1,
     null, { timeout: 5000 })
-  check(await page.textContent('#rail .arcbox .arcn') === '',
+  check(await page.textContent('#rail .arcfilter .arcn') === '',
     'and clearing it puts the archive back with no count to explain')
+  check(await page.evaluate(() => !document.querySelector('#rail .sess.arcoff')), 'and no live row stays faded')
 
   /* --- Backspace is not a way out of the board -------------------------------- */
 

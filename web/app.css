@@ -833,6 +833,9 @@ button.ovc-who:hover,.ovc-file:hover{background:var(--hover)}
    like every other sub-line: the row says what was said, the transcript has the
    rest. */
 .sess-sub.said{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* A live row the filter does not match: faded, not hidden, so the rail does not
+   jump under the pointer while you type. */
+.sess.arcoff{opacity:.35}
 
 /* The rail's own foot: `+ open project`, below every project and above the PR
    pane. Outside `.rail-scroll`, so an open archive cannot push it away. */

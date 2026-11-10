@@ -2466,11 +2466,14 @@ pub struct ArchiveQuery {
     pub find: String,
 }
 
-/// Which of this checkout's past conversations said this, and what they said.
+/// Which of this checkout's conversations said this, live or past, and what
+/// they said.
 ///
-/// **The slow half of the archive filter.** The rail filters the names itself, out
+/// **The slow half of the rail's filter.** The rail filters the names itself, out
 /// of the snapshot it already holds, and asks this for the rest — so a keystroke
-/// costs nothing and this answers when it answers.
+/// costs nothing and this answers when it answers. Live sessions are read too:
+/// the filter sits over the whole rail, and "which session was that" is asked of
+/// the running ones as often as of the past ones.
 ///
 /// Only what people wrote counts, which is [`crate::store::first_spoken_match`]:
 /// searching the tool output as well matches nearly every conversation and tells
@@ -2487,21 +2490,16 @@ pub async fn search_archive(
         return Ok(Json(json!({ "hits": [] })));
     }
 
-    /* The archive's two halves, exactly as the rail lists them: the daemon's own
-    finished conversations, and the ones it never started. Collected under the
-    lock and scanned outside it — the read holds up every other request, and this
-    walks megabytes. */
+    /* Everything the rail lists: the daemon's own conversations, live and
+    finished, and the ones it never started. Collected under the lock and scanned
+    outside it — the read holds up every other request, and this walks megabytes.
+    A live transcript is read as it stands; a line still being written is simply
+    not a match yet. */
     let files: Vec<(Uuid, std::path::PathBuf)> = {
         let inner = app.inner.read().await;
         inner
             .sessions
             .values()
-            .filter(|s| {
-                matches!(
-                    s.state,
-                    crate::model::State::Archived { .. } | crate::model::State::Exited
-                )
-            })
             .filter_map(|s| {
                 let recorded = s
                     .archived_transcript
