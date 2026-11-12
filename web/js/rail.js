@@ -3031,7 +3031,7 @@ function fillStackCard(
      only replays a branch whose lower branch just grew, and the buttons here are
      yours for anything else. Nothing pops up for it. */
   const line = card.appendChild(el('div', 'ovc-line'));
-  line.append('Its agent is told before it pushes: where it sits in the stack, what to restack, and what its push does to the branches above. Orchestrator only restacks it by itself when the branch under it just grew and this one is idle and unpushed. ');
+  line.append('This session is told how to keep the stack right when it pushes. ');
   const act = (/** @type {string} */ label, /** @type {string} */ route, /** @type {string} */ done) => {
     const b = line.appendChild(el('button', 'ovc-now', label));
     b.type = 'button';
