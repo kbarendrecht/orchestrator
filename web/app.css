@@ -442,14 +442,12 @@ button.ctx-btn:hover{color:var(--text)}
   border:1px solid var(--line);border-radius:var(--r);padding:0 4px;flex:0 0 auto;
   letter-spacing:.04em;
 }
-/* Files another session changed too that git cannot merge: amber, because
-   only a conflict reaches the page (`state.rs`). `flex:none` so a long name clips before the mark does. */
+/* The stack and conflict marks: grey, never a state colour. Amber and
+   champagne are what the dot says about the session, and a mark in the same
+   colours read as the session asking for you. Their cards say the rest.
+   `flex:none` so a long name clips before the mark does. */
 .sess-overlap{flex:none;font-size:calc(11px * var(--fs));line-height:1;color:var(--faint-solid)}
-.sess-overlap.conflict{color:var(--attn)}
-/* A stack: grey, and the settled colour once the branch under it moved. */
-.sess-overlap.stack{color:var(--faint-solid)}
 .sess-overlap.stack svg{display:block}
-.sess-overlap.stack.behind{color:var(--done)}
 /* The spotlight while the pointer is on a mark (`spotlight` in rail.js): the two
    sides stay lit, every other row steps back. */
 #rail.ov-spot .sess:not(.ov-lit){opacity:.3}

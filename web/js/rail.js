@@ -2231,11 +2231,11 @@ function sessionRow(/** @type {import('../snapshot').SessionView} */ s, /** @typ
      No `title`: the card below says which files and with whom, and a native
      tooltip on top of it would be a second answer arriving a second later. */
   /* **A stack is not a conflict**, so it wears its own mark: layers, for
-     "built on another branch", grey unless the branch under it moved. A row that
+     "built on another branch". Grey like the conflict mark: neither is a state. A row that
      is both gets both, the stack first: which branch it is built on can matter
      more than a conflict with a third one. Each opens a card of its own. */
   if (overlap?.stack) {
-    const up = row.appendChild(icon('sess-overlap stack' + (overlap.stack.behind || overlap.stack.stale ? ' behind' : ''), 1.6, ...LAYERS));
+    const up = row.appendChild(icon('sess-overlap stack', 1.6, ...LAYERS));
     up.dataset.session = s.id;
     up.dataset.kind = 'stack';
   }
