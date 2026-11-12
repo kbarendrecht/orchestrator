@@ -969,6 +969,26 @@ impl Inner {
         at
     }
 
+    /// Where `workspace` sits in its stack: 1 for a base with a branch on it that
+    /// `live` accepts, one more per branch under it, at most 3, 0 for none.
+    pub fn stack_level(&self, workspace: &str, live: impl Fn(&str) -> bool) -> u8 {
+        let mut depth = 1u8;
+        let mut at = workspace.to_string();
+        let mut seen = HashSet::new();
+        while let Some((lower, _)) = self.stacked_on(&at) {
+            if !seen.insert(at.clone()) || depth >= 3 {
+                break;
+            }
+            depth += 1;
+            at = lower;
+        }
+        if depth > 1 || self.uppers_of(workspace).iter().any(|u| live(u)) {
+            depth
+        } else {
+            0
+        }
+    }
+
     /// Every branch `workspace` is built on, through each stack it is the upper
     /// half of and theirs in turn.
     fn lowers_of(&self, workspace: &str) -> HashSet<String> {
@@ -2132,6 +2152,11 @@ impl AppState {
                             },
                         }
                     }),
+                stack_level: if live_ids.contains(w.id.as_str()) {
+                    inner.stack_level(&w.id, |id| live_ids.contains(id))
+                } else {
+                    0
+                },
                 /* **Not on the upper half of a stack**, where it is the stack's to
                 settle from the bottom, and its agent is never told to rebase onto
                 upstream alone (`upstream_note`). Shown there as a conflict, it
@@ -3946,6 +3971,10 @@ pub struct WorkspaceView {
     pub overlaps: Vec<OverlapView>,
     /// What this workspace is stacked on, when it is the upper half of a stack.
     pub stacked_on: Option<StackView>,
+    /// Where this workspace sits in its stack, for the mark's layers: 1 for the
+    /// base of a stack somebody works higher up in, 2 for the branch on it, 3
+    /// for anything above that, 0 for none.
+    pub stack_level: u8,
     /// Files git cannot merge between this workspace and the upstream ref, sorted.
     /// Only while somebody works in it: see `Inner::upstream_conflicts`.
     pub upstream_conflicts: Vec<String>,
@@ -6052,6 +6081,41 @@ mod tests {
         assert!(
             !above.contains("base of your stack"),
             "the one above it is not asked to: {above}"
+        );
+    }
+
+    /// The mark's layers say where a branch sits: 1 for the base, one more per
+    /// branch under it, at most 3. A base whose upper branch has nobody in it has
+    /// no mark.
+    #[tokio::test]
+    async fn a_stack_mark_counts_the_branches_under_it() {
+        let app = app().await;
+        for ws in ["l1", "l2", "l3", "l4"] {
+            live_worktree(&app, ws, &format!("/tmp/{ws}"), &[]).await;
+        }
+        let mut inner = app.inner.write().await;
+        let stack = crate::overlap::Stack {
+            lower_is_a: true,
+            behind: 0,
+            lower_tip: "t".into(),
+            anchor: "t".into(),
+            lower_commits: 1,
+        };
+        for (lower, upper) in [("l1", "l2"), ("l2", "l3"), ("l3", "l4")] {
+            inner
+                .stacks
+                .insert((lower.into(), upper.into()), stack.clone());
+        }
+        let live = |_: &str| true;
+        let levels: Vec<u8> = ["l1", "l2", "l3", "l4"]
+            .iter()
+            .map(|w| inner.stack_level(w, live))
+            .collect();
+        assert_eq!(levels, vec![1, 2, 3, 3]);
+        assert_eq!(
+            inner.stack_level("l1", |_| false),
+            0,
+            "nobody works on top of it"
         );
     }
 

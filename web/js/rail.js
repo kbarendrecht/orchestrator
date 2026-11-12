@@ -2178,9 +2178,15 @@ function forkBadge(/** @type {import('../snapshot').SessionView} */ s) {
   return s.forked_from ? el('span', 'forked', 'fork') : null;
 }
 
-/** The stack mark: two sheets, one on the other. It was an up arrow, and git
- *  tools print "\u21912" for commits to push, so it read as "ahead". */
-const LAYERS = ['M8 2.5 14 5.5 8 8.5 2 5.5Z', 'M2 9 8 12 14 9'];
+/** The stack mark: sheets, one per level, so the mark says where the branch sits
+ *  in its stack: one for the base, two for the branch on it, three for anything
+ *  higher. It was an up arrow, and git tools print "\u21912" for commits to push,
+ *  so it read as "ahead". */
+const LAYERS = [
+  ['M8 4.5 14 7.5 8 10.5 2 7.5Z'],
+  ['M8 2.5 14 5.5 8 8.5 2 5.5Z', 'M2 9 8 12 14 9'],
+  ['M8 1.5 14 4.5 8 7.5 2 4.5Z', 'M2 8 8 11 14 8', 'M2 11.5 8 14.5 14 11.5'],
+];
 
 /** Whether a row gets the overlap mark: nothing, or which files another
  *  workspace in the same checkout also changed, and whether git cannot merge them.
@@ -2191,18 +2197,18 @@ const LAYERS = ['M8 2.5 14 5.5 8 8.5 2 5.5Z', 'M2 9 8 12 14 9'];
  *  open checkout, and the active one's workspaces are not this row's.
  *
  *  @param {import('../snapshot').Snapshot} state @param {string} workspace
- *  @returns {{ conflict: boolean, stack: import('../snapshot').StackView | null } | null} */
+ *  @returns {{ conflict: boolean, level: number } | null} */
 function overlapMark(state, workspace) {
   const w = state.workspaces.find((x) => x.id === workspace);
   const list = w?.overlaps ?? [];
-  const stack = w?.stacked_on ?? null;
+  const level = w?.stack_level ?? 0;
   // A conflict with upstream wears the same mark: it is the same question, asked
   // of the branch every PR lands on.
   const conflict = list.length > 0 || (w?.upstream_conflicts.length ?? 0) > 0;
-  return conflict || stack ? { conflict, stack } : null;
+  return conflict || level ? { conflict, level } : null;
 }
 
-function sessionRow(/** @type {import('../snapshot').SessionView} */ s, /** @type {{ id: string | null } | undefined} */ w, /** @type {boolean} */ fromMain = false, /** @type {{ conflict: boolean, stack: import('../snapshot').StackView | null } | null} */ overlap = null) {
+function sessionRow(/** @type {import('../snapshot').SessionView} */ s, /** @type {{ id: string | null } | undefined} */ w, /** @type {boolean} */ fromMain = false, /** @type {{ conflict: boolean, level: number } | null} */ overlap = null) {
   const btn = el('button', 'sess');
   /* **Current means "what the centre pane is showing", not "what is selected".**
      While you are watching a create, the pane is showing the create — the selection
@@ -2234,8 +2240,8 @@ function sessionRow(/** @type {import('../snapshot').SessionView} */ s, /** @typ
      "built on another branch". Grey like the conflict mark: neither is a state. A row that
      is both gets both, the stack first: which branch it is built on can matter
      more than a conflict with a third one. Each opens a card of its own. */
-  if (overlap?.stack) {
-    const up = row.appendChild(icon('sess-overlap stack', 1.6, ...LAYERS));
+  if (overlap?.level) {
+    const up = row.appendChild(icon('sess-overlap stack', 1.6, ...LAYERS[Math.min(overlap.level, 3) - 1]));
     up.dataset.session = s.id;
     up.dataset.kind = 'stack';
   }
@@ -2971,8 +2977,9 @@ function fillStackCard(
   /** @type {import('../snapshot').WorkspaceView} */ mine,
 ) {
   const stack = mine.stacked_on;
-  if (!stack) return false;
   const { below, above } = stackChain(state, mine.id);
+  // The base has nothing under it, and is a stack as long as something is on it.
+  if (!stack && !above.length) return false;
   const prOf = (/** @type {string} */ ws) => state.prs.find((p) => p.workspace === ws)?.number ?? null;
   const rows = [...[...above].reverse(), mine, ...below];
   const sig = paintSig(['stack', rows.map((w) => [w.id, w.stacked_on, prOf(w.id), liveIn(state, w.id).map((x) => [x.id, railName(x, { id: w.id }), stateLabel(x)])]), state.upstream_ref]);
@@ -3020,9 +3027,10 @@ function fillStackCard(
   /* The stack against the base: a question for the whole stack, settled from
      its bottom, so it is here and not a conflict with a tell link that has no
      note behind it. */
-  const base = ladder.appendChild(el('div', 'ovc-gap' + (stack.upstream ? ' warn' : '')));
-  base.appendChild(el('span', '', stack.upstream
-    ? `${state.upstream_ref.replace(/^[^/]+\//, '')} moved on, ${stack.upstream} file${stack.upstream === 1 ? '' : 's'} will not merge`
+  const against = stack ? stack.upstream : mine.upstream_conflicts.length;
+  const base = ladder.appendChild(el('div', 'ovc-gap' + (against ? ' warn' : '')));
+  base.appendChild(el('span', '', against
+    ? `${state.upstream_ref.replace(/^[^/]+\//, '')} moved on, ${against} file${against === 1 ? '' : 's'} will not merge`
     : ''));
   const bottom = ladder.appendChild(el('div', 'ovc-rung'));
   const baseName = bottom.appendChild(el('span', 'ovc-rname'));
@@ -3046,8 +3054,8 @@ function fillStackCard(
     };
     line.append(' ');
   };
-  if (stack.behind || stack.stale) act('Restack it now', `/api/workspace/${encodeURIComponent(mine.id)}/restack`, 'restacked');
-  if (stack.base_behind) act(`Rebase the stack onto ${state.upstream_ref}`, `/api/workspace/${encodeURIComponent(mine.id)}/rebase-stack`, 'stack rebased');
+  if (stack && (stack.behind || stack.stale)) act('Restack it now', `/api/workspace/${encodeURIComponent(mine.id)}/restack`, 'restacked');
+  if (stack ? stack.base_behind : mine.behind) act(`Rebase the stack onto ${state.upstream_ref}`, `/api/workspace/${encodeURIComponent(mine.id)}/rebase-stack`, 'stack rebased');
   return true;
 }
 

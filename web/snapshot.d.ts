@@ -843,6 +843,12 @@ overlaps: Array<OverlapView>,
  */
 stacked_on: StackView | null, 
 /**
+ * Where this workspace sits in its stack, for the mark's layers: 1 for the
+ * base of a stack somebody works higher up in, 2 for the branch on it, 3
+ * for anything above that, 0 for none.
+ */
+stack_level: number, 
+/**
  * Files git cannot merge between this workspace and the upstream ref, sorted.
  * Only while somebody works in it: see `Inner::upstream_conflicts`.
  */
