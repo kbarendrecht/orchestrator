@@ -334,13 +334,9 @@ pub struct Inner {
     /// what its tree measured when that was asked ([`UpstreamStamp`]). Only for a
     /// workspace somebody works in that is behind. Memory only, like the overlaps.
     pub upstream_conflicts: HashMap<String, (UpstreamStamp, Vec<String>)>,
-    /// The lower head each upper workspace was last restacked onto, or tried:
-    /// one attempt per head, so a rebase that stops is not retried on every
-    /// refresh. Memory only.
+    /// The lower head each upper workspace was last restacked onto by itself,
+    /// or tried: one attempt per head (`AppState::restack_when_safe`).
     pub restack_tried: HashMap<String, String>,
-    /// What each stack's base looked like against upstream when its stack was
-    /// last rebased, asked about or told, so that happens once per move of either.
-    pub stack_rebase_tried: HashMap<String, String>,
     /// Workspaces a stack rebase is working through right now, which the
     /// one-branch restack leaves alone until it is done.
     pub stack_rebasing: HashSet<String>,
@@ -1470,7 +1466,6 @@ impl AppState {
                 stacks: HashMap::new(),
                 upstream_conflicts: HashMap::new(),
                 restack_tried: HashMap::new(),
-                stack_rebase_tried: HashMap::new(),
                 stack_rebasing: HashSet::new(),
                 stack_dirs: None,
                 merged_under: Vec::new(),
@@ -3322,7 +3317,7 @@ impl AppState {
             a tree nobody works in has nobody to tell. **Live includes the base of a
             stack somebody works higher up in**: a base in review often has no
             session, and it is the one branch whose conflict with upstream decides
-            what the whole stack does (`AppState::stack_upstream`). */
+            what the whole stack does (`crate::push`). */
             let stamp = upstream_stamp(&w.tree);
             let upstream_ask = (w.tree.divergence.0 > 0
                 && !w.tree.changed.is_empty()
@@ -3450,12 +3445,40 @@ impl AppState {
                             orchd_base::git::git(lower, &["rev-parse", "HEAD"])
                                 .map_or(true, |h| h.trim() != st.lower_tip)
                         };
-                        let stack = match known_stacks.get(&key) {
-                            Some(s) if found == before && !moved(s) => Some(s.clone()),
-                            prev => crate::overlap::stack_of(&a.1, &b.1, &upstream, prev),
+                        /* `proved`: one head contains the other right now, so
+                        the direction is a fact rather than a guess from what it
+                        was or how old the branches are. Only a proved direction
+                        is remembered, and only a remembered one lets orchd
+                        restack by itself (`restack_when_safe`). */
+                        let (stack, proved) = match known_stacks.get(&key) {
+                            Some(s) if found == before && !moved(s) => (Some(s.clone()), false),
+                            prev => {
+                                let s = crate::overlap::stack_of(&a.1, &b.1, &upstream, prev);
+                                let head = |p: &Path| {
+                                    orchd_base::git::git(p, &["rev-parse", "HEAD"])
+                                        .map(|h| h.trim().to_string())
+                                        .unwrap_or_default()
+                                };
+                                let (ha, hb) = (head(&a.1), head(&b.1));
+                                let within = |x: &str, y: &str| {
+                                    orchd_base::git::git(
+                                        &a.1,
+                                        &["merge-base", "--is-ancestor", x, y],
+                                    )
+                                    .is_ok()
+                                };
+                                let proved = s.as_ref().is_some_and(|st| {
+                                    if st.lower_is_a {
+                                        within(&ha, &hb)
+                                    } else {
+                                        within(&hb, &ha)
+                                    }
+                                });
+                                (s, proved)
+                            }
                         };
                         if let Some(s) = stack {
-                            stacks.push((key, s));
+                            stacks.push((key, s, proved));
                         }
                     }
                     for found in found {
@@ -3477,9 +3500,9 @@ impl AppState {
         inner
             .stacks
             .retain(|(a, b), _| a != workspace && b != workspace);
-        // Remember each direction by its branches, for after a restart.
+        // Remember each proved direction by its branches, for after a restart.
         let mut learned = false;
-        for ((a, b), st) in &stacks {
+        for ((a, b), st, _) in stacks.iter().filter(|(_, _, proved)| *proved) {
             let branch = |id: &str| inner.workspaces.get(id).and_then(|w| w.tree.branch.clone());
             let (Some(ba), Some(bb)) = (branch(a), branch(b)) else {
                 continue;
@@ -3494,7 +3517,9 @@ impl AppState {
                 learned = true;
             }
         }
-        inner.stacks.extend(stacks);
+        inner
+            .stacks
+            .extend(stacks.into_iter().map(|(key, st, _)| (key, st)));
         if learned {
             let all: Vec<crate::store::StackDirection> = inner
                 .stack_dirs
@@ -3531,11 +3556,10 @@ impl AppState {
             .sort_by(|x, y| (&x.found.path, &x.a, &x.b).cmp(&(&y.found.path, &y.a, &y.b)));
         /* **No note from here.** A note sent from the refresh went out as a turn
         on every refresh, to a session the check wrongly found stacked on four
-        branches: about 1,500 in an hour. Stack notes ride on the next prompt now
-        (`overlap_note`), once per pair and lower head. */
+        branches: about 1,500 in an hour. What a stack needs is said at the
+        agent's next push now (`crate::push`). */
         drop(inner);
         self.restack_when_safe(workspace).await;
-        self.stack_upstream(workspace).await;
     }
 }
 
@@ -5625,9 +5649,23 @@ mod tests {
         }
         let create = "gh pr create --title x --web";
         assert_eq!(app.push_note(upper, "gh pr list").await, None, "not a push");
+        // The first push in a stack hears where it sits, once.
+        let named = "gh pr create --base story-1 --web";
+        let first = app
+            .push_note(upper, named)
+            .await
+            .expect("the stack, said once");
+        assert!(
+            first.contains("bottom first") && !first.contains("Open this PR with"),
+            "where it sits, and no base hint for a PR that names its base: {first}"
+        );
         assert_eq!(
-            app.push_note(upper, "gh pr create --base story-1 --web")
-                .await,
+            app.push_note(upper, named).await,
+            None,
+            "the retry goes through"
+        );
+        assert_eq!(
+            app.push_note(upper, named).await,
             None,
             "already on the branch under it"
         );

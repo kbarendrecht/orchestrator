@@ -349,7 +349,10 @@ fn path() -> Result<PathBuf> {
     Ok(Config::config_dir()?.join("sessions.json"))
 }
 
-/// Which branch of a pair is the lower one of their stack, as last measured.
+/// Which branch of a pair is the lower one of their stack, as last *proved*:
+/// one head contained the other when it was measured. A direction guessed from
+/// the branches' ages is never kept, because a kept direction is what lets orchd
+/// restack by itself.
 ///
 /// **Kept because git cannot always say again.** When both branches have moved
 /// past their shared commit (a lower branch rewritten after the upper one was
@@ -367,7 +370,7 @@ pub fn load_stack_directions() -> Vec<StackDirection> {
     let Ok(dir) = Config::config_dir() else {
         return Vec::new();
     };
-    std::fs::read_to_string(dir.join("stacks.json"))
+    std::fs::read_to_string(dir.join("stack-directions.json"))
         .ok()
         .and_then(|raw| serde_json::from_str(&raw).ok())
         .unwrap_or_default()
@@ -376,7 +379,7 @@ pub fn load_stack_directions() -> Vec<StackDirection> {
 /// Write the stack directions. Blocking file IO.
 pub fn save_stack_directions(all: &[StackDirection]) -> Result<()> {
     let bytes = serde_json::to_vec_pretty(all)?;
-    crate::atomic::write(&Config::config_dir()?.join("stacks.json"), &bytes)
+    crate::atomic::write(&Config::config_dir()?.join("stack-directions.json"), &bytes)
 }
 
 fn automation_path() -> Result<PathBuf> {

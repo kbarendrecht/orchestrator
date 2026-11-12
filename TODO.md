@@ -233,16 +233,14 @@ this file, which churned it from every build; that feature is gone.
   stacked-PR entry. Stacking is not orchd's job: the agents cut a branch off their
   own PR and restack it well enough, and a `stack` action plus a `/restack` skill
   would be the daemon doing their work. **The exception, since November, is the
-  restack with no decision in it** (`crates/orchd/src/restack.rs`): an idle, clean,
-  unpushed branch follows the one under it, a stack that is not pushed follows its
-  base bottom first, and an unpushed branch moves onto the base with `--onto` when
-  the lower PR merges. **Nothing is asked, and nothing rides a prompt** but "orchd
-  rebased your branch": a question per pushed restack, and conflict notes on every
-  prompt, read as noise to people doing something else in that session. Everything
-  else is said once at the agent's next `git push` or `gh pr create`
-  (`crates/orchd/src/push.rs`): the restack command, whose PR goes first in a
-  conflict (`Progress`), a stack base behind upstream, the `--base` of a stacked PR.
-  A pushed restack is a button on the Stacked card. What orchd owns is
+  restack with no decision in it** (`crates/orchd/src/restack.rs`): the branch
+  under an idle, clean, unpushed one only grew, and which is under which was proved
+  by containment, so `git rebase --onto <new> <old>` replays its own commits, after
+  a backup ref. Nothing else moves by itself, and nothing is asked: a stack is
+  said to each agent before it pushes (`crates/orchd/src/push.rs`), where its
+  branch sits, what to restack, what a rewrite does to the branches above it, a
+  base behind upstream, the `--base` of a stacked PR, and whose PR goes first in a
+  conflict (`Progress`). The Stacked card's buttons do the rest when you ask. What orchd owns is
   *showing* what an agent did. A session now keeps every branch it held and every PR opened on them
   (`Session::branches`, `Session::prs`), the rail names the worst PR with a count
   of the rest, and the pane header draws one chip per PR. A PR that ended while

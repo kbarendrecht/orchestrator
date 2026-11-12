@@ -108,7 +108,7 @@ impl AppState {
     async fn push_points(&self, session: SessionId, command: &str) -> Option<Points> {
         let upstream = self.cfg.upstream_ref.clone();
         // Read under the lock; the one git question (the restack's cut) after it.
-        let (mut items, conflicts, own_upstream, restack) = {
+        let (mut items, conflicts, own_upstream, restack, above) = {
             let inner = self.inner.read().await;
             let s = inner.sessions.get(&session)?;
             let ws = s.workspace.clone();
@@ -117,6 +117,53 @@ impl AppState {
 
             // The stack: a restack it needs, and its base against upstream.
             let stacked = inner.stacked_on(&ws).map(|(lower, st)| (lower, st.clone()));
+            let branch_of = |id: &str| {
+                inner
+                    .workspaces
+                    .get(id)
+                    .and_then(|x| x.tree.branch.clone())
+                    .unwrap_or_else(|| id.to_string())
+            };
+            let named = |id: &str| match inner.progress(id).pr {
+                Some(n) => format!("`{}` (#{n})", branch_of(id)),
+                None => format!("`{}`", branch_of(id)),
+            };
+
+            /* **Where it sits, before anything else.** A stack is pushed and
+            merged bottom first, and an agent working on one branch of it sees one
+            branch: the line says which branches are under and over it, so it can
+            decide which PR a change belongs in and in what order to push. */
+            let uppers = inner.uppers_of(&ws);
+            if stacked.is_some() || !uppers.is_empty() {
+                let bottom = inner.stack_bottom(&ws);
+                let chain: Vec<String> = std::iter::once(bottom.clone())
+                    .chain(inner.uppers_of(&bottom))
+                    .collect();
+                let rungs: Vec<String> = chain
+                    .iter()
+                    .map(|id| {
+                        let on = inner.stacked_on(id).map_or_else(
+                            || upstream.clone(),
+                            |(l, _)| format!("`{}`", branch_of(&l)),
+                        );
+                        let me = if *id == ws { " (yours)" } else { "" };
+                        format!("{}{me} on {on}", named(id))
+                    })
+                    .collect();
+                items.push(format!(
+                    "your branch is in a stack, bottom first: {}. It merges bottom first: a change \
+                     the lower branches need belongs in their PR, not in yours.",
+                    rungs.join("; ")
+                ));
+            }
+            // What this push does to the branches built on it, asked of git below.
+            let above = (!uppers.is_empty()).then(|| {
+                (
+                    w.path.clone(),
+                    w.tree.branch.clone().unwrap_or_default(),
+                    uppers.iter().map(|u| named(u)).collect::<Vec<_>>(),
+                )
+            });
             let restack = stacked.as_ref().and_then(|(lower, st)| {
                 let stale = inner.stack_conflicts(&ws, lower) > 0;
                 (st.behind > 0 || stale).then(|| {
@@ -238,8 +285,51 @@ impl AppState {
                 items.push(hint);
             }
             items.extend(s.push_notes.iter().cloned());
-            (items, conflicts, own_upstream, restack)
+            (items, conflicts, own_upstream, restack, above)
         };
+
+        /* **A push that rewrites a branch others are built on** leaves them
+        carrying the old commits, which is how a stack gets messed up without
+        anybody noticing: said before it lands, with the new head in the text so
+        each rewrite is said, not only the first. A push that only adds commits
+        is said once, as what happens to the branches above. */
+        if let Some((path, branch, names)) = above {
+            let forced = command.split_whitespace().any(|w| {
+                w == "-f"
+                    || w == "--force"
+                    || w.starts_with("--force-with-lease")
+                    || w.starts_with('+')
+            });
+            let probe = orchd_base::proc::run_blocking("reading the push", move || {
+                let head = crate::git::git(&path, &["rev-parse", "--short", "HEAD"])
+                    .map(|h| h.trim().to_string())
+                    .unwrap_or_default();
+                let diverged = crate::git::pushed_ref(&path, &branch).is_some_and(|r| {
+                    crate::git::git(&path, &["merge-base", "--is-ancestor", &r, "HEAD"]).is_err()
+                });
+                (head, diverged, branch)
+            })
+            .await
+            .ok();
+            if let Some((head, diverged, branch)) = probe {
+                let n = names.len();
+                let them = names.join(", ");
+                let branches = if n == 1 { "branch is" } else { "branches are" };
+                items.push(if diverged || (forced && !command.contains("gh pr create")) {
+                    format!(
+                        "this push rewrites `{branch}` (to {head}), and {n} {branches} built on it \
+                         ({them}): they keep the old commits until they restack, which their agents \
+                         are told at their next push. If you only add commits, push them on top \
+                         instead of rewriting."
+                    )
+                } else {
+                    format!(
+                        "{n} {branches} built on yours ({them}): once this is pushed they restack onto \
+                         it, by orchd when they are idle and unpushed, otherwise at their own next push."
+                    )
+                });
+            }
+        }
 
         // The restack command, which needs git for its cut.
         if let Some((lower_branch, st, path, branch)) = restack {

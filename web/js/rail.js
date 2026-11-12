@@ -3027,11 +3027,11 @@ function fillStackCard(
   const bottom = ladder.appendChild(el('div', 'ovc-rung'));
   const baseName = bottom.appendChild(el('span', 'ovc-rname'));
   baseName.append(el('span', 'ovc-node base'), el('span', 'ovc-name', state.upstream_ref));
-  /* **Quiet unless you ask.** Orchestrator restacks an idle, unpushed branch by
-     itself; a pushed one is the agent's at its next push, or yours with a click
-     here, and nothing pops up for it. */
+  /* **Quiet unless you ask.** The agent hears it all before it pushes, orchd
+     only replays a branch whose lower branch just grew, and the buttons here are
+     yours for anything else. Nothing pops up for it. */
   const line = card.appendChild(el('div', 'ovc-line'));
-  line.append('Orchestrator restacks it when it is idle and unpushed. A pushed branch is restacked by its agent when it next pushes. ');
+  line.append('Its agent is told before it pushes: where it sits in the stack, what to restack, and what its push does to the branches above. Orchestrator only restacks it by itself when the branch under it just grew and this one is idle and unpushed. ');
   const act = (/** @type {string} */ label, /** @type {string} */ route, /** @type {string} */ done) => {
     const b = line.appendChild(el('button', 'ovc-now', label));
     b.type = 'button';
