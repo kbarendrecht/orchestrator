@@ -165,6 +165,28 @@ this file, which churned it from every build; that feature is gone.
   screen. Deny-and-continue (`Tab` to amend) waits on either a screen parser or a
   reliable option count, and so does a guard against the stale prompt.
 
+  **A screen parser was evaluated, and it is cheap enough (2026-11-13).** Raw pty
+  bytes of real prompts (tmux `pipe-pane`, 140x40) fed into `vt100` 0.18.1 in a
+  scratch crate:
+  - It reads both menus exactly — Bash's four options and Write's three, "No" last
+    — and the same in `CLAUDE_CODE_NO_FLICKER` mode, on the alternate screen.
+  - After the prompt was answered the scan found no menu, so it does say whether a
+    prompt is still up, which is the guard the hooks cannot give.
+  - 85–88 MiB/s through Claude Code's own escape-heavy output, and 18 µs to read
+    the screen and scan it. A pty never streams near either.
+  - MIT, and four new crates (`vt100`, `vte`, `unicode-width`, `arrayvec`), all
+    on `deny.toml`'s licence list.
+  - The seam exists: `pty.rs` already pushes every read into `RingBuffer` and holds
+    the size `PtyHandle::resize` sets, so the parser sits beside the ring, fed in
+    the same place and resized in the same call. Only agent ptys need one.
+
+  The cost is the dependency on Claude Code's wording ("Do you want", "N. No",
+  "Esc to cancel"), which is UI and not contract. So the scan is tested against
+  the recorded bytes as fixtures, and anything it does not recognise falls back to
+  the v1 verbs (`1`, `Esc`) rather than guessing an option number. With it,
+  deny-with-a-reason becomes "No", `Tab`, text, `Enter` — no interrupted turn —
+  and a stale prompt is refused instead of typed into.
+
   Not in it: starting a session from the phone (`spawnSession` on the machine,
   which the host can route because it knows every checkout), images, and running
   with the window closed.
