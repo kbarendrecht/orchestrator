@@ -690,7 +690,14 @@ button.ovc-who:hover{background:var(--hover)}
 .sess-sub{
   display:flex;align-items:center;gap:13px;padding-left:14px;margin-top:2px;
   font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid);
+  white-space:nowrap;min-width:0;overflow:hidden;
 }
+/* **One line, always.** A long state ("#36751 checks failing") wrapped inside its
+   own span and a narrow rail grew the row to three lines. The pass, the restart
+   note and the clock are short and keep their width; the state is the one that
+   gives way, to an ellipsis, with the whole of it in its tooltip. */
+.sess-sub>*{flex:0 0 auto}
+.sess-sub>.sess-state{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}
 /* Which pass a session is running, in the one accent nothing else uses — the
    command is the only thing on the row that is not about state. */
 .sess-cmd{color:var(--auto)}
@@ -895,6 +902,7 @@ button.ovc-who:hover{background:var(--hover)}
 .sess-warn{
   display:block;padding:0 16px 8px 29px;font-family:var(--mono);
   font-size:calc(9px * var(--fs));color:var(--bad);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
 }
 
 /* A line of rail text that is not a control: an empty state, a poller's error.

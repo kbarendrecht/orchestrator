@@ -2275,6 +2275,8 @@ function sessionRow(/** @type {import('../snapshot').SessionView} */ s, /** @typ
   // `handle-review` do very different things to it.
   if (s.pass) sub.appendChild(el('span', 'sess-cmd', s.pass.command));
   const word = sub.appendChild(el('span', 'sess-state ' + stateClass(s), stateLabel(s)));
+  // The whole of it, for when one line cuts it short.
+  word.title = stateLabel(s);
   // A session that opened several PRs names the worst and counts the rest; the
   // pane header draws them all.
   if (handedToPr(s) && s.prs.length > 1) word.appendChild(el('span', 'sess-more', ` +${s.prs.length - 1}`));
@@ -2305,8 +2307,9 @@ function sessionRow(/** @type {import('../snapshot').SessionView} */ s, /** @typ
   // An agent editing outside its worktree is a prompt problem worth seeing,
   // not noise to swallow (§11).
   if (s.boundary_violations.length) {
-    btn.appendChild(el('span', 'sess-warn',
+    const warn = btn.appendChild(el('span', 'sess-warn',
       `${s.boundary_violations.length} blocked edit(s) outside the worktree`));
+    warn.title = warn.textContent ?? '';
   }
 
   btn.appendChild(el('div', 'sess-pad'));

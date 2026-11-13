@@ -249,6 +249,31 @@ try {
   })
   check(clipped.length === 0, `no header label is clipped${clipped.length ? `: ${clipped[0]}` : ''}`)
 
+  /* **A session's subtitle is one line, at the rail's narrowest.** A long state
+     wrapped inside its span and grew the row to three lines on a small screen.
+     Measured in one synchronous pass, because the rail rebuilds every second and
+     the long label is this check's own. */
+  const subLines = await page.evaluate(() => {
+    const root = document.documentElement
+    const width = root.style.getPropertyValue('--rail')
+    root.style.setProperty('--rail', '210px')
+    const sub = document.querySelector('#rail .sess .sess-sub')
+    const word = sub?.querySelector('.sess-state')
+    if (!sub || !word) {
+      root.style.setProperty('--rail', width)
+      return null
+    }
+    const was = word.textContent
+    const one = sub.getBoundingClientRect().height
+    word.textContent = '#36751 checks failing, and a merge conflict with develop on top of that'
+    const long = sub.getBoundingClientRect().height
+    word.textContent = was
+    root.style.setProperty('--rail', width)
+    return { one, long }
+  })
+  check(!!subLines && subLines.long <= subLines.one + 1,
+    `a session's subtitle stays one line with a long state in a narrow rail, got ${JSON.stringify(subLines)}`)
+
   /* The href rule, in the page's own module rather than a copy of it here. A PR's
      URL comes from GitHub, a review row's from whatever `reviews_command` prints,
      a story's from an agent reading third-party comments — and `javascript:` in
