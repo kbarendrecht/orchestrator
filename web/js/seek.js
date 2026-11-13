@@ -9,10 +9,10 @@
 // buy nothing, and when the editor is open the text is a buffer somebody is
 // typing in that the daemon has never seen.
 //
-// Smart case is the daemon's rule on purpose — `case_smart` in
-// `crates/orchd-repo/src/search.rs`: an upper-case letter anywhere in the query
-// makes the search case-sensitive. Two find boxes in one app that disagree about
-// case is a difference nobody can see and everybody trips over.
+// Case is the daemon's rule on purpose (`Query::exact_case` in
+// `crates/orchd-repo/src/search.rs`): ignored unless the `Aa` toggle is on. Two
+// find boxes in one app that disagree about case is a difference nobody can see
+// and everybody trips over.
 
 /** One match.
  *
@@ -35,7 +35,7 @@ export const MAX = 2000;
 const literal = (/** @type {string} */ q) => q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /** How to read the query: as a pattern rather than a literal, and in the case it
- *  is written rather than smart-cased. The two toggles in the bar, and the same
+ *  is written rather than ignoring it. The two toggles in the bar, and the same
  *  two the workspace search has.
  *
  *  @typedef {{ regex?: boolean, exact?: boolean }} How */
@@ -45,7 +45,7 @@ const literal = (/** @type {string} */ q) => q.replace(/[.*+?^${}()|[\]\\]/g, '\
  *
  *  @param {string} query @param {How} how @param {string} flags */
 function pattern(query, how, flags) {
-  const insensitive = !how.exact && query === query.toLowerCase();
+  const insensitive = !how.exact;
   try {
     return new RegExp(how.regex ? query : literal(query), flags + (insensitive ? 'i' : ''));
   } catch (err) {

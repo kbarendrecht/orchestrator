@@ -505,8 +505,8 @@ fails it.
 
 Three smaller rules hold it up. The language comes from the **clicked file's**
 extension, because a symbol has none of its own — asking about a Python `def` in
-a `.rs` file finds nothing, which is correct. Case is exact here and smart
-everywhere else (`Query::exact_case`): a typed query wants `run_blocking` to find
+a `.rs` file finds nothing, which is correct. Case is exact here and ignored
+everywhere else unless asked for (`Query::exact_case`): a typed query wants `run_blocking` to find
 `RUN_BLOCKING`, a jump must not move on it. And the word is rejected before it
 becomes a pattern unless it is an identifier, because the page sends whatever was
 under the pointer and that is punctuation as often as a name.

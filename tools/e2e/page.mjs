@@ -1584,7 +1584,7 @@ try {
   const bothCases = await page.waitForFunction(
     () => document.querySelectorAll('#fnhits .fnhit').length === 2, null, { timeout: 5000 })
     .then(() => true).catch(() => false)
-  check(bothCases, 'smart case finds the capitalised word too')
+  check(bothCases, 'case is ignored, so the capitalised word is found too')
   await page.$eval('#fncase', (b) => b.click())
   const onlyLower = await page.waitForFunction(
     () => document.querySelectorAll('#fnhits .fnhit').length === 1, null, { timeout: 5000 })
@@ -2816,8 +2816,8 @@ try {
     await page.$$eval('#fvsrc .ruler .rm.hit', (ms) => ms.length) > 0,
     'the ruler beside the scrollbar marks them',
   )
-  /* Smart case, the daemon's own rule: an upper-case letter anywhere makes the
-     query sensitive. Two find boxes in one app that disagree about this is a
+  /* Case is ignored unless Aa is on, the daemon's own rule, whatever case the
+     query is written in. Two find boxes in one app that disagree about this is a
      difference nobody can see. */
   await page.fill('#fvseekq', 'title')
   check(
@@ -2826,12 +2826,11 @@ try {
   )
   await page.fill('#fvseekq', 'TITLE')
   check(
-    await page.$eval('#fvseekn', (n) => n.textContent) === 'no matches',
-    'and an upper-case letter makes it match the case written',
+    await page.$eval('#fvseekn', (n) => n.textContent) === '1 of 1',
+    'and so does an upper-case one',
   )
-  /* The case toggle, which is the finder's with the same default. The two checks
-     above are smart case doing its job; this is the search it cannot express — a
-     lower-case query that must stay lower-case. */
+  /* The case toggle, which is the finder's with the same default: the one way to
+     hold a query to the case you typed. */
   await page.fill('#fvseekq', 'more')
   check(
     await page.$eval('#fvseekn', (n) => n.textContent) === '1 of 60',

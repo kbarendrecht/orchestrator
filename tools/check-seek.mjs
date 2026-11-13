@@ -5,7 +5,7 @@
 //
 // The cases are the ones that are wrong in silence rather than loudly: a match
 // on a line with an accent in it, a pattern that can match nothing, the wrap at
-// either end, and smart case. A wrong column here puts the mark on the wrong
+// either end, and case. A wrong column here puts the mark on the wrong
 // glyph, which reads as a renderer bug rather than as a search bug.
 
 import { MAX, hitLines, matches, nextIndex, offsetOf, replaceAll, substitute } from '../web/js/seek.js'
@@ -22,16 +22,16 @@ const text = L('let a = 1', 'let bb = 2', 'LET c = 3')
 
 {
   const h = matches(text, 'let', {})
-  check(h.length === 3, 'a lower-case query is case-insensitive (smart case)')
+  check(h.length === 3, 'case is ignored by default')
   check(same(h[0], { line: 1, col: 0, len: 3, at: 0 }), 'the first hit is line 1, column 0')
   check(h[2].line === 3 && h[2].col === 0, 'the upper-case line is found too')
 }
 {
   const h = matches(text, 'LET', {})
-  check(h.length === 1 && h[0].line === 3, 'an upper-case letter makes the query sensitive')
+  check(h.length === 3, 'an upper-case letter does not make the query sensitive')
 }
 {
-  // The toggle, for the search smart case cannot express.
+  // The toggle is the one way to match case.
   const h = matches(text, 'let', { exact: true })
   check(h.length === 2 && h.every((x) => x.line < 3), 'and the exact flag holds a lower-case query to its case')
 }

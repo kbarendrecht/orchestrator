@@ -206,11 +206,9 @@
         <input class="fnglob" id="fnglob" spellcheck="false" autocomplete="off"
                placeholder="path filter" aria-label="path filter">
         <div class="ov-nav">
-          <!-- Off is smart case, which is what a person typing a query wants and
-               what the daemon does by default. On asks for the case written, for
-               the one search smart case cannot express: a lower-case word that
-               must stay lower-case. -->
-          <button class="fntg" id="fncase" title="Match the case written. Off is smart case: an upper-case letter already makes the search sensitive">Aa</button>
+          <!-- Off ignores case, on matches the case written: the toggle is the
+               whole rule, so nothing in the query quietly turns it on. -->
+          <button class="fntg" id="fncase" title="Match case">Aa</button>
           <button class="fntg" id="fnre" title="The query is a regular expression">.*</button>
           <button class="fntg" id="fnword" title="Whole words only">W</button>
           <button class="head-btn" id="fnclose">Close <kbd>Esc</kbd></button>
@@ -278,11 +276,11 @@
         <span class="ov-count" id="fvseekn"></span>
         <button class="head-btn" id="fvseekdo" hidden title="Replace this match (Enter in the replace box)">Replace</button>
         <button class="head-btn" id="fvseekall" hidden title="Replace every match, as one undo">All</button>
-        <!-- The same two the workspace search has, and the same defaults: off is
-             smart case, and a whole-word search is `\bword\b` with the pattern
+        <!-- The same two the workspace search has, and the same defaults: off
+             ignores case, and a whole-word search is `\bword\b` with the pattern
              toggle on. Two find boxes in one app that disagree about case is a
              difference nobody can see. -->
-        <button class="fntg" id="fvseekcase" title="Match the case written. Off is smart case: an upper-case letter already makes the search sensitive">Aa</button>
+        <button class="fntg" id="fvseekcase" title="Match case">Aa</button>
         <button class="fntg" id="fvseekre" title="The query is a regular expression">.*</button>
         <button class="head-btn" id="fvseekprev" title="Previous match (Shift Enter)">&#8593;</button>
         <button class="head-btn" id="fvseeknext" title="Next match (Enter)">&#8595;</button>

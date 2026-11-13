@@ -104,11 +104,12 @@ pub struct Query {
     /// typing it means.
     #[serde(default)]
     pub glob: Option<String>,
-    /// Match the case written, rather than smart-casing it.
+    /// Match the case written; off, case is ignored.
     ///
-    /// Smart case is the default, because it is what a person typing a query
-    /// wants; the overlay's `Aa` asks for this one, for the search smart case
-    /// cannot express — a lower-case word that must not match the upper-case one.
+    /// Off used to be smart case, where an upper-case letter in the query made
+    /// the search sensitive anyway. Beside an `Aa` toggle that reads as broken:
+    /// `searchIndexCommands` with the toggle off did not find
+    /// `SearchIndexCommands`. So the toggle is the whole rule.
     /// [`crate::symbols`] sets it too, because a definition jump moves the cursor
     /// on the strength of there being exactly one hit, and folding `run_blocking`
     /// onto `RUN_BLOCKING` is a way to land somewhere nobody asked for.
@@ -839,15 +840,13 @@ pub fn search(root: &Path, exclude: Option<&str>, q: &Query) -> Result<Matches> 
         });
     }
     // A literal is the default, so the pattern is escaped rather than trusted.
-    // `case_smart` is the library's own rule — an uppercase letter anywhere makes
-    // the search sensitive — rather than a second copy of that rule here.
     let pattern = if q.regex {
         q.pattern.clone()
     } else {
         regex::escape(&q.pattern)
     };
     let matcher = RegexMatcherBuilder::new()
-        .case_smart(!q.exact_case)
+        .case_insensitive(!q.exact_case)
         .word(q.word)
         .build(&pattern)
         .with_context(|| format!("{} is not a pattern", q.pattern))?;
@@ -1109,11 +1108,10 @@ mod tests {
         );
     }
 
-    /// Smart case is the library's rule and this is what it means: a lower-case
-    /// query matches both spellings, a query with an upper-case letter matches
-    /// only its own.
+    /// Case is ignored unless `exact_case` asks for it, whatever case the query
+    /// is written in: an upper-case letter does not quietly turn the toggle on.
     #[test]
-    fn case_is_smart_in_both_directions() {
+    fn case_is_ignored_unless_asked_for() {
         let dir = tree("search-case");
         let loose = find(&dir, "needle");
         assert_eq!(
@@ -1124,17 +1122,15 @@ mod tests {
                 .count(),
             2
         );
-        let exact = find(&dir, "Needle");
-        let only: Vec<u32> = exact
-            .hits
-            .iter()
-            .filter(|h| h.path == "src/other.rs")
-            .map(|h| h.line)
-            .collect();
+        let upper = find(&dir, "Needle");
         assert_eq!(
-            only,
-            vec![2],
-            "an upper-case letter makes the search sensitive"
+            upper
+                .hits
+                .iter()
+                .filter(|h| h.path == "src/other.rs")
+                .count(),
+            2,
+            "an upper-case letter does not make the search sensitive"
         );
     }
 

@@ -52,8 +52,8 @@ export async function run(t) {
      answer for. `exact_case` was the one flag the overlay never sent, so nothing
      had ever asked whether it arrives. */
   fs.writeFileSync(path.join(tree, 'capitalised.txt'), 'Frobnicate here\n')
-  const smart = await find(t, workspace)
-  assert.equal(smart.hits.length, 2, 'smart case finds the capital one too')
+  const loose = await find(t, workspace)
+  assert.equal(loose.hits.length, 2, 'case is ignored, so the capital one is found too')
   const exact = await find(t, workspace, '&exact_case=true')
   assert.deepEqual(
     exact.hits.map((h) => h.path), ['in-the-worktree.txt'],
