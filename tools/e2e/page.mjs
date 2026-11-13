@@ -3381,6 +3381,55 @@ try {
   )
   // And closing the file takes the card with it, so it never floats over nothing.
   await page.keyboard.press(chord('Shift+KeyJ'))
+
+  {
+    /* The card is a window of its own: its header moves it, a corner resizes it,
+       Collapse takes it down to the bar, and its frame is the terminal's ground. */
+    const box = () => page.$eval('#termwrap', (w) => {
+      const r = w.getBoundingClientRect()
+      return { x: r.left, y: r.top, w: r.width, h: r.height }
+    })
+    await page.waitForFunction(() => document.body.classList.contains('fvagent'), null, { timeout: 3000 })
+      .catch(() => {})
+    await page.waitForTimeout(400)
+    const before = await box()
+    const grab = { x: before.x + 60, y: before.y + 20 }
+    await page.mouse.move(grab.x, grab.y)
+    await page.mouse.down()
+    await page.mouse.move(grab.x - 60, grab.y - 50, { steps: 5 })
+    await page.mouse.up()
+    const moved = await box()
+    check(Math.abs(moved.x - (before.x - 60)) <= 2 && Math.abs(moved.y - (before.y - 50)) <= 2,
+      `dragging the card's header moves it, got ${JSON.stringify({ before, moved })}`)
+    const corner = { x: moved.x + moved.w - 8, y: moved.y + moved.h - 8 }
+    await page.mouse.move(corner.x, corner.y)
+    await page.mouse.down()
+    await page.mouse.move(corner.x - 40, corner.y - 30, { steps: 5 })
+    await page.mouse.up()
+    const sized = await box()
+    check(Math.abs(sized.w - (moved.w - 40)) <= 2 && Math.abs(sized.h - (moved.h - 30)) <= 2
+      && Math.abs(sized.x - moved.x) <= 2,
+      `dragging its corner resizes it from that corner, got ${JSON.stringify({ moved, sized })}`)
+    const grounds = await page.evaluate(() => {
+      const host = document.querySelector('#termwrap .termhost:not([hidden])')
+      return {
+        frame: getComputedStyle(document.getElementById('termwrap')).backgroundColor,
+        terminal: host ? getComputedStyle(host).backgroundColor : null,
+      }
+    })
+    check(grounds.frame === grounds.terminal,
+      `the card's frame is the terminal's own ground, got ${JSON.stringify(grounds)}`)
+    check(await page.$eval('#agentfold', (b) => b.textContent) === 'Collapse', 'the card offers Collapse')
+    await page.click('#agentfold')
+    const bar = await box()
+    check(bar.h <= 42 && await page.$eval('#agentfold', (b) => b.textContent) === 'Expand',
+      `Collapse takes it down to a bar that offers Expand, got ${JSON.stringify(bar)}`)
+    await page.click('#agentfold')
+    await page.dblclick('#agentname')
+    const home = await box()
+    check(Math.abs(home.y + home.h - before.y - before.h) <= 2,
+      `a double-click on the header puts it back, got ${JSON.stringify({ before, home })}`)
+  }
   await page.click('#fvclose')
   check(
     await page.evaluate(() => !document.body.classList.contains('fvagent')

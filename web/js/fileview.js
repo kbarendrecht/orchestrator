@@ -89,7 +89,9 @@ function paintAgent() {
   document.body.classList.toggle('fvagent-folded', agent.open && agent.folded);
   const button = $('fvagent');
   button.setAttribute('aria-pressed', String(agent.open));
-  $('agentfold').textContent = agent.folded ? 'Show' : 'Hide';
+  const fold = $('agentfold');
+  fold.textContent = agent.folded ? 'Expand' : 'Collapse';
+  fold.title = agent.folded ? 'Show the whole conversation again' : 'Collapse to a bar that keeps showing the session';
 }
 
 /** The header button and MOD Shift J: the agent on screen, or not. */
@@ -121,47 +123,134 @@ function askAbout(/** @type {number} */ from, /** @type {number} */ to) {
   if (!asker.ask(`${state.path}:${range} `)) toast('that session has no terminal open to type into', true);
 }
 
-/** The card's height, dragged from its top edge and remembered like the
- *  drawer's. Nothing stored is the stylesheet's default. */
-const AGENT_H = { key: 'orch.agentcard.h', min: 140 };
+/* **Where the card is, once it has been moved or resized.** Until then it sits
+   where the stylesheet puts it, centred at the bottom of the centre column; the
+   first drag of its header or an edge takes that box as its start and from then
+   on the card is a window of its own, remembered across runs. A double-click on
+   the header puts it back. */
+const AGENT_AT = { key: 'orch.agentcard', minW: 360, minH: 140, bar: 40 };
+/** @type {{ x: number, y: number, w: number, h: number } | null} */
+let placed = null;
 
-function setAgentHeight(/** @type {number | null} */ px) {
-  const root = document.documentElement;
-  if (px == null) root.style.removeProperty('--agentcard-h');
-  else root.style.setProperty('--agentcard-h', `${Math.round(px)}px`);
+/** `p` kept on screen: no smaller than the floor, no larger than the window,
+ *  and the header always inside it, so the card can always be dragged back. */
+function onScreen(/** @type {{ x: number, y: number, w: number, h: number }} */ p) {
+  const w = Math.min(Math.max(p.w, AGENT_AT.minW), window.innerWidth);
+  const h = Math.min(Math.max(p.h, AGENT_AT.minH), window.innerHeight);
+  return {
+    w, h,
+    x: Math.min(Math.max(p.x, 0), window.innerWidth - w),
+    y: Math.min(Math.max(p.y, 0), window.innerHeight - AGENT_AT.bar),
+  };
 }
 
-function dragAgent() {
+function applyPlace() {
+  const root = document.documentElement;
+  document.body.classList.toggle('fvagent-placed', !!placed);
+  if (!placed) {
+    for (const v of ['--agent-x', '--agent-y', '--agent-w', '--agent-h']) root.style.removeProperty(v);
+    return;
+  }
+  const p = onScreen(placed);
+  root.style.setProperty('--agent-x', `${Math.round(p.x)}px`);
+  root.style.setProperty('--agent-y', `${Math.round(p.y)}px`);
+  root.style.setProperty('--agent-w', `${Math.round(p.w)}px`);
+  root.style.setProperty('--agent-h', `${Math.round(p.h)}px`);
+}
+
+function savePlace() {
   try {
-    const kept = Number(localStorage.getItem(AGENT_H.key));
-    if (kept >= AGENT_H.min) setAgentHeight(kept);
-  } catch { /* private mode: the default height */ }
-  const grip = $('agentgrip');
-  grip.addEventListener('mousedown', (ev) => {
-    if (ev.button !== 0 || agent.folded) return;
+    if (placed) localStorage.setItem(AGENT_AT.key, JSON.stringify(onScreen(placed)));
+    else localStorage.removeItem(AGENT_AT.key);
+  } catch { /* private mode: the drag still worked for this run */ }
+}
+
+/** The card's box now, as a starting point for a drag. */
+function boxNow() {
+  if (placed) return onScreen(placed);
+  const r = $('termwrap').getBoundingClientRect();
+  return { x: r.left, y: r.top, w: r.width, h: r.height };
+}
+
+/** Follow the pointer from `ev` until the button comes up. `step` gets how far
+ *  it moved; `end` is told whether it moved at all, so a click stays a click. */
+function track(/** @type {MouseEvent} */ ev, /** @type {(dx: number, dy: number) => void} */ step,
+  /** @type {(moved: boolean) => void} */ end) {
+  const x0 = ev.clientX;
+  const y0 = ev.clientY;
+  let moved = false;
+  const move = (/** @type {MouseEvent} */ e) => {
+    const dx = e.clientX - x0;
+    const dy = e.clientY - y0;
+    if (!moved && Math.hypot(dx, dy) < 3) return;
+    moved = true;
+    step(dx, dy);
+  };
+  window.addEventListener('mousemove', move);
+  window.addEventListener('mouseup', () => {
+    window.removeEventListener('mousemove', move);
+    document.body.classList.remove('agent-dragging');
+    end(moved);
+  }, { once: true });
+}
+
+function placeAgent() {
+  try {
+    const kept = JSON.parse(localStorage.getItem(AGENT_AT.key) ?? 'null');
+    if (kept && [kept.x, kept.y, kept.w, kept.h].every(Number.isFinite)) placed = kept;
+  } catch { /* nothing kept, or private mode: the default place */ }
+  applyPlace();
+  // A smaller window must not strand the card off its edge.
+  window.addEventListener('resize', applyPlace);
+
+  // The header moves it, and a click on a collapsed one expands it.
+  $('agenthead').addEventListener('mousedown', (ev) => {
+    if (ev.button !== 0 || /** @type {HTMLElement} */ (ev.target).closest('button')) return;
     ev.preventDefault();
-    ev.stopPropagation();
-    document.body.classList.add('row-resizing');
-    // The card hangs from the bottom, so its height is the distance up to the pointer.
-    const bottom = $('termwrap').getBoundingClientRect().bottom;
-    const most = window.innerHeight - 70;
-    const move = (/** @type {MouseEvent} */ e) => setAgentHeight(Math.max(AGENT_H.min, Math.min(most, bottom - e.clientY)));
-    const done = () => {
-      window.removeEventListener('mousemove', move);
-      document.body.classList.remove('row-resizing');
-      try {
-        localStorage.setItem(AGENT_H.key, String(Math.round($('termwrap').getBoundingClientRect().height)));
-      } catch { /* the drag still worked for this run */ }
-    };
-    window.addEventListener('mousemove', move);
-    window.addEventListener('mouseup', done, { once: true });
+    const from = boxNow();
+    document.body.classList.add('agent-dragging');
+    track(ev, (dx, dy) => {
+      placed = { ...from, x: from.x + dx, y: from.y + dy };
+      applyPlace();
+    }, (moved) => {
+      if (moved) savePlace();
+      else if (agent.folded) foldAgent(false);
+    });
   });
-  grip.addEventListener('dblclick', () => {
-    setAgentHeight(null);
-    try {
-      localStorage.removeItem(AGENT_H.key);
-    } catch { /* nothing to forget */ }
+  $('agenthead').addEventListener('dblclick', (ev) => {
+    if (/** @type {HTMLElement} */ (ev.target).closest('button')) return;
+    placed = null;
+    applyPlace();
+    savePlace();
   });
+
+  // Each edge and corner resizes from its own side, the opposite one staying put.
+  for (const edge of document.querySelectorAll('#termwrap .agentedge')) {
+    edge.addEventListener('mousedown', (e) => {
+      const ev = /** @type {MouseEvent} */ (e);
+      if (ev.button !== 0 || agent.folded) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      const side = /** @type {HTMLElement} */ (edge).dataset.edge ?? '';
+      const from = boxNow();
+      document.body.classList.add('agent-dragging');
+      track(ev, (dx, dy) => {
+        let { x, y, w, h } = from;
+        if (side.includes('e')) w = Math.max(AGENT_AT.minW, from.w + dx);
+        if (side.includes('s')) h = Math.max(AGENT_AT.minH, from.h + dy);
+        if (side.includes('w')) {
+          w = Math.max(AGENT_AT.minW, from.w - dx);
+          x = from.x + from.w - w;
+        }
+        if (side.includes('n')) {
+          h = Math.max(AGENT_AT.minH, from.h - dy);
+          y = from.y + from.h - h;
+        }
+        placed = { x, y, w, h };
+        applyPlace();
+      }, (moved) => { if (moved) savePlace(); });
+    });
+  }
 }
 
 /** MOD L: ask about the selected lines. */
@@ -908,11 +997,7 @@ export function init() {
     ev.stopPropagation();
     foldAgent(!agent.folded);
   };
-  // Folded, the whole bar opens it again: it is one line, and a 40px target.
-  $('agenthead').addEventListener('click', () => {
-    if (agent.folded) foldAgent(false);
-  });
-  dragAgent();
+  placeAgent();
   $('fvback').onclick = () => void back();
   /* The mouse's back button steps back, like `Escape`: through the files a
      rendered page's links led to, and then out. Button 3 is the back one. */

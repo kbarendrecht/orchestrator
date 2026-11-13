@@ -933,7 +933,7 @@ button.ovc-who:hover{background:var(--hover)}
 body.fvagent .termwrap{
   position:fixed;z-index:21;left:var(--rail);right:var(--files);margin-inline:auto;
   width:min(900px, calc(100vw - var(--rail) - var(--files) - 24px));
-  bottom:12px;height:var(--agentcard-h, 45vh);min-height:140px;max-height:calc(100vh - 70px);
+  bottom:12px;height:45vh;min-height:140px;max-height:calc(100vh - 70px);
   padding:0;overflow:hidden;
   border:1px solid var(--line);border-radius:12px;
   box-shadow:0 24px 60px -12px rgba(0,0,0,.75);
@@ -944,15 +944,34 @@ body.fvagent .agenthead{
   display:flex;align-items:center;gap:10px;position:absolute;top:0;left:0;right:0;height:40px;
   padding:0 10px 0 14px;border-bottom:1px solid var(--line);background:var(--raised);
 }
+body.fvagent .agenthead{cursor:move;user-select:none}
 body.fvagent .agenthead .ctx-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.agentgrip{position:absolute;top:0;left:0;right:0;height:6px;cursor:row-resize}
 body.fvagent .termhost{inset:48px 6px 8px 12px}
+/* Moved or resized: a window of its own, at the box `fileview.js` keeps. */
+body.fvagent.fvagent-placed .termwrap{
+  left:var(--agent-x);top:var(--agent-y);width:var(--agent-w);height:var(--agent-h);
+  right:auto;bottom:auto;margin:0;max-height:none;
+}
+/* The edges and corners, over the terminal so a drag reaches them first. */
+.agentedge{display:none}
+body.fvagent .agentedge{display:block;position:absolute;z-index:2}
+.agentedge[data-edge="n"]{top:0;left:10px;right:10px;height:6px;cursor:ns-resize}
+.agentedge[data-edge="s"]{bottom:0;left:10px;right:10px;height:6px;cursor:ns-resize}
+.agentedge[data-edge="e"]{right:0;top:10px;bottom:10px;width:6px;cursor:ew-resize}
+.agentedge[data-edge="w"]{left:0;top:10px;bottom:10px;width:6px;cursor:ew-resize}
+.agentedge[data-edge="ne"]{top:0;right:0;width:16px;height:16px;cursor:nesw-resize}
+.agentedge[data-edge="sw"]{bottom:0;left:0;width:16px;height:16px;cursor:nesw-resize}
+.agentedge[data-edge="nw"]{top:0;left:0;width:16px;height:16px;cursor:nwse-resize}
+.agentedge[data-edge="se"]{bottom:0;right:0;width:16px;height:16px;cursor:nwse-resize}
+/* No text selection and no terminal picking up the pointer while a drag runs. */
+body.agent-dragging{user-select:none}
+body.agent-dragging .termhost{pointer-events:none}
 /* Folded: the header alone, a bar that keeps saying what the session is doing.
    The host goes to no size, which `resize` in term.js waits out rather than
    handing the pty a terminal of nothing. */
-body.fvagent-folded .termwrap{height:40px;min-height:0;border-radius:10px;animation:none}
-body.fvagent-folded .agenthead{cursor:pointer;border-bottom:0}
-body.fvagent-folded .agentgrip,body.fvagent-folded .termhost{display:none}
+body.fvagent.fvagent-folded .termwrap{height:40px;min-height:0;border-radius:10px;animation:none}
+body.fvagent-folded .agenthead{border-bottom:0}
+body.fvagent-folded .agentedge,body.fvagent-folded .termhost{display:none}
 /* What the session is blocked on stays over its card, raised clear of its input
    the way it is over the pane. Fixed, because the card left the column. */
 body.fvagent .oq{

@@ -305,13 +305,16 @@
       <!-- The card's header, drawn only while the pane is lifted over a file
            (`body.fvagent`, see fileview.js). Its name and dot are the context
            bar's, painted beside them in app.js. -->
-      <div class="agenthead" id="agenthead">
-        <div class="agentgrip" id="agentgrip" role="separator" aria-orientation="horizontal"
-             title="Drag to resize · double-click to reset"></div>
+      <div class="agenthead" id="agenthead" title="Drag to move · double-click to put it back">
         <span class="dot sdot" id="agentdot"></span>
         <span class="ctx-name" id="agentname"></span>
-        <button class="head-btn" id="agentfold" type="button">Hide</button>
+        <button class="head-btn" id="agentfold" type="button">Collapse</button>
       </div>
+      <!-- Its edges and corners, each resizing from its own side. -->
+      <div class="agentedge" data-edge="n"></div><div class="agentedge" data-edge="s"></div>
+      <div class="agentedge" data-edge="e"></div><div class="agentedge" data-edge="w"></div>
+      <div class="agentedge" data-edge="ne"></div><div class="agentedge" data-edge="nw"></div>
+      <div class="agentedge" data-edge="se"></div><div class="agentedge" data-edge="sw"></div>
       <!-- An empty pane is the one moment someone is looking for what to do, so it
            names the moves and their chords. MOD is resolved to the platform
            modifier at boot in app.js, the same way the legend is. -->
