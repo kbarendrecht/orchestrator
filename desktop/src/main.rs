@@ -64,6 +64,10 @@ static RT: OnceLock<tokio::runtime::Handle> = OnceLock::new();
 /// `claude` processes share a worktree. `shutdown` is what makes that true.
 static RESTART: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// Set by the first exit request, so the ones that arrive while the children
+/// are stopping do not start a second shutdown.
+static EXITING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// How long a replacement waits for the process it is replacing.
 ///
 /// `shutdown` kills the sessions and waits on them, so this is the tail of that,
@@ -298,15 +302,43 @@ fn main() {
         if let tauri::RunEvent::ExitRequested { api, code, .. } = event {
             // Hold the loop open just long enough to take the children with us.
             api.prevent_exit();
-            shutdown();
-            app_handle.cleanup_before_exit();
-            if RESTART.load(std::sync::atomic::Ordering::SeqCst) {
-                relaunch();
+            // Once: a second request while the children stop is the same exit.
+            if EXITING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                return;
             }
-            // `None` is a user closing the window; `Some` came from an
-            // `exit(n)` of ours, and a failed start that reports success is a
-            // lie to whatever launched us.
-            std::process::exit(code.unwrap_or(0));
+            /* **Gone from the screen first, stopped after, off this thread.**
+            Stopping the children waits for each checkout's daemon to end its
+            sessions and exit, measured at 1.2s for the sessions and 5.8s for the
+            process. Waited for here, on the event loop, the window could neither
+            close nor redraw, and the desktop called it not responding. The order
+            the restart depends on is kept: children gone, then the replacement,
+            then the exit. */
+            for window in app_handle.webview_windows().values() {
+                let _ = window.hide();
+            }
+            let ah = app_handle.clone();
+            std::thread::spawn(move || {
+                shutdown();
+                let main = ah.clone();
+                let ran = ah.run_on_main_thread(move || {
+                    main.cleanup_before_exit();
+                    if RESTART.load(std::sync::atomic::Ordering::SeqCst) {
+                        relaunch();
+                    }
+                    // `None` is a user closing the window; `Some` came from an
+                    // `exit(n)` of ours, and a failed start that reports success
+                    // is a lie to whatever launched us.
+                    std::process::exit(code.unwrap_or(0));
+                });
+                // The loop is held open, so this only happens if it is already
+                // gone; the exit still has to happen.
+                if ran.is_err() {
+                    if RESTART.load(std::sync::atomic::Ordering::SeqCst) {
+                        relaunch();
+                    }
+                    std::process::exit(code.unwrap_or(0));
+                }
+            });
         }
     });
 }
