@@ -4309,6 +4309,69 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// **The router itself, walked: a session route is an ask route exactly when
+    /// its handler checks the ask token.** The lists below are a person's memory
+    /// of the routes; this reads the real ones. An ask route skips the origin and
+    /// the app token, so an app route whose name happened to end in an ask suffix
+    /// would answer anybody; and an ask route left off `ASK_ROUTES` answers
+    /// "bad origin" to the agent it exists for. Both fail here, by name.
+    #[test]
+    fn a_session_route_is_an_ask_route_exactly_when_its_handler_checks_the_token() {
+        const ROUTER: &str = include_str!("../../orchd-serve/src/lib.rs");
+        const HERE: &str = include_str!("api.rs");
+        // The body of `fn name` in this file, up to the next item at column 0.
+        let body = |name: &str| -> Option<&str> {
+            let at = ["pub async fn ", "pub(crate) async fn ", "async fn "]
+                .iter()
+                .find_map(|lead| HERE.find(&format!("\n{lead}{name}(")))?;
+            let rest = &HERE[at + 1..];
+            let end = rest[1..].find("\n}\n").map_or(rest.len(), |e| e + 1 + 3);
+            Some(&rest[..end])
+        };
+        let mut seen = 0;
+        for chunk in ROUTER.split(".route(").skip(1) {
+            let Some(path) = chunk.split('"').nth(1) else {
+                continue;
+            };
+            if !path.starts_with("/api/session/") {
+                continue;
+            }
+            // `:id` and friends, as a request would name them.
+            let concrete: String = path
+                .split('/')
+                .map(|seg| if seg.starts_with(':') { "x" } else { seg })
+                .collect::<Vec<_>>()
+                .join("/");
+            let handlers: Vec<&str> = ["post(", "get("]
+                .iter()
+                .flat_map(|m| chunk.match_indices(m).map(|(i, _)| &chunk[i + m.len()..]))
+                .map(|h| {
+                    let end = h
+                        .find(|c: char| !(c.is_alphanumeric() || c == '_' || c == ':'))
+                        .unwrap_or(h.len());
+                    &h[..end]
+                })
+                .collect();
+            for handler in handlers {
+                seen += 1;
+                let checks = handler
+                    .strip_prefix("api::")
+                    .and_then(body)
+                    .is_some_and(|b| b.contains("ask_token_ok("));
+                assert_eq!(
+                    is_ask_route(&concrete),
+                    checks,
+                    "{path} ({handler}): an ask route must check the ask token, and a route \
+                     that checks it must be in ASK_ROUTES"
+                );
+            }
+        }
+        assert!(
+            seen > 20,
+            "the router was not read: only {seen} session handlers"
+        );
+    }
+
     #[test]
     fn every_route_the_vendored_prompts_call_on_the_ask_token_is_exempt() {
         // The literal paths the vendored prompts curl.
