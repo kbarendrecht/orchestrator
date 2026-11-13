@@ -1591,7 +1591,7 @@ fn background_left_in(text: &str) -> bool {
 }
 
 /// What Claude Code said did not come back when this session resumed, since the
-/// agent last spoke: "Artifact comment monitor for <url>", from its own line
+/// agent last spoke: `Artifact comment monitor for <url>`, from its own line
 /// "… didn't resume: it couldn't restart in this session". Each once, in order.
 ///
 /// **The agent's own words, which the `Stop` hook cannot give.** A monitor an
