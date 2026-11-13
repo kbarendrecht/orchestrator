@@ -910,7 +910,11 @@ button.ovc-who:hover{background:var(--hover)}
    the terminal — xterm paints its own solid ground, so a see-through board leaves
    the pane you read opaque. */
 .center{display:flex;flex-direction:column;min-width:0;position:relative}
-.termwrap{flex:1;min-height:0;position:relative;padding:8px 6px 8px 12px;background:var(--ground,var(--bg))}
+/* **The frame around a terminal is the terminal's own ground**, here and in the
+   drawer: a terminal scheme brings its own background (`--term-ground`, set in
+   `theme.js`), and the board's colour around it read as a border inside the
+   pane. With no scheme picked the two are the same colour. */
+.termwrap{flex:1;min-height:0;position:relative;padding:8px 6px 8px 12px;background:var(--term-ground,var(--ground,var(--bg)))}
 /* **The pane carries the terminal's own ground.** The host is inset inside its
    pane, so whatever sits behind it shows as a frame — in the drawer that is the
    panel's own colour around a black terminal, which reads as grey padding. The
@@ -931,7 +935,7 @@ body.fvagent .termwrap{
   width:min(900px, calc(100vw - var(--rail) - var(--files) - 24px));
   bottom:12px;height:var(--agentcard-h, 45vh);min-height:140px;max-height:calc(100vh - 70px);
   padding:0;overflow:hidden;
-  background:var(--raised);border:1px solid var(--line);border-radius:12px;
+  border:1px solid var(--line);border-radius:12px;
   box-shadow:0 24px 60px -12px rgba(0,0,0,.75);
   animation:agentrise .32s cubic-bezier(.2,.8,.2,1) both;
 }
@@ -1231,7 +1235,7 @@ kbd{
    panel's own colour as a frame around the terminal, which is the grey padding a
    shell pane was reported for — the centre pane never had it because `.termwrap`
    has carried this line all along. */
-.drawer-body{flex:1;min-height:0;position:relative;background:var(--ground,var(--bg))}
+.drawer-body{flex:1;min-height:0;position:relative;background:var(--term-ground,var(--ground,var(--bg)))}
 .drawer-body .termhost{inset:6px 10px}
 
 /* ---------- files ---------- */
