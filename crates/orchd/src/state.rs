@@ -1006,6 +1006,11 @@ impl Inner {
     /// Every branch built on `workspace`, through each stack it is the lower
     /// half of and theirs in turn, nearest first: a branch always comes after
     /// the one it is built on.
+    ///
+    /// **Members only, by the rule lowers already follow** ([`Self::counts_as_lower`]:
+    /// somebody works in it, or its branch has an open PR). An idle tree that only
+    /// carries a branch's commits is no stack, and "Rebase the stack" rebased and
+    /// force-pushed such trees, or refused the whole button over a dirty one.
     pub fn uppers_of(&self, workspace: &str) -> Vec<String> {
         let mut found: Vec<String> = Vec::new();
         let mut level = vec![workspace.to_string()];
@@ -1013,7 +1018,11 @@ impl Inner {
             let mut next = Vec::new();
             for ((a, b), st) in &self.stacks {
                 let (lower, upper) = if st.lower_is_a { (a, b) } else { (b, a) };
-                if level.contains(lower) && upper != workspace && !found.contains(upper) {
+                if level.contains(lower)
+                    && upper != workspace
+                    && !found.contains(upper)
+                    && self.counts_as_lower(upper)
+                {
                     found.push(upper.clone());
                     next.push(upper.clone());
                 }
@@ -6177,8 +6186,9 @@ mod tests {
     #[tokio::test]
     async fn a_stack_mark_counts_the_branches_under_it() {
         let app = app().await;
+        let mut ids = Vec::new();
         for ws in ["l1", "l2", "l3", "l4"] {
-            live_worktree(&app, ws, &format!("/tmp/{ws}"), &[]).await;
+            ids.push(live_worktree(&app, ws, &format!("/tmp/{ws}"), &[]).await);
         }
         let mut inner = app.inner.write().await;
         let stack = crate::overlap::Stack {
@@ -6203,6 +6213,20 @@ mod tests {
             inner.stack_level("l1", |_| false),
             0,
             "nobody works on top of it"
+        );
+
+        // A tree nobody works in, with no PR, is no member: "Rebase the stack"
+        // rebased and force-pushed such a tree.
+        assert_eq!(inner.uppers_of("l1"), ["l2", "l3", "l4"]);
+        inner
+            .sessions
+            .get_mut(&ids[3])
+            .unwrap()
+            .set_state(crate::model::State::Archived { resumable: true });
+        assert_eq!(
+            inner.uppers_of("l1"),
+            ["l2", "l3"],
+            "the idle top is left out"
         );
     }
 
