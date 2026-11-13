@@ -1590,6 +1590,54 @@ fn background_left_in(text: &str) -> bool {
     !open.is_empty() || unanswered
 }
 
+/// What Claude Code said did not come back when this session resumed, since the
+/// agent last spoke: "Artifact comment monitor for <url>", from its own line
+/// "… didn't resume: it couldn't restart in this session". Each once, in order.
+///
+/// **The agent's own words, which the `Stop` hook cannot give.** A monitor an
+/// Artifact page arms is not a background task, so it is in no `Stop` payload,
+/// and a restart ends it all the same; Claude Code says so in the transcript as
+/// it starts again. Continue names what is listed here (`api::continue_text`).
+pub fn not_resumed(id: uuid::Uuid, cwd: &Path, recorded: Option<&Path>) -> Vec<String> {
+    let Some(path) = transcript_file(id, cwd, recorded) else {
+        return Vec::new();
+    };
+    let Ok(tail) = read_tail(&path, BACKGROUND_TAIL_BYTES) else {
+        return Vec::new();
+    };
+    not_resumed_in(&String::from_utf8_lossy(&tail))
+}
+
+/// The half of [`not_resumed`] that reads text.
+fn not_resumed_in(text: &str) -> Vec<String> {
+    const MARK: &str = " didn't resume";
+    let mut out: Vec<String> = Vec::new();
+    // Skip the first line: a tail read almost always lands mid-record.
+    for line in text.split('\n').skip(1) {
+        // The agent has spoken since, so what it was told is its to act on.
+        if line.contains("\"type\":\"assistant\"") {
+            out.clear();
+            continue;
+        }
+        if !line.contains("\"subtype\":\"informational\"") {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let Some(said) = v.get("content").and_then(|c| c.as_str()) else {
+            continue;
+        };
+        if let Some(at) = said.find(MARK) {
+            let what = said[..at].trim().to_string();
+            if !what.is_empty() && !out.contains(&what) {
+                out.push(what);
+            }
+        }
+    }
+    out
+}
+
 /// The last `n` bytes of a file, or the whole thing if it is shorter.
 fn read_tail(path: &Path, n: u64) -> std::io::Result<Vec<u8>> {
     use std::io::{Read, Seek, SeekFrom};
@@ -1605,6 +1653,30 @@ fn read_tail(path: &Path, n: u64) -> std::io::Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    /// What Claude Code said did not resume is read off its own lines, once each,
+    /// and only since the agent last spoke.
+    #[test]
+    fn what_did_not_resume_is_read_since_the_agent_last_spoke() {
+        let info = |what: &str| {
+            format!(
+                r#"{{"type":"system","subtype":"informational","content":"{what} didn't resume: it couldn't restart in this session."}}"#
+            )
+        };
+        let text = [
+            "a torn first line".to_string(),
+            info("Old monitor"),
+            r#"{"type":"assistant","message":{}}"#.to_string(),
+            info("Artifact comment monitor for https://claude.ai/artifact/X"),
+            info("Artifact comment monitor for https://claude.ai/artifact/X"),
+            r#"{"type":"user","message":{"content":"continue"}}"#.to_string(),
+        ]
+        .join("\n");
+        assert_eq!(
+            super::not_resumed_in(&text),
+            ["Artifact comment monitor for https://claude.ai/artifact/X"]
+        );
+    }
+
     /// The next start `SIGTERM`s what a record's pid names, so a pid may only
     /// reach that start from a record that was live — and a restore must not carry
     /// one forward, or every later persist writes it back until the number is

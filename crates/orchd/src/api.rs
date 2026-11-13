@@ -1739,7 +1739,20 @@ pub async fn process_from_session(
 /// What Continue types into a session the restart stopped: `continue`, and
 /// what to start again when the restart killed work it had out, so the agent
 /// does not have to work out that its monitor is gone.
-pub(crate) fn continue_text(kinds: &[String]) -> String {
+pub(crate) fn continue_text(kinds: &[String], not_resumed: &[String]) -> String {
+    /* What Claude Code itself said did not come back first, in its own words; a
+    kind the hook gave is left out when one of those already names it, so an
+    Artifact page's monitor is not said twice as "monitor". */
+    let mut all: Vec<String> = not_resumed.to_vec();
+    for k in kinds {
+        if !all
+            .iter()
+            .any(|n| n.to_lowercase().contains(&k.to_lowercase()))
+        {
+            all.push(k.clone());
+        }
+    }
+    let kinds = all.as_slice();
     let named = match kinds {
         [] => return "continue".to_string(),
         [one] => one.clone(),
@@ -1812,9 +1825,8 @@ pub async fn nudge_sessions(
                     crate::model::TurnReason::Ready if s.interrupted => targets.push((
                         s.id,
                         pty,
-                        asked
-                            .clone()
-                            .unwrap_or_else(|| continue_text(&s.left_kinds)),
+                        s.left_kinds.clone(),
+                        (s.cwd.clone(), s.transcript_path.clone()),
                     )),
                     // Both take a keystroke as an answer: a permission prompt as
                     // consent, a question as whichever choice is highlighted.
@@ -1831,9 +1843,24 @@ pub async fn nudge_sessions(
         (targets, held)
     };
 
-    let nudged: Vec<String> = targets.iter().map(|(id, _, _)| id.to_string()).collect();
-    for (n, (_, pty, text)) in targets.into_iter().enumerate() {
+    let nudged: Vec<String> = targets.iter().map(|(id, ..)| id.to_string()).collect();
+    for (n, (id, pty, kinds, (cwd, recorded))) in targets.into_iter().enumerate() {
+        let asked = asked.clone();
         tokio::spawn(async move {
+            // The transcript is read here, off the lock and off the runtime: what
+            // Claude Code said did not resume is only in there.
+            let text = match asked {
+                Some(text) => text,
+                None => {
+                    let gone =
+                        crate::proc::run_blocking("reading what did not resume", move || {
+                            crate::store::not_resumed(id, &cwd, recorded.as_deref())
+                        })
+                        .await
+                        .unwrap_or_default();
+                    continue_text(&kinds, &gone)
+                }
+            };
             // Staggered, the way auto-resume staggers its spawns: four agents all
             // being typed into on the same tick is four prompt boxes competing for
             // the same instant, and one of them swallowed the return.
@@ -3526,13 +3553,21 @@ mod tests {
     #[test]
     fn continue_names_the_work_the_restart_stopped() {
         let k = |xs: &[&str]| xs.iter().map(|x| (*x).to_string()).collect::<Vec<_>>();
-        assert_eq!(super::continue_text(&[]), "continue");
+        assert_eq!(super::continue_text(&[], &[]), "continue");
         assert_eq!(
-            super::continue_text(&k(&["monitor"])),
+            super::continue_text(&k(&["monitor"]), &[]),
             "continue: the restart stopped your monitor, so start it again"
         );
+        // What Claude Code said did not resume, in its own words, and not twice.
         assert_eq!(
-            super::continue_text(&k(&["monitor", "background agent", "scheduled wake-up"])),
+            super::continue_text(&k(&["monitor"]), &k(&["Artifact comment monitor for X"])),
+            "continue: the restart stopped your Artifact comment monitor for X, so start it again"
+        );
+        assert_eq!(
+            super::continue_text(
+                &k(&["monitor", "background agent", "scheduled wake-up"]),
+                &[]
+            ),
             "continue: the restart stopped your monitor, background agent and scheduled \
              wake-up, so start them again"
         );
