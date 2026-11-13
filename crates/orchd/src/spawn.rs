@@ -406,8 +406,11 @@ struct Carried {
     /// interrupted is the one thing it cannot re-derive. A fork starts a fresh
     /// direction, so it is never interrupted.
     interrupted: bool,
-    /// What the restart stopped, so Continue can name it (`Session::left_kinds`).
-    /// Resume only, with `interrupted`.
+    /// Whether the last turn left work out, and what it was, so Continue can name
+    /// it (`Session::left_work`, `Session::left_kinds`). Resume only, with
+    /// `interrupted`, and the two together: carrying the kinds alone sent the next
+    /// boot back to the transcript guess the hook's answer replaces.
+    left_work: Option<bool>,
     left_kinds: Vec<String>,
     /// Where the respawn stood (`Session::comes_back_as`), stamped by
     /// `relocate_session` before its kill. Resume only. Nothing else stamps it, so a
@@ -510,6 +513,7 @@ impl Carried {
         };
         Carried {
             interrupted: !fork && prev.interrupted,
+            left_work: if fork { None } else { prev.left_work },
             left_kinds: if fork {
                 Vec::new()
             } else {
@@ -573,6 +577,7 @@ impl Carried {
     /// the struct so it cannot be the field somebody forgets.
     fn apply(self, session: &mut Session) -> Option<String> {
         session.interrupted = self.interrupted;
+        session.left_work = self.left_work;
         session.left_kinds = self.left_kinds;
         session.comes_back_as = self.turn;
         session.had_a_turn = self.had_a_turn;
@@ -2990,6 +2995,7 @@ mod tests {
         let began = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
         let mut prev = Session::new(Uuid::new_v4(), "wt".into(), PathBuf::from("/tmp"), None);
         prev.interrupted = true;
+        prev.left_work = Some(true);
         prev.left_kinds = vec!["monitor".into()];
         prev.had_a_turn = true;
         let rested = State::YourTurn {
@@ -3015,7 +3021,8 @@ mod tests {
 
         assert_eq!(branch.as_deref(), Some("feature/x"), "the branch");
         assert!(next.interrupted, "the interrupted turn");
-        assert_eq!(next.left_kinds, ["monitor"], "what the restart stopped");
+        assert_eq!(next.left_work, Some(true), "that work was left out");
+        assert_eq!(next.left_kinds, ["monitor"], "and what it was");
         assert_eq!(next.comes_back_as, Some(rested), "where the turn stood");
         assert!(next.had_a_turn, "that it is a conversation at all");
         assert_eq!(

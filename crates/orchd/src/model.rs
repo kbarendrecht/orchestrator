@@ -685,8 +685,10 @@ pub struct Session {
     /// **Kept on the session, because the forge forgets it.** The poller only
     /// answers for open PRs, and the daemon remembers ten ended ones in memory —
     /// so an archive row weeks old had no way to say which PR it was. Written by
-    /// [`crate::state::Inner::note_session_prs`] and never cleared: a PR that
-    /// merged is still the PR this conversation was about.
+    /// [`crate::state::Inner::note_session_prs`], and not cleared when a PR ends:
+    /// a PR that merged is still the PR this conversation was about. A hand edit
+    /// changes it (`Inner::edit_session_prs`): unlinking this one moves it to the
+    /// newest still linked, or clears it when none is.
     pub pr: Option<u64>,
     /// Every branch this session's tree held while the session was live, oldest
     /// first, beside [`Self::branch`] which follows the tree and so is only ever the
