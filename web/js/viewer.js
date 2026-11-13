@@ -43,6 +43,8 @@ const STICKY = 3;
 const TAB = 8;
 
 /**
+ * `line` 0 is no active line: a file opened without one marks none.
+ *
  * @typedef {{ line: number, last?: number, col: number, len: number }} Spot
  * @typedef {{ path: string, lines: string[], lang: string | null, plain: boolean }} Loaded
  */
@@ -712,6 +714,23 @@ export function create(on) {
     if (num?.dataset.n) toggle(Number(num.dataset.n));
   });
 
+  /* **A click on a line makes it the active one**, the line a question or a copy
+     is about. Not on a drag that selected text, which is a selection and not a
+     pick, and not on what has a click of its own: a fold marker, a blame label, a
+     scope stuck to the top. */
+  on.mount.addEventListener('click', (ev) => {
+    if (view.mode !== 'source' || !view.file || held()) return;
+    const at = /** @type {HTMLElement} */ (ev.target);
+    if (at.closest?.('.stuck, b.blame, .fnrow.fh > i')) return;
+    if (!(window.getSelection()?.isCollapsed ?? true)) return;
+    const n = Number(at.closest?.('.fnrow')?.querySelector('i')?.dataset.n ?? 0);
+    if (!n) return;
+    view.spot = { line: n, last: 0, col: 0, len: 0 };
+    for (const row of on.mount.querySelectorAll('.fnrow.on')) row.classList.remove('on');
+    at.closest('.fnrow')?.classList.add('on');
+    sayWhere(view.spot);
+  });
+
   /* The breadcrumbs open the outline, each symbol a jump, indented by depth. */
   on.crumbs?.addEventListener('click', (ev) => {
     if (!shape.symbols.length) return;
@@ -719,6 +738,16 @@ export function create(on) {
       `${'  '.repeat(s.depth)}${s.name}  ${s.kind}`, null, () => paint({ line: s.line, col: 0, len: 0 }),
     ]));
   });
+
+  /** The header's "where": the active line of how many, or only how many when
+   *  no line is active — a file opened without one marks none (`Spot.line` 0). */
+  function sayWhere(/** @type {Spot} */ spot) {
+    const file = view.file;
+    if (!on.where || !file) return;
+    const total = file.lines.length;
+    on.where.textContent = (spot.line ? `${spot.line} of ${total}` : `${total} lines`)
+      + (file.plain ? ' · too large to colour' : file.lang ? ` · ${file.lang}` : '');
+  }
 
   /** Draw the loaded file around `spot`, and say where that is.
    *
@@ -730,10 +759,7 @@ export function create(on) {
     view.spot = spot;
     const total = file.lines.length;
     if (on.path) on.path.textContent = file.path;
-    if (on.where) {
-      on.where.textContent = `${spot.line} of ${total}`
-        + (file.plain ? ' · too large to colour' : file.lang ? ` · ${file.lang}` : '');
-    }
+    sayWhere(spot);
     /* **Clamped from above as well as below.** A line past the end of the file
        put `from` past the end too, so the band was empty and the pane went blank
        under a header that still said "N of 743". The numbers are real: a file
@@ -859,6 +885,8 @@ export function create(on) {
     renderable: () => kind() != null,
     /** The lines the selection covers, for asking about them by key. */
     selectedLines: () => (view.mode === 'source' ? selectedLines() : null),
+    /** The active line, the one clicked or opened at, or 0 for none. */
+    activeLine: () => (view.mode === 'source' ? view.spot?.line ?? 0 : 0),
 
     /** `'markdown'`, `'html'` or `null`, for the button that says which. */
     kind,
@@ -876,7 +904,7 @@ export function create(on) {
       view.ws = null;
       view.readOnly = false;
       load(label, content);
-      paint({ line: 1, last: 0, col: 0, len: 0 });
+      paint({ line: 0, last: 0, col: 0, len: 0 });
       void askStructure();
     },
 

@@ -253,11 +253,12 @@ function placeAgent() {
   }
 }
 
-/** MOD L: ask about the selected lines. */
+/** MOD L: ask about the selected lines, or the active one. */
 export function askSelection() {
   if (!state.open) return;
-  const lines = viewer().selectedLines();
-  if (!lines) return toast('select the lines to ask about first', true);
+  const active = viewer().activeLine();
+  const lines = viewer().selectedLines() ?? (active ? [active, active] : null);
+  if (!lines) return toast('click or select the lines to ask about first', true);
   askAbout(lines[0], lines[1]);
 }
 
@@ -460,8 +461,10 @@ async function show(ws, path, line, last, pinned = false, onTrail = false) {
   state.last = Math.max(0, last ?? 0);
   borrowFocus('fileview');
   $('fvoverlay').classList.add('on');
+  // Opened without a line, none is active: line 1 used to be, which marked a
+  // line nobody had asked about.
   const drawn = await viewer().show(ws, path, {
-    line: state.line, last: state.last, col: 0, len: 0,
+    line: line > 0 ? state.line : 0, last: state.last, col: 0, len: 0,
   });
   /* **A line number is a reason to show the source.** `notes.md:42` means that
      line, and a rendered page cannot point at it — so the mode gives way to the
@@ -993,6 +996,10 @@ export function init() {
   $('fvsave').onclick = () => Editor.save();
   $('fvclose').onclick = () => void close();
   $('fvagent').onclick = () => toggleAgent();
+  $('agentclose').onclick = (ev) => {
+    ev.stopPropagation();
+    toggleAgent();
+  };
   $('agentfold').onclick = (ev) => {
     ev.stopPropagation();
     foldAgent(!agent.folded);

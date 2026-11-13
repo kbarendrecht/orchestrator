@@ -3493,12 +3493,47 @@ try {
     check(Math.abs(home.y + home.h - before.y - before.h) <= 2,
       `a double-click on the header puts it back, got ${JSON.stringify({ before, home })}`)
   }
+  // The × closes it, like the Agent button and the key.
+  await page.click('#agentclose')
+  check(
+    await page.evaluate(() => !document.body.classList.contains('fvagent')
+      && document.getElementById('fvagent')?.getAttribute('aria-pressed') === 'false'),
+    'the card\'s × closes it',
+  )
+  await page.keyboard.press(chord('Semicolon'))
   await page.click('#fvclose')
   check(
     await page.evaluate(() => !document.body.classList.contains('fvagent')
       && !document.querySelector('#fvoverlay.on')),
     'closing the file closes the card',
   )
+
+  /* --- a file opened without a line marks none, and a click marks one -------- */
+
+  /* Line 1 used to be marked on every file opened without a line, which reads
+     as "this is the line" about a line nobody asked about. */
+  await t.api('POST', '/api/host/open', {
+    url: `orchestrator://open?file=${encodeURIComponent(path.join(t.worktreePath('page'), 'other.md'))}`,
+  })
+  await page.waitForFunction(() => document.getElementById('fvpath')?.textContent === 'other.md',
+    null, { timeout: 5000 })
+  // Markdown opens rendered without a line; the lines are the source.
+  if (await page.$('#fvsrc .md')) await page.click('#fvmode')
+  const plainRow = await page.waitForFunction(() => {
+    const r = [...document.querySelectorAll('#fvsrc .fnrow')]
+      .find((x) => x.textContent === 'two')?.getBoundingClientRect()
+    return r && r.width > 0 ? { x: r.left + 80, y: r.top + r.height / 2 } : null
+  }, null, { timeout: 5000 }).then((h) => h.jsonValue()).catch(() => null)
+  check(await page.$$eval('#fvsrc .fnrow.on', (rs) => rs.length) === 0,
+    'a file opened without a line has no active line')
+  if (plainRow) await page.mouse.click(plainRow.x, plainRow.y)
+  const activeNow = await page.evaluate(() => ({
+    rows: [...document.querySelectorAll('#fvsrc .fnrow.on')].map((r) => r.textContent),
+    where: document.getElementById('fvwhere')?.textContent ?? '',
+  }))
+  check(JSON.stringify(activeNow.rows) === '["two"]' && activeNow.where.startsWith('2 of'),
+    `a click on a line makes it the active one, got ${JSON.stringify(activeNow)}`)
+  await page.click('#fvclose')
 
   /* --- a worktree being cut sits where it will land ------------------------- */
 

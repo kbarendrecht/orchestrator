@@ -243,7 +243,7 @@ async function search() {
       const dir = state.leftOut.find((d) => q.trim().startsWith(`${d}/`));
       const inside = dir ? await loadUnder(dir) : [];
       if (mine !== state.seq) return;
-      state.hits = rank([...(state.paths ?? []), ...inside], q).map((path) => ({ path, line: 1, col: 0, len: 0 }));
+      state.hits = rank([...(state.paths ?? []), ...inside], q).map((path) => ({ path, line: 0, col: 0, len: 0 }));
       /* **The daemon's own flag, not `false`.** `MAX_PATHS` is 50,000 and this
          repo lists 20,462 of them, so the cap is reachable — and past it the
          footer said nothing while the list was quietly short. Worse, a path click
@@ -399,7 +399,8 @@ function renderHits() {
 }
 
 /** The one hit a browse has: the file picked in the tree, if any. */
-const pickedHits = () => (state.picked ? [{ path: state.picked, line: 1, col: 0, len: 0 }] : []);
+// Line 0: a file picked by name has no line asked about, so none is active.
+const pickedHits = () => (state.picked ? [{ path: state.picked, line: 0, col: 0, len: 0 }] : []);
 
 /** A name search with nothing typed yet, which browses rather than ranks. */
 const browsing = () => state.mode === 'names' && !/** @type {HTMLInputElement} */ ($('fnq')).value.trim();
