@@ -119,6 +119,19 @@ export async function run(t) {
   assert.equal(s.workspace, `pr-${PR}`)
   assert.deepEqual(s.pass, { pr: PR, command: 'fix-pr' })
 
+  /* **A fix run is handed an ask token like every session.** It went without, as
+     the narrower surface, and that left it no way to reach `orch` at all: told
+     something by a manager, it could not answer. Asserted by using it, on a route
+     only the token opens, the way `orch` would. */
+  const token = t.askToken(session)
+  assert.ok(token, 'the fix run was started without ORCH_ASK_TOKEN')
+  const own = await fetch(`http://127.0.0.1:${t.port}/api/session/${session}/link-prs`, {
+    method: 'POST',
+    headers: { 'x-orch-ask': token, 'content-type': 'application/json' },
+    body: '{}',
+  })
+  assert.equal(own.status, 200, `its token opens its own orch routes, got ${own.status}`)
+
   // Recorded, and recorded against this session. The write is what survives a
   // restart, and it is the whole of the one-run-per-PR cap.
   const auto = (await t.state()).automation[String(PR)]

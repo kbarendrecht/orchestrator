@@ -40,10 +40,9 @@ pub const ORCH: &str = include_str!("../../../skills/orch/SKILL.md");
 ///
 /// Converted from `commands/fix-pr.md`, and the six values that prompt substituted
 /// reach it through the *environment* rather than a context call. That is not
-/// symmetry with `triage` for its own sake — a fix run force-pushes unattended and
-/// was deliberately given no ask token (`942d01b`), so a route would have meant
-/// handing it a credential to read values the daemon can just as easily put in the
-/// environment it is already building for that run.
+/// symmetry with `triage` for its own sake: the daemon is already building that
+/// run's environment, so a context route would be a second way to read values it
+/// holds at that moment.
 pub const FIX_PR: &str = include_str!("../../../skills/fix-pr/SKILL.md");
 
 /// Working a PR's review threads in a pane, with a person watching.

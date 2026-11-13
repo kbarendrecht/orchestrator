@@ -1321,9 +1321,6 @@ pub struct RunSpec {
     pub args: String,
     /// The agent it runs on.
     pub agent: crate::agent::Agent,
-    /// Whether the run takes decisions over the ask channel, and so is handed
-    /// `ORCH_ASK_TOKEN`. A run with nothing to ask is given the narrower surface.
-    pub asks: bool,
     /// Variables the run needs beyond the checkout's own and the daemon's.
     pub extra_env: Vec<(String, String)>,
 }
@@ -1484,7 +1481,12 @@ pub(crate) async fn spawn_run(
     // Minted with the session so the same value goes into the environment and onto
     // the record: the agent reads `ORCH_ASK_TOKEN`, and `/ask`/`/wait` check it
     // against `session.ask_token`.
-    let ask = spec.asks.then(|| session.ask_token.clone());
+    //
+    // **Every run gets one**, the way every other session does. A fix run went
+    // without, as the narrower surface, and that cut it off from `orch` entirely:
+    // a manager could `orch tell` it, and it had no way to answer, ask or reach
+    // anything back.
+    let tok = session.ask_token.clone();
     // A narrow credential, no broad one: an ask is authenticated against this
     // session and opens nothing else, which is what keeps "the daemon owns
     // outward writes" an API rule rather than a sentence in a prompt this run's own
@@ -1493,7 +1495,7 @@ pub(crate) async fn spawn_run(
     let (env, unset) = {
         let (app, at, extra) = (app.clone(), path.clone(), spec.extra_env.clone());
         crate::proc::run_blocking("reading the session environment", move || {
-            run_env(&app.cfg, &at, id, ask.as_deref(), &extra)
+            run_env(&app.cfg, &at, id, Some(&tok), &extra)
         })
         .await?
     };
@@ -1538,11 +1540,12 @@ pub async fn spawn_fix_pr_session(
     /* **The instructions are a skill, and what the prompt substituted the
     environment carries.** `/orchd:fix-pr` is one typed line, so the six values
     `commands/fix-pr.md` had rendered into it need another way in — and for this
-    run that way is not a context route. A fix run force-pushes unattended and
-    is deliberately given no ask token, so a route would have meant handing it a
-    credential to read four values the daemon is already building an environment
-    for. `triage` went the other way for the opposite reason: it has a post token
-    already and its context is a fetch the daemon would otherwise repeat.
+    run that way is not a context route. The daemon is already building this
+    run's environment, so a route would be a second way to read four values it
+    holds at that moment. (A fix run went without an ask token at the time this
+    was decided; it has one now, like every session, and the reason stands
+    without it.) `triage` went the other way: its context is a fetch the daemon
+    would otherwise repeat.
 
     Being a skill is also what makes it work when *you* type `/orchd:fix-pr 42`
     in a checkout the daemon never started: the file names a fallback for each
@@ -1604,9 +1607,6 @@ pub async fn spawn_fix_pr_session(
         skill: Pass::FIX_PR.to_string(),
         args: pr.to_string(),
         agent: app.agent_for(None).await?,
-        // No ask token: a fix run has nothing to ask, which is the narrower surface
-        // 942d01b chose on purpose.
-        asks: false,
         extra_env,
     };
     spawn_run(app, &workspace, pr, id, spec).await
@@ -2943,7 +2943,6 @@ mod tests {
             skill: "fix-pr".to_string(),
             args: "7".to_string(),
             agent: crate::agent::Agent::Claude,
-            asks: true,
             extra_env: Vec::new(),
         };
         let id = Uuid::new_v4();

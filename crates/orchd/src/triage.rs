@@ -394,7 +394,6 @@ async fn start_with_prompt(
         skill: command.to_string(),
         args: pr.to_string(),
         agent: app.agent_for(None).await?,
-        asks: true,
         extra_env: vec![
             (crate::skills::VAR_PR.to_string(), pr.to_string()),
             // Asked by `may_push` before anything was spawned, so it is the answer
