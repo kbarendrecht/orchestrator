@@ -274,7 +274,7 @@ pub(crate) async fn hand_to_live_session(
     session still being spawned has no pty to type into, so one that has a process
     is preferred over it. */
     let live = app.live_sessions_in(&ws).await;
-    let named = app.inner.read().await.session_on(head_ref);
+    let named = app.inner.read().await.session_on(head_ref, pr);
     let with_process = {
         let inner = app.inner.read().await;
         live.iter()

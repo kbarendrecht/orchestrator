@@ -1216,11 +1216,24 @@ impl Inner {
     /// who is in the tree: that is what a swap already carries sessions by, and the
     /// PR row's button promises "the session on this branch". The newest wins when
     /// several share one, which is main with sharing on.
-    pub fn session_on(&self, head_ref: &str) -> Option<SessionId> {
-        self.sessions
-            .values()
-            .filter(|s| s.state.is_live() && s.branch.as_deref() == Some(head_ref))
+    ///
+    /// **And the session's own PR list, where a person edited it.** A session
+    /// that unlinked PR `number` is never the answer, even on its branch; and with
+    /// nobody on the branch, a session that lists the PR (one linked by hand) is.
+    /// The branch stays first: a session also lists the PRs of branches it has
+    /// since left, and the one working on the branch now is who the row means.
+    /// The row and the session used to disagree exactly where somebody had
+    /// corrected one of them.
+    pub fn session_on(&self, head_ref: &str, number: u64) -> Option<SessionId> {
+        let live = || self.sessions.values().filter(|s| s.state.is_live());
+        live()
+            .filter(|s| s.branch.as_deref() == Some(head_ref) && !s.prs_unlinked.contains(&number))
             .max_by_key(|s| (s.created_at, s.id))
+            .or_else(|| {
+                live()
+                    .filter(|s| s.prs.iter().any(|p| p.number == number))
+                    .max_by_key(|s| (s.created_at, s.id))
+            })
             .map(|s| s.id)
     }
 
@@ -2262,7 +2275,7 @@ impl AppState {
                         press: inner.press_for(p, None),
                     };
                 }
-                let session = inner.session_on(&p.head_ref);
+                let session = inner.session_on(&p.head_ref, p.number);
                 let workspace = inner.workspace_on(&p.head_ref, |_| true).or_else(|| {
                     session
                         .and_then(|id| inner.sessions.get(&id))
@@ -6383,6 +6396,11 @@ mod tests {
         inner.note_session_prs();
         assert!(numbers(&inner).is_empty(), "a cleared PR stays off");
         assert_eq!(inner.sessions[&id].pr, None);
+        assert_eq!(
+            inner.session_on("story-1", 11),
+            None,
+            "and the PR row no longer names the session, branch or not"
+        );
 
         // Add one on another branch: kept, and named from the poll.
         let after = inner
@@ -6391,6 +6409,11 @@ mod tests {
         assert_eq!(after[0].title, "theirs");
         inner.note_session_prs();
         assert_eq!(numbers(&inner), [20], "an added PR survives the poll");
+        assert_eq!(
+            inner.session_on("someone-else", 20),
+            Some(id),
+            "and its row names the session that linked it"
+        );
 
         // Adding the removed one back links it again.
         inner
