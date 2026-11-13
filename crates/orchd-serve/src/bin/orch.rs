@@ -36,8 +36,8 @@ orch — talk to the orchestrator you are running inside
       Name one of your own spawns, so the human can find it in the app.
 
   orch teardown <workspace>
-      Remove a worktree nobody is working in, through the same checks as the
-      app's button. Refuses one holding a live session or unpushed work.
+      Remove a worktree one of your spawns used, through the same checks as
+      the app's button. Refuses one holding a live session or unpushed work.
 
   orch pr [<id>] [--add <number>] [--remove <number>] [--clear]
       The pull requests linked to this session or one it spawned, and a way
@@ -167,7 +167,9 @@ lists. Any other session is refused: the human edits those in the app.
 const HELP_TEARDOWN: &str = "\
 orch teardown <workspace>
 
-Remove a worktree, the way the app's own button does. The transcripts of the
+Remove a worktree a session you spawned works or worked in, the way the app's
+own button does. Any other worktree is refused: the person removes those in the
+app. The transcripts of the
 sessions that ran there are archived first, and each of them stays in the rail as
 a resumable conversation — a resume rebuilds the tree at the same path.
 

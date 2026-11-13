@@ -19,7 +19,7 @@ Then none of this applies, and you must not simulate it.
 | `orch new` | Start another session, in a worktree of its own or a free one you name |
 | `orch kill` | Undo one of your own spawns |
 | `orch rename` | Name one of your own spawns, once you know what its work is |
-| `orch teardown` | Remove a worktree nobody is working in, when the human asks for a cleanup |
+| `orch teardown` | Remove a worktree one of your spawns used, once it is done |
 | `orch ls` | The sessions, their state, their branch and their path |
 | `orch pr` | The pull requests linked to this session or one it spawned, and adding or taking one off |
 | `orch run` | Start one of the processes this workspace declares |

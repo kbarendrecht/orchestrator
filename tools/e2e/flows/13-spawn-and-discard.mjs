@@ -120,4 +120,15 @@ export async function run(t) {
     /is not a session you spawned/,
   )
   assert.equal((await t.session(parent)).alive, true, 'it killed the caller')
+
+  // 6. And `orch teardown` by the same rule: a worktree no session it spawned
+  //    uses is the person's to remove, however clean it is.
+  const { session: stranger } = await t.api('POST', '/api/worktree', { name: 'stranger' })
+  await t.settled(stranger)
+  await t.api('POST', `/api/session/${stranger}/kill`)
+  await assert.rejects(
+    () => t.api('POST', `/api/session/${parent}/teardown`, { workspace: 'stranger' }),
+    /is not a worktree a session you spawned works in/,
+  )
+  assert.ok(await t.workspace('stranger'), 'the refused teardown removed it anyway')
 }

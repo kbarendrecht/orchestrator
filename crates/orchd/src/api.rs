@@ -2458,10 +2458,12 @@ pub struct TeardownBody {
 /// `orch teardown <workspace>`: the same teardown as the rail's button, reached
 /// on the ask token.
 ///
-/// Wider than `discard_spawned`, on purpose, and no wider than the button: any
-/// worktree, but through the same preflight, so a live session, a dirty tree or
-/// an unpushed commit refuses here exactly as it refuses a right-click, and main
-/// is never a worktree. Closed to agents until #10, which left bulk cleanup to
+/// **Only a worktree a session you spawned works or worked in**, the rule `orch
+/// kill`, `rename` and `pr` hold: an ask token reaches what it brought into being.
+/// It reached any worktree the button could, so an agent tidying up could take a
+/// person's parked tree away. Then the button's own preflight, so a live session,
+/// a dirty tree or an unpushed commit refuses here exactly as it refuses a
+/// right-click, and main is never a worktree. Closed to agents until #10, which left bulk cleanup to
 /// `git worktree remove` by hand, and that skips the transcript archive and the
 /// recovery record the preflight exists to write.
 ///
@@ -2475,6 +2477,19 @@ pub async fn teardown_from_session(
     Json(body): Json<TeardownBody>,
 ) -> ApiResult<worktree::Preflight> {
     ask_token_ok(&app, id, &headers).await?;
+    let spawned_there = app
+        .inner
+        .read()
+        .await
+        .sessions
+        .values()
+        .any(|s| s.spawned_by == Some(id) && s.workspace == body.workspace);
+    if !spawned_there {
+        refuse!(
+            "{} is not a worktree a session you spawned works in; ask the person to remove it in the app",
+            body.workspace
+        );
+    }
     Ok(Json(worktree::teardown(&app, &body.workspace).await?))
 }
 
