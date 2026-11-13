@@ -258,6 +258,11 @@
         <!-- Only on a file this can render, and it names what you would get
              rather than what you are looking at. -->
         <button class="head-btn" id="fvmode" hidden>Source</button>
+        <!-- The session's own pane, over the file as a card (#52). A toggle, so
+             aria-pressed says whether the agent is on screen; hidden when there
+             is no session to ask. -->
+        <button class="head-btn" id="fvagent" aria-pressed="false" hidden
+                title="Show the session's terminal over the file"><span data-mod>Agent <kbd>MOD Shift J</kbd></span></button>
         <button class="head-btn" id="fvedit">Edit</button>
         <button class="head-btn" id="fvsave" hidden><span data-mod>Save <kbd>MOD S</kbd></span></button>
         <button class="head-btn" id="fvclose">Close <kbd>Esc</kbd></button>
@@ -297,6 +302,16 @@
     <div class="oq" id="oq" hidden></div>
 
     <div class="termwrap" id="termwrap">
+      <!-- The card's header, drawn only while the pane is lifted over a file
+           (`body.fvagent`, see fileview.js). Its name and dot are the context
+           bar's, painted beside them in app.js. -->
+      <div class="agenthead" id="agenthead">
+        <div class="agentgrip" id="agentgrip" role="separator" aria-orientation="horizontal"
+             title="Drag to resize · double-click to reset"></div>
+        <span class="dot sdot" id="agentdot"></span>
+        <span class="ctx-name" id="agentname"></span>
+        <button class="head-btn" id="agentfold" type="button">Hide</button>
+      </div>
       <!-- An empty pane is the one moment someone is looking for what to do, so it
            names the moves and their chords. MOD is resolved to the platform
            modifier at boot in app.js, the same way the legend is. -->
@@ -1071,6 +1086,8 @@
       <div class="settings-group">Overlays</div>
       <dt data-mod>MOD&nbsp;Shift&nbsp;F</dt><dd>find in this workspace's files</dd>
       <dt data-mod>MOD&nbsp;F</dt><dd>find in the file on screen, and replace while editing</dd>
+      <dt data-mod>MOD&nbsp;Shift&nbsp;J</dt><dd>show or hide the session's terminal over the open file</dd>
+      <dt data-mod>MOD&nbsp;L</dt><dd>ask the session about the lines selected in the open file</dd>
       <dt>Shift&nbsp;Shift</dt><dd>find a file by name</dd>
       <dt>Enter</dt><dd>open the found file on its own, with the markdown view</dd>
       <dt data-mod>MOD&nbsp;Shift&nbsp;D</dt><dd>toggle the diff</dd>

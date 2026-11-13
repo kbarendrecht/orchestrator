@@ -56,9 +56,121 @@ const viewer = () => {
   view ??= Viewer.create({
     mount: $('fvsrc'), path: $('fvpath'), where: $('fvwhere'), crumbs: $('fvcrumbs'),
     onFile: (rel, line) => void follow(rel, line),
+    ask: { who: () => asker?.who() ?? null, at: (from, to) => askAbout(from, to) },
   });
   return view;
 };
+
+/* ---------- the agent over the file (#52) ----------
+
+   **The session's own terminal, lifted over the file as a card**, so a question
+   about what you are reading is asked and answered with the file still on
+   screen. Not a copy and not a second view: `#termwrap` is the pane the session
+   already runs in, and `body.fvagent` repositions it (app.css says how). The file
+   stays mounted underneath and keeps its scroll.
+
+   Three states, and the header button answers only one question, whether the
+   agent is on screen: `open` is the card, `folded` is the card down to its
+   header, a bar that still shows the session's state. Closing the file closes
+   the card, so the terminal is never left floating over nothing. */
+const agent = { open: false, folded: false };
+
+/** What the page knows that this module does not: which session the card is,
+ *  by name or null when there is none, how to type into it and how to give it
+ *  the keyboard. Set from `app.js`, for the reason `Term.onPathClick` is.
+ *  @type {{ who: () => string | null, ask: (text: string) => boolean, focus: () => void } | null} */
+let asker = null;
+export function onAsk(/** @type {NonNullable<typeof asker>} */ fn) {
+  asker = fn;
+}
+
+function paintAgent() {
+  document.body.classList.toggle('fvagent', agent.open);
+  document.body.classList.toggle('fvagent-folded', agent.open && agent.folded);
+  const button = $('fvagent');
+  button.setAttribute('aria-pressed', String(agent.open));
+  $('agentfold').textContent = agent.folded ? 'Show' : 'Hide';
+}
+
+/** The header button and MOD Shift J: the agent on screen, or not. */
+export function toggleAgent() {
+  if (!state.open) return;
+  if (!agent.open && !asker?.who()) return toast('no session here to ask', true);
+  agent.open = !agent.open;
+  agent.folded = false;
+  paintAgent();
+  if (agent.open) asker?.focus();
+}
+
+/** Down to a bar and back up again. */
+export function foldAgent(/** @type {boolean} */ folded) {
+  if (!agent.open) return;
+  agent.folded = folded;
+  paintAgent();
+  if (!folded) asker?.focus();
+}
+
+/** Open the card and type `path:from-to ` into the session's input, for the
+ *  question to follow. Typed, never sent: the question is yours to write. */
+function askAbout(/** @type {number} */ from, /** @type {number} */ to) {
+  if (!state.open || !state.path || !asker) return;
+  agent.open = true;
+  agent.folded = false;
+  paintAgent();
+  const range = to > from ? `${from}-${to}` : `${from}`;
+  if (!asker.ask(`${state.path}:${range} `)) toast('that session has no terminal open to type into', true);
+}
+
+/** The card's height, dragged from its top edge and remembered like the
+ *  drawer's. Nothing stored is the stylesheet's default. */
+const AGENT_H = { key: 'orch.agentcard.h', min: 140 };
+
+function setAgentHeight(/** @type {number | null} */ px) {
+  const root = document.documentElement;
+  if (px == null) root.style.removeProperty('--agentcard-h');
+  else root.style.setProperty('--agentcard-h', `${Math.round(px)}px`);
+}
+
+function dragAgent() {
+  try {
+    const kept = Number(localStorage.getItem(AGENT_H.key));
+    if (kept >= AGENT_H.min) setAgentHeight(kept);
+  } catch { /* private mode: the default height */ }
+  const grip = $('agentgrip');
+  grip.addEventListener('mousedown', (ev) => {
+    if (ev.button !== 0 || agent.folded) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    document.body.classList.add('row-resizing');
+    // The card hangs from the bottom, so its height is the distance up to the pointer.
+    const bottom = $('termwrap').getBoundingClientRect().bottom;
+    const most = window.innerHeight - 70;
+    const move = (/** @type {MouseEvent} */ e) => setAgentHeight(Math.max(AGENT_H.min, Math.min(most, bottom - e.clientY)));
+    const done = () => {
+      window.removeEventListener('mousemove', move);
+      document.body.classList.remove('row-resizing');
+      try {
+        localStorage.setItem(AGENT_H.key, String(Math.round($('termwrap').getBoundingClientRect().height)));
+      } catch { /* the drag still worked for this run */ }
+    };
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', done, { once: true });
+  });
+  grip.addEventListener('dblclick', () => {
+    setAgentHeight(null);
+    try {
+      localStorage.removeItem(AGENT_H.key);
+    } catch { /* nothing to forget */ }
+  });
+}
+
+/** MOD L: ask about the selected lines. */
+export function askSelection() {
+  if (!state.open) return;
+  const lines = viewer().selectedLines();
+  if (!lines) return toast('select the lines to ask about first', true);
+  askAbout(lines[0], lines[1]);
+}
 
 /** Open a file a rendered page links to, above the page. */
 async function follow(/** @type {string} */ rel, /** @type {number} */ line) {
@@ -284,6 +396,7 @@ function renderHead(/** @type {boolean} */ drawn) {
   $('fvmode').hidden = !can;
   // A picture has no source to edit, and the editor's refusal would say so late.
   $('fvedit').hidden = (drawn && viewer().isImage()) || state.scratch || viewer().readOnly();
+  $('fvagent').hidden = !asker?.who();
   const html = viewer().kind() === 'html';
   $('fvmode').textContent = state.rendered ? 'Source' : html ? 'Preview' : 'Rendered';
   $('fvmode').title = state.rendered
@@ -301,6 +414,8 @@ export async function close() {
   state.pinned = false;
   state.trail = [];
   state.path = null;
+  agent.open = false;
+  paintAgent();
   $('fvoverlay').classList.remove('on');
   returnFocus('fileview', $('fvoverlay'));
   return true;
@@ -788,6 +903,16 @@ export function init() {
   $('fvedit').onclick = () => (Editor.isOpen() ? Editor.close() : edit());
   $('fvsave').onclick = () => Editor.save();
   $('fvclose').onclick = () => void close();
+  $('fvagent').onclick = () => toggleAgent();
+  $('agentfold').onclick = (ev) => {
+    ev.stopPropagation();
+    foldAgent(!agent.folded);
+  };
+  // Folded, the whole bar opens it again: it is one line, and a 40px target.
+  $('agenthead').addEventListener('click', () => {
+    if (agent.folded) foldAgent(false);
+  });
+  dragAgent();
   $('fvback').onclick = () => void back();
   /* The mouse's back button steps back, like `Escape`: through the files a
      rendered page's links led to, and then out. Button 3 is the back one. */

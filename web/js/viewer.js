@@ -88,8 +88,13 @@ function age(/** @type {number} */ secs) {
  *  `crumbs` is where the scope the pane is scrolled to is named, `Order › total`,
  *  and a click on it lists the file's outline. A pane without one passes nothing.
  *
+ *  `ask` puts "ask <session> about line N" at the top of the line menu (#52):
+ *  `who` names the session, or null when there is none to ask, and `at` is
+ *  handed the lines. A pane without one has no such item.
+ *
  *  @param {{ mount: HTMLElement, path?: HTMLElement | null, where?: HTMLElement | null,
- *            crumbs?: HTMLElement | null, onFile?: (rel: string, line: number) => void }} on
+ *            crumbs?: HTMLElement | null, onFile?: (rel: string, line: number) => void,
+ *            ask?: { who: () => string | null, at: (from: number, to: number) => void } }} on
  */
 export function create(on) {
   /** `mode` is which of the two pictures is mounted. It exists because the band
@@ -463,6 +468,18 @@ export function create(on) {
     };
     /** @type {[string, string | null, (() => void) | null][]} */
     const items = [];
+    /* **The ask first, because it is the one item that is about the code.**
+       Inside a selection it asks about the selected lines, elsewhere about the
+       line clicked: a right-click is a click on one line, and moving the
+       selection to it would throw away the range somebody just dragged. */
+    const who = view.mode === 'source' && n ? on.ask?.who() : null;
+    if (on.ask && who && n) {
+      const [from, to] = selectedLines() ?? [0, 0];
+      const at = Number(n);
+      const [a, b] = from && at >= from && at <= to ? [from, to] : [at, at];
+      const ask = on.ask;
+      items.push([`ask ${who} about ${a === b ? `line ${a}` : `lines ${a}-${b}`}`, null, () => ask.at(a, b)]);
+    }
     const picked = String(window.getSelection() ?? '');
     if (picked) items.push(['copy selection', null, copy(picked)]);
     items.push(['copy path', null, copy(path)]);
@@ -479,6 +496,22 @@ export function create(on) {
     if (sha) items.push([`open ${sha.slice(0, 7)} on ${FORGE_LABEL[snap.forge]}`, null, () => openCommit(sha)]);
     openMenu(ev, items);
   });
+
+  /** The first and last line the page selection covers in this pane, or null
+   *  when nothing in it is selected. */
+  function selectedLines() {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || !sel.anchorNode || !sel.focusNode) return null;
+    const line = (/** @type {Node} */ node) => {
+      const at = node instanceof Element ? node : node.parentElement;
+      const row = at?.closest('.fnrow');
+      return row && on.mount.contains(row) ? Number(row.querySelector('i')?.dataset.n ?? 0) : 0;
+    };
+    const a = line(sel.anchorNode);
+    const b = line(sel.focusNode);
+    if (!a || !b) return null;
+    return /** @type {[number, number]} */ ([Math.min(a, b), Math.max(a, b)]);
+  }
 
   /** Open a blamed commit on the forge. */
   const openCommit = (/** @type {string} */ sha) => {
@@ -824,6 +857,8 @@ export function create(on) {
   return {
     /** Whether the file on screen is one this can render. */
     renderable: () => kind() != null,
+    /** The lines the selection covers, for asking about them by key. */
+    selectedLines: () => (view.mode === 'source' ? selectedLines() : null),
 
     /** `'markdown'`, `'html'` or `null`, for the button that says which. */
     kind,

@@ -918,6 +918,45 @@ button.ovc-who:hover{background:var(--hover)}
    is taken off the elements it owns. */
 .termhost{position:absolute;inset:8px 6px 8px 12px;transition:opacity .35s ease;background:var(--term-ground,var(--bg))}
 .termhost[hidden]{display:none}
+
+/* ---------- the agent over a file (#52) ----------
+   **The same pane, repositioned, not a copy.** `body.fvagent` lifts `#termwrap`
+   out of the column and over the file overlay (z 20) as a card the shape of the
+   ask box: centred in the centre column, off the bottom edge, rounded, nothing
+   darkened behind it. The terminal inside is the session's own xterm, and the
+   `ResizeObserver` on `#termwrap` in app.js refits it to the card and back. */
+.agenthead{display:none}
+body.fvagent .termwrap{
+  position:fixed;z-index:21;left:var(--rail);right:var(--files);margin-inline:auto;
+  width:min(900px, calc(100vw - var(--rail) - var(--files) - 24px));
+  bottom:12px;height:var(--agentcard-h, 45vh);min-height:140px;max-height:calc(100vh - 70px);
+  padding:0;overflow:hidden;
+  background:var(--raised);border:1px solid var(--line);border-radius:12px;
+  box-shadow:0 24px 60px -12px rgba(0,0,0,.75);
+  animation:agentrise .32s cubic-bezier(.2,.8,.2,1) both;
+}
+@keyframes agentrise{from{opacity:0;transform:translateY(10px) scale(.985)}to{opacity:1;transform:none}}
+body.fvagent .agenthead{
+  display:flex;align-items:center;gap:10px;position:absolute;top:0;left:0;right:0;height:40px;
+  padding:0 10px 0 14px;border-bottom:1px solid var(--line);background:var(--raised);
+}
+body.fvagent .agenthead .ctx-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.agentgrip{position:absolute;top:0;left:0;right:0;height:6px;cursor:row-resize}
+body.fvagent .termhost{inset:48px 6px 8px 12px}
+/* Folded: the header alone, a bar that keeps saying what the session is doing.
+   The host goes to no size, which `resize` in term.js waits out rather than
+   handing the pty a terminal of nothing. */
+body.fvagent-folded .termwrap{height:40px;min-height:0;border-radius:10px;animation:none}
+body.fvagent-folded .agenthead{cursor:pointer;border-bottom:0}
+body.fvagent-folded .agentgrip,body.fvagent-folded .termhost{display:none}
+/* What the session is blocked on stays over its card, raised clear of its input
+   the way it is over the pane. Fixed, because the card left the column. */
+body.fvagent .oq{
+  position:fixed;z-index:22;left:calc(var(--rail) + (100vw - var(--rail) - var(--files)) / 2);
+  bottom:calc(12px + var(--oq-clear));
+}
+body.fvagent-folded .oq{bottom:60px}
+#fvagent[aria-pressed="true"]{background:var(--bg);border-color:var(--faint-solid)}
 /* A pane whose pty is not yet carrying live output: starting up before the first
    attach, or a dropped socket reconnecting. xterm keeps blinking its cursor from
    its own buffer, so without this a blank or deaf pane looks alive and — on a

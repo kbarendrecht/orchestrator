@@ -3332,9 +3332,61 @@ try {
   // The labels name what is copied, not its value: the value is in the toast.
   check(offered.includes('copy path:line') && offered.includes('copy path'),
     `a row offers its path and line, got ${JSON.stringify(offered)}`)
-  await page.keyboard.press('Escape')
-  await page.keyboard.press('Escape')
 
+  /* --- the agent over the file (#52) ----------------------------------------- */
+
+  /* **The session's own pane, lifted over the file as a card.** The ask is the
+     menu's first item, it opens the card with the file still up, and the line is
+     typed into the agent's input rather than sent. */
+  check(/^ask .+ about line 2$/.test(offered[0] ?? ''),
+    `the row's menu offers the ask first, got ${JSON.stringify(offered[0])}`)
+  await page.click('#ctxmenu .ctxmenu-item >> nth=0').catch(() => {})
+  const agentCard = await page.waitForFunction(() => {
+    if (!document.body.classList.contains('fvagent')) return null
+    const w = document.getElementById('termwrap')
+    if (!w) return null
+    const r = w.getBoundingClientRect()
+    return {
+      fixed: getComputedStyle(w).position === 'fixed',
+      above: Number(getComputedStyle(w).zIndex) > Number(getComputedStyle(document.getElementById('fvoverlay')).zIndex),
+      onScreen: r.bottom <= window.innerHeight && r.height >= 140,
+      pressed: document.getElementById('fvagent')?.getAttribute('aria-pressed'),
+      fileOpen: !!document.querySelector('#fvoverlay.on'),
+      inTerminal: !!document.activeElement?.closest('#termwrap'),
+    }
+  }, null, { timeout: 5000 }).then((h) => h.jsonValue()).catch(() => null)
+  check(!!agentCard && agentCard.fixed && agentCard.above && agentCard.onScreen && agentCard.fileOpen,
+    `the ask lifts the agent's pane over the open file, got ${JSON.stringify(agentCard)}`)
+  check(!!agentCard && agentCard.pressed === 'true' && agentCard.inTerminal,
+    `with the Agent button pressed and the keyboard in the terminal, got ${JSON.stringify(agentCard)}`)
+  /* The line, typed into the agent's input: the pty echoes it back, so the
+     terminal's own buffer is where it shows up. */
+  const typed = await page.waitForFunction(async () => {
+    const core = await import('/js/core.js')
+    const term = await import('/js/term.js')
+    const s = core.currentSession()
+    const text = s ? term.readTerm(core.activeCheckout(), `session:${s.id}`, 20) : null
+    return text && text.includes('other.md:2') ? text : null
+  }, null, { timeout: 5000 }).then((h) => h.jsonValue()).catch(() => null)
+  check(!!typed, 'the ask types other.md:2 into the agent\'s input')
+  // In the card's terminal, Escape is the agent's interrupt, never a close.
+  await page.keyboard.press('Escape')
+  check(await page.$$eval('#fvoverlay.on', (o) => o.length) === 1,
+    'Escape in the card reaches the agent and leaves the file open')
+  await page.keyboard.press(chord('Shift+KeyJ'))
+  check(
+    await page.evaluate(() => !document.body.classList.contains('fvagent')
+      && document.getElementById('fvagent')?.getAttribute('aria-pressed') === 'false'),
+    'MOD Shift J puts the card away',
+  )
+  // And closing the file takes the card with it, so it never floats over nothing.
+  await page.keyboard.press(chord('Shift+KeyJ'))
+  await page.click('#fvclose')
+  check(
+    await page.evaluate(() => !document.body.classList.contains('fvagent')
+      && !document.querySelector('#fvoverlay.on')),
+    'closing the file closes the card',
+  )
 
   /* --- a worktree being cut sits where it will land ------------------------- */
 
