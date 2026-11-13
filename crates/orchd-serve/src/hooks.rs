@@ -135,6 +135,31 @@ fn leaves_work(payload: &HookPayload) -> Option<bool> {
     Some(crons || tasks)
 }
 
+/// The work [`leaves_work`] counts, in the words Continue says it in, each once,
+/// in the order the hook listed them. An unknown kind is said as Claude Code
+/// named it rather than dropped: it is still something the restart stopped.
+fn left_kinds(payload: &HookPayload) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for t in payload.background_tasks.iter().flatten() {
+        let said = match t.kind.as_str() {
+            "shell" => continue,
+            "subagent" => "background agent",
+            other => other,
+        };
+        if !out.iter().any(|k| k == said) {
+            out.push(said.to_string());
+        }
+    }
+    if payload
+        .session_crons
+        .as_ref()
+        .is_some_and(|c| !c.is_empty())
+    {
+        out.push("scheduled wake-up".to_string());
+    }
+    out
+}
+
 /// Does this `SessionEnd` reason mean the process is going away?
 ///
 /// `clear` and `resume` are the conversation ending, not the session: Claude Code
@@ -855,9 +880,14 @@ pub async fn stop(
 
     // Recorded before the state moves, and whatever the state does: a `Stop` that
     // stays `Working` for its agents has left those agents out too.
-    let (left, waits) = (leaves_work(&payload), waits_on_agents(&payload));
+    let (left, kinds, waits) = (
+        leaves_work(&payload),
+        left_kinds(&payload),
+        waits_on_agents(&payload),
+    );
     app.with_session(id, |s| {
         s.left_work = left;
+        s.left_kinds = kinds;
         // Still `Working`: its own agents will wake it, and the turn is not yours yet.
         if waits {
             return;
@@ -1616,6 +1646,11 @@ mod tests {
             left().await,
             Some(true),
             "a monitor is work a restart would kill"
+        );
+        assert_eq!(
+            app.inner.read().await.sessions[&id].left_kinds,
+            ["monitor"],
+            "and it is named, the shell beside it is not"
         );
         let _ = stop(
             AxState(app.clone()),

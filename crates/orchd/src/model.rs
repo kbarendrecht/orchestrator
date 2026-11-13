@@ -651,6 +651,12 @@ pub struct Session {
     /// (`store::left_background_work`). A new turn sets it to `Some(false)`, since
     /// that turn's own `Stop` is the next answer.
     pub left_work: Option<bool>,
+    /// What that work was, in words: "monitor", "background agent", "workflow",
+    /// "scheduled wake-up". The restart's Continue names them ("continue, and
+    /// start your monitor again"), because a bare "continue" left the agent to
+    /// guess that the restart had stopped its watcher. Empty with `left_work`
+    /// false, and for a record from before this existed.
+    pub left_kinds: Vec<String>,
     /// The idle state a respawn under the same id comes back in, instead of `Ready`.
     ///
     /// `SessionStart` turns a `Starting` record into `Ready`, which is right for a
@@ -856,6 +862,7 @@ impl Session {
             last_reconcile: None,
             interrupted: false,
             left_work: None,
+            left_kinds: Vec::new(),
             comes_back_as: None,
             had_a_turn: false,
             forked_from: None,
@@ -955,6 +962,7 @@ impl Session {
             State::Working => {
                 self.interrupted = true;
                 self.left_work = Some(false);
+                self.left_kinds.clear();
                 // `Working` is only ever entered off a prompt (`UserPromptSubmit`,
                 // or the nudge that resumes a polling agent), so it is the moment a
                 // conversation stops being an empty pane. Latched, never cleared.

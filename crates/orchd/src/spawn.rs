@@ -406,6 +406,9 @@ struct Carried {
     /// interrupted is the one thing it cannot re-derive. A fork starts a fresh
     /// direction, so it is never interrupted.
     interrupted: bool,
+    /// What the restart stopped, so Continue can name it (`Session::left_kinds`).
+    /// Resume only, with `interrupted`.
+    left_kinds: Vec<String>,
     /// Where the respawn stood (`Session::comes_back_as`), stamped by
     /// `relocate_session` before its kill. Resume only. Nothing else stamps it, so a
     /// resume of an archived session, and auto-resume at boot, open at `Ready`.
@@ -507,6 +510,11 @@ impl Carried {
         };
         Carried {
             interrupted: !fork && prev.interrupted,
+            left_kinds: if fork {
+                Vec::new()
+            } else {
+                prev.left_kinds.clone()
+            },
             turn: if fork {
                 None
             } else {
@@ -565,6 +573,7 @@ impl Carried {
     /// the struct so it cannot be the field somebody forgets.
     fn apply(self, session: &mut Session) -> Option<String> {
         session.interrupted = self.interrupted;
+        session.left_kinds = self.left_kinds;
         session.comes_back_as = self.turn;
         session.had_a_turn = self.had_a_turn;
         session.arrival_notice = self.notice;
@@ -2981,6 +2990,7 @@ mod tests {
         let began = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
         let mut prev = Session::new(Uuid::new_v4(), "wt".into(), PathBuf::from("/tmp"), None);
         prev.interrupted = true;
+        prev.left_kinds = vec!["monitor".into()];
         prev.had_a_turn = true;
         let rested = State::YourTurn {
             since: began,
@@ -3005,6 +3015,7 @@ mod tests {
 
         assert_eq!(branch.as_deref(), Some("feature/x"), "the branch");
         assert!(next.interrupted, "the interrupted turn");
+        assert_eq!(next.left_kinds, ["monitor"], "what the restart stopped");
         assert_eq!(next.comes_back_as, Some(rested), "where the turn stood");
         assert!(next.had_a_turn, "that it is a conversation at all");
         assert_eq!(

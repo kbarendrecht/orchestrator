@@ -2877,7 +2877,8 @@ function renderNudge() {
   const why = el('span', 'railnudge-why', 'They were mid-turn or waiting on work.');
   const acts = el('span', 'railnudge-acts');
   const go = iconLabel('button', 'railnudge-go', 'Continue', 'M5 3.5l7 4.5-7 4.5z');
-  go.title = 'Types "continue" into each of them; a finished turn, a question and a '
+  go.title = 'Types "continue" into each of them, and names a monitor, agent or wake-up '
+    + 'the restart stopped so it is started again; a finished turn, a question and a '
     + 'permission prompt are left alone.';
   go.onclick = async () => {
     go.disabled = true;

@@ -1736,9 +1736,22 @@ pub async fn process_from_session(
     Ok(Json(json!({ "process": process, "workspace": workspace })))
 }
 
+/// What Continue types into a session the restart stopped: `continue`, and
+/// what to start again when the restart killed work it had out, so the agent
+/// does not have to work out that its monitor is gone.
+pub(crate) fn continue_text(kinds: &[String]) -> String {
+    let named = match kinds {
+        [] => return "continue".to_string(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    };
+    let them = if kinds.len() == 1 { "it" } else { "them" };
+    format!("continue: the restart stopped your {named}, so start {them} again")
+}
+
 #[derive(Deserialize)]
 pub struct NudgeBody {
-    /// What to type. Defaults to `continue`, which is the whole point.
+    /// What to type. Defaults to [`continue_text`], per session.
     #[serde(default)]
     pub text: Option<String>,
 }
@@ -1758,13 +1771,12 @@ pub async fn nudge_sessions(
     State(app): State<Arc<AppState>>,
     Json(body): Json<NudgeBody>,
 ) -> ApiResult<serde_json::Value> {
-    let text = body
+    let asked = body
         .text
         .as_deref()
         .map(str::trim)
         .filter(|t| !t.is_empty())
-        .unwrap_or("continue")
-        .to_string();
+        .map(str::to_string);
 
     let (targets, held) = {
         let inner = app.inner.read().await;
@@ -1797,7 +1809,13 @@ pub async fn nudge_sessions(
                     // And only one that was cut off mid-turn. A conversation that
                     // had finished before the restart comes back at the same empty
                     // prompt, and "continue" there invents the next piece of work.
-                    crate::model::TurnReason::Ready if s.interrupted => targets.push((s.id, pty)),
+                    crate::model::TurnReason::Ready if s.interrupted => targets.push((
+                        s.id,
+                        pty,
+                        asked
+                            .clone()
+                            .unwrap_or_else(|| continue_text(&s.left_kinds)),
+                    )),
                     // Both take a keystroke as an answer: a permission prompt as
                     // consent, a question as whichever choice is highlighted.
                     // Named rather than skipped, so pressing the button does not
@@ -1813,9 +1831,8 @@ pub async fn nudge_sessions(
         (targets, held)
     };
 
-    let nudged: Vec<String> = targets.iter().map(|(id, _)| id.to_string()).collect();
-    for (n, (_, pty)) in targets.into_iter().enumerate() {
-        let text = text.clone();
+    let nudged: Vec<String> = targets.iter().map(|(id, _, _)| id.to_string()).collect();
+    for (n, (_, pty, text)) in targets.into_iter().enumerate() {
         tokio::spawn(async move {
             // Staggered, the way auto-resume staggers its spawns: four agents all
             // being typed into on the same tick is four prompt boxes competing for
@@ -3504,6 +3521,23 @@ pub async fn fix_pr(
 
 #[cfg(test)]
 mod tests {
+    /// Continue says `continue`, and names what the restart stopped so the agent
+    /// starts it again rather than guessing.
+    #[test]
+    fn continue_names_the_work_the_restart_stopped() {
+        let k = |xs: &[&str]| xs.iter().map(|x| (*x).to_string()).collect::<Vec<_>>();
+        assert_eq!(super::continue_text(&[]), "continue");
+        assert_eq!(
+            super::continue_text(&k(&["monitor"])),
+            "continue: the restart stopped your monitor, so start it again"
+        );
+        assert_eq!(
+            super::continue_text(&k(&["monitor", "background agent", "scheduled wake-up"])),
+            "continue: the restart stopped your monitor, background agent and scheduled \
+             wake-up, so start them again"
+        );
+    }
+
     use super::outside_folder;
 
     /// A printed folder outside every workspace opens, and nothing else does: not

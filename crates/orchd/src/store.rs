@@ -137,6 +137,9 @@ pub struct SessionRecord {
     /// Absent in a record from before it, which reads as `None`: not known.
     #[serde(default)]
     pub left_work: Option<bool>,
+    /// See `Session::left_kinds`.
+    #[serde(default)]
+    pub left_kinds: Vec<String>,
     /// Whether a turn ever started — see [`Session::had_a_turn`]. Persisted so a
     /// restart keeps the difference between an empty pane and a real conversation
     /// without re-reading every transcript. A record written before this field
@@ -210,6 +213,7 @@ impl SessionRecord {
             prs_unlinked: s.prs_unlinked.clone(),
             interrupted: s.interrupted,
             left_work: s.left_work,
+            left_kinds: s.left_kinds.clone(),
             had_a_turn: s.had_a_turn,
             branch: s.branch.clone(),
             arrival_notice: s.arrival_notice.clone(),
@@ -245,6 +249,7 @@ impl SessionRecord {
         s.prs_unlinked = self.prs_unlinked;
         s.interrupted = self.interrupted;
         s.left_work = self.left_work;
+        s.left_kinds = self.left_kinds;
         s.had_a_turn = self.had_a_turn;
         s.branch = self.branch;
         s.arrival_notice = self.arrival_notice;
@@ -1843,6 +1848,7 @@ mod tests {
                 prs_unlinked: Vec::new(),
                 interrupted: false,
                 left_work: None,
+                left_kinds: Vec::new(),
                 had_a_turn: false,
                 branch: None,
                 arrival_notice: None,
@@ -2583,6 +2589,9 @@ mod tests {
         );
         s.set_state(State::Working);
         assert!(SessionRecord::of(&s).restore().interrupted);
+        // What the work cut off was survives with it, for Continue to name.
+        s.left_kinds = vec!["workflow".into()];
+        assert_eq!(SessionRecord::of(&s).restore().left_kinds, ["workflow"]);
 
         s.set_state(State::YourTurn {
             since: std::time::SystemTime::now(),
