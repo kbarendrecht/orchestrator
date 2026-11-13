@@ -531,6 +531,8 @@ function renderAgentUpdate() {
           const r = await callOn(c, '/api/sessions/restart', { stale: true, agent });
           now += r.now;
           later += r.queued - r.now;
+          // Left out by the daemon, because their agent is not on that PATH.
+          if (r.missing?.length) toast(`not restarted, ${who} is not installed for: ${r.missing.join(', ')}`, true);
         } catch (e) {
           toast(reason(e), true);
         }

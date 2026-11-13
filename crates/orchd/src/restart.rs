@@ -44,6 +44,11 @@ pub struct Queued {
     /// Of those, how many can go straight away. The rest go when their turn ends,
     /// and the page says so rather than leaving a count that looks like a failure.
     pub now: usize,
+    /// Sessions left out because their agent is not on this checkout's PATH, by
+    /// name: queued, they were dropped later by a respawn that could not start,
+    /// with only a log line to say so.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub missing: Vec<String>,
 }
 
 /// Which sessions a restart is for.
@@ -90,7 +95,11 @@ pub async fn queue(app: &Arc<AppState>, which: Which) -> Result<Queued> {
                     crate::model::short_id(&id)
                 );
             }
+            // The rail greys this already; the route says why, the way fork does,
+            // rather than queueing a respawn that cannot start.
+            inner.installed(s.agent)?;
         }
+        let agents = inner.agents.clone();
         let mut out = Queued::default();
         for s in inner.sessions.values_mut() {
             let left_behind = match which {
@@ -98,6 +107,11 @@ pub async fn queue(app: &Arc<AppState>, which: Which) -> Result<Queued> {
                 Which::One(_) | Which::All => true,
             };
             if only.is_some_and(|id| id != s.id) || !running(s) || !left_behind {
+                continue;
+            }
+            if !agents.contains(&s.agent) {
+                out.missing
+                    .push(s.label().unwrap_or(&s.workspace).to_string());
                 continue;
             }
             s.restart_queued = true;
@@ -267,6 +281,31 @@ mod tests {
         }
     }
 
+    /// A session whose agent is not on PATH is refused by id and named by "restart
+    /// all", never queued: the respawn could not start it, and dropped the flag with
+    /// only a log line to say so.
+    #[tokio::test]
+    async fn a_restart_for_an_agent_that_is_not_installed_is_refused_or_named() {
+        let (app, dir) = crate::testutil::app("restart-missing");
+        let gone = live(&app, &dir, turn(TurnReason::TurnComplete)).await;
+        {
+            let mut inner = app.inner.write().await;
+            inner.agents = vec![crate::agent::Agent::Claude];
+            inner.sessions.get_mut(&gone).unwrap().agent = crate::agent::Agent::Codex;
+        }
+        assert!(
+            queue(&app, Which::One(gone)).await.is_err(),
+            "one session asked for by id is refused"
+        );
+        let got = queue(&app, Which::All).await.unwrap();
+        assert_eq!(
+            (got.queued, got.missing.len()),
+            (0, 1),
+            "and named by restart all"
+        );
+        assert!(!app.inner.read().await.sessions[&gone].restart_queued);
+    }
+
     /// "Restart all" flags every live session and says how many go now.
     #[tokio::test]
     async fn the_queue_takes_every_live_session_and_counts_the_ready_ones() {
@@ -276,7 +315,14 @@ mod tests {
         let asking = live(&app, &dir, turn(TurnReason::AskedAQuestion)).await;
 
         let got = queue(&app, Which::All).await.unwrap();
-        assert_eq!(got, Queued { queued: 3, now: 1 });
+        assert_eq!(
+            got,
+            Queued {
+                queued: 3,
+                now: 1,
+                ..Queued::default()
+            }
+        );
 
         let inner = app.inner.read().await;
         for id in [idle, busy, asking] {
@@ -309,7 +355,11 @@ mod tests {
 
         assert_eq!(
             queue(&app, Which::Stale(None)).await.unwrap(),
-            Queued { queued: 1, now: 1 }
+            Queued {
+                queued: 1,
+                now: 1,
+                ..Queued::default()
+            }
         );
         let inner = app.inner.read().await;
         assert!(inner.sessions[&old].restart_queued);
@@ -338,7 +388,11 @@ mod tests {
             queue(&app, Which::Stale(Some(Agent::Claude)))
                 .await
                 .unwrap(),
-            Queued { queued: 1, now: 1 }
+            Queued {
+                queued: 1,
+                now: 1,
+                ..Queued::default()
+            }
         );
         let inner = app.inner.read().await;
         assert!(inner.sessions[&claude].restart_queued);
