@@ -743,6 +743,9 @@ pub async fn rewind_session(
                     match other {
                         crate::model::State::Working => "mid-turn",
                         crate::model::State::Starting => "still starting",
+                        // Live, both: "not live" sent you looking for a dead session.
+                        crate::model::State::BuildFailing { .. } => "showing a failing build",
+                        crate::model::State::Error { .. } => "showing an error",
                         _ => "not live",
                     }
                 )
@@ -1808,8 +1811,9 @@ pub async fn nudge_sessions(
             };
             // Nothing to continue: a session that has never had a turn would take
             // the word as its opening instruction, which is not what anyone
-            // pressing this meant.
-            if !s.had_a_turn {
+            // pressing this meant. `has_conversation`, the rule the snapshot sends
+            // as `has_transcript`, so the strip's count is what this reaches.
+            if !s.has_conversation() {
                 continue;
             }
             // Working, starting, failing: not waiting on you, so not yours to
