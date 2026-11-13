@@ -133,6 +133,38 @@ this file, which churned it from every build; that feature is gone.
   - Each live session is also a Happy session, so the Happy app sees the
     transcript too. That half is cheap, and the spike already did it.
 
+  **The permission prompt, measured on Claude Code 2.1.318 (2026-11-13).** A
+  session in `default` mode was asked for a `touch` and for a `Write`, with every
+  hook recorded and the keys sent through tmux:
+  - **`PermissionRequest` fires for Claude Code too**, not only for Codex, and it
+    is the one that carries the content: `tool_name`, `tool_input` (`command` and
+    `description` for Bash, `file_path` and `content` for Write) and
+    `permission_suggestions`. `Notification` says only "Claude needs your
+    permission" with `notification_type: permission_prompt`. Both carry the same
+    `prompt_id`, which is the join. So the card's text comes from
+    `PermissionRequest`, which orchd today registers only for Codex.
+  - **Allow is `1`**, with no Enter, on every menu seen: option 1 is always "Yes".
+  - **The menu is not fixed.** Bash offered four options (Yes, always allow the
+    directory, switch to auto mode, No) and Write three (Yes, switch to accept
+    edits, No). "No" is always last, and its number varies.
+  - **Deny is `Esc`** (or the "No" number), and it **interrupts the turn**:
+    "Interrupted · What should Claude do instead?", and no hook fires at all — no
+    `Stop`, no `PostToolUse`. The host knows only because it sent the key.
+  - **Deny with a reason does not interrupt.** Moving to "No", `Tab` ("Tab to
+    amend"), the text, `Enter`: Claude read the reason and carried on in the same
+    turn, asking again for the amended command. Reaching "No" means knowing how
+    many options the menu has.
+  - orchd has no terminal parser (no `vt100` or `alacritty_terminal`), so "is the
+    prompt still on screen" cannot be read from the pty today. A prompt answered at
+    the desk is followed by `PostToolUse` (allowed) or by nothing (denied), so the
+    hooks alone leave a stale prompt after a deny at the desk. A stale "Allow" then
+    types a bare `1` into the prompt box — not submitted, but left there.
+
+  So the v1 verbs: **Allow** sends `1`. **Deny** sends `Esc`, and a reason, if
+  given, follows as the next line, which costs an interrupted turn and needs no
+  screen. Deny-and-continue (`Tab` to amend) waits on either a screen parser or a
+  reliable option count, and so does a guard against the stale prompt.
+
   Not in it: starting a session from the phone (`spawnSession` on the machine,
   which the host can route because it knows every checkout), images, and running
   with the window closed.
