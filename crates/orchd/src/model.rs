@@ -980,8 +980,14 @@ impl Session {
             // while the build is red is `BuildFailing` over a finished turn, and it
             // left the flag set: the next restart then nudged a session whose turn
             // had ended with "continue".
+            //
+            // **Only a finished turn clears it.** The flag means the session owes
+            // you the rest of a turn, and a question or a permission prompt is a
+            // turn waiting on you, not one that ended: cleared there, a restart
+            // that killed the question left the session out of Continue's targets
+            // and out of its held list both.
             State::YourTurn { reason, .. } | State::BuildFailing { covers: reason, .. }
-                if !matches!(reason, TurnReason::Ready | TurnReason::Interrupted) =>
+                if *reason == TurnReason::TurnComplete =>
             {
                 self.interrupted = false;
             }
@@ -1469,6 +1475,14 @@ mod tests {
         // the session "continue" is true of.
         s.set_state(your_turn(TurnReason::Ready));
         assert!(s.interrupted);
+
+        // A question or a permission prompt is a turn waiting on you, not one
+        // that ended: a restart that kills it still owes you the rest.
+        s.set_state(State::Working);
+        s.set_state(your_turn(TurnReason::AskedAQuestion));
+        assert!(s.interrupted, "a question does not end the turn");
+        s.set_state(your_turn(TurnReason::NeedsPermission));
+        assert!(s.interrupted, "nor does a permission prompt");
 
         // A turn that ends is not an interrupted one.
         s.set_state(your_turn(TurnReason::TurnComplete));

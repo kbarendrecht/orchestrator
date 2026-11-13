@@ -164,7 +164,27 @@ pub async fn run_due(app: &Arc<AppState>) {
             return;
         };
         tracing::info!(session = %id, "restarting on the installed agent");
-        let outcome = crate::spawn::relocate_session(app, id, &workspace, GRACE).await;
+        /* **Owed a Continue the way a boot restart leaves it.** The respawn kills
+        what the last turn left out (a monitor, an agent) as surely as a restart
+        of the app does, and that path marks the session owed and brings it back
+        at `Ready`. This one brought it back as it stood, `TurnComplete` with
+        nothing owed, so Continue never offered it. */
+        let owed = app
+            .with_session(id, |s| {
+                if s.left_work == Some(true) {
+                    s.interrupted = true;
+                }
+                s.interrupted.then(|| crate::model::State::YourTurn {
+                    since: std::time::SystemTime::now(),
+                    reason: crate::model::TurnReason::Ready,
+                })
+            })
+            .await
+            .flatten();
+        let outcome = match owed {
+            Some(ready) => crate::spawn::relocate_back(app, id, &workspace, GRACE, &ready).await,
+            None => crate::spawn::relocate_session(app, id, &workspace, GRACE).await,
+        };
         /* **Cleared whatever happened.** A respawn under the same id replaced the
         record already, so this finds `false` and changes nothing. A fork left the
         old record behind as archived, and a failure left it closed — and a flag on
