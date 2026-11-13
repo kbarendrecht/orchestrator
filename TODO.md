@@ -5,6 +5,86 @@ this file, which churned it from every build; that feature is gone.
 
 ## Next
 
+- **orchd on a phone, through Happy.** Much of the agent work around this project
+  is driven from a phone, through Happy, and orchd is a window on the desktop. So an
+  agent blocked on a question waits until somebody is back at the machine. This
+  entry used to stop at the transport: the daemon listens on loopback, and the
+  page's token can spawn a pty, so whatever carries it carries a shell.
+
+  **Happy answers the transport, and it moves no new trust.** It is three parts: the
+  app, a relay that stores and routes only ciphertext, and a client next to the
+  agent that encrypts before anything leaves. The relay is self-hostable and one
+  already runs. Whoever holds `~/.happy/access.key` can already start an agent on
+  this machine through Happy's own daemon, so orchd as a second client of the same
+  key gives that key nothing it did not have. The page's token stays on loopback.
+
+  **The client is the host, not each child.** Closing the window stops the host,
+  the host stops each child, and each child stops its sessions, so a client in the
+  children survives nothing the host does not. The host holds one connection, one
+  key and one machine in the app, and the children's transcripts and ptys reach it
+  through `child.rs`.
+
+  **The protocol is reachable from Rust or from `happy/lib`.** The `happy` npm
+  package (MIT) exports `ApiClient`: `getOrCreateSession({tag, metadata, state})`,
+  and per session `sendClaudeSessionMessageFromLocalTranscript` (a transcript line
+  out), `onUserMessage` (a phone message in), `keepAlive(thinking)`,
+  `updateAgentState`, `sendSessionDeath`, plus a push client with the kinds `done`,
+  `permission` and `question`. Underneath it is REST for auth and sessions,
+  Socket.IO for realtime, and NaCl secretbox or AES-256-GCM with wrapped per-session
+  keys. That library changed between 1.2.5 and 1.2.6 and the shipped app may not
+  depend on `node` (a launcher-started app finds one too old), so the shipped
+  client is Rust carrying only what a spike proves necessary, and `happy/lib` is
+  the spike's tool and the reference. The cost of either is the same and is the
+  real one: orchd follows a protocol it does not own, and the side that moves is
+  the phone app, which updates from the store and breaks a copy silently.
+
+  **Two competitors were read, and both confirm the order.**
+  - `stablyai/orca` ships its own app and relay (`cloud/`). Direct mode is a
+    WebSocket to the desktop on port 6768 over LAN or Tailscale, paired by a QR code
+    carrying the endpoint, a device token and a TLS fingerprint. The phone has a
+    terminal view and a chat view built from the transcript, and can reply, start
+    an agent and create a workspace. **"The paired desktop owns the agent
+    sessions"**: closing the desktop app drops the phone. Mobile is Beta.
+  - `herdrdev/herdr` has no relay and no account. A background server owns the
+    panes and survives every client, and phones reach it over SSH, Tailscale
+    included. Its socket API is newline-delimited JSON (`agent.read`,
+    `agent.prompt`, `events.subscribe`), with the states `idle`, `working`,
+    `blocked` and `done` — idle and not yet seen. **`agent.prompt` refuses a
+    blocked agent** with `agent_blocked` and sends nothing. The phone clients
+    others built on it (Heeler and the rest) all lead with an inbox, blocked first,
+    and a push on blocked or done.
+
+  **The first version works while the window is open**, which is Orca's shape:
+  - A setting, off by default, reading the key and the `serverUrl` from `~/.happy`.
+  - Each live session is one Happy session, carrying its name, path and branch.
+  - Transcript lines go out; a phone message is typed into the pty.
+  - Busy or idle comes from the state machine.
+  - **A message to a blocked session is refused, and the phone is told why.** Text
+    typed into a permission prompt or the ask box answers it, which is Herdr's
+    rule and the reason for it.
+  - A push when a session goes blocked or done, because that is what both
+    products treat as the point of the phone.
+  - A stopped session ends its Happy session.
+
+  Not in it: starting a session from the phone (machine registration and
+  `spawnSession`, which the host can route because it knows every checkout),
+  answering a permission prompt or a question from the phone (an answer has to
+  become keystrokes in the pty), images, and running with the window closed.
+
+  **Order:** a throwaway Node spike against the relay, using `happy/lib` on one
+  existing session, to measure what the code cannot say — which message shape the
+  installed app renders, whether it shows a session with no registered machine,
+  and which events are the minimum. Then the Rust client in the host, tested
+  against a fake relay for the encryption and the framing.
+
+  **Later, the window.** Herdr is what surviving the window costs: a server
+  process apart from the UI. Here that is the host as a background service the app
+  attaches to, since `orchd --host` already is a host without a window — the same
+  property the entry on a daemon restart wants. A smaller step first would be a
+  close that hides the window and a quit that stops the host. Either one also
+  depends on the machine staying up, and whether WSL keeps a distro alive with
+  no window open is unmeasured.
+
 - **Make it run somewhere other than this machine.** The hardcoded assumptions are
   gone: the six stack-specific settings are `#[serde(default)]` values editable in
   the settings panel, `worktrees_subdir` makes the layout configurable, `docker` and
@@ -295,17 +375,3 @@ this file, which churned it from every build; that feature is gone.
   successful start instead, which meant the bound never bit and a daemon dying on
   boot restarted forever. Leaving the ask in invited somebody to build a guard that
   exists.
-
-- **Deferred: orchd on a phone.** Much of the agent work around this project is
-  driven from a phone, through a remote-control app, and orchd is a window on the
-  desktop. So an agent blocked on a question waits until somebody is back at the
-  machine, although the page that asks it is already served over HTTP and opens in
-  any browser tab. The useful shape is narrow: the rail with its amber rows, the
-  blocking question with its answer box, and the PR rows with their verbs. It is
-  not the diff, the editor or the terminals.
-
-  The UI is the small half. The open question is **reaching the daemon from
-  outside the machine**: it listens on loopback, and the page's token can spawn a
-  pty, so whatever carries it (a tailnet, a tunnel, a signed link) carries a
-  shell. That is the same decision the entry on running somewhere else has to make
-  first, and it should be made once for both.
