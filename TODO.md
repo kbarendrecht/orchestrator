@@ -5,38 +5,105 @@ this file, which churned it from every build; that feature is gone.
 
 ## Next
 
-- **orchd on a phone, through Happy.** Much of the agent work around this project
-  is driven from a phone, through Happy, and orchd is a window on the desktop. So an
-  agent blocked on a question waits until somebody is back at the machine. This
-  entry used to stop at the transport: the daemon listens on loopback, and the
-  page's token can spawn a pty, so whatever carries it carries a shell.
+- **orchd on a phone: its own PWA, over a Happy relay.** Much of the agent work
+  around this project is driven from a phone, and orchd is a window on the desktop,
+  so an agent blocked on a question waits until somebody is back at the machine.
+  The decision is made: **orchd's own PWA**, showing what only orchd has (the rail,
+  the ask box, the PR rows), reaching the host **through a Happy relay**, and
+  working away from home and for other people. What follows is what was measured
+  and read on the way, so the next session starts from it rather than from the
+  question.
 
-  **Happy answers the transport, and it moves no new trust.** It is three parts: the
-  app, a relay that stores and routes only ciphertext, and a client next to the
-  agent that encrypts before anything leaves. The relay is self-hostable and one
-  already runs. Whoever holds `~/.happy/access.key` can already start an agent on
-  this machine through Happy's own daemon, so orchd as a second client of the same
-  key gives that key nothing it did not have. The page's token stays on loopback.
+  **Why a relay, and why Happy's.** Both ends dial out and the relay sees only
+  ciphertext, so there is no inbound port — which matters, because the daemon
+  listens on loopback inside WSL2, behind NAT, and the page's token can spawn a
+  pty, so anything that carried it to a phone would carry a shell. Happy already
+  is that relay, MIT, self-hostable (`happy server`, the `happy-server-self-host`
+  package), with a public instance beside it. A tailnet straight to the SPA was the
+  alternative, and it was turned down on both counts: the shell, and the network
+  between WSL, Windows and the phone.
 
   **The client is the host, not each child.** Closing the window stops the host,
   the host stops each child, and each child stops its sessions, so a client in the
   children survives nothing the host does not. The host holds one connection, one
-  key and one machine in the app, and the children's transcripts and ptys reach it
-  through `child.rs`.
+  key and one machine, and reaches the children's transcripts and ptys through
+  `child.rs`. **The first version works while the window is open** — Orca's shape
+  (below). Surviving the window is Herdr's, and comes later.
 
-  **The protocol is reachable from Rust or from `happy/lib`.** The `happy` npm
-  package (MIT) exports `ApiClient`: `getOrCreateSession({tag, metadata, state})`,
-  and per session `sendClaudeSessionMessageFromLocalTranscript` (a transcript line
-  out), `onUserMessage` (a phone message in), `keepAlive(thinking)`,
-  `updateAgentState`, `sendSessionDeath`, plus a push client with the kinds `done`,
-  `permission` and `question`. Underneath it is REST for auth and sessions,
-  Socket.IO for realtime, and NaCl secretbox or AES-256-GCM with wrapped per-session
-  keys. That library changed between 1.2.5 and 1.2.6 and the shipped app may not
-  depend on `node` (a launcher-started app finds one too old), so the shipped
-  client is Rust carrying only what a spike proves necessary, and `happy/lib` is
-  the spike's tool and the reference. The cost of either is the same and is the
-  real one: orchd follows a protocol it does not own, and the side that moves is
-  the phone app, which updates from the store and breaks a copy silently.
+  **A spike proved the transport (2026-11-13, against a self-hosted relay).** A
+  Node script on `happy/lib` stood in for the host, with `claude` in a tmux pane
+  standing in for a session's pty:
+  - A session with no registered machine is accepted, and the app shows it.
+  - Transcript lines go out with `sendClaudeSessionMessageFromLocalTranscript`
+    after `RawJSONLinesSchema` filters them; Claude Code's internal lines
+    (`attachment`, `mode`, `ai-title`, `file-history-snapshot`, …) do not parse
+    and are dropped, as Happy's own client drops them.
+  - A message sent from the Android app arrived through `onUserMessage`, was typed
+    into the pane, and the answer came back. The app attaches an
+    `appendSystemPrompt` of its own to every message; typing only the text drops it.
+  - **Encrypted RPC works end to end.** The session registered `orchd.snapshot`; a
+    second, user-scoped client called it with `rpc-call` on
+    `<session id>:orchd.snapshot`, AES-256-GCM both ways, **38 ms** round trip.
+    That is the PWA's whole transport: the host registers the methods, the PWA
+    calls them.
+  - CORS on both the self-hosted and the public relay
+    (`api.cluster-fluster.com`) is `Access-Control-Allow-Origin: *`, for the REST
+    routes and for Socket.IO's `/v1/updates`. A PWA served from anywhere can use
+    either.
+
+  **What the spike found that the design must carry.**
+  - **A restart must not replay.** A new tag made a new session, which sent the
+    whole transcript again and a second "done" push. The host remembers, per
+    orchd session, the Happy session id and the transcript offset.
+  - **An ended session cannot be reopened by its tag.** `getOrCreateSession`
+    returned it with null metadata, and `happy/lib` crashed on it.
+  - **`happy/lib` registers `bash`, `readFile` and `writeFile` RPCs on every
+    session** (`registerCommonHandlers`), so any client of the account gets a shell
+    in that directory. orchd registers only the methods it chooses — a reason, on
+    its own, to write the client rather than wrap the library.
+  - **A push's title and body reach the relay in plain text**, and Expo after it.
+    The text must not carry a session name or a prompt.
+  - `happy/lib` changed between 1.2.5 and 1.2.6, and the shipped app may not
+    depend on `node` (a launcher-started app finds one too old), so the host's
+    client is Rust.
+
+  **Identity and pairing, read from `slopus/happy` at `f74aed1`.** The repo's own
+  `docs/encryption.md`, `api.md` and `protocol.md` cover the wire, and
+  `packages/happy-android/crypto/` (about 870 lines of Kotlin, each file naming the
+  TypeScript it mirrors) is a second implementation to port from.
+  - An account **is** a random 32-byte master secret. An Ed25519 key derived from
+    it signs a challenge for `POST /v1/auth`, which upserts the account by public
+    key and returns a JWT. A PWA can therefore create an account on its own, with
+    no Happy app.
+  - `deriveKey(secret, "Happy EnCoder", ["content"])` (an HMAC-SHA512 key tree)
+    seeds the content box keypair, and every session and machine key is wrapped
+    to its public half as `0x00 ‖ ephemeral pk ‖ nonce ‖ box`.
+  - **Linking a device** (`/v1/auth/account/request`): the new device shows
+    `happy:///account?<box pk>`, a device holding the secret seals it to that key.
+    The PWA uses this to join an account the Happy app already has.
+  - **Pairing a terminal, v2** (`/v1/auth/request` with `supportsV2`): the approver
+    seals `0x00 ‖ contentPublicKey`, and the terminal keeps that plus a random
+    `machineKey` — it can wrap keys for the account but read nothing else. **The
+    host pairs this way and keeps its own key in its config dir**, rather than
+    reading `~/.happy`, so orchd works for people without the Happy CLI.
+  - The PWA, by contrast, holds the master secret (in IndexedDB), so whatever runs
+    script on its origin reads everything: no third-party scripts, a strict CSP.
+  - The secret's human form is base32 in groups of five, the "secret key backup".
+  - **Upstream has dropped its web client.** `happy-app` (Expo) is gone from
+    `main`, leaving native iOS and Android; a relay that still serves one serves an
+    old build. That is one more reason for a PWA of our own.
+
+  **Other people, and the public relay.** Happy's Terms of Use (15 July 2026) are
+  the only terms; they cover the software, call it MIT and "a third-party client
+  that works with publicly available APIs", and say nothing about other clients on
+  the hosted relay, quotas or availability. No rate limiting was found in the
+  server source. One clause needs respecting by being open about it: *"must not
+  attempt to reverse engineer security features or encryption protocols."*
+  Implementing the protocol from the MIT source and its own docs is not that, but
+  it is near enough that the maintainers should hear it from us. So: **no default
+  relay** — the first run asks, offering a self-hosted one and the public one —
+  and an issue on `slopus/happy` asking whether a third-party client on their
+  relay is welcome, and within what limits, **before** the public one is offered.
 
   **Two competitors were read, and both confirm the order.**
   - `stablyai/orca` ships its own app and relay (`cloud/`). Direct mode is a
@@ -54,36 +121,29 @@ this file, which churned it from every build; that feature is gone.
     others built on it (Heeler and the rest) all lead with an inbox, blocked first,
     and a push on blocked or done.
 
-  **The first version works while the window is open**, which is Orca's shape:
-  - A setting, off by default, reading the key and the `serverUrl` from `~/.happy`.
-  - Each live session is one Happy session, carrying its name, path and branch.
-  - Transcript lines go out; a phone message is typed into the pty.
-  - Busy or idle comes from the state machine.
-  - **A message to a blocked session is refused, and the phone is told why.** Text
-    typed into a permission prompt or the ask box answers it, which is Herdr's
-    rule and the reason for it.
-  - A push when a session goes blocked or done, because that is what both
-    products treat as the point of the phone.
-  - A stopped session ends its Happy session.
+  **The first version**, with the window open:
+  - The host pairs with a relay (v2, QR in the window) and registers one machine.
+  - It registers RPC methods for the PWA: a snapshot of the rail, the open
+    questions and the PR rows, and the verbs to answer one and to send a line.
+  - **A line sent to a blocked session is refused, and the phone is told why.**
+    Text typed into a permission prompt or the ask box answers it — Herdr's rule,
+    for Herdr's reason.
+  - A push when a session goes blocked or done, with neutral text.
+  - The PWA: link to an account (or create one), list, answer, send.
+  - Each live session is also a Happy session, so the Happy app sees the
+    transcript too. That half is cheap, and the spike already did it.
 
-  Not in it: starting a session from the phone (machine registration and
-  `spawnSession`, which the host can route because it knows every checkout),
-  answering a permission prompt or a question from the phone (an answer has to
-  become keystrokes in the pty), images, and running with the window closed.
+  Not in it: starting a session from the phone (`spawnSession` on the machine,
+  which the host can route because it knows every checkout), images, and running
+  with the window closed.
 
-  **Order:** a throwaway Node spike against the relay, using `happy/lib` on one
-  existing session, to measure what the code cannot say — which message shape the
-  installed app renders, whether it shows a session with no registered machine,
-  and which events are the minimum. Then the Rust client in the host, tested
-  against a fake relay for the encryption and the framing.
-
-  **Later, the window.** Herdr is what surviving the window costs: a server
-  process apart from the UI. Here that is the host as a background service the app
-  attaches to, since `orchd --host` already is a host without a window — the same
-  property the entry on a daemon restart wants. A smaller step first would be a
-  close that hides the window and a quit that stops the host. Either one also
-  depends on the machine staying up, and whether WSL keeps a distro alive with
-  no window open is unmeasured.
+  **Later, the window.** Herdr is what surviving it costs: a server process apart
+  from the UI. Here that is the host as a background service the app attaches to,
+  since `orchd --host` already is a host without a window — the same property the
+  entry on a daemon restart wants. A smaller step first would be a close that
+  hides the window and a quit that stops the host. Either one depends on the
+  machine staying up, and whether WSL keeps a distro alive with no window open is
+  unmeasured.
 
 - **Make it run somewhere other than this machine.** The hardcoded assumptions are
   gone: the six stack-specific settings are `#[serde(default)]` values editable in
