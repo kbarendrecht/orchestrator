@@ -694,8 +694,13 @@ pub struct Session {
     /// of them moved it.
     pub branches: Vec<String>,
     /// Every PR seen on [`Self::branches`], in the order they were opened, kept
-    /// after they end for the reason [`Self::pr`] is.
+    /// after they end for the reason [`Self::pr`] is. Edited by hand too: the
+    /// app's PR menu and `orch pr` add one by number and take one off.
     pub prs: Vec<SessionPr>,
+    /// PRs taken off this session by hand. The branch match in
+    /// `Inner::note_session_prs` would link them again on the next poll, so it
+    /// skips these; adding one back takes it off this list.
+    pub prs_unlinked: Vec<u64>,
     /// The session whose `orch new` created this one.
     ///
     /// What makes `orch kill` an undo rather than a remote control: the ask token
@@ -851,6 +856,7 @@ impl Session {
             pr: None,
             branches: Vec::new(),
             prs: Vec::new(),
+            prs_unlinked: Vec::new(),
             spawned_by: None,
             spawn_cut_worktree: false,
             launch: Default::default(),

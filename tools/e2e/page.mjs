@@ -1226,6 +1226,44 @@ try {
   check(!(await page.$eval('#rail .sess[data-id]', (r) => r.hasAttribute('data-menu-open'))),
     'and loses the mark when the menu closes')
 
+  /* **A session's PRs, edited from its menu.** "link one…" takes a number the way
+     a person writes one, the snapshot carries it, and "unlink all" takes it off
+     again. The daemon keeps an unlink off past the next poll; its own test holds
+     that, and this holds that the menu reaches it. */
+  {
+    const rowId = await page.$eval('#rail .sess[data-id]', (r) => r.getAttribute('data-id'))
+    const linkedPrs = () => page.evaluate(async (id) => {
+      const core = await import('/js/core.js')
+      return core.snap.sessions.find((x) => x.id === id)?.prs.map((p) => p.number) ?? null
+    }, rowId)
+    const prsLevel = await rowMenu('pull requests')
+    await prsLevel?.click()
+    const linkOne = await page.$('#ctxmenu .ctxmenu-sub:not([hidden]) .ctxmenu-item:first-child')
+    await linkOne?.click()
+    await page.waitForSelector('.dlginput', { timeout: 5000 })
+    await page.keyboard.type('#5')
+    await page.keyboard.press('Enter')
+    const nowLinked = await page.waitForFunction(async (id) => {
+      const core = await import('/js/core.js')
+      return core.snap.sessions.find((x) => x.id === id)?.prs.some((p) => p.number === 5) || null
+    }, rowId, { timeout: 5000 }).then(() => true, () => false)
+    check(nowLinked, `the menu links #5 to the session, got ${JSON.stringify(await linkedPrs())}`)
+    const level = await rowMenu('pull requests')
+    await level?.click()
+    const offered = await page.$$eval('#ctxmenu .ctxmenu-sub:not([hidden]) .ctxmenu-item',
+      (bs) => bs.map((b) => b.textContent?.trim()))
+    check(offered.some((o) => o?.startsWith('unlink #5')) && offered.at(-1) === 'unlink all',
+      `and offers to unlink it, got ${JSON.stringify(offered)}`)
+    for (const item of await page.$$('#ctxmenu .ctxmenu-sub:not([hidden]) .ctxmenu-item')) {
+      if ((await item.textContent())?.trim() === 'unlink all') await item.click()
+    }
+    const cleared = await page.waitForFunction(async (id) => {
+      const core = await import('/js/core.js')
+      return core.snap.sessions.find((x) => x.id === id)?.prs.length === 0 || null
+    }, rowId, { timeout: 5000 }).then(() => true, () => false)
+    check(cleared, `and "unlink all" clears them, got ${JSON.stringify(await linkedPrs())}`)
+  }
+
   /* A rename that changes nothing still has to put the row back. It changes no
      signature, so the rail skipped the redraw and the input stayed, deaf to Enter
      and Escape. Both ways out, since Escape and an unchanged Enter take the same

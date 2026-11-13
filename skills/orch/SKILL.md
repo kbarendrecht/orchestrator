@@ -21,6 +21,7 @@ Then none of this applies, and you must not simulate it.
 | `orch rename` | Name one of your own spawns, once you know what its work is |
 | `orch teardown` | Remove a worktree nobody is working in, when the human asks for a cleanup |
 | `orch ls` | The sessions, their state, their branch and their path |
+| `orch pr` | The pull requests linked to this session or one it spawned, and adding or taking one off |
 | `orch run` | Start one of the processes this workspace declares |
 | `orch tell` | Message a session that changes files you changed or are about to, to settle the overlap |
 

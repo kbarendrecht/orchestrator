@@ -39,6 +39,10 @@ orch — talk to the orchestrator you are running inside
       Remove a worktree nobody is working in, through the same checks as the
       app's button. Refuses one holding a live session or unpushed work.
 
+  orch pr [<id>] [--add <number>] [--remove <number>] [--clear]
+      The pull requests linked to this session or one it spawned, and a way
+      to add or take some off.
+
   orch ls [--state <state>] [--all]
       The sessions the daemon knows about, one per line, with their name last.
       Archived ones are hidden unless you ask.
@@ -139,6 +143,25 @@ goes back to the agent's own.
 session included: those are the human's to name, in the app.
 
 A name is one line in the rail, so it is cut at 80 characters.
+";
+
+const HELP_PR: &str = "\
+orch pr [<id>] [--add <number>] [--remove <number>] [--clear]
+
+The pull requests linked to a session, one per line: number, state, title. With
+no id, the session running this; with an id, a session it spawned (`orch new`
+printed the id). They are found by branch, so a PR on a branch the session held
+is linked by itself. The app shows them on the session's row and in the pane
+header.
+
+  --add <number>      Link a PR that is on no branch of the session's, such as
+                      one it reviews or one it continues from. Repeatable.
+  --remove <number>   Take a PR off. It stays off: the branch match does not
+                      link it again. --add puts it back. Repeatable.
+  --clear             Take every linked PR off, the same way.
+
+A number may be written `123`, `#123` or as the PR's URL. With no flags it only
+lists. Any other session is refused: the human edits those in the app.
 ";
 
 const HELP_TEARDOWN: &str = "\
@@ -294,6 +317,7 @@ fn help_for(cmd: &str) -> Option<&'static str> {
         "new" => HELP_NEW,
         "kill" => HELP_KILL,
         "rename" => HELP_RENAME,
+        "pr" => HELP_PR,
         "teardown" => HELP_TEARDOWN,
         "ls" => HELP_LS,
         "ask" => HELP_ASK,
@@ -341,6 +365,11 @@ fn spec(cmd: &str) -> Option<&'static [(&'static str, Arity)]> {
         ],
         "kill" => &[],
         "rename" => &[],
+        "pr" => &[
+            ("--add", Arity::Value),
+            ("--remove", Arity::Value),
+            ("--clear", Arity::Flag),
+        ],
         "teardown" => &[],
         "ls" => &[("--state", Arity::Value), ("--all", Arity::Flag)],
         "ask" => &[
@@ -473,6 +502,9 @@ fn parse(cmd: &str, args: &[String]) -> Result<Parsed, String> {
     if out.words.len() < wanted {
         return Err(missing.to_string());
     }
+    // `orch pr` alone is the only command whose word is optional: no id is the
+    // calling session.
+    let wanted = if cmd == "pr" { 1 } else { wanted };
     if out.words.len() > wanted {
         return Err(format!(
             "`orch {cmd}` does not take `{}`",
@@ -480,6 +512,21 @@ fn parse(cmd: &str, args: &[String]) -> Result<Parsed, String> {
         ));
     }
     Ok(out)
+}
+
+/// A PR number as a person writes one: `123`, `#123`, or the PR's URL.
+fn pr_number(raw: &str) -> Result<u64, Failure> {
+    let raw = raw.trim();
+    let tail = raw.split_once("/pull/").map_or(raw, |(_, rest)| {
+        rest.split(['/', '?', '#']).next().unwrap_or("")
+    });
+    tail.trim_start_matches('#')
+        .parse::<u64>()
+        .ok()
+        .filter(|n| *n > 0)
+        .ok_or_else(|| {
+            format!("`{raw}` is not a PR number: write 123, #123 or the PR's URL").into()
+        })
 }
 
 // ---------------------------------------------------------------------------
@@ -1140,6 +1187,52 @@ fn run(cmd: &str, a: &Parsed) -> Result<String, Failure> {
                 },
             )
         }
+        "pr" => {
+            let add = a
+                .every("--add")
+                .into_iter()
+                .map(pr_number)
+                .collect::<Result<Vec<_>, _>>()?;
+            let remove = a
+                .every("--remove")
+                .into_iter()
+                .map(pr_number)
+                .collect::<Result<Vec<_>, _>>()?;
+            let out = http(
+                "POST",
+                &format!("{base}/api/session/{me}/link-prs"),
+                &token,
+                Some(
+                    &json!({
+                        "add": add,
+                        "remove": remove,
+                        "clear": a.has("--clear"),
+                        "session": a.words.first(),
+                    })
+                    .to_string(),
+                ),
+            )?;
+            let v = reply(&out)?;
+            let prs = v
+                .get("prs")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            if prs.is_empty() {
+                return Ok("no pull requests linked".into());
+            }
+            Ok(prs
+                .iter()
+                .map(|p| {
+                    let state = p.get("outcome").and_then(Value::as_str).unwrap_or("open");
+                    let n = p.get("number").and_then(Value::as_u64).unwrap_or(0);
+                    format!("#{n}  {state}  {}", str_at(p, "title"))
+                        .trim_end()
+                        .to_string()
+                })
+                .collect::<Vec<_>>()
+                .join("\n"))
+        }
         "kill" => {
             let child = &a.words[0];
             let out = http(
@@ -1420,6 +1513,33 @@ mod tests {
     /// Every command in the usage has help of its own, and that help names every
     /// flag it takes — otherwise a flag stays undocumented, which is how "the
     /// workspace must already exist" came to be learnable only by triggering it.
+    /// A PR number in each way a person writes one, and the flags repeat.
+    #[test]
+    fn a_pr_number_is_read_the_ways_people_write_it() {
+        assert_eq!(pr_number("123").unwrap(), 123);
+        assert_eq!(pr_number("#123").unwrap(), 123);
+        assert_eq!(pr_number("https://github.com/o/r/pull/123").unwrap(), 123);
+        assert_eq!(
+            pr_number("https://github.com/o/r/pull/123/files?x=1").unwrap(),
+            123
+        );
+        for bad in ["", "0", "abc", "https://github.com/o/r/issues/5"] {
+            assert!(pr_number(bad).is_err(), "{bad} was taken");
+        }
+        let a = parse("pr", &argv(&["--add", "5", "--add", "#6", "--clear"])).unwrap();
+        assert_eq!(a.every("--add"), ["5", "#6"]);
+        assert!(a.has("--clear"));
+        // One optional word, the spawned session's id.
+        assert_eq!(
+            parse("pr", &argv(&["abc", "--clear"])).unwrap().words,
+            ["abc"]
+        );
+        assert!(
+            parse("pr", &argv(&["abc", "def"])).is_err(),
+            "one session at a time"
+        );
+    }
+
     #[test]
     fn every_command_documents_its_own_flags() {
         for cmd in [

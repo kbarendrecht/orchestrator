@@ -155,7 +155,7 @@ pub fn origin_ok(
 /// A list rather than a growing chain of `ends_with`, because it has been
 /// outgrown once already — see the note in [`guard`].
 fn is_ask_route(path: &str) -> bool {
-    const ASK_ROUTES: [&str; 9] = [
+    const ASK_ROUTES: [&str; 10] = [
         "/ask",
         "/wait",
         // The worktree grant, asked by the agent and read by the push guard —
@@ -177,6 +177,9 @@ fn is_ask_route(path: &str) -> bool {
         // `orch tell`. Not `/tell`: that is the SPA's own route, which types into
         // any session, and a suffix match would hand it to every ask token.
         "/message",
+        // `orch pr`, on the asking session's own PRs. Not `/prs`, the SPA's route
+        // on any session, which this suffix does not match.
+        "/link-prs",
     ];
     path.starts_with("/api/session/") && ASK_ROUTES.iter().any(|s| path.ends_with(s))
 }
@@ -578,6 +581,61 @@ pub async fn rename_session(
     // Persists on the way out: `notify` writes `sessions.json` before it pushes.
     app.notify().await;
     Ok(Json(json!({ "session": id, "name": name })))
+}
+
+/// What to do to a session's PRs: add these numbers, take these off, or clear the
+/// lot. See `Inner::edit_session_prs`.
+#[derive(Deserialize)]
+pub struct PrEdit {
+    #[serde(default)]
+    pub add: Vec<u64>,
+    #[serde(default)]
+    pub remove: Vec<u64>,
+    #[serde(default)]
+    pub clear: bool,
+    /// `orch pr <id>`: a session the asking one spawned, instead of itself.
+    #[serde(default)]
+    pub session: Option<Uuid>,
+}
+
+/// Edit any session's PRs, from the app.
+pub async fn edit_prs(
+    State(app): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<PrEdit>,
+) -> ApiResult<serde_json::Value> {
+    let prs = app
+        .inner
+        .write()
+        .await
+        .edit_session_prs(id, &body.add, &body.remove, body.clear)?;
+    // Persists on the way out, like a rename.
+    app.notify().await;
+    Ok(Json(json!({ "session": id, "prs": prs })))
+}
+
+/// `orch pr`: the same edit, on the asking session's own PRs or on one it
+/// spawned, and no other: the rule `orch rename` and `orch kill` hold, so an
+/// ask token reaches only what that token brought into being.
+pub async fn edit_own_prs(
+    State(app): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<PrEdit>,
+) -> ApiResult<serde_json::Value> {
+    ask_token_ok(&app, id, &headers).await?;
+    let target = body.session.unwrap_or(id);
+    if target != id {
+        let inner = app.inner.read().await;
+        let s = inner
+            .sessions
+            .get(&target)
+            .ok_or_else(|| crate::state::no_such_session(target))?;
+        if s.spawned_by != Some(id) {
+            refuse!("{target} is not a session you spawned; edit its PRs in the app");
+        }
+    }
+    edit_prs(State(app), Path(target), Json(body)).await
 }
 
 /// The one rule for what a name may be, so the rail's rename and `orch rename`

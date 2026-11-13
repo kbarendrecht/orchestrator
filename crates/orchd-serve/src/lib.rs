@@ -737,6 +737,8 @@ fn daemon_router(app: Arc<AppState>) -> Router {
         .route("/api/session", post(api::new_session))
         .route("/api/session/:id/kill", post(api::kill_session))
         .route("/api/session/:id/rename", post(api::rename_session))
+        .route("/api/session/:id/prs", post(api::edit_prs))
+        .route("/api/session/:id/link-prs", post(api::edit_own_prs))
         .route(
             "/api/session/:id/out-of-main",
             post(relocate::move_out_of_main),

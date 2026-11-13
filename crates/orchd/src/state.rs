@@ -647,7 +647,7 @@ impl Inner {
             // A record from before the list knew only `pr`: that one is the start
             // of it, named once the poll or `session_prs_to_ask` answers for it.
             if s.prs.is_empty() {
-                if let Some(n) = s.pr {
+                if let Some(n) = s.pr.filter(|n| !s.prs_unlinked.contains(n)) {
                     s.prs.push(crate::model::SessionPr {
                         number: n,
                         title: String::new(),
@@ -671,6 +671,7 @@ impl Inner {
                 .filter(|p| {
                     heads.contains(&p.head_ref.as_str())
                         && !self.foreign_heads.contains_key(&p.number)
+                        && !s.prs_unlinked.contains(&p.number)
                 })
                 .collect();
             // Opened order is number order on one repo.
@@ -691,6 +692,15 @@ impl Inner {
                     }),
                 }
             }
+            /* A PR added by hand is on no branch the session held, so the match
+            above never names it: refreshed by number instead, from the same poll. */
+            for k in s.prs.iter_mut() {
+                if let Some(p) = self.prs.iter().find(|p| p.number == k.number) {
+                    k.title.clone_from(&p.title);
+                    k.url.clone_from(&p.url);
+                    k.outcome = None;
+                }
+            }
             // Number order is opened order on one repo, and the poll finds them one
             // at a time rather than oldest first.
             s.prs.sort_by_key(|k| k.number);
@@ -698,6 +708,64 @@ impl Inner {
                 s.pr = Some(p.number);
             }
         }
+    }
+
+    /// Add PRs to a session by number, take some off, or clear them all: the
+    /// app's PR menu and `orch pr`. The list afterwards, in number order.
+    ///
+    /// **Taking one off is remembered** (`Session::prs_unlinked`), because the
+    /// poll links every PR on a branch the session held and would put it straight
+    /// back. Adding takes a number off that list again. An added PR is named from
+    /// the poll when it is open; one the poll does not hold is named by
+    /// `session_prs_to_ask` on the next poll, the way an older record's is.
+    pub fn edit_session_prs(
+        &mut self,
+        id: crate::model::SessionId,
+        add: &[u64],
+        remove: &[u64],
+        clear: bool,
+    ) -> anyhow::Result<Vec<crate::model::SessionPr>> {
+        if add.iter().chain(remove).any(|n| *n == 0) {
+            anyhow::bail!("a PR number starts at 1");
+        }
+        let open = &self.prs;
+        let s = self
+            .sessions
+            .get_mut(&id)
+            .ok_or_else(|| no_such_session(id))?;
+        let gone: Vec<u64> = if clear {
+            s.prs.iter().map(|p| p.number).collect()
+        } else {
+            remove.to_vec()
+        };
+        for n in gone {
+            s.prs.retain(|p| p.number != n);
+            if !s.prs_unlinked.contains(&n) {
+                s.prs_unlinked.push(n);
+            }
+            if s.pr == Some(n) {
+                s.pr = None;
+            }
+        }
+        for &n in add {
+            s.prs_unlinked.retain(|k| *k != n);
+            if s.prs.iter().any(|p| p.number == n) {
+                continue;
+            }
+            let polled = open.iter().find(|p| p.number == n);
+            s.prs.push(crate::model::SessionPr {
+                number: n,
+                title: polled.map(|p| p.title.clone()).unwrap_or_default(),
+                url: polled.map(|p| p.url.clone()).unwrap_or_default(),
+                outcome: None,
+            });
+        }
+        s.prs.sort_by_key(|p| p.number);
+        // `pr` is the last one seen, for the archive row: the newest still linked.
+        if s.pr.is_none() {
+            s.pr = s.prs.last().map(|p| p.number);
+        }
+        Ok(s.prs.clone())
     }
 
     /// Live sessions' PRs that are neither in the poll nor known to have ended.
@@ -751,8 +819,9 @@ impl Inner {
     /// in number order, and into the ended list like any other.
     pub fn note_ended_on_head(&mut self, ended: crate::forge::EndedPr) {
         for s in self.sessions.values_mut() {
-            let held = s.branch.as_deref() == Some(ended.head_ref.as_str())
-                || s.branches.contains(&ended.head_ref);
+            let held = (s.branch.as_deref() == Some(ended.head_ref.as_str())
+                || s.branches.contains(&ended.head_ref))
+                && !s.prs_unlinked.contains(&ended.number);
             if held && !s.prs.iter().any(|p| p.number == ended.number) {
                 let at = s.prs.partition_point(|p| p.number < ended.number);
                 s.prs.insert(
@@ -6275,6 +6344,59 @@ mod tests {
         assert_eq!(prs.len(), 2, "an ended PR stays on the list");
         assert_eq!(prs[0].outcome, Some(crate::forge::PrOutcome::Merged));
         assert_eq!(prs[1].outcome, None, "the second is still open");
+    }
+
+    /// PRs edited by hand: one taken off stays off when the poll matches its
+    /// branch again, one added by number is kept and named from the poll, and
+    /// adding a removed one back links it again.
+    #[tokio::test]
+    async fn a_pr_taken_off_by_hand_stays_off_and_one_added_stays_on() {
+        let app = app().await;
+        let id = live_in_main(&app).await;
+        let mut inner = app.inner.write().await;
+        inner.sessions.get_mut(&id).expect("the session").branch = Some("story-1".into());
+        inner.prs = vec![
+            crate::forge::Pr {
+                head_ref: "story-1".into(),
+                title: "mine".into(),
+                ..crate::testutil::pr(11)
+            },
+            crate::forge::Pr {
+                head_ref: "someone-else".into(),
+                title: "theirs".into(),
+                ..crate::testutil::pr(20)
+            },
+        ];
+        inner.note_session_prs();
+        let numbers = |inner: &Inner| -> Vec<u64> {
+            inner.sessions[&id].prs.iter().map(|p| p.number).collect()
+        };
+        assert_eq!(numbers(&inner), [11]);
+
+        // Clear, and the poll's branch match does not bring it back.
+        inner.edit_session_prs(id, &[], &[], true).expect("cleared");
+        inner.note_session_prs();
+        assert!(numbers(&inner).is_empty(), "a cleared PR stays off");
+        assert_eq!(inner.sessions[&id].pr, None);
+
+        // Add one on another branch: kept, and named from the poll.
+        let after = inner
+            .edit_session_prs(id, &[20], &[], false)
+            .expect("added");
+        assert_eq!(after[0].title, "theirs");
+        inner.note_session_prs();
+        assert_eq!(numbers(&inner), [20], "an added PR survives the poll");
+
+        // Adding the removed one back links it again.
+        inner
+            .edit_session_prs(id, &[11], &[20], false)
+            .expect("swapped");
+        inner.note_session_prs();
+        assert_eq!(numbers(&inner), [11]);
+        assert!(
+            inner.edit_session_prs(id, &[0], &[], false).is_err(),
+            "no PR 0"
+        );
     }
 
     /// A PR that ended while the daemon was down is asked about once.

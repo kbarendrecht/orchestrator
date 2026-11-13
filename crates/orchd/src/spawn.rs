@@ -467,6 +467,8 @@ struct Carried {
     /// fork cuts its own branches and opens its own PRs.
     branches: Vec<String>,
     prs: Vec<crate::model::SessionPr>,
+    /// The PRs taken off it by hand, so a resume does not link them again.
+    prs_unlinked: Vec<u64>,
     /// What the conversation was told about overlaps and upstream, on both: a
     /// resume continues it and a fork replays it, so either already knows.
     told_overlaps: std::collections::HashSet<(String, String, bool)>,
@@ -528,6 +530,11 @@ impl Carried {
                 prev.branches.clone()
             },
             prs: if fork { Vec::new() } else { prev.prs.clone() },
+            prs_unlinked: if fork {
+                Vec::new()
+            } else {
+                prev.prs_unlinked.clone()
+            },
             told_overlaps: prev.told_overlaps.clone(),
             told_upstream: prev.told_upstream.clone(),
             // Resume only. A fork is a new conversation and started when it was
@@ -572,6 +579,7 @@ impl Carried {
         session.pr = self.pr;
         session.branches = self.branches;
         session.prs = self.prs;
+        session.prs_unlinked = self.prs_unlinked;
         session.told_overlaps = self.told_overlaps;
         session.told_upstream = self.told_upstream;
         session.agent = self.agent;

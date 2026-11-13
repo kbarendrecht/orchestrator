@@ -123,6 +123,9 @@ pub struct SessionRecord {
     pub branches: Vec<String>,
     #[serde(default)]
     pub prs: Vec<crate::model::SessionPr>,
+    /// See `Session::prs_unlinked`.
+    #[serde(default)]
+    pub prs_unlinked: Vec<u64>,
     /// Whether the last turn was cut off rather than finished.
     ///
     /// The one thing a resumed session cannot work out for itself: it comes back
@@ -204,6 +207,7 @@ impl SessionRecord {
             pr: s.pr,
             branches: s.branches.clone(),
             prs: s.prs.clone(),
+            prs_unlinked: s.prs_unlinked.clone(),
             interrupted: s.interrupted,
             left_work: s.left_work,
             had_a_turn: s.had_a_turn,
@@ -238,6 +242,7 @@ impl SessionRecord {
         s.pr = self.pr;
         s.branches = self.branches;
         s.prs = self.prs;
+        s.prs_unlinked = self.prs_unlinked;
         s.interrupted = self.interrupted;
         s.left_work = self.left_work;
         s.had_a_turn = self.had_a_turn;
@@ -1835,6 +1840,7 @@ mod tests {
                 pr: None,
                 branches: Vec::new(),
                 prs: Vec::new(),
+                prs_unlinked: Vec::new(),
                 interrupted: false,
                 left_work: None,
                 had_a_turn: false,

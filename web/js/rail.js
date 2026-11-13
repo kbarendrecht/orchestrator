@@ -2386,6 +2386,16 @@ function sessionRow(/** @type {import('../snapshot').SessionView} */ s, /** @typ
       ['id', null, s.conversation_id ? () => copyId(s) : null],
       ['branch', null, sessionBranch(s) ? () => copyBranch(s) : null],
     ]],
+    /* The PRs this session is linked to, by hand: the poll links each PR on a
+       branch it held, and that is wrong for a PR it only reviewed, or right for
+       one on a branch it never checked out. An unlink stays: the daemon skips it
+       on the next poll. `orch pr` is the same edit, from the agent. */
+    ['pull requests', null, [
+      ['link one\u2026', null, () => void linkPr(s)],
+      ...s.prs.map((p) => /** @type {import('./core.js').MenuItem} */ (
+        [`unlink #${p.number}${p.title ? ` ${short(p.title)}` : ''}`, null, () => void editPrs(s, { remove: [p.number] })])),
+      ['unlink all', 'bad', s.prs.length ? () => void editPrs(s, { clear: true }) : null],
+    ]],
     // The worktree, not the session: the row is the only place a worktree is
     // visible, so its workspace-level action lives here too.
     [moveLabel, null, moveDo],
@@ -2393,6 +2403,39 @@ function sessionRow(/** @type {import('../snapshot').SessionView} */ s, /** @typ
     ['delete', 'bad', () => deleteSession(s)],
   ]);
   return btn;
+}
+
+/** A PR title cut to fit a menu row. */
+const short = (/** @type {string} */ t) => (t.length > 40 ? `${t.slice(0, 39)}\u2026` : t);
+
+/** A PR number as a person writes one: `123`, `#123`, or the PR's URL. The same
+ *  three `orch pr` reads (`pr_number` in orch.rs). */
+export function prNumber(/** @type {string} */ raw) {
+  const text = raw.trim();
+  const tail = text.includes('/pull/') ? (text.split('/pull/')[1] ?? '').split(/[/?#]/)[0] ?? '' : text;
+  const n = Number(tail.replace(/^#/, ''));
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+/** Ask for a PR and link it to the session. */
+async function linkPr(/** @type {import('../snapshot').SessionView} */ s) {
+  const asked = await promptBox('Link a pull request', { placeholder: '123, #123 or the PR URL', ok: 'Link' });
+  if (asked == null) return;
+  const n = prNumber(asked);
+  if (n == null) return toast(`${asked.trim()} is not a PR number`, true);
+  await editPrs(s, { add: [n] });
+}
+
+/** Add, take off or clear a session's PRs (`Inner::edit_session_prs`). */
+async function editPrs(/** @type {import('../snapshot').SessionView} */ s,
+  /** @type {{ add?: number[], remove?: number[], clear?: boolean }} */ edit) {
+  try {
+    await callFor(s.id, `/api/session/${s.id}/prs`, edit);
+    toast(edit.clear ? 'pull requests unlinked'
+      : edit.add ? `linked #${edit.add.join(', #')}` : `unlinked #${(edit.remove ?? []).join(', #')}`);
+  } catch (e) {
+    toast(reason(e), true);
+  }
 }
 
 /** The conversation's id, as its agent knows it, on the clipboard.
