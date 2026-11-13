@@ -513,10 +513,7 @@ function renderAgentUpdate() {
   const safety = 'Sessions already running are unaffected \u2014 they finish on the '
     + 'version they started with, and the next session you open gets the new one.';
   go.title = failed ? run.tail
-    : restarting
-      ? 'Respawns each of them on the new version, under its own id and with its '
-        + 'conversation. One at its prompt goes now; one mid-turn goes when the turn '
-        + 'ends. The app, the drawer and every other session stay as they are.'
+    : restarting ? 'Restart when idle'
       : run ? `Running \`mise upgrade\`. ${safety}`
         : `Runs \`mise upgrade ${u?.tool}\`. ${safety}`;
   go.onclick = async () => {
