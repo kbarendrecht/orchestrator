@@ -2062,38 +2062,48 @@ pub(crate) fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<
             app.run_ended(exit).await;
         }
         if let Some(ws) = workspace {
-            // The drawer's processes belong to whoever was working here. Only once
-            // the workspace is empty, though: a worktree holds one session at a time
-            // now, but the swap's relocation briefly leaves the incoming one live
-            // beside the outgoing, and killing the shells then would pull them out
-            // from under the session that is staying.
-            if app.live_sessions_in(&ws).await.is_empty() {
-                // Through `stop_managed`, like every other path that means stop
-                // this: it runs the configured `stop_command` and escalates past a
-                // trapped `SIGHUP`, neither of which a bare `kill` here did.
-                let leaving = app.processes_to_stop(&ws).await;
-                for (name, pty) in &leaving {
-                    crate::managed::stop_managed(&app, &ws, name, pty).await;
-                }
-                if !leaving.is_empty() {
-                    tracing::info!(
-                        workspace = %ws,
-                        "stopped {} process(es) with the last session",
-                        leaving.len()
-                    );
-                }
-                // And main goes back to its base branch, so it stops holding a
-                // PR's branch hostage the moment you are done with it.
-                if ws == MAIN {
-                    crate::carry::park_main(&app).await;
-                }
-            }
-            // Closing Claude is a moment the changed-file pane must be right
-            // about: whatever the last turn left behind is now the whole story.
-            let _ = app.reconcile(&ws).await;
+            left_workspace(&app, &ws).await;
         }
         app.notify().await;
     });
+}
+
+/// What a workspace owes the session that just left it, however it left: the
+/// exit watcher, and the rail's delete and `orch kill`, which remove the record
+/// themselves (`api::forget_session`). Those used to race the watcher for it, and
+/// when the delete won, the watcher found no record and main kept the PR's branch
+/// and its processes. Safe to run twice: the second finds nothing left to stop
+/// and main already on its base.
+pub(crate) async fn left_workspace(app: &Arc<AppState>, ws: &str) {
+    // The drawer's processes belong to whoever was working here. Only once
+    // the workspace is empty, though: a worktree holds one session at a time
+    // now, but the swap's relocation briefly leaves the incoming one live
+    // beside the outgoing, and killing the shells then would pull them out
+    // from under the session that is staying.
+    if app.live_sessions_in(ws).await.is_empty() {
+        // Through `stop_managed`, like every other path that means stop
+        // this: it runs the configured `stop_command` and escalates past a
+        // trapped `SIGHUP`, neither of which a bare `kill` here did.
+        let leaving = app.processes_to_stop(ws).await;
+        for (name, pty) in &leaving {
+            crate::managed::stop_managed(app, ws, name, pty).await;
+        }
+        if !leaving.is_empty() {
+            tracing::info!(
+                workspace = %ws,
+                "stopped {} process(es) with the last session",
+                leaving.len()
+            );
+        }
+        // And main goes back to its base branch, so it stops holding a
+        // PR's branch hostage the moment you are done with it.
+        if ws == MAIN {
+            crate::carry::park_main(app).await;
+        }
+    }
+    // Closing Claude is a moment the changed-file pane must be right
+    // about: whatever the last turn left behind is now the whole story.
+    let _ = app.reconcile(ws).await;
 }
 
 /// Resolve the worktree a session actually landed in.

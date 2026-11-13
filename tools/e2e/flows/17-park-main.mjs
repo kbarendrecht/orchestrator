@@ -63,4 +63,17 @@ export async function run(t) {
     .filter((l) => l && !l.includes('.worktrees/'))
     .join('\n')
   assert.equal(dirty, '', 'main came home with work on it')
+
+  /* --- a delete parks main too ------------------------------------------------
+
+     The rail's delete removes the record itself, and the exit watcher, woken by
+     the same exit, then found no record and skipped the park: main kept the
+     branch. Both paths leave the workspace the same way now. */
+  git(t.repo, ['switch', '-qc', 'feature/deleted'])
+  const { session: third } = await t.api('POST', '/api/session', { workspace: 'main' })
+  await t.settled(third)
+  await t.api('POST', `/api/session/${third}/delete`)
+  await until('main to go back to its base after a delete', async () => branchOf(t.repo) === base, {
+    context: async () => `main is on ${branchOf(t.repo)}, wanted ${base}`,
+  })
 }

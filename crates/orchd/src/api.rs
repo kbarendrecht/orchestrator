@@ -795,13 +795,17 @@ pub async fn delete_session(
 /// [`discard_spawned`] so the agent's undo and the rail's delete cannot drift into
 /// meaning different things.
 async fn forget_session(app: &Arc<AppState>, id: SessionId) -> anyhow::Result<()> {
-    let (pty, archived) = {
+    let (pty, archived, workspace) = {
         let inner = app.inner.read().await;
         let s = inner
             .sessions
             .get(&id)
             .ok_or_else(|| crate::state::no_such_session(id))?;
-        (s.pty.clone(), s.archived_transcript.clone())
+        (
+            s.pty.clone(),
+            s.archived_transcript.clone(),
+            s.workspace.clone(),
+        )
     };
 
     if let Some(h) = pty {
@@ -817,6 +821,9 @@ async fn forget_session(app: &Arc<AppState>, id: SessionId) -> anyhow::Result<()
         let mut inner = app.inner.write().await;
         inner.sessions.remove(&id);
     }
+    // What the exit watcher does once a session leaves, which it skips when this
+    // removed the record first: the processes, and main back to its base.
+    crate::spawn::left_workspace(app, &workspace).await;
     if let Some(path) = archived {
         if let Err(e) = std::fs::remove_file(&path) {
             tracing::warn!("could not remove {}: {e}", path.display());
