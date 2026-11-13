@@ -94,7 +94,7 @@ function paintAgent() {
   fold.title = agent.folded ? 'Show the whole conversation again' : 'Collapse to a bar that keeps showing the session';
 }
 
-/** The header button and MOD Shift J: the agent on screen, or not. */
+/** The header button and MOD ;: the agent on screen, or not. */
 export function toggleAgent() {
   if (!state.open) return;
   if (!agent.open && !asker?.who()) return toast('no session here to ask', true);

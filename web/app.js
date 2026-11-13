@@ -1830,11 +1830,12 @@ function keymap(/** @type {KeyboardEvent} */ e) {
     FileView.seek();
     return;
   }
-  /* **The agent over the file (#52): MOD Shift J, from anywhere in it.** Shift,
-     because plain Ctrl+J is a newline in the agent's input and the card puts that
-     input on screen. Claimed in the terminal too, so the key that opened the card
-     also puts it away. */
-  if (appMod(e) && e.shiftKey && !e.altKey && (e.key === 'j' || e.key === 'J') && FileView.isOpen()) {
+  /* **The agent over the file (#52): MOD ;, from anywhere in it.** Not a letter,
+     because every Ctrl+letter is a key in the agent's input on Linux (Ctrl+J is
+     its newline), and Ctrl+; sends the terminal nothing at all. Claimed in the
+     terminal too, so the key that opened the card also puts it away. By `code`,
+     like MOD ., so it is the same key on a layout where `;` needs Shift. */
+  if (appMod(e) && !e.shiftKey && !e.altKey && e.code === 'Semicolon' && FileView.isOpen()) {
     e.preventDefault();
     FileView.toggleAgent();
     return;

@@ -3373,14 +3373,14 @@ try {
   await page.keyboard.press('Escape')
   check(await page.$$eval('#fvoverlay.on', (o) => o.length) === 1,
     'Escape in the card reaches the agent and leaves the file open')
-  await page.keyboard.press(chord('Shift+KeyJ'))
+  await page.keyboard.press(chord('Semicolon'))
   check(
     await page.evaluate(() => !document.body.classList.contains('fvagent')
       && document.getElementById('fvagent')?.getAttribute('aria-pressed') === 'false'),
-    'MOD Shift J puts the card away',
+    'MOD ; puts the card away',
   )
   // And closing the file takes the card with it, so it never floats over nothing.
-  await page.keyboard.press(chord('Shift+KeyJ'))
+  await page.keyboard.press(chord('Semicolon'))
 
   {
     /* The card is a window of its own: its header moves it, a corner resizes it,
