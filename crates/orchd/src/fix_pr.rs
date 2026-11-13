@@ -82,6 +82,27 @@ fn no(reason: String) -> Verdict {
 ///
 /// The refusal comes back as the error, verbatim: `fix-pr` refusals are written to
 /// be read by whoever asked.
+/// The guard table alone, with nothing claimed or written: what `start` would
+/// answer about this PR right now. Asked before a dirty tree is settled, so a
+/// press the table refuses commits nothing into the PR's branch first.
+pub async fn may_start(
+    app: &std::sync::Arc<crate::state::AppState>,
+    number: u64,
+) -> anyhow::Result<()> {
+    let inner = app.inner.read().await;
+    let pr = inner
+        .pr(number)
+        .ok_or_else(|| anyhow::anyhow!("PR #{number} is not in the current poll"))?;
+    match evaluate(&GuardInput {
+        pr,
+        automation: inner.automation.get(number),
+        viewer: inner.viewer.as_deref().unwrap_or_default(),
+    }) {
+        Verdict::No { reason } => anyhow::bail!("{reason}"),
+        _ => Ok(()),
+    }
+}
+
 pub async fn start(
     app: &std::sync::Arc<crate::state::AppState>,
     number: u64,

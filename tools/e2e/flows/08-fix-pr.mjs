@@ -146,4 +146,18 @@ export async function run(t) {
     () => t.api('POST', `/api/pr/${PR}/fix-pr`),
     /already has a fix-pr session running/,
   )
+
+  /* **And a refused press writes nothing first.** With the tree dirty and the
+     press saying "commit it", the commit used to land on the PR's branch before
+     the guard refused the run. The guard answers first now, and the work stays
+     uncommitted where it was. */
+  fs.writeFileSync(`${dir}/left-behind.txt`, 'somebody\'s work\n')
+  const before = git(dir, ['rev-parse', 'HEAD'])
+  await assert.rejects(
+    () => t.api('POST', `/api/pr/${PR}/fix-pr`, { dirty: 'commit' }),
+    /already has a fix-pr session running/,
+  )
+  assert.equal(git(dir, ['rev-parse', 'HEAD']), before, 'a refused press committed onto the PR branch')
+  assert.match(git(dir, ['status', '--porcelain']), /left-behind\.txt/, 'and the work is still there')
+  fs.rmSync(`${dir}/left-behind.txt`)
 }

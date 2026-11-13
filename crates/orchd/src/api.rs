@@ -3540,6 +3540,9 @@ pub async fn fix_pr(
             let inner = app.inner.read().await;
             pr_from_poll(&inner.prs, number)?.head_ref
         };
+        // The guards first: settling commits or banks into the PR's tree, and a
+        // run the table then refuses would have written there for nothing.
+        crate::fix_pr::may_start(&app, number).await?;
         crate::triage::settle_dirty(&app, number, &head, how).await?;
     }
     let session = crate::fix_pr::start(&app, number).await?;

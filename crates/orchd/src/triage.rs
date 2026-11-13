@@ -224,6 +224,21 @@ async fn may_push(app: &Arc<AppState>, pr: u64) -> Result<()> {
     }
 }
 
+/// Whether a review pass on this PR could start at all, asked before its tree is
+/// settled: `settle_dirty` commits or banks into the PR's tree, and a press the
+/// pass then refuses (a branch you may not push to, a fix run rewriting it) would
+/// have written there for nothing.
+pub(crate) async fn may_settle(app: &Arc<AppState>, pr: u64) -> Result<()> {
+    may_push(app, pr).await?;
+    if matches!(
+        app.inner.read().await.automation.get(pr),
+        Some(crate::model::PrAutomation::Running { .. })
+    ) {
+        bail!("a fix run is already rewriting PR #{pr}; wait for it to finish");
+    }
+    Ok(())
+}
+
 /// Hand `/orchd:<command> <pr>` to the live session on `head_ref`'s tree, if there
 /// is one, and say which session that was.
 ///

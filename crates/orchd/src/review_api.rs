@@ -34,6 +34,8 @@ pub async fn pr_handle_review(
         pr_from_poll(&inner.prs, number)?
     };
     if let Some(how) = body.and_then(|b| b.0.dirty) {
+        // Refused before anything is written into the PR's tree, not after.
+        crate::triage::may_settle(&app, number).await?;
         crate::triage::settle_dirty(&app, number, &pr.head_ref, how).await?;
     }
     let session =
