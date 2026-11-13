@@ -32,6 +32,10 @@ const HUGE = 512 * 1024;
 /** Files shown as a picture rather than as lines: what the daemon's image route
  *  serves, so the two cannot disagree about which files are pictures. */
 export const IMAGE = /\.(png|jpe?g|gif|webp|avif|svg|ico|bmp)$/i;
+
+/** A path no workspace holds, as the pane shows it: workspace files are
+ *  relative, and an outside or scratchpad file is the path as printed. */
+const isOutside = (/** @type {string} */ path) => path.startsWith('/') || path.startsWith('~/');
 /** Scope lines kept at the top at most. Past three they are a second header
  *  taking the pane, and the breadcrumbs name the rest. */
 const STICKY = 3;
@@ -741,9 +745,15 @@ export function create(on) {
     noCrumbs();
     if (on.path) on.path.textContent = file.path;
     if (on.where) on.where.textContent = 'preview · scripts on';
+    /* A page no workspace holds is previewed on a grant for that one file
+       (`preview::open`), so the frame loads it by its own name and nothing
+       beside it resolves. */
+    const outside = isOutside(file.path);
     let token;
     try {
-      ({ token } = await call('/api/preview', { workspace: view.ws, path: file.path }));
+      ({ token } = await call('/api/preview', outside
+        ? { path: file.path, outside: true }
+        : { workspace: view.ws, path: file.path }));
     } catch (e) {
       if (mine === view.seq) on.mount.replaceChildren(el('div', 'fnsay', reason(e)));
       return;
@@ -755,7 +765,8 @@ export function create(on) {
     frame.setAttribute('referrerpolicy', 'no-referrer');
     frame.title = file.path;
     frame.src = `${activeCheckout().base}/preview/${token}/`
-      + file.path.split('/').map(encodeURIComponent).join('/');
+      + (outside ? encodeURIComponent(file.path.split('/').pop() ?? '')
+        : file.path.split('/').map(encodeURIComponent).join('/'));
     on.mount.replaceChildren(frame);
   }
 
@@ -805,8 +816,8 @@ export function create(on) {
   const kind = () => {
     const path = view.file?.path ?? '';
     if (/\.(md|markdown)$/i.test(path)) return 'markdown';
-    // A preview runs on a workspace's token, and a scratchpad file has none.
-    if (/\.html?$/i.test(path) && view.ws) return 'html';
+    // A preview runs on a workspace's token, or on one for a single outside page.
+    if (/\.html?$/i.test(path) && (view.ws || isOutside(path))) return 'html';
     return null;
   };
 

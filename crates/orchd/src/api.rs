@@ -2987,15 +2987,11 @@ const PACKAGES: [&str; 10] = [
     "appex",
 ];
 
-/// `raw` as a folder that is safe to hand the file manager: absolute (or `~/`),
-/// existing, a directory, and no package anywhere along it. Canonical, so a link
-/// that points into a package is judged by where it lands.
-///
-/// **Not bounded by a workspace, and that is the point** (#56): an agent leaves
-/// its work in a temporary folder "somewhere" and prints the path. What keeps it
-/// narrow is the rest: only a folder, never a file, and only opened, never run.
-pub(crate) fn outside_folder(raw: &str) -> anyhow::Result<std::path::PathBuf> {
-    let raw = raw.trim();
+/// `raw` as an absolute path, with a leading `~/` expanded against `HOME`: the
+/// page has no `HOME` of its own, so the daemon is where a printed `~/x` becomes
+/// a path. Anything relative is refused, because outside a workspace there is
+/// nothing to be relative to.
+pub(crate) fn absolute_or_home(raw: &str) -> anyhow::Result<std::path::PathBuf> {
     let path = match raw.strip_prefix("~/") {
         Some(rest) => std::path::PathBuf::from(
             std::env::var_os("HOME")
@@ -3007,6 +3003,19 @@ pub(crate) fn outside_folder(raw: &str) -> anyhow::Result<std::path::PathBuf> {
     if !path.is_absolute() {
         anyhow::bail!("{raw} is not an absolute path");
     }
+    Ok(path)
+}
+
+/// `raw` as a folder that is safe to hand the file manager: absolute (or `~/`),
+/// existing, a directory, and no package anywhere along it. Canonical, so a link
+/// that points into a package is judged by where it lands.
+///
+/// **Not bounded by a workspace, and that is the point** (#56): an agent leaves
+/// its work in a temporary folder "somewhere" and prints the path. What keeps it
+/// narrow is the rest: only a folder, never a file, and only opened, never run.
+pub(crate) fn outside_folder(raw: &str) -> anyhow::Result<std::path::PathBuf> {
+    let raw = raw.trim();
+    let path = absolute_or_home(raw)?;
     let real = std::fs::canonicalize(&path).map_err(|_| anyhow::anyhow!("there is no {raw}"))?;
     if !real.is_dir() {
         anyhow::bail!("{raw} is not a folder");

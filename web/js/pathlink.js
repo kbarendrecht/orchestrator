@@ -91,12 +91,13 @@ function looksLikeAPath(s) {
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) return false;
   // Nothing but dots and separators: `.`, `..`, `...`, `/`.
   if (/^[./\\]+$/.test(s)) return false;
-  /* **A home path is refused rather than guessed at.** The page has no `$HOME` to
-     expand `~` with, and joining it onto the pty's directory makes
-     `<cwd>/~/.bashrc` — which passes every check after this one and names a file
-     that does not exist. Only a leading one: a trailing `~` is an editor's backup
-     and a real file. */
-  if (s.startsWith('~')) return false;
+  /* **A home path is the daemon's to expand.** The page has no `$HOME`, and
+     joining `~` onto the pty's directory makes `<cwd>/~/.bashrc`, a file that
+     does not exist; so `~/` is taken here and `locate` in `app.js` leaves it to
+     the daemon (`api::absolute_or_home`). `~user/` stays refused: nothing here
+     knows another user's home. A trailing `~` is an editor's backup and a real
+     file. */
+  if (s.startsWith('~') && !s.startsWith('~/')) return false;
   /* A slash is enough to be *asked about*, not to be a link: a branch
      (`chore/bump-deps`) and a slash command (`/implement`) have one too. The
      workspace's file list decides those, in [`matching`], because no rule over the

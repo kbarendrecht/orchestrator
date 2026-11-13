@@ -31,8 +31,13 @@ const MAX_BYTES: u64 = 16 * 1024 * 1024;
 
 #[derive(Deserialize)]
 pub struct OpenBody {
+    #[serde(default)]
     pub workspace: String,
     pub path: String,
+    /// `path` is a file no workspace holds, absolute or `~/`, and `workspace` is
+    /// ignored. See [`outside_file`].
+    #[serde(default)]
+    pub outside: bool,
 }
 
 #[derive(Serialize)]
@@ -47,6 +52,26 @@ pub async fn open(State(app): State<Arc<AppState>>, Json(b): Json<OpenBody>) -> 
     let lower = b.path.to_ascii_lowercase();
     if !(lower.ends_with(".html") || lower.ends_with(".htm")) {
         refuse!("only an .html file can be previewed");
+    }
+    if b.outside {
+        let raw = b.path.clone();
+        let Some(file) =
+            crate::proc::run_blocking("checking a page to preview", move || outside_file(&raw))
+                .await?
+        else {
+            refuse!("{} cannot be read", b.path);
+        };
+        return Ok(Json(Opened {
+            token: mint(
+                &app,
+                PreviewGrant {
+                    workspace: String::new(),
+                    page: b.path,
+                    page_ignored: false,
+                    outside: Some(file),
+                },
+            ),
+        }));
     }
     let Some(root) = app.workspace_path(&b.workspace).await else {
         refuse!("unknown workspace {}", b.workspace);
@@ -71,10 +96,18 @@ pub async fn open(State(app): State<Arc<AppState>>, Json(b): Json<OpenBody>) -> 
         workspace: b.workspace,
         page: b.path,
         page_ignored,
+        outside: None,
     };
+    Ok(Json(Opened {
+        token: mint(&app, grant),
+    }))
+}
+
+/// The token for `grant`, reused when the same page was opened before, so
+/// opening it again is not a new entry.
+fn mint(app: &AppState, grant: PreviewGrant) -> String {
     let mut previews = app.previews.lock().unwrap_or_else(|e| e.into_inner());
-    // One token per page, so opening the same file again is not a new entry.
-    let token = previews
+    previews
         .iter()
         .find(|(_, g)| **g == grant)
         .map(|(t, _)| t.clone())
@@ -82,8 +115,7 @@ pub async fn open(State(app): State<Arc<AppState>>, Json(b): Json<OpenBody>) -> 
             let t = crate::secret::random_token();
             previews.insert(t.clone(), grant);
             t
-        });
-    Ok(Json(Opened { token }))
+        })
 }
 
 /// One file of a previewed page.
@@ -101,33 +133,60 @@ pub async fn serve(
     let Some(grant) = grant else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let Some(root) = app.workspace_path(&grant.workspace).await else {
+    let read = if let Some(file) = grant.outside.clone() {
+        // The page alone, by its own name: nothing beside it is served.
+        let own = file.file_name().and_then(|n| n.to_str()) == Some(rel.as_str());
+        crate::proc::run_blocking("serving a preview file", move || {
+            own.then(|| read_capped(&file)).flatten()
+        })
+        .await
+    } else {
+        serve_from_workspace(&app, grant, rel.clone()).await
+    };
+    let Ok(Some(bytes)) = read else {
         return StatusCode::NOT_FOUND.into_response();
+    };
+    preview_response(&rel, bytes)
+}
+
+/// The bytes at `at` when it is a regular file no larger than [`MAX_BYTES`].
+fn read_capped(at: &Path) -> Option<Vec<u8>> {
+    let md = std::fs::metadata(at).ok()?;
+    if !md.is_file() || md.len() > MAX_BYTES {
+        return None;
+    }
+    std::fs::read(at).ok()
+}
+
+/// One file of a page a workspace holds, under [`servable`]'s rules.
+async fn serve_from_workspace(
+    app: &AppState,
+    grant: PreviewGrant,
+    rel: String,
+) -> anyhow::Result<Option<Vec<u8>>> {
+    let Some(root) = app.workspace_path(&grant.workspace).await else {
+        return Ok(None);
     };
     // The checkout is the bound; see `open` above.
     let shared = app.cfg.main_checkout.clone();
-    let path = rel.clone();
-    let read = crate::proc::run_blocking("serving a preview file", move || {
+    let path = rel;
+    crate::proc::run_blocking("serving a preview file", move || {
         if !servable(&path, &grant, |p| crate::search::is_ignored(&root, p)) {
             return None;
         }
         let at = crate::edit::resolve_in_workspace(&root, &path, &shared).ok()?;
-        let md = std::fs::metadata(&at).ok()?;
-        if !md.is_file() || md.len() > MAX_BYTES {
-            return None;
-        }
-        std::fs::read(&at).ok()
+        read_capped(&at)
     })
-    .await;
-    let Ok(Some(bytes)) = read else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
+    .await
+}
 
+/// A preview file's answer, with the headers that keep it sandboxed.
+fn preview_response(rel: &str, bytes: Vec<u8>) -> Response {
     let mut response = bytes.into_response();
     let headers = response.headers_mut();
     headers.insert(
         header::CONTENT_TYPE,
-        HeaderValue::from_static(content_type(&rel)),
+        HeaderValue::from_static(content_type(rel)),
     );
     /* **Sandboxed by the response too, not only by the frame.** Opened in a tab of
     its own, a preview URL would otherwise run with this daemon's origin, where a
@@ -280,6 +339,79 @@ pub async fn scratchpad_file(
         return StatusCode::NOT_FOUND.into_response();
     };
     let mut response = Json(serde_json::json!({ "content": content })).into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
+#[derive(Deserialize)]
+pub struct OutsideQuery {
+    /// As the agent printed it: absolute, or `~/`.
+    pub path: String,
+}
+
+/// `raw` as a file no workspace holds that the file pane may show: absolute or
+/// `~/`, resolved through links, a regular file, and no larger than
+/// [`MAX_BYTES`]. `None` for anything else.
+///
+/// **Read-only, and only ever shown.** An agent leaves a plan or a report outside
+/// every workspace (`~/development/claude-plans/...`) and prints the path; the
+/// pane used to refuse it as "outside this workspace". Nothing here writes, runs
+/// or hands a file to another program, and the page reading it is the trusted
+/// one, behind the same origin guard as every other route. The editor cannot
+/// open it: it writes to a workspace.
+pub(crate) fn outside_file(raw: &str) -> Option<std::path::PathBuf> {
+    let path = crate::api::absolute_or_home(raw.trim()).ok()?;
+    let at = std::fs::canonicalize(path).ok()?;
+    let md = std::fs::metadata(&at).ok()?;
+    (md.is_file() && md.len() <= MAX_BYTES).then_some(at)
+}
+
+/// A text file no workspace holds, as `/api/file` answers one. See
+/// [`outside_file`] for the bound. Refused when it is not UTF-8.
+pub async fn outside_text(method: axum::http::Method, Query(q): Query<OutsideQuery>) -> Response {
+    if content_type(&q.path).starts_with("image/") {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    // The underline check is a HEAD, one per printed path: answered without a read.
+    let head = method == axum::http::Method::HEAD;
+    let read = crate::proc::run_blocking("reading a file outside the workspaces", move || {
+        let at = outside_file(&q.path)?;
+        if head {
+            return Some(String::new());
+        }
+        String::from_utf8(std::fs::read(at).ok()?).ok()
+    })
+    .await;
+    let Ok(Some(content)) = read else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    if head {
+        return StatusCode::OK.into_response();
+    }
+    let mut response = Json(serde_json::json!({ "content": content })).into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
+/// An image no workspace holds, for the pane's `<img>`, under [`outside_file`]'s
+/// bound and with the CSP every image answer carries.
+pub async fn outside_image(Query(q): Query<OutsideQuery>) -> Response {
+    let kind = content_type(&q.path);
+    if !kind.starts_with("image/") {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let read = crate::proc::run_blocking("reading an image outside the workspaces", move || {
+        std::fs::read(outside_file(&q.path)?).ok()
+    })
+    .await;
+    let Ok(Some(bytes)) = read else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let mut response = image_response(kind, bytes);
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
@@ -620,7 +752,42 @@ mod tests {
             workspace: "wt".into(),
             page: page.into(),
             page_ignored,
+            outside: None,
         }
+    }
+
+    /// A file no workspace holds opens when it is a regular file, by an absolute
+    /// path or a `~/` one, and never when it is a folder, relative, or missing.
+    #[test]
+    fn an_outside_file_is_a_real_file_named_absolutely() {
+        let root = std::env::temp_dir().join(format!("orchd-outside-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("plan.html");
+        std::fs::write(&file, "<p>plan</p>").unwrap();
+        let real = std::fs::canonicalize(&file).unwrap();
+        assert_eq!(super::outside_file(file.to_str().unwrap()), Some(real));
+        assert_eq!(
+            super::outside_file(root.to_str().unwrap()),
+            None,
+            "a folder is not a file"
+        );
+        assert_eq!(
+            super::outside_file("plan.html"),
+            None,
+            "relative to nothing"
+        );
+        assert_eq!(
+            super::outside_file(root.join("gone.md").to_str().unwrap()),
+            None
+        );
+        // `~/` is expanded by the daemon, because the page has no HOME.
+        let home = std::fs::canonicalize(std::env::var_os("HOME").unwrap()).unwrap();
+        let mut entries = std::fs::read_dir(&home).unwrap().flatten();
+        if let Some(f) = entries.find(|e| e.path().is_file()) {
+            let name = f.file_name().into_string().unwrap();
+            assert!(super::outside_file(&format!("~/{name}")).is_some());
+        }
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

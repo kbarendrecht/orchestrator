@@ -512,6 +512,10 @@ pub struct PreviewGrant {
     /// Whether git ignores that page, which makes it build output: its own
     /// directory is then served even though git ignores it too.
     pub page_ignored: bool,
+    /// A page no workspace holds (`preview::outside_file`), resolved. Only that
+    /// file is served: its folder is somewhere an agent left it, not a site, so
+    /// nothing beside it is read. `workspace` and `page_ignored` are unused then.
+    pub outside: Option<std::path::PathBuf>,
 }
 
 /// How to rebuild a torn-down worktree so an archived session can be resumed (§2).

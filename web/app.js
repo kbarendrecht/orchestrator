@@ -1055,7 +1055,7 @@ const checkoutAt = (/** @type {string} */ checkout) =>
 /** @type {Map<string, { at: number, yes: Promise<boolean> }>} */
 const outsideFolders = new Map();
 const isOutsideFolder = (/** @type {string} */ checkout, /** @type {string} */ path) => {
-  if (!path.startsWith('/')) return Promise.resolve(false);
+  if (!path.startsWith('/') && !path.startsWith('~/')) return Promise.resolve(false);
   const key = `${checkout}\n${path}`;
   const kept = outsideFolders.get(key);
   if (kept && Date.now() - kept.at < 5_000) return kept.yes;
@@ -1067,6 +1067,28 @@ const isOutsideFolder = (/** @type {string} */ checkout, /** @type {string} */ p
 const openOutsideFolder = (/** @type {string} */ checkout, /** @type {string} */ path) =>
   void callOn(checkoutAt(checkout), '/api/open/folder', { path }).catch((e) => toast(reason(e), true));
 
+/* **And a file no workspace holds opens read-only in the viewer**: a plan or a
+   report an agent left in `~/development/claude-plans/` and printed. The daemon
+   expands `~/` and reads it (`preview::outside_file`); the editor stays shut,
+   because it writes to a workspace. `known` is the answer once it is in, for the
+   hover, which cannot wait. */
+/** @type {Map<string, { at: number, yes: Promise<boolean>, known?: boolean }>} */
+const outsideFiles = new Map();
+const outsidePath = (/** @type {string} */ path) => path.startsWith('/') || path.startsWith('~/');
+const isOutsideFile = (/** @type {string} */ checkout, /** @type {string} */ path) => {
+  if (!outsidePath(path)) return Promise.resolve(false);
+  const key = `${checkout}\n${path}`;
+  const kept = outsideFiles.get(key);
+  if (kept && Date.now() - kept.at < 5_000) return kept.yes;
+  /** @type {{ at: number, yes: Promise<boolean>, known?: boolean }} */
+  const entry = { at: Date.now(), yes: Promise.resolve(false) };
+  entry.yes = fetch(FileView.outsideUrl(checkoutAt(checkout).base, path), { method: 'HEAD' })
+    .then((r) => r.ok, () => false)
+    .then((ok) => { entry.known = ok; return ok; });
+  outsideFiles.set(key, entry);
+  return entry.yes;
+};
+
 Term.onPathClick(({ checkout, target, path, line, last, ev }) => {
   const state = snapshotOf(checkout) ?? snap;
   const where = ptyRoot(state, target);
@@ -1077,13 +1099,12 @@ Term.onPathClick(({ checkout, target, path, line, last, ev }) => {
     && void FileView.openScratch(scratch.workspace, scratch.session, scratch.abs, checkoutAt(checkout));
   if (!at) {
     if (scratch) return openScratch();
-    // Refused rather than opened and failed: `/etc/hosts` is a real file and not
-    // this workspace's, and a viewer that answers "no such file" would be lying
-    // about which of the two went wrong. A folder is the exception, and it opens
-    // in the file manager rather than here.
-    return void isOutsideFolder(checkout, path).then((folder) => (folder
-      ? openOutsideFolder(checkout, path)
-      : toast(`${path} is outside this workspace`, true)));
+    // A file opens read-only here, a folder in the file manager.
+    return void isOutsideFile(checkout, path).then(async (file) => {
+      if (file) return FileView.openOutside(where.workspace, path, checkoutAt(checkout));
+      if (await isOutsideFolder(checkout, path)) return openOutsideFolder(checkout, path);
+      toast(`${path} could not be found`, true);
+    });
   }
   /* **The file viewer, not the finder.** Opening one file used to take over the
      search overlay, which threw away whatever search was in it and answered a
@@ -1136,7 +1157,10 @@ Term.onPathCheck(({ checkout, target, paths }) => {
         .then(() => locate(state, where, path, checkout), () => null)
       : null);
     return Promise.resolve(found).then((hit) => {
-      if (!hit) return inScratch().then((ok) => ok || isOutsideFolder(checkout, path));
+      if (!hit) {
+        return inScratch().then(async (ok) => ok
+          || await isOutsideFile(checkout, path) || isOutsideFolder(checkout, path));
+      }
       // A workspace file by that name wins over the scratchpad shorthand.
       return FileView.known(at, hit.workspace, hit.rel).then((k) => k || inScratch());
     });
@@ -1153,8 +1177,9 @@ Term.onPathHover(({ checkout, target, path }) => {
   const hit = locate(state, where, path, checkout);
   return (hit && FileView.hoverFor(checkout, hit.workspace, hit.rel))
     ?? scratchpadOf(state, target, path)?.abs
-    // Underlined only once the daemon said it is a folder, so this is that answer.
-    ?? (path.startsWith('/') ? `${IS_MAC ? 'Open in Finder' : 'Open in the file manager'}: ${path}` : null);
+    ?? (outsideFiles.get(`${checkout}\n${path}`)?.known ? `${path} (read-only)` : null)
+    // Underlined only once the daemon said it is a file or a folder, so this is the folder.
+    ?? (outsidePath(path) ? `${IS_MAC ? 'Open in Finder' : 'Open in the file manager'}: ${path}` : null);
 });
 
 /* **The same path, with the other two things you can do to it.** A click opens
@@ -1287,6 +1312,8 @@ function ptyRoot(state, target) {
  *  @param {string} path
  *  @param {string} checkout the terminal's own checkout, by path */
 function locate(state, where, path, checkout) {
+  // The page has no HOME, so a `~/` path is the daemon's (`/api/outside/file`).
+  if (path.startsWith('~/')) return null;
   const abs = resolvePath(path.startsWith('/') ? path : `${where.cwd}/${path}`);
   const under = (/** @type {string} */ dir) => {
     const root = resolvePath(dir.startsWith('/') ? dir : `/${dir}`);

@@ -132,6 +132,12 @@ export const scratchUrl = (base, session, abs) =>
   `${base}/api/scratchpad/${Viewer.IMAGE.test(abs) ? 'image' : 'file'}`
   + `?session=${encodeURIComponent(session)}&path=${encodeURIComponent(abs)}`;
 
+/** Where a file no workspace holds is served (`preview::outside_text` and
+ *  `preview::outside_image`), on the daemon at `base`.
+ *  @param {string} base @param {string} path absolute or `~/` */
+export const outsideUrl = (base, path) =>
+  `${base}/api/outside/${Viewer.IMAGE.test(path) ? 'image' : 'file'}?path=${encodeURIComponent(path)}`;
+
 /** Open a file from a session's Claude Code scratchpad, which is outside every
  *  workspace and so has routes of its own (`preview::scratchpad_image` and
  *  `preview::scratchpad_file`). Shown in the same pane, held to the session's own
@@ -142,14 +148,29 @@ export const scratchUrl = (base, session, abs) =>
  *  @param {string} session
  *  @param {string} abs the path as the agent printed it
  *  @param {import('./core.js').Endpoint} [at] the daemon of the terminal it was printed in */
-export async function openScratch(ws, session, abs, at = activeCheckout()) {
+export const openScratch = (ws, session, abs, at = activeCheckout()) =>
+  openReadOnly(ws, abs, (base) => scratchUrl(base, session, abs), at);
+
+/** Open a file no workspace holds, read-only, the way a scratchpad file opens:
+ *  a plan or report an agent left somewhere and printed. The daemon expands
+ *  `~/` and holds the bound (`preview::outside_file`).
+ *
+ *  @param {string} ws the workspace of the pane it was printed in
+ *  @param {string} path absolute or `~/`, as printed
+ *  @param {import('./core.js').Endpoint} [at] */
+export const openOutside = (ws, path, at = activeCheckout()) =>
+  openReadOnly(ws, path, (base) => outsideUrl(base, path), at);
+
+/** @param {string} ws @param {string} abs @param {(base: string) => string} url
+ *  @param {import('./core.js').Endpoint} at */
+async function openReadOnly(ws, abs, url, at) {
   if (Editor.isOpen() && !await Editor.close()) return;
   if (state.open && state.ws !== ws && !await close()) return;
   /** @type {string | null} */
   let content = null;
   if (!Viewer.IMAGE.test(abs)) {
     try {
-      content = String((await getOn(at, scratchUrl('', session, abs))).content ?? '');
+      content = String((await getOn(at, url(''))).content ?? '');
     } catch {
       return toast(`${abs} could not be read`, true);
     }
@@ -162,7 +183,7 @@ export async function openScratch(ws, session, abs, at = activeCheckout()) {
   state.path = abs;
   borrowFocus('fileview');
   $('fvoverlay').classList.add('on');
-  if (content == null) viewer().image(abs, scratchUrl(at.base, session, abs));
+  if (content == null) viewer().image(abs, url(at.base));
   else viewer().showText(abs, content);
   // The same two steps `show` takes, or a handoff `.md` opened as source under a
   // button that said it was rendered, and the first press seemed to do nothing.

@@ -74,13 +74,13 @@ check(pathsIn('version v1.2 shipped').length === 0, 'a version number is not a f
 check(pathsIn('/ and . and ..').length === 0, 'separators alone name nothing')
 
 /* The three a review found, each of which had reached the page. `e.g` and `i.e`
-   are the shape of an abbreviation and of nothing anybody names a file; `~` is a
-   path the page cannot expand, and joining it onto the pty's directory makes
-   `<cwd>/~/.bashrc`, which passes every check after the matcher and names a file
-   that is not there. */
+   are the shape of an abbreviation and of nothing anybody names a file. A `~/`
+   path is found, and the daemon expands it, because joining it onto the pty's
+   directory makes `<cwd>/~/.bashrc`, a file that is not there. */
 check(pathsIn('see e.g. the rail').length === 0, 'e.g. is an abbreviation, not a file')
 check(pathsIn('i.e. that one').length === 0, 'and so is i.e.')
-check(pathsIn('open ~/.bashrc now').length === 0, 'a home path has no $HOME here to expand')
+check(one('open ~/notes/plan.html now') === '~/notes/plan.html:0:0', 'a home path is found, for the daemon to expand')
+check(pathsIn('open ~kars/plan.html now').length === 0, 'but not another user\'s home')
 check(one('edit main.c here') === 'main.c:0:0', 'but a one-letter extension on a real stem stays')
 check(one('see a/b/c.h line') === 'a/b/c.h:0:0', 'and a slash answers for itself')
 

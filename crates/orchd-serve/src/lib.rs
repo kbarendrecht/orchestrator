@@ -858,6 +858,8 @@ fn daemon_router(app: Arc<AppState>) -> Router {
             get(orchd::preview::scratchpad_image),
         )
         .route("/api/scratchpad/file", get(orchd::preview::scratchpad_file))
+        .route("/api/outside/file", get(orchd::preview::outside_text))
+        .route("/api/outside/image", get(orchd::preview::outside_image))
         .route("/api/workspace/:id/changed", get(api::workspace_changed))
         // Outside `/api/`: a sandboxed frame reads it, on a token of its own.
         .route("/preview/:token/*path", get(orchd::preview::serve))
