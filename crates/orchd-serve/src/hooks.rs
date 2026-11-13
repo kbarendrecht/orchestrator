@@ -711,10 +711,28 @@ pub async fn post_tool_use(
             // left to take it out — `Stop` does not fire on an interrupt. That is the
             // exact fault `TurnReason::Interrupted` exists to fix, reproduced through
             // a race. Only your next prompt (`UserPromptSubmit`) clears it.
-            if matches!(
-                s.state,
-                State::YourTurn { reason, .. } if reason != TurnReason::Interrupted
-            ) {
+            //
+            // **And only the session's own agent, finishing what the wait is
+            // about.** A question that opened beside a background agent read
+            // `working` within seconds: the agent's tools, and the finish of the
+            // tool that launched it, all arrive here while the question is still
+            // up. A subagent's tool never lifts a wait, and a question or a
+            // permission prompt that named its tool is lifted by that tool alone.
+            let lifts = match s.state {
+                State::YourTurn { reason, .. } if reason != TurnReason::Interrupted => {
+                    payload.agent_id.is_none()
+                        && match (&s.waits_on_tool, reason) {
+                            (
+                                Some(tool),
+                                TurnReason::AskedAQuestion | TurnReason::NeedsPermission,
+                            ) => payload.tool_name.as_deref() == Some(tool.as_str()),
+                            _ => true,
+                        }
+                }
+                _ => false,
+            };
+            if lifts {
+                s.waits_on_tool = None;
                 s.set_state(State::Working);
                 changed = true;
             }
@@ -752,6 +770,14 @@ fn permission_reason(message: Option<&str>) -> TurnReason {
     }
 }
 
+/// The tool a permission prompt names: "Claude needs your permission to use
+/// Bash" is `Bash`. `None` for a message that names none.
+fn waited_tool(message: Option<&str>) -> Option<String> {
+    let rest = message?.split("to use ").nth(1)?;
+    let tool = rest.split_whitespace().next()?.trim_end_matches(['.', ',']);
+    (!tool.is_empty()).then(|| tool.to_string())
+}
+
 pub async fn notification(
     AxState(app): AxState<Arc<AppState>>,
     AxPath(kind): AxPath<String>,
@@ -766,7 +792,17 @@ pub async fn notification(
         "permission_prompt" => permission_reason(payload.message.as_deref()),
         _ => TurnReason::TurnComplete,
     };
-    app.with_session(id, |s| s.wait_for(reason)).await;
+    let tool = (kind == "permission_prompt")
+        .then(|| waited_tool(payload.message.as_deref()))
+        .flatten();
+    app.with_session(id, |s| {
+        s.wait_for(reason);
+        // Only when this prompt is the wait, not one `wait_for` left in place.
+        if matches!(s.state, State::YourTurn { reason: r, .. } if r == reason) {
+            s.waits_on_tool = tool;
+        }
+    })
+    .await;
     app.notify().await;
     // An idle prompt is a turn that is over, `Stop` or not.
     app.deliver_inbox(id).await;
@@ -2207,6 +2243,86 @@ mod tests {
         );
         let retry = pre_edit(AxState(app.clone()), headers, Json(patch("src/a.rs"))).await;
         assert!(reason(retry).is_none(), "and the retry goes through");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A question asked beside a background agent stays a question until it is
+    /// answered: neither the background agent's tools nor the finish of the tool
+    /// that launched it lift it, and the question tool's own finish does.
+    #[tokio::test]
+    async fn a_question_stays_open_while_a_background_agent_works() {
+        let dir = std::env::temp_dir().join(format!("orchd-hooks-ask-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let app = orchd::testutil::app_at(&dir, "");
+        let id = uuid::Uuid::new_v4();
+        {
+            let mut inner = app.inner.write().await;
+            let mut s = Session::new(id, MAIN.to_string(), dir.clone(), None);
+            s.set_state(State::Working);
+            inner.sessions.insert(id, s);
+        }
+        let mut headers = HeaderMap::new();
+        headers.insert("x-orch-session", id.to_string().parse().unwrap());
+        let asked = || async {
+            matches!(
+                app.inner.read().await.sessions.get(&id).unwrap().state,
+                State::YourTurn {
+                    reason: TurnReason::AskedAQuestion,
+                    ..
+                }
+            )
+        };
+        let _ = notification(
+            AxState(app.clone()),
+            AxPath("permission_prompt".to_string()),
+            headers.clone(),
+            Json(HookPayload {
+                message: Some("Claude needs your permission to use AskUserQuestion".into()),
+                ..HookPayload::default()
+            }),
+        )
+        .await;
+        assert!(asked().await, "the prompt is a question");
+        let finish = |tool: &str, agent: Option<&str>| HookPayload {
+            tool_name: Some(tool.into()),
+            agent_id: agent.map(Into::into),
+            ..HookPayload::default()
+        };
+        let _ = post_tool_use(
+            AxState(app.clone()),
+            headers.clone(),
+            Json(finish("Bash", Some("a-sub"))),
+        )
+        .await;
+        assert!(asked().await, "a background agent's tool does not lift it");
+        let _ = post_tool_use(
+            AxState(app.clone()),
+            headers.clone(),
+            Json(finish("Agent", None)),
+        )
+        .await;
+        assert!(
+            asked().await,
+            "nor does the tool that launched it, finishing beside it"
+        );
+        let _ = post_tool_use(
+            AxState(app.clone()),
+            headers,
+            Json(finish("AskUserQuestion", None)),
+        )
+        .await;
+        assert!(
+            matches!(
+                app.inner.read().await.sessions.get(&id).unwrap().state,
+                State::Working
+            ),
+            "answering it does"
+        );
+        assert_eq!(
+            waited_tool(Some("Claude needs your permission to use Bash")).as_deref(),
+            Some("Bash")
+        );
+        assert_eq!(waited_tool(Some("Claude is waiting for your input")), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

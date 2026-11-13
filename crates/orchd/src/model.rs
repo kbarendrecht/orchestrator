@@ -701,6 +701,12 @@ pub struct Session {
     /// `Inner::note_session_prs` would link them again on the next poll, so it
     /// skips these; adding one back takes it off this list.
     pub prs_unlinked: Vec<u64>,
+    /// The tool a question or a permission prompt is waiting on, read off the
+    /// prompt's own message ("… permission to use AskUserQuestion"). Only that
+    /// tool finishing lifts the wait: a tool started beside it, or a background
+    /// agent's, finishes while the question is still open. Memory only, like the
+    /// state it qualifies.
+    pub waits_on_tool: Option<String>,
     /// The session whose `orch new` created this one.
     ///
     /// What makes `orch kill` an undo rather than a remote control: the ask token
@@ -857,6 +863,7 @@ impl Session {
             branches: Vec::new(),
             prs: Vec::new(),
             prs_unlinked: Vec::new(),
+            waits_on_tool: None,
             spawned_by: None,
             spawn_cut_worktree: false,
             launch: Default::default(),
@@ -933,6 +940,12 @@ impl Session {
     }
 
     pub fn set_state(&mut self, state: State) {
+        // The tool a wait was on means nothing once the wait is over, however it
+        // ended: a prompt typed instead of an answer would leave it to hold the
+        // next prompt to the wrong tool.
+        if !matches!(state, State::YourTurn { .. }) {
+            self.waits_on_tool = None;
+        }
         // A turn in flight is a turn that can be lost: closing the app or killing
         // the process takes whatever the agent was part-way through with it. Only
         // a turn that actually ends clears it — `Ready` deliberately does not,
