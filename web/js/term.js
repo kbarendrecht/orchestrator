@@ -307,6 +307,11 @@ function linkPaths(term, checkout, target) {
           leave: hideTip,
           activate: (/** @type {MouseEvent} */ ev) => {
             hideTip();
+            /* **The main button only.** xterm activates a link on mouse-up for any
+               button, so a right-click ran the click's action under the menu it
+               opened, and for a folder outside every workspace that is the file
+               manager: a window per right-click, page-check's included. */
+            if (ev.button !== 0) return;
             if (Math.hypot(ev.clientX - down.x, ev.clientY - down.y) > DRAG_PX) return;
             ev.preventDefault();
             if (h.kind === 'url') { openUrl(checkout, h.url); return; }

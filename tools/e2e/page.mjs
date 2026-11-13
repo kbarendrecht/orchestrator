@@ -3154,17 +3154,32 @@ try {
     check(items.length === 2 && /Finder|file manager/.test(items[0] ?? '') && items[1] === 'Copy path',
       `and its menu opens it in the file manager or copies it, got ${JSON.stringify(items)}`)
     await page.keyboard.press('Escape')
+    /* And the right-click opened nothing by itself. xterm activates a link on any
+       button, so it used to hand the folder to the file manager under the menu:
+       a real window on the desktop of whoever ran this. */
+    await page.waitForTimeout(500)
+    check(!t.log().includes(`handed the folder ${outside}`),
+      'the right-click only opens the menu, never the folder')
   }
   const fileOut = path.join(outside, 'report.txt')
   await focusTerm()
   await page.keyboard.type(`printf 'wrote %s too\\n' ${fileOut}`)
   await page.keyboard.press('Enter')
   const fileAt = await pointAt(`wrote ${fileOut} too`, 6, 6 + fileOut.length)
-  await page.mouse.move(fileAt.x, fileAt.y + 120)
-  await page.mouse.move(fileAt.x, fileAt.y)
-  await page.waitForTimeout(1500)
-  check(!(await page.$('#drawerbody .termhost:not([hidden]) .xterm-cursor-pointer')),
-    'a file outside every workspace is not underlined: only a folder may be opened from out there')
+  /* **And a file out there opens read-only in the viewer**: a plan an agent left
+     outside every workspace and printed. Read by the daemon (`/api/outside/file`),
+     with the editor shut, because it writes to a workspace. */
+  const fileLinked = await hoverLink(fileAt).then(() => true, () => false)
+  check(fileLinked, 'a file outside every workspace is underlined')
+  if (fileLinked) {
+    await page.mouse.click(fileAt.x, fileAt.y)
+    const shown = await page.waitForFunction((want) => {
+      if (document.getElementById('fvpath')?.textContent !== want) return null
+      return { readOnly: !!document.getElementById('fvedit')?.hidden }
+    }, fileOut, { timeout: 5000 }).then((h) => h.jsonValue()).catch(() => null)
+    check(!!shown && shown.readOnly, `and a click shows it read-only, got ${JSON.stringify(shown)}`)
+    await page.click('#fvclose').catch(() => {})
+  }
   fs.rmSync(outside, { recursive: true, force: true })
   await t.api('POST', `/api/process/${folderShell}/close`).catch(() => {})
 
@@ -3319,6 +3334,7 @@ try {
     `a row offers its path and line, got ${JSON.stringify(offered)}`)
   await page.keyboard.press('Escape')
   await page.keyboard.press('Escape')
+
 
   /* --- a worktree being cut sits where it will land ------------------------- */
 
