@@ -4263,6 +4263,10 @@ pub struct SessionView {
     /// Every PR this session opened, oldest first. The rail names the worst of
     /// them and counts the rest; the pane header draws one chip each.
     pub prs: Vec<crate::model::SessionPr>,
+    /// The PRs taken off this session by hand (`Session::prs_unlinked`), so the
+    /// page's own fallback to the workspace's PR does not draw one of them back.
+    #[cfg_attr(any(test, feature = "test-util"), ts(type = "Array<number>"))]
+    pub prs_unlinked: Vec<u64>,
     /// Whether this session still owes you the rest of a turn. The nudge is only
     /// true of these; every other resumed session is sitting at its prompt done.
     pub interrupted: bool,
@@ -4327,6 +4331,7 @@ impl SessionView {
             forked_from: s.forked_from,
             pr: s.pr,
             prs: s.prs.clone(),
+            prs_unlinked: s.prs_unlinked.clone(),
             interrupted: s.interrupted,
             restart_queued: s.restart_queued,
             inbox: s.inbox.len(),

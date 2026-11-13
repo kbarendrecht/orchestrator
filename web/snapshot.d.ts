@@ -442,6 +442,11 @@ pr: number | null,
  */
 prs: Array<SessionPr>, 
 /**
+ * The PRs taken off this session by hand (`Session::prs_unlinked`), so the
+ * page's own fallback to the workspace's PR does not draw one of them back.
+ */
+prs_unlinked: Array<number>, 
+/**
  * Whether this session still owes you the rest of a turn. The nudge is only
  * true of these; every other resumed session is sitting at its prompt done.
  */

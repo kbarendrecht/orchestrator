@@ -2334,7 +2334,10 @@ function prOf(/** @type {import('../snapshot').SessionView} */ s) {
     const open = s.prs.map((k) => (state.prs || []).find((p) => p.number === k.number));
     return open.filter((p) => !!p).sort((a, b) => prRank(a) - prRank(b))[0] || null;
   }
-  return (state.prs || []).find((p) => p.workspace === s.workspace) || null;
+  // Not one you took off: "unlink all" left `prs` empty, and this fallback drew
+  // the workspace's PR straight back onto the row.
+  return (state.prs || [])
+    .find((p) => p.workspace === s.workspace && !s.prs_unlinked.includes(p.number)) || null;
 }
 
 /** The PR this session's work ended on, if one did.
@@ -2363,7 +2366,7 @@ function endedOf(/** @type {import('../snapshot').SessionView} */ s) {
     }
     return null;
   }
-  return ended.find((p) => p.workspace === s.workspace) || null;
+  return ended.find((p) => p.workspace === s.workspace && !s.prs_unlinked.includes(p.number)) || null;
 }
 
 /** Whether this session has a PR at all — open or ended.
