@@ -467,13 +467,15 @@ struct Carried {
     forked_from: Option<SessionId>,
     /// The PR this conversation was about, so a resume does not drop it before the
     /// next poll writes it back — and an archived one is never polled again.
-    /// Not carried on a fork: a fork cuts its own branch, so its PR is its own.
+    /// Carried on a fork too, with `prs` and `prs_unlinked`: the fork keeps the
+    /// branch, and the PRs on it come with it (see `Carried::from`).
     pr: Option<u64>,
-    /// Resume only, for the reason `pr` is: the list is the conversation's, and a
-    /// fork cuts its own branches and opens its own PRs.
+    /// Resume only: the branches the parent held before are its history, and a
+    /// fork cuts its own branches from here.
     branches: Vec<String>,
     prs: Vec<crate::model::SessionPr>,
-    /// The PRs taken off it by hand, so a resume does not link them again.
+    /// The PRs taken off it by hand, so neither a resume nor a fork links them
+    /// again.
     prs_unlinked: Vec<u64>,
     /// What the conversation was told about overlaps and upstream, on both: a
     /// resume continues it and a fork replays it, so either already knows.
@@ -535,18 +537,20 @@ impl Carried {
             // `spawn_session` sets that from the `Source`. This carries the fact
             // for a resume of a session that was already a fork.
             forked_from: if fork { None } else { prev.forked_from },
-            pr: if fork { None } else { prev.pr },
+            /* **The PRs go wherever the branch goes, a fork included.** A fork
+            carries `branch` (above), so the poll credits it every PR on that
+            branch: a fork that started with none got the parent's back, unlinks
+            and all, and the PR row named the fork as the newest. The relocate
+            fallback is a fork that is meant to be the same conversation, which is
+            where that showed. `branches` stays the parent's history alone. */
+            pr: prev.pr,
             branches: if fork {
                 Vec::new()
             } else {
                 prev.branches.clone()
             },
-            prs: if fork { Vec::new() } else { prev.prs.clone() },
-            prs_unlinked: if fork {
-                Vec::new()
-            } else {
-                prev.prs_unlinked.clone()
-            },
+            prs: prev.prs.clone(),
+            prs_unlinked: prev.prs_unlinked.clone(),
             told_overlaps: prev.told_overlaps.clone(),
             told_upstream: prev.told_upstream.clone(),
             // Resume only. A fork is a new conversation and started when it was
@@ -3094,9 +3098,10 @@ mod tests {
             next.forked_from.is_none(),
             "spawn_session sets this from the Source"
         );
-        assert!(
-            next.pr.is_none(),
-            "a fork cuts its own branch, so its PR is its own"
+        assert_eq!(
+            next.pr,
+            Some(41),
+            "a fork keeps the parent's branch, so its PRs and unlinks come with it"
         );
         assert_ne!(next.created_at, began, "a fork started when it was forked");
         // And the one that does: a fork replays the parent's turns, so it opens on
