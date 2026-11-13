@@ -123,15 +123,53 @@ this file, which churned it from every build; that feature is gone.
 
   **The first version**, with the window open:
   - The host pairs with a relay (v2, QR in the window) and registers one machine.
-  - It registers RPC methods for the PWA: a snapshot of the rail, the open
-    questions and the PR rows, and the verbs to answer one and to send a line.
+  - It registers RPC methods for the PWA and nothing else: `orchd.snapshot` (the
+    inbox: sessions, open questions, permission prompts, PR rows),
+    `orchd.answer` (an ask-box option, with text when the option is `free`),
+    `orchd.permit` (allow or deny, with an optional reason), `orchd.send` (a
+    line to an idle session) and `orchd.fixPr`.
   - **A line sent to a blocked session is refused, and the phone is told why.**
     Text typed into a permission prompt or the ask box answers it — Herdr's rule,
     for Herdr's reason.
+  - **Permission prompts are answered from the phone** (decided 2026-11-13), by
+    keystrokes, because a hook may not wait for a decision ("Hooks are observers,
+    not gatekeepers", `docs/traps/daemon.md`). The verbs and their limits are in
+    the two measured sections below.
   - A push when a session goes blocked or done, with neutral text.
-  - The PWA: link to an account (or create one), list, answer, send.
+  - The PWA: link to an account (or create one), the inbox, the cards.
   - Each live session is also a Happy session, so the Happy app sees the
     transcript too. That half is cheap, and the spike already did it.
+
+  **The first screen (brief confirmed 2026-11-13).** Operate, not persuade: you
+  arrive from a push with ten seconds, and success is an agent unblocked in two
+  taps when an option fits.
+  - **The desktop's visual language, not a new one**: the near-black surfaces,
+    amber for needs-you, teal working, green ok, red failing, the PR ring on the
+    dot, the checkout badges, Plex Sans and Plex Mono, and `stateLabel`'s words.
+  - **One inbox across every checkout**, ordered by need: needs you (a question or
+    a permission prompt), failing, turn complete and not yet seen, working (one
+    line each, folded when there are many), then PR rows. A row is the badge, the
+    name, the state, the age, and one line of context — the question, or the last
+    line of the agent's answer.
+  - **A row opens in place into a card**; no pages. Controls sit in the lower half
+    where a thumb reaches, at least 44px. Three cards: a *question* (its detail
+    folded, the options as full-width buttons with their `sub` lines, a `free`
+    option opening a field above the keyboard); a *permission* (the tool and what
+    it wants, Allow and Deny, Deny taking an optional reason); an *idle session*
+    (a send-line field, absent on a blocked one so a line cannot answer a prompt
+    by accident).
+  - **PR rows carry two verbs**, open on GitHub and fix PR, the second confirmed
+    once because it starts a run. No merge from the phone.
+  - **States**: not linked (link or create an account); the host offline ("the
+    desktop is closed", with the last contact; the list greyed and nothing
+    sendable); empty ("nothing needs you", with the working count); an answer
+    pending until the host confirms, and handed back to the card on an error so
+    it is never lost. Ranges: up to about 30 sessions over one to four
+    checkouts; a question can be long and carry a diff.
+  - **Not on it**: the transcript, the terminal, the diff, starting a session,
+    images.
+  - The PWA holds the master secret, so it is static, carries no third-party
+    script, and ships a strict CSP. Dark theme only.
 
   **The permission prompt, measured on Claude Code 2.1.318 (2026-11-13).** A
   session in `default` mode was asked for a `touch` and for a `Write`, with every
@@ -160,7 +198,7 @@ this file, which churned it from every build; that feature is gone.
     hooks alone leave a stale prompt after a deny at the desk. A stale "Allow" then
     types a bare `1` into the prompt box — not submitted, but left there.
 
-  So the v1 verbs: **Allow** sends `1`. **Deny** sends `Esc`, and a reason, if
+  So the v1 verbs, accepted: **Allow** sends `1`. **Deny** sends `Esc`, and a reason, if
   given, follows as the next line, which costs an interrupted turn and needs no
   screen. Deny-and-continue (`Tab` to amend) waits on either a screen parser or a
   reliable option count, and so does a guard against the stale prompt.
@@ -186,6 +224,27 @@ this file, which churned it from every build; that feature is gone.
   the v1 verbs (`1`, `Esc`) rather than guessing an option number. With it,
   deny-with-a-reason becomes "No", `Tab`, text, `Enter` — no interrupted turn —
   and a stale prompt is refused instead of typed into.
+
+  **Build order**, each step useful on its own:
+  1. **`PermissionRequest` for Claude Code.** orchd registers it only for Codex
+     today; the card's content (`tool_name`, `tool_input`) is only there.
+  2. **A `vt100` parser beside `RingBuffer`** in `crates/orchd-base/src/pty.rs`,
+     agent ptys only, with the menu scan and its fixture tests. The fixtures are
+     recorded rather than written: `claude --model haiku --permission-mode
+     default` in a 140x40 tmux pane with `tmux pipe-pane -o 'cat >> raw.bin'`,
+     asked for a Bash `touch` and for a `Write`, copied while each menu is up, once
+     more with `CLAUDE_CODE_NO_FLICKER=1`, and once after the prompt is answered
+     (no menu). The first recordings were made in a scratch dir and not kept.
+  3. **The host's relay client in Rust**: v2 pairing with a QR in the window, its
+     own key in the config dir, the machine, the RPC methods above, the push.
+     Tested against a fake relay for the encryption and the framing, with
+     `packages/happy-android/crypto/` as the reference to port from.
+  4. **The PWA**, to the brief above. The mockup first, shown as an artifact,
+     because the person this is for reads it on a phone.
+  5. **Mirroring sessions into the Happy app**, last, because the PWA does not
+     need it.
+  Before the public relay is offered to anybody else: the issue on
+  `slopus/happy` described above.
 
   Not in it: starting a session from the phone (`spawnSession` on the machine,
   which the host can route because it knows every checkout), images, and running
