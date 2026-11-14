@@ -925,8 +925,12 @@ function renamedFrom(/** @type {string | null} */ path) {
   return f?.status.startsWith('R') ? f.old_path : null;
 }
 
-function renderDiff() {
+/** Draw the open file. `stay` keeps the view where it is, for a fold opening:
+ *  that is not a move between changes, and emptying the body drops its scroll
+ *  to the top, after which `markCursor` would centre the current change. */
+function renderDiff(stay = false) {
   const body = $('diffbody');
+  const top = body.scrollTop;
   body.replaceChildren();
   body.className = 'diff' + (diffState.split ? ' split' : '');
   const f = diffState.file;
@@ -975,7 +979,7 @@ function renderDiff() {
     return note(foldBar(f.hunks.flatMap((h) => h.rows), 'generated',
       'A lockfile, or marked linguist-generated in .gitattributes', () => {
         diffState.openGenerated = true;
-        renderDiff();
+        renderDiff(true);
         // Not parsed while it was one line: nothing on screen needed it.
         void askStructure(path);
       }));
@@ -997,9 +1001,12 @@ function renderDiff() {
     if (diffState.split) push3(lineEl(r, 'old'), lineEl(r, 'new'));
     else body.appendChild(lineEl(r, 'new'));
   };
-  /** The unchanged lines between two hunks, as many as the fold shows. */
+  /** The unchanged lines between two hunks, as many as the fold shows. The
+   *  heading goes straight under the bar, because it names what the fold still
+   *  hides: drawn after the gap, it sat between the opened lines and the change. */
   const drawGap = (/** @type {number} */ idx, /** @type {number} */ oldStart,
-    /** @type {number} */ newStart, /** @type {number} */ count) => {
+    /** @type {number} */ newStart, /** @type {number} */ count,
+    /** @type {HTMLElement | null} */ heading = null) => {
     if (count <= 0) return;
     const lines = diffState.lines;
     if (!lines) {
@@ -1011,6 +1018,7 @@ function renderDiff() {
         void loadFile(diffState.path ?? '');
       };
       body.appendChild(b);
+      if (heading) body.appendChild(heading);
       return;
     }
     const seen = diffState.reveal.get(idx) ?? { top: 0, bottom: 0 };
@@ -1026,7 +1034,7 @@ function renderDiff() {
     const hidden = count - seen.top - seen.bottom;
     const show = (/** @type {number} */ top, /** @type {number} */ bottom) => {
       diffState.reveal.set(idx, { top: seen.top + top, bottom: seen.bottom + bottom });
-      renderDiff();
+      renderDiff(true);
     };
     const bar = el('div', 'fold');
     bar.title = 'Click to show them all';
@@ -1043,6 +1051,7 @@ function renderDiff() {
     if (idx < f.hunks.length) bar.appendChild(step('↑ 20', 'Show 20 more above the change below', () => show(0, 20)));
     bar.appendChild(el('span', null, `⋯ ${hidden} unchanged line${hidden === 1 ? '' : 's'}`));
     body.appendChild(bar);
+    if (heading) body.appendChild(heading);
     for (let k = count - seen.bottom; k < count; k++) drawContext(row(k));
   };
   /** The last line a hunk reaches on each side, so the next gap starts after it. */
@@ -1054,18 +1063,8 @@ function renderDiff() {
   };
 
   for (const [hi, h] of f.hunks.entries()) {
-    {
-      const prev = hi > 0 ? ends(f.hunks[hi - 1]) : { o: 0, n: 0 };
-      drawGap(hi, prev.o + 1, prev.n + 1, h.gap_before);
-    }
-
-    if (importsOnly(h) && !diffState.openImports.has(hi)) {
-      body.appendChild(foldBar(h.rows, 'imports changed', 'Only imports change here', () => {
-        diffState.openImports.add(hi);
-        renderDiff();
-      }));
-      continue;
-    }
+    const prev = hi > 0 ? ends(f.hunks[hi - 1]) : { o: 0, n: 0 };
+    const importsFolded = importsOnly(h) && !diffState.openImports.has(hi);
 
     // The hunk's section heading — git's text after the second @@, the function
     // or class the change sits in — pinned so it stays in view while you scroll a
@@ -1085,8 +1084,23 @@ function renderDiff() {
     const section = sectionOf(h);
     const seen = diffState.reveal.get(hi) ?? { top: 0, bottom: 0 };
     const folded = h.gap_before > seen.top + seen.bottom;
-    if (section && folded && (hi === 0 || section !== sectionOf(f.hunks[hi - 1]))) {
-      body.appendChild(el('div', 'diffhh', section));
+    /* A fold opened twenty lines up from the change can show the declaration the
+       heading names, and then the heading repeats a line on screen: the same rule
+       as a fold opened whole. Git's guess has no line, so it keeps the old rule. */
+    const inner = scopesOf(h).at(-1);
+    const named = inner !== undefined && inner.line >= prev.n + 1 + h.gap_before - seen.bottom;
+    const heading = section && folded && !named && !importsFolded
+      && (hi === 0 || section !== sectionOf(f.hunks[hi - 1]))
+      ? el('div', 'diffhh', section) : null;
+
+    drawGap(hi, prev.o + 1, prev.n + 1, h.gap_before, heading);
+
+    if (importsFolded) {
+      body.appendChild(foldBar(h.rows, 'imports changed', 'Only imports change here', () => {
+        diffState.openImports.add(hi);
+        renderDiff(true);
+      }));
+      continue;
     }
 
     if (diffState.split) {
@@ -1142,7 +1156,8 @@ function renderDiff() {
     : diffState.pendingCursor === 'first' ? 0
       : Math.min(diffState.cursor, last);
   diffState.pendingCursor = null;
-  markCursor();
+  if (stay) body.scrollTop = top;
+  markCursor(!stay);
   drawMap();
 }
 
@@ -1203,13 +1218,13 @@ async function revertBlock(/** @type {import('./revert.js').Block} */ b) {
   await reload();
 }
 
-function markCursor() {
+function markCursor(scroll = true) {
   for (const e of $('diffbody').querySelectorAll('.ln.cur')) e.classList.remove('cur');
   const anchors = diffState.anchors || [];
   const a = anchors[diffState.cursor];
   if (!a) return;
   a.classList.add('cur');
-  a.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  if (scroll) a.scrollIntoView({ block: 'center', behavior: 'smooth' });
   for (const [i, t] of [...$('diffmap').children].entries()) t.classList.toggle('cur', i === diffState.cursor);
   // Within-file position, plus which file of the changeset when there is more
   // than one — the stepper walks the whole PR, so "3 of 7" alone would not say

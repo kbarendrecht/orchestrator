@@ -2267,6 +2267,51 @@ try {
   })))
   check(commented.del && commented.add,
     `a changed line inside a block comment is comment on both sides, got ${JSON.stringify(commented)}`)
+
+  /* **A fold step keeps the view, and the heading labels the fold** (#58). The
+     step redrew the body, which dropped its scroll to the top and then centred
+     the first change, so the fold you clicked left the screen. And the heading
+     was drawn after the gap, so twenty opened lines sat above it: a header in
+     the middle of the code. Two functions, so the second hunk's heading is not
+     the first's repeated: `a` changes at its top, which makes the diff tall
+     enough to scroll, and `b` changes far below its declaration on line 63. */
+  const scoped = [
+    'function a() {', ...Array.from({ length: 60 }, (_, i) => `  const a${i} = ${i};`), '}',
+    'function b() {', ...Array.from({ length: 120 }, (_, i) => `  const b${i} = ${i};`), '}',
+  ]
+  fs.writeFileSync(path.join(tree, 'scoped.js'), scoped.join('\n') + '\n')
+  git(tree, ['add', 'scoped.js'])
+  git(tree, ['commit', '-qm', 'a file with two long functions'])
+  git(tree, ['update-ref', 'refs/remotes/origin/main', 'HEAD'])
+  for (let i = 1; i < 30; i++) scoped[i] = scoped[i].replace(' = ', ' = -')
+  scoped[174] = '  const b111 = "changed";'
+  fs.writeFileSync(path.join(tree, 'scoped.js'), scoped.join('\n') + '\n')
+  await page.evaluate(async () => (await import('/js/diff.js')).loadFile('scoped.js'))
+  // The heading comes from the parse, which lands after the first draw.
+  await page.waitForSelector('#diffbody .fold + .diffhh', { timeout: 10_000 })
+  await page.waitForTimeout(600) // the first draw's smooth scroll to change one
+  const up = '#diffbody .fold-step[title^="Show 20 more above"]'
+  const barTop = () => page.$eval(up, (b) => /** @type {HTMLElement} */ (b.closest('.fold')).getBoundingClientRect().top)
+  await page.$eval(up, (b) => /** @type {HTMLElement} */ (b.closest('.fold')).scrollIntoView({ block: 'center' }))
+  const stepFrom = await barTop()
+  const foldFrom = await hiddenNow()
+  await press(up)
+  await page.waitForFunction((n) => !document.querySelector('#diffbody .fold span')?.textContent?.includes(String(n)),
+    foldFrom, { timeout: 5000 })
+  await page.waitForTimeout(600) // long enough for a smooth scroll to show itself
+  const stepTo = await barTop()
+  check(Math.abs(stepTo - stepFrom) < 2, `a fold step leaves the fold where it was, ${stepFrom}px then ${stepTo}px`)
+  check(await page.$eval(up, (b) => b.closest('.fold')?.nextElementSibling?.classList.contains('diffhh')),
+    'the heading stays right under the fold, above the lines it opened')
+  // Five more reach line 63, `function b() {`, with lines still folded above it.
+  for (let i = 0; i < 5; i++) {
+    const n = await hiddenNow()
+    await press(up)
+    await page.waitForFunction((m) => !document.querySelector('#diffbody .fold span')?.textContent?.includes(String(m)),
+      n, { timeout: 5000 })
+  }
+  check(await page.$$eval('#diffbody .diffhh', (h) => h.length) === 0,
+    'and goes once the opened lines show the declaration it names')
   git(tree, ['update-ref', 'refs/remotes/origin/main', upstreamWas])
 
   /* **Untracked files stay in the open diff's list**, one row each. The list is
