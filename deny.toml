@@ -11,12 +11,7 @@
 # somebody's legal review of the bundle.
 
 [advisories]
-# `serial` is pulled in by `portable-pty`, which is the crate this daemon cannot
-# do without — and the advisory is "unmaintained", not a vulnerability: last
-# release 2017, no safe upgrade, no exploit. Recorded rather than silenced so the
-# next reader sees the decision instead of an empty file.
-#
-# Everything below the first is reached only through `tauri`, and surfaced the day
+# Everything here is reached only through `tauri`, and surfaced the day
 # this started scanning the **workspace** rather than the `orchd` crate alone —
 # which is to say the desktop shell's ~130 dependencies had never been checked at
 # all. Every one is "unmaintained", none is a vulnerability, and none has a fix
@@ -33,7 +28,6 @@
 # matches tauri's, and glib follows gtk. It leaves when the toolkit bumps, like
 # the rest of this list. Worth re-reading if this crate ever grows a `Variant`.
 ignore = [
-    { id = "RUSTSEC-2017-0008", reason = "unmaintained `serial`, via portable-pty; no vulnerability and no upgrade path" },
     { id = "RUSTSEC-2024-0370", reason = "unmaintained `proc-macro-error`, via tauri's macros" },
     { id = "RUSTSEC-2025-0075", reason = "unmaintained `unic-char-property`, via tauri" },
     { id = "RUSTSEC-2025-0080", reason = "unmaintained `unic-char-range`, via tauri" },
