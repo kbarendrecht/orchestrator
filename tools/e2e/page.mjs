@@ -1226,42 +1226,45 @@ try {
   check(!(await page.$eval('#rail .sess[data-id]', (r) => r.hasAttribute('data-menu-open'))),
     'and loses the mark when the menu closes')
 
-  /* **A session's PRs, edited from its menu.** "link one…" takes a number the way
-     a person writes one, the snapshot carries it, and "unlink all" takes it off
-     again. The daemon keeps an unlink off past the next poll; its own test holds
-     that, and this holds that the menu reaches it. */
+  /* **A session's PRs, edited from the center pane header.** The dashed + opens an
+     input in the chip strip that takes a number the way a person writes one, the
+     snapshot carries it, a chip appears, and the chip's x takes it off again. The
+     daemon keeps an unlink off past the next poll; its own test holds that. */
   {
+    await page.keyboard.press('Escape')
     const rowId = await page.$eval('#rail .sess[data-id]', (r) => r.getAttribute('data-id'))
+    await page.click(`#rail .sess[data-id="${rowId}"]`)
     const linkedPrs = () => page.evaluate(async (id) => {
       const core = await import('/js/core.js')
       return core.snap.sessions.find((x) => x.id === id)?.prs.map((p) => p.number) ?? null
     }, rowId)
-    const prsLevel = await rowMenu('pull requests')
-    await prsLevel?.click()
-    const linkOne = await page.$('#ctxmenu .ctxmenu-sub:not([hidden]) .ctxmenu-item:first-child')
-    await linkOne?.click()
-    await page.waitForSelector('.dlginput', { timeout: 5000 })
+    // The bars float over the header, so they go first (see `clearBars` below,
+    // declared after this point).
+    await page.evaluate(() => {
+      for (const id of ['updatex', 'agentx', 'agenterrx', 'machinex']) {
+        const b = document.getElementById(id)
+        if (b && !(/** @type {HTMLElement | null} */ (b.closest('.updatebar'))?.hidden)) b.click()
+      }
+    })
+    await page.click('#ctxprs .addchip')
+    await page.waitForSelector('#ctxprs .chipin', { timeout: 5000 })
     await page.keyboard.type('#5')
     await page.keyboard.press('Enter')
-    const nowLinked = await page.waitForFunction(async (id) => {
-      const core = await import('/js/core.js')
-      return core.snap.sessions.find((x) => x.id === id)?.prs.some((p) => p.number === 5) || null
-    }, rowId, { timeout: 5000 }).then(() => true, () => false)
-    check(nowLinked, `the menu links #5 to the session, got ${JSON.stringify(await linkedPrs())}`)
-    const level = await rowMenu('pull requests')
-    await level?.click()
-    const offered = await page.$$eval('#ctxmenu .ctxmenu-sub:not([hidden]) .ctxmenu-item',
-      (bs) => bs.map((b) => b.textContent?.trim()))
-    check(offered.some((o) => o?.startsWith('unlink #5')) && offered.at(-1) === 'unlink all',
-      `and offers to unlink it, got ${JSON.stringify(offered)}`)
-    for (const item of await page.$$('#ctxmenu .ctxmenu-sub:not([hidden]) .ctxmenu-item')) {
-      if ((await item.textContent())?.trim() === 'unlink all') await item.click()
-    }
-    const cleared = await page.waitForFunction(async (id) => {
-      const core = await import('/js/core.js')
-      return core.snap.sessions.find((x) => x.id === id)?.prs.length === 0 || null
-    }, rowId, { timeout: 5000 }).then(() => true, () => false)
-    check(cleared, `and "unlink all" clears them, got ${JSON.stringify(await linkedPrs())}`)
+    const chipShown = await page.waitForFunction(
+      () => [...document.querySelectorAll('#ctxprs .prchip')].some((c) => c.textContent?.includes('#5')),
+      null, { timeout: 5000 }).then(() => true, () => false)
+    check(chipShown && JSON.stringify(await linkedPrs()) === '[5]',
+      `the header's + links #5 and draws its chip, got ${JSON.stringify(await linkedPrs())}`)
+    const chip = page.locator('#ctxprs .prchip', { hasText: '#5' })
+    await chip.hover()
+    await chip.locator('.chipx').click()
+    const gone = await page.waitForFunction(
+      () => ![...document.querySelectorAll('#ctxprs .prchip')].some((c) => c.textContent?.includes('#5')),
+      null, { timeout: 5000 }).then(() => true, () => false)
+    check(gone && JSON.stringify(await linkedPrs()) === '[]',
+      `and the chip's x unlinks it, got ${JSON.stringify(await linkedPrs())}`)
+    check(!(await rowMenu('pull requests')), 'and the rail menu no longer carries it')
+    await page.keyboard.press('Escape')
   }
 
   /* A rename that changes nothing still has to put the row back. It changes no

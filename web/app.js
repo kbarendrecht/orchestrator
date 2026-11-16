@@ -698,6 +698,46 @@ import * as Rail from './js/rail.js';
 
 
 
+/* **Linking a PR from the header.** The chips are the session's PRs;
+   a dashed + opens an input in their place for a number, `#123` or a URL, and
+   each chip's x takes one off. `linkingFor` is the session the input is open for,
+   which keeps `renderContext` from rebuilding the strip under your typing. */
+/** @type {string | null} */
+let linkingFor = null;
+
+function openLinkInput(/** @type {import('./snapshot').SessionView} */ s) {
+  const strip = $('ctxprs');
+  linkingFor = s.id;
+  strip.querySelector('.addchip')?.remove();
+  const input = /** @type {HTMLInputElement} */ (el('input', 'chipin'));
+  input.placeholder = '123, #123 or the PR URL';
+  input.setAttribute('aria-label', 'link a pull request');
+  input.spellcheck = false;
+  const done = () => {
+    linkingFor = null;
+    renderContext();
+  };
+  input.onkeydown = (ev) => {
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      done();
+      return;
+    }
+    if (ev.key !== 'Enter') return;
+    ev.preventDefault();
+    const n = Rail.prNumber(input.value);
+    if (n == null) {
+      toast(`${input.value.trim() || 'that'} is not a PR number`, true);
+      return;
+    }
+    linkingFor = null;
+    void Rail.editPrs(s, { add: [n] }).then(done);
+  };
+  input.onblur = () => { if (linkingFor === s.id) done(); };
+  strip.appendChild(input);
+  input.focus();
+}
+
 function renderContext() {
   const s = currentSession();
   const wsId = currentWorkspaceId();
@@ -761,6 +801,13 @@ function renderContext() {
      the worst; this is where the rest are, next to the session you are reading.
      Five at most, because the strip shares the bar with the name and the branch. */
   const strip = $('ctxprs');
+  // Left alone while you type a number into it: a snapshot lands every few
+  // seconds, and rebuilding the strip threw the half-typed input away.
+  if (s && linkingFor === s.id && strip.querySelector('.chipin')) {
+    $('killbtn').style.display = s.alive ? '' : 'none';
+    return;
+  }
+  linkingFor = null;
   strip.replaceChildren();
   for (const p of own.slice(-5)) {
     const sev = prSeverity(p);
@@ -775,9 +822,25 @@ function renderContext() {
     chip.oncontextmenu = (ev) => openMenu(ev, [
       ['copy PR number', null, () => { void copyText(String(p.number)).then((ok) => { if (ok) toast(`copied ${p.number}`); }); }],
     ]);
+    // The chip's own unlink, shown on hover. Inside the link, so it stops the
+    // click from opening the PR.
+    const x = chip.appendChild(el('span', 'chipx', '\u00d7'));
+    x.title = `Unlink #${p.number} from this session`;
+    x.setAttribute('role', 'button');
+    x.onclick = (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (s) void Rail.editPrs(s, { remove: [p.number] });
+    };
     strip.appendChild(chip);
   }
   if (own.length > 5) strip.appendChild(el('span', 'ctx-sep', `+${own.length - 5}`));
+  if (s) {
+    const add = strip.appendChild(el('button', 'prchip addchip', '+'));
+    add.type = 'button';
+    add.title = 'Link a pull request to this session';
+    add.onclick = () => openLinkInput(s);
+  }
   $('killbtn').style.display = s && s.alive ? '' : 'none';
 
 }

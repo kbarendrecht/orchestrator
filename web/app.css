@@ -313,6 +313,19 @@ body[data-chrome="custom"] .resizers{display:block}
 .prchip:hover{color:var(--text);border-color:var(--faint-solid)}
 .prchip.bad{color:var(--bad)}
 .prchip.merged{color:var(--merged)}
+/* The chip's unlink: on hover only, so a resting header reads as it did. A
+   button-sized hit inside the chip, which stops the click from opening the PR. */
+.chipx{display:none;width:12px;height:12px;margin:0 -3px 0 1px;border-radius:3px;place-items:center;color:var(--faint-solid);cursor:pointer}
+.prchip:hover .chipx,.prchip:focus-within .chipx{display:inline-grid}
+.chipx:hover{color:var(--text);background:var(--raised)}
+/* Link one more: dashed, because it is a place to add rather than a PR. */
+.prchip.addchip{border-style:dashed;color:var(--ghost);background:none;cursor:pointer}
+.prchip.addchip:hover{color:var(--text)}
+.chipin{
+  width:190px;font-family:var(--mono);font-size:calc(10.5px * var(--fs));line-height:1.7;
+  color:var(--text);background:var(--bg);border:1px solid var(--faint-solid);border-radius:var(--r);padding:0 6px;
+}
+.chipin:focus{outline:none;border-color:var(--text)}
 .ctx-right{margin-left:auto;display:flex;align-items:center;gap:12px;flex:0 0 auto}
 .ctx-btn{font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid)}
 /* Every dismiss control, in one place. They were four sizes, two glyphs and
