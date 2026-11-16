@@ -3100,11 +3100,13 @@ function fillStackCard(
      yours for anything else. Nothing pops up for it. */
   const line = card.appendChild(el('div', 'ovc-line'));
   line.append('This session is told how to keep the stack right when it pushes. ');
-  const act = (/** @type {string} */ label, /** @type {string} */ route, /** @type {string} */ done) => {
+  const act = (/** @type {string} */ label, /** @type {string} */ route, /** @type {string} */ done,
+    /** @type {string | null} */ ask = null) => {
     const b = line.appendChild(el('button', 'ovc-now', label));
     b.type = 'button';
     b.onclick = async () => {
       closeOverlapCard();
+      if (ask && !await confirmBox(ask, { ok: label, danger: false })) return;
       try {
         await callFor(s.id, route);
         toast(done);
@@ -3114,7 +3116,15 @@ function fillStackCard(
     };
     line.append(' ');
   };
-  if (stack && (stack.behind || stack.stale)) act('Restack it now', `/api/workspace/${encodeURIComponent(mine.id)}/restack`, 'restacked');
+  /* A direction read from the branches' ages, not their history, is asked about
+     before the rebase acts on it: upside down, it replays the wrong branch. */
+  const lowerName = stack ? (state.workspaces.find((w) => w.id === stack.on)?.branch ?? stack.on) : '';
+  if (stack && (stack.behind || stack.stale)) {
+    act('Restack it now', `/api/workspace/${encodeURIComponent(mine.id)}/restack`, 'restacked',
+      stack.proved ? null
+        : `Which of the two is built on the other is a guess from their ages here, not from their history. `
+          + `Restack ${mine.branch ?? mine.id} onto ${lowerName}?`);
+  }
   if (stack ? stack.base_behind : mine.behind) act(`Rebase the stack onto ${state.upstream_ref}`, `/api/workspace/${encodeURIComponent(mine.id)}/rebase-stack`, 'stack rebased');
   return true;
 }

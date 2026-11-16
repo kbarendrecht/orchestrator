@@ -1128,6 +1128,23 @@ impl Inner {
         u32::try_from(n).unwrap_or(u32::MAX)
     }
 
+    /// Whether `lower` is under `upper` by fact: containment showed it, and it is
+    /// remembered by branch (`stack_dirs`, which only a proved direction enters).
+    /// Otherwise the direction is a guess from the branches' ages: the daemon's
+    /// own restack refuses to act on that, and what it tells an agent or a person
+    /// says "probably".
+    pub fn direction_proved(&self, lower: &str, upper: &str) -> bool {
+        let branch = |id: &str| self.workspaces.get(id).and_then(|w| w.tree.branch.clone());
+        let (Some(lb), Some(ub)) = (branch(lower), branch(upper)) else {
+            return false;
+        };
+        let pair = sorted_pair(&lb, &ub);
+        self.stack_dirs
+            .as_ref()
+            .and_then(|d| d.get(&pair))
+            .is_some_and(|l| *l == lb)
+    }
+
     /// Whether the overlap `p` is between two branches of one stack, which is a
     /// restack rather than a conflict to settle.
     pub fn stacked(&self, p: &crate::overlap::Pair) -> bool {
@@ -2225,6 +2242,7 @@ impl AppState {
                     .map(|(lower, s)| {
                         let conflicts = inner.stack_conflicts(&w.id, &lower);
                         StackView {
+                            proved: inner.direction_proved(&lower, &w.id),
                             conflicts,
                             stale: s.behind == 0 && conflicts > 0,
                             upstream: inner
@@ -4221,6 +4239,10 @@ pub struct StackView {
     /// for the whole stack, settled from its lowest branch, so it is shown here
     /// and not as a conflict of this branch.
     pub upstream: u32,
+    /// Whether "built on `on`" is a fact (containment, remembered) rather than a
+    /// guess from the branches' ages (`Inner::direction_proved`). The card asks
+    /// before a restack on a guess.
+    pub proved: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -5756,6 +5778,35 @@ mod tests {
         );
     }
 
+    /// A stack's direction is proved only by what `stack_dirs` remembers, which
+    /// only a containment check writes, and only the way up it was proved.
+    #[tokio::test]
+    async fn a_stack_direction_is_proved_only_the_way_it_was_seen() {
+        let app = app().await;
+        live_worktree(&app, "upper", "/tmp/upper", &[]).await;
+        live_worktree(&app, "lower", "/tmp/lower", &[]).await;
+        let mut inner = app.inner.write().await;
+        for (ws, branch) in [("upper", "story-2"), ("lower", "story-1")] {
+            inner.workspaces.get_mut(ws).expect("ws").tree.branch = Some(branch.into());
+        }
+        assert!(
+            !inner.direction_proved("lower", "upper"),
+            "nothing proved yet"
+        );
+        inner
+            .stack_dirs
+            .get_or_insert_with(HashMap::new)
+            .insert(sorted_pair("story-1", "story-2"), "story-1".into());
+        assert!(
+            inner.direction_proved("lower", "upper"),
+            "remembered, so proved"
+        );
+        assert!(
+            !inner.direction_proved("upper", "lower"),
+            "and only that way up"
+        );
+    }
+
     /// A `gh pr create` on the upper half of a stack is held once, and says
     /// `--base` only when the lower PR is in the same repository. The retry goes
     /// through, and a point said once is not said again.
@@ -5808,6 +5859,11 @@ mod tests {
 
         let none = app.push_note(upper, create).await.expect("held");
         assert!(none.contains("no PR yet"), "{none}");
+        // No containment and nothing remembered: the order is a guess, said as one.
+        assert!(
+            none.contains("probably stacked on `story-1`"),
+            "a guessed direction says so: {none}"
+        );
         assert_eq!(
             app.push_note(upper, create).await,
             None,

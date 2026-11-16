@@ -152,17 +152,7 @@ impl AppState {
                 else {
                     continue;
                 };
-                let pair = if branch < lower_branch {
-                    (branch.clone(), lower_branch.clone())
-                } else {
-                    (lower_branch.clone(), branch.clone())
-                };
-                let proved = inner
-                    .stack_dirs
-                    .as_ref()
-                    .and_then(|d| d.get(&pair))
-                    .is_some_and(|l| *l == lower_branch);
-                if !proved || st.anchor.is_empty() {
+                if !inner.direction_proved(lower, upper) || st.anchor.is_empty() {
                     continue;
                 }
                 due.push((

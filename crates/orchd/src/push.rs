@@ -51,6 +51,13 @@ fn pr_base_hint(inner: &Inner, workspace: &str, command: &str) -> Option<String>
     }
     let (lower, _) = inner.stacked_on(workspace)?;
     let branch = inner.workspaces.get(&lower)?.tree.branch.clone()?;
+    // A direction read from the branches' ages, not their history, is said as
+    // one: the `--base` below targets the PR at it.
+    let probably = if inner.direction_proved(&lower, workspace) {
+        ""
+    } else {
+        "probably "
+    };
     let words: Vec<&str> = command.split_whitespace().collect();
     let names_it = words.windows(2).any(|w| {
         matches!(w, [flag, b] if (*flag == "--base" || *flag == "-B") && b.trim_matches(['"', '\'']) == branch)
@@ -75,17 +82,17 @@ fn pr_base_hint(inner: &Inner, workspace: &str, command: &str) -> Option<String>
         });
     Some(match pr {
         Some((n, true)) => format!(
-            "your branch is stacked on `{branch}` (PR #{n}): open this PR with `--base {branch}`, \
+            "your branch is {probably}stacked on `{branch}` (PR #{n}): open this PR with `--base {branch}`, \
              so it shows only your own commits; GitHub moves it onto the base when #{n} merges and \
              its branch is deleted."
         ),
         Some((n, false)) => format!(
-            "your branch is stacked on `{branch}` (PR #{n}), which is in a fork, so this PR cannot \
+            "your branch is {probably}stacked on `{branch}` (PR #{n}), which is in a fork, so this PR cannot \
              target it and will show #{n}'s commits until #{n} merges: start the description with \
              \"Stacked on #{n}, review that one first.\""
         ),
         None => format!(
-            "your branch is stacked on `{branch}`, which has no PR yet: open that one first, then \
+            "your branch is {probably}stacked on `{branch}`, which has no PR yet: open that one first, then \
              target it with `--base {branch}` if both branches are in the same repository, or name \
              it at the top of this description if not."
         ),
@@ -142,12 +149,20 @@ impl AppState {
                 let rungs: Vec<String> = chain
                     .iter()
                     .map(|id| {
+                        // "probably on" where the order is a guess from age.
                         let on = inner.stacked_on(id).map_or_else(
-                            || upstream.clone(),
-                            |(l, _)| format!("`{}`", branch_of(&l)),
+                            || format!("on {upstream}"),
+                            |(l, _)| {
+                                let guess = if inner.direction_proved(&l, id) {
+                                    ""
+                                } else {
+                                    "probably "
+                                };
+                                format!("{guess}on `{}`", branch_of(&l))
+                            },
                         );
                         let me = if *id == ws { " (yours)" } else { "" };
-                        format!("{}{me} on {on}", named(id))
+                        format!("{}{me} {on}", named(id))
                     })
                     .collect();
                 items.push(format!(

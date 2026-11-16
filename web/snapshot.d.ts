@@ -674,7 +674,13 @@ stale: boolean,
  * for the whole stack, settled from its lowest branch, so it is shown here
  * and not as a conflict of this branch.
  */
-upstream: number, };
+upstream: number, 
+/**
+ * Whether "built on `on`" is a fact (containment, remembered) rather than a
+ * guess from the branches' ages (`Inner::direction_proved`). The card asks
+ * before a restack on a guess.
+ */
+proved: boolean, };
 
 export type State = { "state": "starting" } | { "state": "working" } | { "state": "your_turn", since: { secs_since_epoch: number, nanos_since_epoch: number }, reason: TurnReason, } | { "state": "build_failing", summary: string, 
 /**
