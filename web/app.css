@@ -221,6 +221,18 @@ body[data-chrome="overlay"] .top{-webkit-user-select:none;user-select:none}
 /* macOS: the real traffic lights float over the top-left, so buy them room.
    78px = 3 buttons at 20px pitch from a 16px inset, plus breathing space. */
 body[data-chrome="overlay"] .top-l{padding-left:86px}
+/* **Thin scrollbars on macOS.** WKWebView draws the legacy 15px bar with a track
+   whenever a mouse is plugged in or "Show scroll bars" is Always, which in a 320px
+   rail is a stripe a twentieth of its width. Thin, trackless and the board's own
+   line colour instead, brighter under the pointer. macOS only: GTK's overlay bars
+   on Linux are thin already, and drawing our own would make them always shown. */
+body[data-chrome="overlay"] ::-webkit-scrollbar{width:10px;height:10px}
+body[data-chrome="overlay"] ::-webkit-scrollbar-track,
+body[data-chrome="overlay"] ::-webkit-scrollbar-corner{background:transparent}
+body[data-chrome="overlay"] ::-webkit-scrollbar-thumb{
+  background-color:var(--line);border:2px solid transparent;border-radius:6px;background-clip:content-box;
+}
+body[data-chrome="overlay"] ::-webkit-scrollbar-thumb:hover{background-color:var(--faint-solid)}
 
 .wctl{display:none;margin-left:10px;gap:2px;align-items:center;flex:0 0 auto}
 body[data-chrome="custom"] .wctl{display:flex}
