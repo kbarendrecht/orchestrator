@@ -1045,9 +1045,9 @@ try {
   await page.keyboard.press('Escape')
   check(!(await palOpen()), 'Esc closes the palette')
 
-  /* **A row you can see never moves.** Move once, and whatever the transcript
-     answer brings in after that is held behind "more found", never put between
-     rows already on screen. */
+  /* **A row you can see never moves.** Whatever the transcript answer brings in
+     after the first rows are drawn is added at the end, never put between rows
+     already on screen. */
   await page.keyboard.press(chord('Shift+KeyK'))
   check(await palOpen(), 'MOD Shift K opens the palette')
   await page.fill('.cpal .cpal-q', 'e2e')

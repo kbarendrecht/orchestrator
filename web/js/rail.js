@@ -1466,13 +1466,11 @@ function askTranscripts(c) {
    button opens it on Past with nothing typed, so it is the archive too.
 
    **A row you can see never moves.** Results keep the order they arrived in
-   (`pal.order`). Until you move (a key, the wheel, the pointer), a new hit is
-   added at the end; after that it waits in `pal.held` behind one "N more found"
-   line, and only that line, or a new query, brings it in. */
+   (`pal.order`), and a hit that arrives later is added at the end, never in
+   between, so a wave of transcript hits grows the list below what you read. */
 /** @type {{ path: string | null, tab: 'all' | 'live' | 'past', sel: number, order: string[],
- *           held: string[], moved: boolean, q: string, sig: string, el: HTMLElement | null,
- *           shownSel: number }} */
-const pal = { path: null, tab: 'all', sel: 0, order: [], held: [], moved: false, q: '', sig: '', el: null, shownSel: -1 };
+ *           q: string, sig: string, el: HTMLElement | null, shownSel: number }} */
+const pal = { path: null, tab: 'all', sel: 0, order: [], q: '', sig: '', el: null, shownSel: -1 };
 
 /** The query in checkout `c`'s field, as it is matched. */
 const searchQuery = (/** @type {import('./core.js').Target} */ c) => (arcQuery[c.path] || '').trim().toLowerCase();
@@ -1597,8 +1595,6 @@ export function closePalette() {
 /** Forget what the list was showing: a new query, a new tab or a new open. */
 function restart() {
   pal.order = [];
-  pal.held = [];
-  pal.moved = false;
   pal.sel = 0;
   pal.shownSel = -1;
   pal.sig = '';
@@ -1638,9 +1634,6 @@ function paletteEl() {
   box.appendChild(el('div', 'cpal-status'));
   const list = box.appendChild(el('div', 'cpal-list'));
   list.setAttribute('role', 'listbox');
-  // Any of these is you reading: from here on, new hits wait instead of landing.
-  list.addEventListener('wheel', () => { pal.moved = true; }, { passive: true });
-  list.addEventListener('pointermove', () => { pal.moved = true; });
   box.appendChild(el('div', 'cpal-foot'));
 
   input.oninput = () => {
@@ -1654,12 +1647,10 @@ function paletteEl() {
   input.onkeydown = (ev) => {
     const c = palCheckout();
     if (!c) return;
-    const { rows, heldHere } = paletteRows(c);
-    const last = rows.length + (heldHere ? 1 : 0) - 1;
+    const { rows } = paletteRows(c);
     if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
       ev.preventDefault();
-      pal.moved = true;
-      pal.sel = Math.max(0, Math.min(last, pal.sel + (ev.key === 'ArrowDown' ? 1 : -1)));
+      pal.sel = Math.max(0, Math.min(rows.length - 1, pal.sel + (ev.key === 'ArrowDown' ? 1 : -1)));
       renderPalette();
     } else if (ev.key === 'Enter') {
       ev.preventDefault();
@@ -1680,10 +1671,10 @@ function paletteEl() {
   return box;
 }
 
-/** The rows the palette shows, in the order they arrived, and how many wait.
+/** The rows the palette shows, in the order they arrived.
  *
  *  Keys already in `pal.order` keep their place; a key the answer no longer has
- *  goes; a new one is added at the end, or held once you have moved.
+ *  goes; a new one is added at the end.
  *  @param {import('./core.js').Target} c */
 function paletteRows(c) {
   const state = snapshotOf(c.path);
@@ -1692,39 +1683,25 @@ function paletteRows(c) {
   /** @type {Map<string, Result>} */
   const present = new Map(all.map((r) => [resultKey(r), r]));
   pal.order = pal.order.filter((k) => present.has(k));
-  pal.held = pal.held.filter((k) => present.has(k) && !pal.order.includes(k));
   for (const r of all) {
     const k = resultKey(r);
-    if (pal.order.includes(k) || pal.held.includes(k)) continue;
-    (pal.moved ? pal.held : pal.order).push(k);
+    if (!pal.order.includes(k)) pal.order.push(k);
   }
-  const pick = (/** @type {string[]} */ keys) => /** @type {Result[]} */ (keys.map((k) => present.get(k)).filter((r) => !!r));
-  const shown = pick(pal.order);
-  const held = pick(pal.held);
+  const shown = /** @type {Result[]} */ (pal.order.map((k) => present.get(k)).filter((r) => !!r));
   return {
     q,
     rows: shown.filter(onTab),
-    heldHere: held.filter(onTab).length,
     counts: {
-      all: shown.length + held.length,
-      live: [...shown, ...held].filter((r) => r.kind === 'live').length,
-      past: [...shown, ...held].filter((r) => r.kind !== 'live').length,
+      all: shown.length,
+      live: shown.filter((r) => r.kind === 'live').length,
+      past: shown.filter((r) => r.kind !== 'live').length,
     },
   };
 }
 
-/** Bring the held hits in, at the end, where the "more found" line was. */
-function showHeld(/** @type {import('./core.js').Target} */ c) {
-  pal.order.push(...pal.held);
-  pal.held = [];
-  renderPalette();
-  void c;
-}
-
-/** Enter on the selection: go to it, resume it, or show what was held. */
+/** Enter on the selection: go to it or resume it. */
 function act(/** @type {import('./core.js').Target} */ c) {
-  const { rows, heldHere } = paletteRows(c);
-  if (pal.sel === rows.length && heldHere) return showHeld(c);
+  const { rows } = paletteRows(c);
   const r = rows[pal.sel];
   if (!r) return;
   closePalette();
@@ -1763,11 +1740,11 @@ export function renderPalette() {
     return;
   }
   const box = paletteEl();
-  const { q, rows, heldHere, counts } = paletteRows(c);
+  const { q, rows, counts } = paletteRows(c);
   const answer = arcHits[c.path];
   const busy = q.length >= ARC_MIN && !!answer && answer.q === q && answer.busy;
-  if (pal.sel > rows.length - (heldHere ? 0 : 1)) pal.sel = Math.max(0, rows.length - (heldHere ? 0 : 1));
-  const sig = paintSig([q, pal.tab, pal.sel, busy, heldHere, counts, rows.map((r) => (r.kind === 'ext'
+  if (pal.sel > rows.length - 1) pal.sel = Math.max(0, rows.length - 1);
+  const sig = paintSig([q, pal.tab, pal.sel, busy, counts, rows.map((r) => (r.kind === 'ext'
     ? [r.x.id, r.x.title, r.hit]
     : [r.s.id, railName(r.s, { id: r.s.workspace }), r.kind === 'live' ? [stateLabel(r.s), sessionDot(r.s)] : r.s.created_ms, r.hit]))]);
   if (sig === pal.sig) return;
@@ -1812,13 +1789,7 @@ export function renderPalette() {
     if (r.kind === 'arc') row.oncontextmenu = (ev) => openMenu(ev, archivedMenu(r.s));
     next.appendChild(row);
   });
-  if (heldHere) {
-    const more = el('div', 'cpal-more' + (pal.sel === rows.length ? ' sel' : ''));
-    more.append(el('span', '', `${heldHere} more found`), el('span', '', 'show \u21b5'));
-    more.onclick = () => showHeld(c);
-    next.appendChild(more);
-  }
-  if (!rows.length && !heldHere) {
+  if (!rows.length) {
     next.appendChild(el('div', 'cpal-empty', busy ? 'searching transcripts\u2026'
       : q ? 'nobody said that' : 'no conversations yet'));
   }
@@ -1831,7 +1802,7 @@ export function renderPalette() {
   }
 
   const r = rows[pal.sel];
-  const what = pal.sel === rows.length && heldHere ? 'show the rest' : r ? `${verb(r)} ${r.kind === 'ext' ? (r.x.title || 'untitled') : railName(r.s, { id: r.s.workspace })}` : '';
+  const what = r ? `${verb(r)} ${r.kind === 'ext' ? (r.x.title || 'untitled') : railName(r.s, { id: r.s.workspace })}` : '';
   const foot = /** @type {HTMLElement} */ (box.querySelector('.cpal-foot'));
   foot.replaceChildren(el('span', '', '\u2191\u2193 move'), el('span', '', 'tab live \u00b7 past'), el('span', 'cpal-sp'));
   if (what) {
