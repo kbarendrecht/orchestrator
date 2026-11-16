@@ -65,7 +65,13 @@ clash: string | null,
  * The band colour you picked for it, 1 to [`BANDS`], or `None` for the one the page
  * assigns by order. From [`Label`].
  */
-band: number | null, };
+band: number | null, 
+/**
+ * A colour of your own, `#rrggbb`, picked with the system's colour picker in
+ * place of a band. From [`Label`]; the page mixes the badge's fill and ink
+ * from it the way the bands' were mixed.
+ */
+colour: string | null, };
 
 /**
  * What orchd worked out about a chosen checkout, for the review step to confirm.

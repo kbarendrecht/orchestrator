@@ -238,7 +238,7 @@ export function setCheckouts(next) {
  *  @type {Target}
  */
 const PAGE_ONLY = {
-  path: '', name: '', port: Number(location.port) || 0, live: true, repo: null, clash: null, band: null,
+  path: '', name: '', port: Number(location.port) || 0, live: true, repo: null, clash: null, band: null, colour: null,
   base: '', wsBase: `ws://${location.host}`, token: window.__ORCH__.token,
 };
 
@@ -359,7 +359,17 @@ export function badgeText(name) {
  */
 export function checkoutBadge(c, band) {
   const node = el('span', 'co-badge', badgeText(c.name));
-  if (band) node.dataset.band = String(band);
+  const colour = c.colour;
+  if (colour) {
+    // Mixed the way the bands' `--co-N-fill` and `--co-N-ink` were, against the
+    // same default ground, so a picked colour sits beside the presets as one of them.
+    // `palette.js` has the same sum, and this floor imports nothing.
+    const rgb = [1, 3, 5].map((i) => parseInt(colour.slice(i, i + 2), 16));
+    const hex = (/** @type {number[]} */ v) => `rgb(${v.map(Math.round).join(',')})`;
+    node.dataset.band = 'custom';
+    node.style.setProperty('--cf', hex(rgb.map((x, i) => x + ([10, 10, 11][i] - x) * 0.14)));
+    node.style.setProperty('--ci', hex(rgb.map((x) => x * 0.2)));
+  } else if (band) node.dataset.band = String(band);
   node.title = c.name;
   return node;
 }

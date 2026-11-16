@@ -398,9 +398,26 @@ function colourItems(c) {
   const classes = ['co1', 'co2', 'co3', 'co4', 'co5', 'co6', 'co7', 'co8'];
   /** @type {import('./core.js').MenuItem[]} */
   const items = BAND_NAMES.map((name, i) => /** @type {import('./core.js').MenuItem} */ (
-    [name, `swatch ${classes[i]}${c.band === i + 1 ? ' on' : ''}`, pick(i + 1)]));
-  items.push(['automatic', `swatch${c.band ? '' : ' on'}`, pick(0)]);
+    [name, `swatch ${classes[i]}${!c.colour && c.band === i + 1 ? ' on' : ''}`, pick(i + 1)]));
+  items.push(['custom…', `swatch custom${c.colour ? ' on' : ''}`, () => pickOwnColour(c)]);
+  items.push(['automatic', `swatch${c.band || c.colour ? '' : ' on'}`, pick(0)]);
   return items;
+}
+
+/** Open the system's colour picker for a checkout, from a menu that has no room
+ *  for one. A throwaway `<input type="color">`, because only that element can ask
+ *  the platform for its picker, and it has to be in the document to open one.
+ *
+ *  @param {import('./core.js').Target} c */
+function pickOwnColour(c) {
+  const input = el('input', 'colour-probe');
+  input.type = 'color';
+  input.value = c.colour ?? '#7E9CC4';
+  document.body.appendChild(input);
+  input.onchange = () => void callHost('/api/host/checkout/label', { path: c.path, colour: input.value })
+    .catch((e) => toast(reason(e), true));
+  input.onblur = () => input.remove();
+  input.click();
 }
 
 /* Which checkouts are folded away, by path.

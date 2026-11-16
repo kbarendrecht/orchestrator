@@ -599,6 +599,7 @@ button.ovc-who:hover{background:var(--hover)}
 .co-badge[data-band="5"]{background:var(--co-5-fill);color:var(--co-5-ink)}
 .co-badge[data-band="6"]{background:var(--co-6-fill);color:var(--co-6-ink)}
 .co-badge[data-band="7"]{background:var(--co-7-fill);color:var(--co-7-ink)}
+.co-badge[data-band="custom"]{background:var(--cf);color:var(--ci)}
 .co-badge[data-band="8"]{background:var(--co-8-fill);color:var(--co-8-ink)}
 /* 8px either side of the badge wherever it sits, from each row's own gap: the
    rail header's is 6, the settings heading's 7, and the PR and review heads
@@ -854,6 +855,13 @@ button.ovc-who:hover{background:var(--hover)}
   box-shadow:0 0 0 2px var(--surface);transition:box-shadow .12s}
 .cosw-b:hover{box-shadow:0 0 0 2px var(--surface),0 0 0 3px var(--faint-solid)}
 .cosw-b[aria-pressed="true"]{box-shadow:0 0 0 2px var(--surface),0 0 0 4px var(--text)}
+/* The ninth swatch is the system's colour picker itself, so it opens on a click
+   with nothing in between. A rainbow until a colour of your own is picked. */
+.cosw-own{-webkit-appearance:none;appearance:none;background:conic-gradient(#DB7A72,#E0A244,#A9A86A,#6EAFAA,#7E9CC4,#8B87C9,#DB7A72)}
+.cosw-own::-webkit-color-swatch-wrapper{padding:0}
+.cosw-own::-webkit-color-swatch{border:0;border-radius:50%}
+.cosw-own:not(.on)::-webkit-color-swatch{opacity:0}
+.cosw-own.on{box-shadow:0 0 0 2px var(--surface),0 0 0 4px var(--text)}
 .cosw-auto{margin-left:4px;padding:0 8px;height:20px;border-radius:999px;border:1px solid var(--line);background:none;
   font-family:var(--sans);font-size:calc(11px * var(--fs));color:var(--faint-solid);cursor:pointer}
 .cosw-auto:hover{color:var(--text)}
@@ -1933,6 +1941,9 @@ button.settings-co:hover{color:var(--text);background:var(--hover)}
 .ctxmenu-item.swatch.co6::before{background:var(--co-6);border:0}
 .ctxmenu-item.swatch.co7::before{background:var(--co-7);border:0}
 .ctxmenu-item.swatch.co8::before{background:var(--co-8);border:0}
+.ctxmenu-item.swatch.custom::before{background:conic-gradient(#DB7A72,#E0A244,#A9A86A,#6EAFAA,#7E9CC4,#8B87C9,#DB7A72);border:0}
+/* Off the page, not `display:none`: a hidden input will not open its picker. */
+.colour-probe{position:fixed;left:-100px;top:0;width:1px;height:1px;opacity:0}
 .ctxmenu-item.swatch.on::after{content:"\2713";margin-left:auto;color:var(--dim)}
 /* A pick of one, like the changes pane's three lists: every row keeps the room
    for the tick, so the labels line up whichever is on. */

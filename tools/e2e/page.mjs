@@ -595,9 +595,10 @@ try {
   /* **A project's colour, from settings.** Eight swatches and auto per open
      project; a pick goes to the host and comes back as the new project list, which
      redraws the row with that swatch pressed. Put back to auto after. */
-  const swatchCount = await page.$$eval('#thprojects .settings-row', (rows) => rows.map((r) => r.querySelectorAll('.cosw-b').length))
-  check(swatchCount.length >= 1 && swatchCount.every((n) => n === 8),
-    `each open project gets eight colours, got ${JSON.stringify(swatchCount)}`)
+  const swatchCount = await page.$$eval('#thprojects .settings-row', (rows) => rows.map((r) =>
+    `${r.querySelectorAll('.cosw-b:not(.cosw-own)').length}+${r.querySelectorAll('input.cosw-own').length}`))
+  check(swatchCount.length >= 1 && swatchCount.every((n) => n === '8+1'),
+    `each open project gets eight colours and a picker, got ${JSON.stringify(swatchCount)}`)
   await page.click('#thprojects .settings-row:first-child .cosw-b:nth-child(5)')
   const bandPicked = await page.waitForFunction(async () => {
     const core = await import('/js/core.js')
@@ -605,6 +606,21 @@ try {
     return core.CHECKOUTS[0]?.band === 5 && pressed === 'true' || null
   }, null, { timeout: 5000 }).then(() => true, () => false)
   check(bandPicked, 'picking rose stores band 5 for the project and shows it pressed')
+  /* A colour of your own replaces the band, and the badges wear it. The picker is
+     the platform's, so the test sets the input's value the way it would. */
+  await page.$eval('#thprojects .settings-row:first-child .cosw-own', (i) => {
+    const input = /** @type {HTMLInputElement} */ (i)
+    input.value = '#3366cc'
+    input.dispatchEvent(new Event('change'))
+  })
+  const ownPicked = await page.waitForFunction(async () => {
+    const core = await import('/js/core.js')
+    const own = document.querySelector('#thprojects .settings-row:first-child .cosw-own')
+    const badge = document.querySelector('#thprojects .settings-row:first-child .co-badge')
+    return core.CHECKOUTS[0]?.colour === '#3366cc' && !core.CHECKOUTS[0]?.band
+      && own?.classList.contains('on') && badge?.getAttribute('data-band') === 'custom' || null
+  }, null, { timeout: 5000 }).then(() => true, () => false)
+  check(ownPicked, 'a picked colour replaces the band, and the badge wears it')
   await page.click('#thprojects .settings-row:first-child .cosw-auto')
   await page.waitForFunction(async () => !(await import('/js/core.js')).CHECKOUTS[0]?.band, null, { timeout: 5000 }).catch(() => {})
   await page.click('#setclose')

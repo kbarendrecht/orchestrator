@@ -106,6 +106,10 @@ pub struct Checkout {
     /// The band colour you picked for it, 1 to [`BANDS`], or `None` for the one the page
     /// assigns by order. From [`Label`].
     pub band: Option<u8>,
+    /// A colour of your own, `#rrggbb`, picked with the system's colour picker in
+    /// place of a band. From [`Label`]; the page mixes the badge's fill and ink
+    /// from it the way the bands' were mixed.
+    pub colour: Option<String>,
 }
 
 /// What you called a checkout and which colour you gave it, keyed on its path in
@@ -121,6 +125,10 @@ pub struct Label {
     /// 1 to [`BANDS`], the band palette. `None` is the order's band.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub band: Option<u8>,
+    /// A colour of your own, `#rrggbb`, in place of a band. Setting one clears the
+    /// other: a project wears one colour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub colour: Option<String>,
 }
 
 /// What the host owns.
@@ -372,6 +380,7 @@ impl Host {
         path: &str,
         name: Option<&str>,
         band: Option<u8>,
+        colour: Option<&str>,
     ) -> anyhow::Result<()> {
         {
             let mut labels = locked(&self.labels);
@@ -386,6 +395,19 @@ impl Host {
                     "a band is 1 to {BANDS}, or 0 for the automatic one"
                 );
                 label.band = (band > 0).then_some(band);
+                label.colour = None;
+            }
+            // "" clears it, back to the band.
+            if let Some(colour) = colour {
+                let colour = colour.trim().to_ascii_lowercase();
+                anyhow::ensure!(
+                    colour.is_empty() || is_hex_colour(&colour),
+                    "a colour is #rrggbb, got {colour}"
+                );
+                label.colour = (!colour.is_empty()).then_some(colour);
+                if label.colour.is_some() {
+                    label.band = None;
+                }
             }
             update_host_file(|file| put_label(&mut file.labels, path, label.clone()))?;
             put_label(&mut labels, path, label);
@@ -491,6 +513,7 @@ impl Host {
             repo: None,
             clash: None,
             band: None,
+            colour: None,
         });
     }
 
@@ -591,6 +614,7 @@ impl Host {
             repo: child.ready.repo.clone(),
             clash: None,
             band: None,
+            colour: None,
         });
         self.note_repo_clash(checkout);
         locked(&self.children).insert(checkout.to_path_buf(), Arc::new(child));
@@ -1137,7 +1161,13 @@ fn name_the_set(checkouts: &mut [Checkout], labels: &std::collections::BTreeMap<
             c.name = name;
         }
         c.band = label.and_then(|l| l.band);
+        c.colour = label.and_then(|l| l.colour.clone());
     }
+}
+
+/// `#rrggbb`, the one form the colour input gives and the page mixes from.
+fn is_hex_colour(text: &str) -> bool {
+    text.len() == 7 && text.starts_with('#') && text[1..].chars().all(|c| c.is_ascii_hexdigit())
 }
 
 /// Write the checkouts to open next launch.
@@ -1967,6 +1997,8 @@ struct CheckoutLabel {
     name: Option<String>,
     #[serde(default)]
     band: Option<u8>,
+    #[serde(default)]
+    colour: Option<String>,
 }
 
 /// Rename a checkout or recolour it ([`Host::label_checkout`]).
@@ -1975,7 +2007,12 @@ async fn label_checkout(
     Json(body): Json<CheckoutLabel>,
 ) -> Response {
     let done = orchd::proc::run_blocking("labelling a checkout", move || {
-        host.label_checkout(&body.path, body.name.as_deref(), body.band)
+        host.label_checkout(
+            &body.path,
+            body.name.as_deref(),
+            body.band,
+            body.colour.as_deref(),
+        )
     })
     .await;
     match done {
@@ -2360,6 +2397,7 @@ mod tests {
             repo: None,
             clash: None,
             band: None,
+            colour: None,
         };
         let mut set = vec![row("/w/app"), row("/p/app"), row("/x/site")];
         let mut labels = std::collections::BTreeMap::new();
@@ -2368,6 +2406,7 @@ mod tests {
             Label {
                 name: Some("marketing".into()),
                 band: Some(3),
+                colour: None,
             },
         );
         name_the_set(&mut set, &labels);

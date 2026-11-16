@@ -70,28 +70,52 @@ function renderProjectColours() {
     badge.setAttribute('aria-hidden', 'true');
     k.append(badge, c.name);
     const swatches = row.appendChild(el('span', 'settings-step cosw'));
-    const pick = (/** @type {number} */ band) => {
-      void callHost('/api/host/checkout/label', { path: c.path, band }).catch((e) => {
+    const label = (/** @type {{ band?: number, colour?: string }} */ change) => {
+      void callHost('/api/host/checkout/label', { path: c.path, ...change }).catch((e) => {
         $('setnote').textContent = reason(e);
       });
     };
+    const pick = (/** @type {number} */ band) => label({ band });
     BAND_NAMES.forEach((name, i) => {
       const b = swatches.appendChild(el('button', 'cosw-b'));
       b.type = 'button';
       b.style.setProperty('--sw', `var(--co-${i + 1})`);
       b.title = `${name} for ${c.name}`;
       b.setAttribute('aria-label', `${name} for ${c.name}`);
-      b.setAttribute('aria-pressed', String(c.band === i + 1));
+      b.setAttribute('aria-pressed', String(!c.colour && c.band === i + 1));
       b.onclick = () => pick(i + 1);
     });
+    const own = swatches.appendChild(el('input', 'cosw-b cosw-own'));
+    own.type = 'color';
+    own.value = c.colour ?? '#7E9CC4';
+    own.classList.toggle('on', !!c.colour);
+    own.title = `a colour of your own for ${c.name}`;
+    own.setAttribute('aria-label', own.title);
+    own.onchange = () => {
+      label({ colour: own.value });
+      $('setnote').textContent = nearState(own.value);
+    };
     const auto = swatches.appendChild(el('button', 'cosw-auto', 'auto'));
     auto.type = 'button';
     auto.title = `${c.name} takes the next free colour, by the order projects were opened`;
-    auto.setAttribute('aria-pressed', String(!c.band));
+    auto.setAttribute('aria-pressed', String(!c.band && !c.colour));
     auto.onclick = () => pick(0);
     return row;
   });
   $('thprojects').replaceChildren(...rows);
+}
+
+/** A warning when a picked colour is close to amber or red, which the rail uses to
+ *  say a session needs you or failed; empty otherwise. A warning and not a refusal:
+ *  the badge carries letters, so the colour is never the only thing it says. */
+function nearState(/** @type {string} */ hex) {
+  const near = (/** @type {string} */ state) => {
+    const [a, b] = [Palette.parseHex(hex), Palette.parseHex(state)];
+    return !!a && !!b && Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]) < 60;
+  };
+  if (near('#E0A244')) return 'that colour is close to the amber that means a session needs you';
+  if (near('#DB7A72')) return 'that colour is close to the red that means a session failed';
+  return '';
 }
 
 /** Redraw what the pane shows about the open projects, after the host sent a new
