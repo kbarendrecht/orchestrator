@@ -996,68 +996,66 @@ try {
   check(/@container \(max-width:265px\)\{\s*\.prage\{display:none\}/.test(css),
     'and the poll age leaves below 265px rather than clipping')
 
-  /* --- the search answers in a sheet over the rail ----------------------------- */
+  /* --- the search palette, and the archive is its Past tab --------------------- */
 
-  /* The field searches live and past conversations and answers in a sheet over
-     the rail, so the rows under it never move. The transcript half is one
-     `getOn` away and flow 33 holds it; this is the half only a page can show:
-     the sheet opens, the rail underneath is untouched, Enter goes to a result
-     and Esc gives the rail back. */
-  await page.click('#rail .ws-add .arctoggle')
-  check(await page.locator('#rail .arcbox .sess.arc').count() >= 1, 'the archive opens on the conversation that was killed')
-  // Rows, their order and their classes: what "nothing fades, nothing moves"
-  // means. Not their HTML, which carries age clocks that tick on their own.
+  /* The rail's field and archive button open one palette in the middle of the
+     window. The transcript half is one `getOn` away and flow 33 holds it; this is
+     the half only a page can show: it opens on the right tab, the rail under it
+     never moves, a row already drawn never moves, Enter goes to a result and Esc
+     gives the board back. */
+  const palOpen = () => page.evaluate(() => !!document.querySelector('.cpal:not([hidden])'))
   const railRows = () => page.evaluate(() => [...document.querySelectorAll('#rail .sess')]
     .map((r) => `${/** @type {HTMLElement} */ (r).dataset.id}:${r.className}`).join('|'))
   const railBefore = await railRows()
-  await page.fill('#rail .arcfilter .arcq', 'zzzznothinglikethis')
-  const nothing = await page.waitForFunction(() => {
-    const sheet = document.querySelector('.srch:not([hidden])')
-    return sheet?.querySelector('.srch-empty')?.textContent ?? null
+  await page.click('#rail .ws-add .arctoggle')
+  const past = await page.waitForFunction(() => {
+    const box = document.querySelector('.cpal:not([hidden])')
+    if (!box) return null
+    return {
+      tab: box.querySelector('.cpal-tab.on')?.textContent ?? '',
+      rows: box.querySelectorAll('.cpal-row').length,
+      query: /** @type {HTMLInputElement} */ (box.querySelector('.cpal-q'))?.value,
+    }
   }, null, { timeout: 5000 }).then((h) => h.jsonValue()).catch(() => null)
-  check(nothing === 'nobody said that', `a query nothing matches opens the sheet and says so, got ${JSON.stringify(nothing)}`)
+  check(!!past && past.tab.startsWith('past') && past.rows >= 1 && past.query === '',
+    `the archive button opens the palette on Past, browsing, got ${JSON.stringify(past)}`)
   check(await railRows() === railBefore, 'and the rail under it is exactly as it was')
-  await page.keyboard.press('Escape')
-  check(await page.evaluate(() => !document.querySelector('.srch:not([hidden])') && document.querySelector('#rail .arcfilter .arcq')?.value === ''),
-    'Esc closes the sheet and empties the field')
 
-  /* **A rebuild keeps where you scrolled to.** Results arrive in waves and live
-     rows change state while you read, and every rebuild drew the list at the top
-     again, then scrolled the first row into view on top of that: reading down the
-     hits, the sheet jumped back up, a few times over. A short window makes the
-     list scroll; a resize is the same rebuild a new wave of hits is. */
-  {
-    const size = page.viewportSize()
-    if (size) await page.setViewportSize({ width: size.width, height: 420 })
-    await page.fill('#rail .arcfilter .arcq', 'e2e')
-    const scrolled = await page.waitForFunction(() => {
-      const list = document.querySelector('.srch:not([hidden]) .srch-list')
-      if (!list || list.scrollHeight <= list.clientHeight + 40) return null
-      list.scrollTop = list.scrollHeight
-      return list.scrollTop > 0 ? list.scrollTop : null
-    }, null, { timeout: 8000 }).then((h) => h.jsonValue()).catch(() => null)
-    const after = scrolled == null ? null : await page.evaluate(async () => {
-      window.dispatchEvent(new Event('resize'))
-      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))
-      return document.querySelector('.srch:not([hidden]) .srch-list')?.scrollTop ?? null
-    })
-    check(scrolled != null && after === scrolled,
-      `the result list keeps its scroll through a rebuild, got ${JSON.stringify({ scrolled, after })}`)
-    await page.keyboard.press('Escape')
-    if (size) await page.setViewportSize(size)
-  }
+  await page.fill('.cpal .cpal-q', 'zzzznothinglikethis')
+  const nothing = await page.waitForFunction(
+    () => document.querySelector('.cpal:not([hidden]) .cpal-empty')?.textContent === 'nobody said that' || null,
+    null, { timeout: 8000 }).then(() => true, () => false)
+  check(nothing, 'a query nothing matches says so')
+  await page.keyboard.press('Escape')
+  check(!(await palOpen()), 'Esc closes the palette')
+
+  /* **A row you can see never moves.** Move once, and whatever the transcript
+     answer brings in after that is held behind "more found", never put between
+     rows already on screen. */
+  await page.keyboard.press(chord('Shift+KeyK'))
+  check(await palOpen(), 'MOD Shift K opens the palette')
+  await page.fill('.cpal .cpal-q', 'e2e')
+  await page.waitForFunction(() => document.querySelectorAll('.cpal .cpal-row').length > 0, null, { timeout: 5000 }).catch(() => {})
+  await page.keyboard.press('ArrowDown')
+  const names = () => page.$$eval('.cpal .cpal-row .cpal-nm', (ns) => ns.map((n) => n.textContent))
+  const drawnFirst = await names()
+  await page.waitForFunction(() => !document.querySelector('.cpal .cpal-bar.busy'), null, { timeout: 8000 }).catch(() => {})
+  const later = await names()
+  check(drawnFirst.length > 0 && JSON.stringify(later.slice(0, drawnFirst.length)) === JSON.stringify(drawnFirst),
+    `rows already drawn keep their places while hits arrive, got ${JSON.stringify({ drawnFirst, later })}`)
 
   const liveName = await page.textContent(`#rail .sess[data-id="${session}"] .sess-name`)
-  await page.fill('#rail .arcfilter .arcq', liveName ?? '')
+  await page.fill('.cpal .cpal-q', liveName ?? '')
   const foundLive = await page.waitForFunction((name) => {
-    const rows = [...document.querySelectorAll('.srch:not([hidden]) .srch-row .srch-name')].map((n) => n.textContent)
+    const rows = [...document.querySelectorAll('.cpal .cpal-row .cpal-nm')].map((n) => n.textContent)
     return rows.includes(name) ? rows : null
   }, liveName, { timeout: 5000 }).then((h) => h.jsonValue()).catch(() => null)
   check(!!foundLive, `a live session is found by its name, got ${JSON.stringify(foundLive)}`)
+  const idx = (foundLive ?? []).indexOf(liveName)
+  for (let i = 0; i < idx; i++) await page.keyboard.press('ArrowDown')
   await page.keyboard.press('Enter')
-  check(await page.evaluate(async () => (await import('/js/core.js')).selected) === session
-    && await page.evaluate(() => !document.querySelector('.srch:not([hidden])')),
-    'Enter goes to the result and gives the rail back')
+  check(await page.evaluate(async () => (await import('/js/core.js')).selected) === session && !(await palOpen()),
+    'Enter goes to the result and gives the board back')
 
   /* --- Backspace is not a way out of the board -------------------------------- */
 

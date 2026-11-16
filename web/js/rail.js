@@ -1,15 +1,9 @@
 // The rail: what is running, what is waiting on you, and the PRs beside it.
 // Twenty-four names, three out; the rest is how a row decides what it says.
 
-import { $, activeCheckout, gateOf, AGENT_LABEL, ageLabel, bandOf, byNewest, call, callFor, callHost, callOn, caret, checkoutBadge, checkoutOf, CHECKOUTS, chooseBox, clock, confirmBox, promptBox, copyText, creating, creatingIn, creatingIntoMain, dotClass, el, enterCheckout, icon, iconLabel, getHost, getOn, handedToPr, hasPr, inTrouble, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, QUEUE_MAX, reason, refreshButton, repoSummary, safeHref, selected, sessionDot, sessionsOf, sessionOrder, setPendingSelect, setSelected, setSessionOrder, snap, snapshotFor, snapshotOf, startingShown, stateClass, stateLabel, terms, toast, paintSig, reconcile, unchanged, watchStarting } from './core.js';
+import { $, activeCheckout, borrowFocus, returnFocus, gateOf, AGENT_LABEL, ageLabel, bandOf, byNewest, call, callFor, callHost, callOn, caret, checkoutBadge, checkoutOf, CHECKOUTS, chooseBox, clock, confirmBox, promptBox, copyText, creating, creatingIn, creatingIntoMain, dotClass, el, enterCheckout, icon, iconLabel, getHost, getOn, handedToPr, hasPr, inTrouble, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, QUEUE_MAX, reason, refreshButton, repoSummary, safeHref, selected, sessionDot, sessionsOf, sessionOrder, setPendingSelect, setSelected, setSessionOrder, snap, snapshotFor, snapshotOf, startingShown, stateClass, stateLabel, terms, toast, paintSig, reconcile, unchanged, watchStarting } from './core.js';
 import * as Open from './open.js';
 import * as Term from './term.js';
-
-/* Expanded per group and kept across renders. Main's two conversations and the
- * worktrees' twenty are not the same question. */
-/** @type {Record<string, boolean>} */
-/** @type {Record<string, boolean>} */
-const showArchived = { main: false, worktrees: false };
 
 /* The conversation search, per checkout, and the two halves of its answer.
  *
@@ -95,7 +89,7 @@ function renderRail() {
      signature that lists its inputs is one refactor away from freezing the rail,
      and the rail is the one pane where stale is worse than an extra rebuild. So
      anything the daemon changes rebuilds it, and a push carrying nothing but new
-     durations does not. `showArchived` and the rest are the view state the
+     durations does not. `arcQuery` and the rest are the view state the
      snapshot cannot see. */
   const states = CHECKOUTS.map((c) => snapshotOf(c.path));
   /* The active checkout is in the signature in its own right, not only through
@@ -111,10 +105,9 @@ function renderRail() {
      nothing the signature could see — so the render returned early and neither
      appeared until the next snapshot happened along. Which is exactly the window
      both of them exist to cover. */
-  /* `arcQuery` and `arcHits` are view state the snapshot cannot see, like
-     `showArchived` above them: typing in the filter and the answer coming back are
-     both things that change the rail and nothing else. */
-  if (unchanged(drawn, [states, CHECKOUTS, activeCheckout().path, [...folded], showArchived,
+  /* `arcQuery` and `arcHits` are view state the snapshot cannot see: typing in
+     the palette and the answer coming back both change what it draws. */
+  if (unchanged(drawn, [states, CHECKOUTS, activeCheckout().path, [...folded],
     arcQuery, arcHits, showPrs, picked, selected, swapInFlight, creating(), creatingIn(),
     sessionOrder], NOT_DRAWN)) {
     return;
@@ -197,7 +190,7 @@ function renderRail() {
   reconcile($('railfoot'), [{ key: 'addco', sig: addco.outerHTML, build: () => addco }]);
   reconcile(rail, items);
   if (spotFor) spotlight(spotFor);
-  renderSearch();
+  renderPalette();
 
   // Its own pane below the scroller, so it stays put while sessions scroll. It
   // describes one repository, so it follows the checkout you are in.
@@ -1276,21 +1269,11 @@ function fillSessions(/** @type {HTMLElement} */ group, /** @type {import('./cor
     }
   }
 
-  /* **The search field, over the whole list.** Its results open in a sheet over
-     the rail (`renderSearch`) rather than filtering the rows under it, so the
-     rail does not move while you type. Built once and kept, whatever else moves:
-     it holds the caret and the focus, and a rebuilt input loses both. Its count
-     is written in `fill` instead, which is the one part of it that changes. */
+  /* **The search field, over the whole list.** A field that opens the search
+     palette (`renderPalette`) in the middle of the window, so the rail never moves
+     while you search. Built once and kept, like any row that takes a press. */
   if (mainActive.length + treeActive.length + archived.length + external.length) {
-    items.push({
-      key: 'filter',
-      sig: 'filter',
-      build: () => searchField(c),
-      fill: (/** @type {HTMLElement} */ f) => {
-        const n = f.querySelector('.arcn');
-        if (n) n.textContent = searchQuery(c) ? String(searchResults(c, state).length) : '';
-      },
-    });
+    items.push({ key: 'filter', sig: 'filter', build: () => searchField(c) });
   }
 
   /* **The press shows before the daemon answers.** A worktree is a POST, the
@@ -1409,122 +1392,32 @@ function fillSessions(/** @type {HTMLElement} */ group, /** @type {import('./cor
   // the right-click offers and which of them it marks as the default.
   const addSig = `${add.outerHTML}|${(state.agents || []).join()}|${state.default_agent}`;
   items.push({ key: 'add', sig: addSig, build: () => add });
-  /* **The rows, in the box `archivedToggle` opens from the add row above.** The box is
-     bounded in CSS at about ten rows rather than truncated, and it is also what
-     says "section" now that the control naming it rides the header —
-     `archivedToggle` and `archiveOpen` carry the rest of that reasoning.
-
-     Keyed inside it, because an archived row is hovered and clicked like a live
-     one and has the same claim on surviving a repaint. */
-  if ((archived.length || external.length) && archiveOpen(c, 'sessions', archived).open) {
-    items.push({
-      key: 'arcbox',
-      sig: 'arcbox',
-      build: () => el('div', 'arcbox'),
-      fill: (/** @type {HTMLElement} */ box) => fillArchive(box, c, archived, external),
-    });
+  /* **The past is in the palette now**, on its Past tab, which the archive button
+     opens. One past conversation stays here: the one the centre pane is showing,
+     so the rail is never silent about what you are looking at. */
+  const pastInView = archived.find((s) => s.id === selected);
+  if (pastInView) {
+    items.push({ key: `arc:${pastInView.id}`, sig: paintSig([pastInView, true], NOT_DRAWN), build: () => archivedRow(pastInView) });
   }
   reconcile(group, items);
 }
 
-/** The archive: past conversations, grouped by week.
- *
- *  **Not filtered any more.** The search field over the list answers in a sheet
- *  of its own (`renderSearch`), so this is the list you scan weeks later and
- *  nothing else: a run of rows that all say "12d" is not something you can scan,
- *  so it is grouped. The outside conversations follow under their own heading,
- *  since the two lists are kept apart on purpose: an archived row knows its
- *  branch and rebuilds its worktree, an outside row knows a file and a directory.
- *
- *  @param {HTMLElement} box
- *  @param {import('./core.js').Target} c
- *  @param {import('../snapshot').SessionView[]} archived
- *  @param {import('../snapshot').ExternalView[]} external
- */
-function fillArchive(box, c, archived, external) {
-  /** @type {any[]} */
-  const listed = [];
-  let week = '';
-  // Already newest-first, and capped, by the daemon that found them.
-  for (const r of [...[...archived].sort(byNewest), ...external]) {
-    const label = 'last_used_ms' in r ? 'outside orchd' : weekLabel(weekOf(r.created_ms));
-    if (label !== week) {
-      week = label;
-      listed.push({ key: `wk:${label}`, sig: `wk:${label}`, build: () => el('div', 'arcweek', label) });
-    }
-    listed.push('last_used_ms' in r
-      ? { key: `ext:${r.id}`, sig: paintSig([r, c.path], NOT_DRAWN), build: () => externalRow(c, r) }
-      : { key: `arc:${r.id}`, sig: paintSig([r, r.id === selected], NOT_DRAWN), build: () => archivedRow(r) });
-  }
-  reconcile(box, listed);
-}
 
-/** The Monday, at midnight, that starts the week a session began in.
- *
- *  `agoMs` is an age, which is what the snapshot carries; a snapshot a few
- *  seconds old cannot move a session across a week. */
-function weekOf(/** @type {number} */ agoMs) {
-  const d = new Date(Date.now() - agoMs);
-  d.setHours(0, 0, 0, 0);
-  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
-  return d;
-}
-
-/** What an archive week heading says: near weeks by name, older ones by date. */
-function weekLabel(/** @type {Date} */ monday) {
-  const now = weekOf(0);
-  // Rounded, because a week with a clock change in it is not 7 × 24 hours.
-  const weeks = Math.round((now.getTime() - monday.getTime()) / (7 * 864e5));
-  if (weeks === 0) return 'this week';
-  if (weeks === 1) return 'last week';
-  const date = monday.getFullYear() === now.getFullYear()
-    ? monday.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
-    : monday.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
-  return `week of ${date}`;
-}
-
-/** The search field, at the top of a checkout's list.
- *
- *  It used to sit inside the archive box and filter the rows under it. It
- *  searches every conversation now, live and past, and answers in a sheet over
- *  the rail, so the rows you are working in never move while you type. ↑ and ↓
- *  move through the results, Enter opens one, Esc closes it all.
+/** The search field, at the top of a checkout's list: a press opens the
+ *  palette for this checkout (`openPalette`). A field you never type into, so it
+ *  is a button drawn like a field; the typing happens in the palette.
  *
  *  @param {import('./core.js').Target} c
  */
 function searchField(c) {
   const wrap = el('div', 'arcfilter');
   wrap.dataset.checkout = c.path;
-  /* A field with a glass in it, so the one thing in the rail you type into looks
-     like one. A label, so a click anywhere in it reaches the input. */
-  const field = el('label', 'arcfield');
-  const input = /** @type {HTMLInputElement} */ (el('input', 'arcq'));
-  input.type = 'search';
-  input.placeholder = 'search conversations';
-  input.value = arcQuery[c.path] || '';
-  input.oninput = () => {
-    arcQuery[c.path] = input.value;
-    srch.path = c.path;
-    srch.sel = 0;
-    askTranscripts(c);
-    renderRail();
-  };
-  input.onkeydown = (ev) => {
-    if (ev.key === 'Escape') { ev.preventDefault(); closeSearch(); return; }
-    const n = searchResults(c, snapshotOf(c.path)).length;
-    if (!n) return;
-    if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
-      ev.preventDefault();
-      srch.sel = (srch.sel + (ev.key === 'ArrowDown' ? 1 : n - 1)) % n;
-      renderSearch();
-    } else if (ev.key === 'Enter') {
-      ev.preventDefault();
-      openResult(c, searchResults(c, snapshotOf(c.path))[srch.sel]);
-    }
-  };
-  field.append(icon('arcglass', 1.5, 'M7 2.8a4.2 4.2 0 1 0 0 8.4a4.2 4.2 0 1 0 0-8.4', 'M10.2 10.2 13.5 13.5'), input);
-  // How many results, written by the list's `fill` each pass.
-  field.appendChild(el('span', 'arcn'));
+  const field = el('button', 'arcfield');
+  field.type = 'button';
+  field.title = `Search conversations · ${MOD_LABEL} Shift K`;
+  field.append(icon('arcglass', 1.5, 'M7 2.8a4.2 4.2 0 1 0 0 8.4a4.2 4.2 0 1 0 0-8.4', 'M10.2 10.2 13.5 13.5'),
+    el('span', 'arcq', 'search conversations'), el('span', 'arcn', `${MOD_LABEL} Shift K`));
+  field.onclick = () => openPalette(c, 'all');
   wrap.appendChild(field);
   return wrap;
 }
@@ -1565,28 +1458,22 @@ function askTranscripts(c) {
   }, ARC_DEBOUNCE);
 }
 
-/** The last row of the results while the transcripts are being read. */
-function searchingRow() {
-  const row = el('div', 'arcbusy');
-  row.appendChild(el('span', 'arcspin'));
-  row.appendChild(el('span', null, 'searching transcripts'));
-  return row;
-}
+/* --- the search palette ------------------------------------------------------
 
-/* --- the results sheet ------------------------------------------------------
+   **In the middle of the window, over everything.** It was a sheet over the rail
+   at the rail's 320px, where the matched line was cut after five words and every
+   wave of transcript hits redrew the list under your cursor. One line per result,
+   one height, so nothing reflows; live, past and both as tabs; and the archive
+   button opens it on Past with nothing typed, so it is the archive too.
 
-   **Over the rail, never in it.** It opens under the field at the rail's width
-   and covers the rows below, which stay exactly as they were: nothing fades,
-   nothing moves, and Esc gives the rail back. On `document.body` like the
-   overlap card, because the rail rebuilds rows under the pointer and a sheet
-   inside it would go with them. Rebuilt only when what it says changed, the
-   guard against a snapshot replacing a row between its press and its release. */
-/** `shown` is the query and the selection the list was last drawn for, so a
- *  rebuild that changes neither keeps your scroll rather than going back to the
- *  top (see `renderSearch`).
- *  @type {{ path: string | null, sel: number, sig: string, el: HTMLElement | null,
- *           shown: { q: string, sel: number } }} */
-const srch = { path: null, sel: 0, sig: '', el: null, shown: { q: '', sel: -1 } };
+   **A row you can see never moves.** Results keep the order they arrived in
+   (`pal.order`). Until you move (a key, the wheel, the pointer), a new hit is
+   added at the end; after that it waits in `pal.held` behind one "N more found"
+   line, and only that line, or a new query, brings it in. */
+/** @type {{ path: string | null, tab: 'all' | 'live' | 'past', sel: number, order: string[],
+ *           held: string[], moved: boolean, q: string, sig: string, el: HTMLElement | null,
+ *           shownSel: number }} */
+const pal = { path: null, tab: 'all', sel: 0, order: [], held: [], moved: false, q: '', sig: '', el: null, shownSel: -1 };
 
 /** The query in checkout `c`'s field, as it is matched. */
 const searchQuery = (/** @type {import('./core.js').Target} */ c) => (arcQuery[c.path] || '').trim().toLowerCase();
@@ -1630,125 +1517,330 @@ function marked(/** @type {string} */ text, /** @type {string} */ q, /** @type {
     span.textContent = text;
     return span;
   }
-  span.append(text.slice(0, at), el('mark', 'srch-mark', text.slice(at, at + q.length)), text.slice(at + q.length));
+  span.append(text.slice(0, at), el('mark', 'cpal-mark', text.slice(at, at + q.length)), text.slice(at + q.length));
   return span;
 }
 
 /** Go to a result, and give the rail back. */
 function openResult(/** @type {import('./core.js').Target} */ c, /** @type {Result | undefined} */ r) {
   if (!r) return;
-  closeSearch();
   if (r.kind === 'ext') void openExternal(c, r.x);
   else if (r.kind === 'live') setSelected(r.s.id);
   else void openArchived(r.s);
 }
 
-/** Empty the field and close the sheet. */
-function closeSearch() {
-  const path = srch.path;
-  srch.path = null;
-  srch.sel = 0;
-  if (path) {
-    arcQuery[path] = '';
-    delete arcHits[path];
-    const input = /** @type {HTMLInputElement | null} */ (document.querySelector(`#rail .arcfilter[data-checkout="${CSS.escape(path)}"] .arcq`));
-    if (input) input.value = '';
-  }
-  if (srch.el) srch.el.hidden = true;
-  srch.sig = '';
-  renderRail();
+/** What the palette lists with nothing typed: the live conversations, then the
+ *  past ones newest first. That is the archive, browsed rather than searched.
+ *  @param {import('./core.js').Target} c @param {import('../snapshot').Snapshot | null} state
+ *  @returns {Result[]} */
+function browseResults(c, state) {
+  if (!state) return [];
+  const { mainActive, treeActive, archived, external } = checkoutFacts(c, state);
+  return [
+    ...[...mainActive, ...treeActive].sort(byNewest).map((s) => /** @type {Result} */ ({ kind: 'live', s, hit: null })),
+    ...[...archived].sort(byNewest).map((s) => /** @type {Result} */ ({ kind: 'arc', s, hit: null })),
+    ...external.map((x) => /** @type {Result} */ ({ kind: 'ext', x, hit: null })),
+  ];
 }
 
-/** Draw the sheet for the checkout being searched, or take it down. Called at
- *  the end of every rail render, so hits that land and snapshots that move it
- *  both reach it. */
-function renderSearch() {
-  const c = srch.path ? CHECKOUTS.find((x) => x.path === srch.path) : undefined;
-  const fieldEl = c ? document.querySelector(`#rail .arcfilter[data-checkout="${CSS.escape(c.path)}"]`) : null;
-  if (!c || !fieldEl || !searchQuery(c)) {
-    if (srch.el) srch.el.hidden = true;
-    srch.sig = '';
+/** A result's identity in `pal.order`, whatever its row draws. */
+const resultKey = (/** @type {Result} */ r) => (r.kind === 'ext' ? `ext:${r.x.id}` : `${r.kind}:${r.s.id}`);
+
+/** Whether the open tab shows `r`. */
+const onTab = (/** @type {Result} */ r) => pal.tab === 'all' || (pal.tab === 'live' ? r.kind === 'live' : r.kind !== 'live');
+
+/** The palette's checkout, while it is open. */
+const palCheckout = () => (pal.path ? CHECKOUTS.find((x) => x.path === pal.path) : undefined);
+
+/** Open the palette on checkout `c`, on `tab`. `q` replaces the query when given:
+ *  the archive button opens it empty, the field keeps what you last searched. */
+export function openPalette(/** @type {import('./core.js').Target} */ c, /** @type {'all' | 'live' | 'past'} */ tab, /** @type {string | undefined} */ q = undefined) {
+  const box = paletteEl();
+  if (q !== undefined) arcQuery[c.path] = q;
+  pal.path = c.path;
+  pal.tab = tab;
+  restart();
+  box.hidden = false;
+  /** @type {HTMLElement} */ (box.previousElementSibling).hidden = false;
+  const input = /** @type {HTMLInputElement} */ (box.querySelector('.cpal-q'));
+  input.value = arcQuery[c.path] || '';
+  borrowFocus('palette');
+  input.focus();
+  input.select();
+  // The past half is read by the daemon: ask it to look again for conversations
+  // it did not start, the way opening the archive always did.
+  if (tab !== 'live') void callOn(liveTarget(c), '/api/external/refresh').catch(() => undefined);
+  askTranscripts(c);
+  renderPalette();
+}
+
+/** Open the palette on the checkout you are in: `MOD Shift K`. */
+export function openSearch() {
+  openPalette(activeCheckout(), 'all');
+}
+
+/** Whether the palette is open, for the key map's Escape. */
+export const paletteOpen = () => !!pal.path;
+
+/** Close the palette and give the keyboard back. The query is kept, so the next
+ *  open shows what you last searched. */
+export function closePalette() {
+  if (!pal.path) return;
+  pal.path = null;
+  const box = pal.el;
+  if (box) {
+    box.hidden = true;
+    /** @type {HTMLElement} */ (box.previousElementSibling).hidden = true;
+    returnFocus('palette', box);
+  }
+}
+
+/** Forget what the list was showing: a new query, a new tab or a new open. */
+function restart() {
+  pal.order = [];
+  pal.held = [];
+  pal.moved = false;
+  pal.sel = 0;
+  pal.shownSel = -1;
+  pal.sig = '';
+  const list = pal.el?.querySelector('.cpal-list');
+  if (list) list.scrollTop = 0;
+}
+
+/** The palette's elements, made once on `document.body`, so no rebuild of the
+ *  rail can take them with it. */
+function paletteEl() {
+  if (pal.el) return pal.el;
+  const scrim = el('div', 'cpal-scrim');
+  scrim.hidden = true;
+  scrim.onclick = () => closePalette();
+  const box = el('div', 'cpal');
+  box.hidden = true;
+  box.setAttribute('role', 'dialog');
+  box.setAttribute('aria-label', 'Search conversations');
+  const head = box.appendChild(el('div', 'cpal-head'));
+  head.appendChild(icon('cpal-glass', 1.5, 'M7 2.8a4.2 4.2 0 1 0 0 8.4a4.2 4.2 0 1 0 0-8.4', 'M10.2 10.2 13.5 13.5'));
+  const input = /** @type {HTMLInputElement} */ (head.appendChild(el('input', 'cpal-q')));
+  input.type = 'text';
+  input.placeholder = 'search names and what was said';
+  input.spellcheck = false;
+  input.autocomplete = 'off';
+  input.setAttribute('aria-label', 'search conversations');
+  const tabs = head.appendChild(el('div', 'cpal-tabs'));
+  tabs.setAttribute('role', 'tablist');
+  for (const t of /** @type {const} */ (['all', 'live', 'past'])) {
+    const b = tabs.appendChild(el('button', 'cpal-tab'));
+    b.type = 'button';
+    b.dataset.tab = t;
+    b.setAttribute('role', 'tab');
+    b.onclick = () => { pal.tab = t; restart(); renderPalette(); input.focus(); };
+  }
+  box.appendChild(el('div', 'cpal-bar'));
+  box.appendChild(el('div', 'cpal-status'));
+  const list = box.appendChild(el('div', 'cpal-list'));
+  list.setAttribute('role', 'listbox');
+  // Any of these is you reading: from here on, new hits wait instead of landing.
+  list.addEventListener('wheel', () => { pal.moved = true; }, { passive: true });
+  list.addEventListener('pointermove', () => { pal.moved = true; });
+  box.appendChild(el('div', 'cpal-foot'));
+
+  input.oninput = () => {
+    const c = palCheckout();
+    if (!c) return;
+    arcQuery[c.path] = input.value;
+    restart();
+    askTranscripts(c);
+    renderPalette();
+  };
+  input.onkeydown = (ev) => {
+    const c = palCheckout();
+    if (!c) return;
+    const { rows, heldHere } = paletteRows(c);
+    const last = rows.length + (heldHere ? 1 : 0) - 1;
+    if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+      ev.preventDefault();
+      pal.moved = true;
+      pal.sel = Math.max(0, Math.min(last, pal.sel + (ev.key === 'ArrowDown' ? 1 : -1)));
+      renderPalette();
+    } else if (ev.key === 'Enter') {
+      ev.preventDefault();
+      act(c);
+    } else if (ev.key === 'Tab') {
+      ev.preventDefault();
+      const order = /** @type {const} */ (['all', 'live', 'past']);
+      pal.tab = order[(order.indexOf(pal.tab) + (ev.shiftKey ? 2 : 1)) % 3];
+      restart();
+      renderPalette();
+    } else if (ev.key === 'Escape') {
+      ev.preventDefault();
+      closePalette();
+    }
+  };
+  document.body.append(scrim, box);
+  pal.el = box;
+  return box;
+}
+
+/** The rows the palette shows, in the order they arrived, and how many wait.
+ *
+ *  Keys already in `pal.order` keep their place; a key the answer no longer has
+ *  goes; a new one is added at the end, or held once you have moved.
+ *  @param {import('./core.js').Target} c */
+function paletteRows(c) {
+  const state = snapshotOf(c.path);
+  const q = searchQuery(c);
+  const all = q ? searchResults(c, state) : browseResults(c, state);
+  /** @type {Map<string, Result>} */
+  const present = new Map(all.map((r) => [resultKey(r), r]));
+  pal.order = pal.order.filter((k) => present.has(k));
+  pal.held = pal.held.filter((k) => present.has(k) && !pal.order.includes(k));
+  for (const r of all) {
+    const k = resultKey(r);
+    if (pal.order.includes(k) || pal.held.includes(k)) continue;
+    (pal.moved ? pal.held : pal.order).push(k);
+  }
+  const pick = (/** @type {string[]} */ keys) => /** @type {Result[]} */ (keys.map((k) => present.get(k)).filter((r) => !!r));
+  const shown = pick(pal.order);
+  const held = pick(pal.held);
+  return {
+    q,
+    rows: shown.filter(onTab),
+    heldHere: held.filter(onTab).length,
+    counts: {
+      all: shown.length + held.length,
+      live: [...shown, ...held].filter((r) => r.kind === 'live').length,
+      past: [...shown, ...held].filter((r) => r.kind !== 'live').length,
+    },
+  };
+}
+
+/** Bring the held hits in, at the end, where the "more found" line was. */
+function showHeld(/** @type {import('./core.js').Target} */ c) {
+  pal.order.push(...pal.held);
+  pal.held = [];
+  renderPalette();
+  void c;
+}
+
+/** Enter on the selection: go to it, resume it, or show what was held. */
+function act(/** @type {import('./core.js').Target} */ c) {
+  const { rows, heldHere } = paletteRows(c);
+  if (pal.sel === rows.length && heldHere) return showHeld(c);
+  const r = rows[pal.sel];
+  if (!r) return;
+  closePalette();
+  openResult(c, r);
+}
+
+/** The line a row shows: the hit, cut so the match is in view, with `you:` in
+ *  front when it was yours; or, for a name match, where it ran.
+ *  @param {Result} r @param {string} q */
+function rowLine(r, q) {
+  const span = el('span', 'cpal-ln');
+  if (r.hit && q) {
+    if (r.hit.who === 'you') span.appendChild(el('span', 'cpal-you', 'you: '));
+    const line = r.hit.line;
+    const at = line.toLowerCase().indexOf(q);
+    // A match deep in a long line is cut to, so it is never past the ellipsis.
+    const from = at > 24 ? at - 20 : 0;
+    span.appendChild(marked((from ? '\u2026' : '') + line.slice(from), q, 'cpal-said'));
+    return span;
+  }
+  const where = r.kind === 'ext' ? (r.x.workspace === 'main' ? 'outside' : `outside · ${r.x.workspace}`)
+    : sessionBranch(r.s) || r.s.workspace;
+  span.appendChild(el('span', 'cpal-where', where));
+  return span;
+}
+
+/** What Enter does with `r`, said in the footer before you press it. */
+const verb = (/** @type {Result} */ r) => (r.kind === 'live' ? 'go to' : r.kind === 'ext' ? 'open' : 'resume');
+
+/** Draw the palette from the snapshot, the answer and its own state. Signed, so a
+ *  snapshot that changes nothing it shows does not touch the list. */
+export function renderPalette() {
+  const c = palCheckout();
+  if (!c) {
+    if (pal.path) closePalette();
     return;
   }
-  if (!srch.el) {
-    srch.el = el('div', 'srch');
-    // A press here must not take the keyboard from the field.
-    srch.el.onmousedown = (ev) => ev.preventDefault();
-    document.body.appendChild(srch.el);
-  }
-  const sheet = srch.el;
-  const rail = $('rail').getBoundingClientRect();
-  const under = fieldEl.getBoundingClientRect();
-  sheet.style.left = `${rail.left}px`;
-  sheet.style.width = `${rail.width}px`;
-  sheet.style.top = `${under.bottom}px`;
-  sheet.style.height = `${Math.max(120, rail.bottom - under.bottom)}px`;
-  sheet.hidden = false;
-
-  const q = searchQuery(c);
-  const state = snapshotOf(c.path);
-  const results = searchResults(c, state);
+  const box = paletteEl();
+  const { q, rows, heldHere, counts } = paletteRows(c);
   const answer = arcHits[c.path];
-  const busy = !!answer && answer.q === q && answer.busy;
-  if (srch.sel >= results.length) srch.sel = Math.max(0, results.length - 1);
-  const sig = paintSig([q, busy, srch.sel, results.map((r) => r.kind === 'ext'
+  const busy = q.length >= ARC_MIN && !!answer && answer.q === q && answer.busy;
+  if (pal.sel > rows.length - (heldHere ? 0 : 1)) pal.sel = Math.max(0, rows.length - (heldHere ? 0 : 1));
+  const sig = paintSig([q, pal.tab, pal.sel, busy, heldHere, counts, rows.map((r) => (r.kind === 'ext'
     ? [r.x.id, r.x.title, r.hit]
-    : [r.s.id, railName(r.s, { id: r.s.workspace }), r.kind === 'live' ? [stateLabel(r.s), sessionDot(r.s)] : r.s.created_ms, r.hit])]);
-  if (sig === srch.sig) return;
-  srch.sig = sig;
+    : [r.s.id, railName(r.s, { id: r.s.workspace }), r.kind === 'live' ? [stateLabel(r.s), sessionDot(r.s)] : r.s.created_ms, r.hit]))]);
+  if (sig === pal.sig) return;
+  pal.sig = sig;
 
-  const list = el('div', 'srch-list');
-  for (const [label, kinds] of /** @type {const} */ ([['Live', ['live']], ['Past', ['arc', 'ext']]])) {
-    const part = results.filter((r) => /** @type {readonly string[]} */ (kinds).includes(r.kind));
-    if (!part.length) continue;
-    const head = list.appendChild(el('div', 'srch-group'));
-    head.append(el('span', '', label), el('span', 'srch-n', String(part.length)));
-    for (const r of part) {
-      const at = results.indexOf(r);
-      const b = list.appendChild(el('button', 'srch-row' + (at === srch.sel ? ' sel' : '')));
-      b.type = 'button';
-      const top = b.appendChild(el('div', 'srch-top'));
-      if (r.kind === 'ext') {
-        top.append(el('span', 'dot archived'), marked(r.x.title || 'untitled', q, 'srch-name'), el('span', 'srch-when', `${ageLabel(r.x.last_used_ms)} ago`));
-      } else {
-        top.append(el('span', r.kind === 'live' ? sessionDot(r.s) : 'dot archived'), marked(railName(r.s, { id: r.s.workspace }), q, 'srch-name'),
-          el('span', 'srch-when', r.kind === 'live' ? stateLabel(r.s) : `${ageLabel(r.s.created_ms)} ago`));
-      }
-      if (r.hit) {
-        const said = b.appendChild(el('div', 'srch-said'));
-        said.append(el('span', 'srch-who', r.hit.who), marked(r.hit.line, q, 'srch-line'));
-      }
-      b.onclick = () => openResult(c, r);
+  // The tabs keep their nodes, so a count changing never moves them.
+  for (const b of box.querySelectorAll('.cpal-tab')) {
+    const t = /** @type {'all' | 'live' | 'past'} */ (/** @type {HTMLElement} */ (b).dataset.tab);
+    b.textContent = `${t} ${counts[t]}`;
+    b.classList.toggle('on', pal.tab === t);
+    b.setAttribute('aria-selected', String(pal.tab === t));
+  }
+  box.querySelector('.cpal-bar')?.classList.toggle('busy', busy);
+  const status = /** @type {HTMLElement} */ (box.querySelector('.cpal-status'));
+  status.replaceChildren(
+    el('span', '', q ? (busy ? 'searching transcripts' : q.length < ARC_MIN ? 'names only, type one more letter for what was said' : 'transcripts searched')
+      : pal.tab === 'past' ? 'past conversations, newest first' : 'live sessions, then past ones'),
+    el('span', '', q ? `${counts.all} found` : 'type to search what was said'),
+  );
+
+  const list = /** @type {HTMLElement} */ (box.querySelector('.cpal-list'));
+  const kept = list.scrollTop;
+  const next = document.createDocumentFragment();
+  let section = '';
+  rows.forEach((r, i) => {
+    // Headings only while browsing: a search is one list, a browse is two kinds.
+    const sec = !q && pal.tab === 'all' ? (r.kind === 'live' ? 'Live' : 'Past') : '';
+    if (sec && sec !== section) {
+      next.appendChild(el('div', 'cpal-sect', sec));
+      section = sec;
     }
+    const row = el('div', 'cpal-row' + (i === pal.sel ? ' sel' : ''));
+    row.setAttribute('role', 'option');
+    row.setAttribute('aria-selected', String(i === pal.sel));
+    const name = r.kind === 'ext' ? (r.x.title || 'untitled') : railName(r.s, { id: r.s.workspace });
+    const when = r.kind === 'live' ? stateLabel(r.s)
+      : `${ageLabel(r.kind === 'ext' ? r.x.last_used_ms : r.s.created_ms)} ago`;
+    row.append(el('span', r.kind === 'live' ? sessionDot(r.s) : 'dot archived'), marked(name, q, 'cpal-nm'),
+      rowLine(r, q), el('span', 'cpal-when', when));
+    row.title = name;
+    row.onclick = () => { pal.sel = i; act(c); };
+    if (r.kind === 'arc') row.oncontextmenu = (ev) => openMenu(ev, archivedMenu(r.s));
+    next.appendChild(row);
+  });
+  if (heldHere) {
+    const more = el('div', 'cpal-more' + (pal.sel === rows.length ? ' sel' : ''));
+    more.append(el('span', '', `${heldHere} more found`), el('span', '', 'show \u21b5'));
+    more.onclick = () => showHeld(c);
+    next.appendChild(more);
   }
-  if (busy) list.appendChild(searchingRow());
-  else if (!results.length) list.appendChild(el('div', 'srch-empty', q.length < ARC_MIN ? 'type two letters or more' : 'nobody said that'));
-  const foot = el('div', 'srch-foot');
-  foot.append(el('span', '', '↑↓ move'), el('span', '', '↵ open'), el('span', '', 'esc close'));
-  /* **Where you scrolled to survives a rebuild.** Results arrive in waves (the
-     names, the archive, then the live sessions' transcripts) and a live row's
-     state changes while you read, and each of those drew a new list at the top;
-     the selected row, the first by default, was then scrolled into view as well.
-     So reading down the hits, the sheet jumped back up, a few times over. Now
-     only a new query starts at the top, and only a moved selection scrolls. */
-  const kept = srch.shown.q === q ? sheet.querySelector('.srch-list')?.scrollTop ?? 0 : 0;
-  sheet.replaceChildren(list, foot);
+  if (!rows.length && !heldHere) {
+    next.appendChild(el('div', 'cpal-empty', busy ? 'searching transcripts\u2026'
+      : q ? 'nobody said that' : 'no conversations yet'));
+  }
+  list.replaceChildren(next);
   list.scrollTop = kept;
-  if (srch.shown.q !== q || srch.shown.sel !== srch.sel) {
-    if (srch.shown.q === q) sheet.querySelector('.srch-row.sel')?.scrollIntoView({ block: 'nearest' });
-    srch.shown = { q, sel: srch.sel };
+  // Only a moved selection scrolls; a new wave of results never does.
+  if (pal.sel !== pal.shownSel) {
+    list.querySelector('.sel')?.scrollIntoView({ block: 'nearest' });
+    pal.shownSel = pal.sel;
   }
-}
 
-/* A press anywhere but the field and the sheet puts the rail back: the search
-   is a question, and doing something else is the answer to it. */
-document.addEventListener('pointerdown', (ev) => {
-  if (!srch.path) return;
-  const t = ev.target;
-  if (t instanceof Node && (srch.el?.contains(t) || (t instanceof Element && t.closest('#rail .arcfilter')))) return;
-  closeSearch();
-}, true);
-window.addEventListener('resize', () => { srch.sig = ''; renderSearch(); });
+  const r = rows[pal.sel];
+  const what = pal.sel === rows.length && heldHere ? 'show the rest' : r ? `${verb(r)} ${r.kind === 'ext' ? (r.x.title || 'untitled') : railName(r.s, { id: r.s.workspace })}` : '';
+  const foot = /** @type {HTMLElement} */ (box.querySelector('.cpal-foot'));
+  foot.replaceChildren(el('span', '', '\u2191\u2193 move'), el('span', '', 'tab live \u00b7 past'), el('span', 'cpal-sp'));
+  if (what) {
+    const doing = foot.appendChild(el('span', '', '\u21b5 '));
+    doing.appendChild(el('b', '', what));
+  }
+  foot.appendChild(el('span', '', 'esc'));
+}
 
 /** A session that has been asked for and does not exist yet.
  *
@@ -1876,7 +1968,7 @@ function addRow(c, state) {
   /* Hard right, so the row says one thing about the list above it rather than two:
      what you can add, and what it is holding back. Absent when there is no archive,
      which is the one case where the row has nothing to say on that side. */
-  const fold = archivedToggle(c, 'sessions', archived, external);
+  const fold = archivedToggle(c, archived, external);
   if (fold) row.appendChild(fold);
 
   return row;
@@ -1939,21 +2031,6 @@ function checkoutFacts(c, state) {
   };
 }
 
-/** Is this checkout's archive open?
- *
- *  One answer for the toggle and for the block it opens: they are drawn by
- *  different functions now, and a second reading of this is how they come to
- *  disagree about what the caret is pointing at.
- */
-function archiveOpen(/** @type {import('./core.js').Target} */ c, /** @type {string} */ key, /** @type {import('../snapshot').SessionView[]} */ sessions) {
-  // Qualified, because `sessions` names a fold in every checkout and one open
-  // archive would open all of them.
-  const held = `${c.path}\u0000${key}`;
-  // Opened whenever the conversation you are looking at is in here, so the rail
-  // never goes silent about what the centre pane is showing.
-  return { held, open: showArchived[held] || sessions.some((/** @type {import('../snapshot').SessionView} */ s) => s.id === selected) };
-}
-
 /** The archive's own control, which rides the header.
  *
  *  `null` when nothing is archived: a count of zero is not news, and the header is
@@ -1963,17 +2040,15 @@ function archiveOpen(/** @type {import('./core.js').Target} */ c, /** @type {str
  *  says it better — as `3 of 24`, against the query it is answering. What it cost
  *  was the widest label on a header that has to hold three of them.
  */
-function archivedToggle(/** @type {import('./core.js').Target} */ c, /** @type {string} */ key, /** @type {import('../snapshot').SessionView[]} */ sessions, /** @type {import('../snapshot').ExternalView[]} */ external) {
+function archivedToggle(/** @type {import('./core.js').Target} */ c, /** @type {import('../snapshot').SessionView[]} */ sessions, /** @type {import('../snapshot').ExternalView[]} */ external) {
   /* Both counted, because both are behind this caret. A checkout whose only past
      conversations were started from a terminal has an archive worth opening, and
      counting the daemon's alone would leave it with no caret at all. */
   const total = sessions.length + external.length;
   if (!total) return null;
-  const { held, open } = archiveOpen(c, key, sessions);
   const btn = el('button', 'arctoggle');
   btn.type = 'button';
-  btn.setAttribute('aria-expanded', String(open));
-  btn.title = `${total} past conversation${total === 1 ? '' : 's'} in this checkout`;
+  btn.title = `${total} past conversation${total === 1 ? '' : 's'} in this checkout · search them`;
   /* **An archive box, and the fold's open state is its fill** (option 1 of the
      archive review). It had a caret, kept because the caret said the rows were
      *behind* it; beside Worktree and Main as icon buttons, the fill says "open"
@@ -1983,20 +2058,13 @@ function archivedToggle(/** @type {import('./core.js').Target} */ c, /** @type {
      app using a second word for one state. A glass was tried here and taken back:
      it says "search", and this control is a fold before it is a search. */
   btn.append(icon('addic', 1.5, 'M2.5 4.5h11v2h-11z', 'M3.5 6.5v6h9v-6', 'M6.5 9h3'), 'Archived');
+  /* **It opens the search palette on Past, with nothing typed**: the archive is
+     the palette browsing instead of searching. It folded a box of rows open in
+     the rail, which pushed the projects under it down a screen. */
   btn.onclick = (/** @type {MouseEvent} */ ev) => {
     // The header it rides is the drag handle and folds on a double-click.
     ev.stopPropagation();
-    /* Opening it asks the daemon to look again for conversations it did not start.
-       Its poller runs on a minute, and the terminal you are opening this to find is
-       usually the one you closed a moment ago. Fire-and-forget: the answer arrives
-       as a snapshot like everything else, and a refresh that fails leaves the list
-       exactly as it was, which is not news worth a toast. */
-    // Read now, not when the button was drawn: the add row keeps its node for as
-    // long as it draws the same, so a captured flag or target can be stale.
-    const now = !!showArchived[held];
-    if (!now) void callOn(liveTarget(c), '/api/external/refresh').catch(() => undefined);
-    showArchived[held] = !now;
-    renderRail();
+    openPalette(c, 'past', '');
   };
   return btn;
 }
@@ -2036,7 +2104,14 @@ function archivedRow(/** @type {import('../snapshot').SessionView} */ s) {
     btn.appendChild(el('div', 'sess-sub', 'tree removed · rebuilds on resume'));
   }
   btn.onclick = () => openArchived(s);
-  btn.oncontextmenu = (ev) => openMenu(ev, [
+  btn.oncontextmenu = (ev) => openMenu(ev, archivedMenu(s));
+  return btn;
+}
+
+/** A past conversation's right-click: on its rail row and on its palette row.
+ *  @returns {import('./core.js').MenuItem[]} */
+function archivedMenu(/** @type {import('../snapshot').SessionView} */ s) {
+  return [
     // Worth more here than on a live row: the archive is the list you scan weeks
     // later, and two conversations Claude Code named the same thing are what you
     // are scanning past.
@@ -2049,8 +2124,7 @@ function archivedRow(/** @type {import('../snapshot').SessionView} */ s) {
       ['branch', null, sessionBranch(s) ? () => copyBranch(s) : null],
     ]],
     ['delete', 'bad', () => deleteSession(s)],
-  ]);
-  return btn;
+  ];
 }
 
 /** Whether this checkout can run the agent holding the conversation.
@@ -2086,37 +2160,6 @@ async function openArchived(/** @type {import('../snapshot').SessionView} */ s) 
   } catch (e) {
     toast(reason(e), true);
   }
-}
-
-/** A conversation this checkout has that orchd did not start.
- *
- *  **It carries no state word and no dot of its own.** The fold it sits in says
- *  "archived" and the sub-line says where it came from; a second vocabulary for
- *  what is, from the rail's point of view, the same thing, a conversation you can
- *  come back to, is a distinction nobody asked for.
- *
- *  No context menu either. Rename, fork and delete are all verbs over a session
- *  record, and there is none until this is resumed; delete in particular would have
- *  to mean deleting Claude Code's own file, which `api::delete_session` is explicit
- *  about never doing.
- */
-function externalRow(/** @type {import('./core.js').Target} */ c, /** @type {import('../snapshot').ExternalView} */ x) {
-  const btn = el('button', 'sess arc');
-  btn.dataset.id = x.id;
-  const row = el('div', 'sess-row');
-  row.appendChild(el('span', 'dot archived'));
-  /* Claude Code's own `ai-title`, and nothing to fall back to: an outside
-     conversation has no name you could have typed, and the workspace it ran in is
-     on the line below. */
-  const name = x.title || 'untitled';
-  row.appendChild(el('span', 'sess-name', name, name));
-  row.appendChild(clock('sess-id', x.last_used_ms, ' ago'));
-  btn.appendChild(row);
-  /* Where it ran, when that is not the obvious answer. `outside` is the word for
-     what makes this row different: the daemon never started it. */
-  btn.appendChild(el('div', 'sess-sub', x.workspace === 'main' ? 'outside' : `outside · ${x.workspace}`));
-  btn.onclick = () => openExternal(c, x);
-  return btn;
 }
 
 /** Take an outside conversation over: the daemon relaunches it under its own id.

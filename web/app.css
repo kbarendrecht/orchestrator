@@ -788,8 +788,6 @@ button.ovc-who:hover{background:var(--hover)}
   background:none;border:0;border-radius:var(--r);cursor:pointer;transition:color .15s,background .15s;
 }
 .arctoggle:hover{color:var(--text);background:var(--hover)}
-/* Open is a fill, the way a pressed button reads; see `archivedToggle`. */
-.ws-add .arctoggle[aria-expanded="true"]{color:var(--text);background:var(--raised)}
 /* The review queue's `not reviewable` fold: a row of its own at the foot of the
    list, full width and padded like the rows above it. */
 .rvfold{
@@ -807,18 +805,6 @@ button.ovc-who:hover{background:var(--hover)}
    the box, against the query it answers. The `margin-left:auto` above is what
    holds it to the right of the add row. */
 
-/* **The archive is a box, and the box is what scrolls.** About ten rows, because
-   a month-old checkout has dozens and the open list took the whole column —
-   pushing `+ open project` and the PR pane out of sight. Bounded, not truncated:
-   everything is still reachable inside it.
-   41px is one `.sess.arc` (6 + 7 of padding, a name line and a sub line), and the
-   cap is a height rather than a row count, so a larger UI scale shows fewer rows
-   instead of a taller block — which is the thing this exists to stop.
-   The rules and the darker ground are what say "section" now that the heading has
-   moved onto the add row. */
-.arcbox{
-  max-height:calc(41px * 10);overflow-y:auto;
-}
 
 /* **The filter is inside the box, and it stays while the rows scroll.** Inside,
    because the box is what the caret opens and a field over a closed archive is a
@@ -832,67 +818,73 @@ button.ovc-who:hover{background:var(--hover)}
   position:sticky;top:0;z-index:1;padding:4px 10px 6px;background:var(--panel-ground,var(--surface));
 }
 .arcfield{
-  display:flex;align-items:center;gap:7px;height:28px;padding:0 9px;cursor:text;
-  background:var(--bg);border:1px solid var(--line);border-radius:var(--r);
+  display:flex;align-items:center;gap:7px;width:100%;height:28px;padding:0 9px;cursor:pointer;
+  background:var(--bg);border:1px solid var(--line);border-radius:var(--r);text-align:left;
 }
+.arcfield:hover{border-color:var(--faint-solid)}
 .arcglass{display:inline-flex;color:var(--ghost);font-size:calc(12px * var(--fs))}
 /* A field, not a row of text: it is the one thing in this rail you type into, so
    it gets the height a text input needs rather than the height of the rows around
    it. */
 .arcq{
-  flex:1 1 auto;min-width:0;background:none;border:0;padding:0;color:var(--text);
+  flex:1 1 auto;min-width:0;color:var(--ghost);
   font-family:var(--sans);font-size:calc(12px * var(--fs));line-height:1.8;
 }
-/* **No focus ring, because the field is focused for you.** Opening the archive
-   puts the caret here, so the app's 2px ring drew a bright box every time the box
-   opened, on a field you had not reached for. The rule under it brightened
-   instead, and that was still a highlight on every open; the caret is enough. */
-.arcq:focus,.arcq:focus-visible{outline:none}
-.arcq::placeholder{color:var(--ghost)}
-/* The webkit search decorations are a magnifier and a cancel button in Chrome's
-   own metrics; the rail draws neither, and the app's engine is WebKitGTK. */
-.arcq::-webkit-search-decoration,.arcq::-webkit-search-cancel-button{-webkit-appearance:none}
-/* What the header's control gave up, back where it means something: how many of
-   the archive this query is showing. Blank until something is typed. */
+/* The chord that opens the palette, in the field that opens it. */
 .arcn{
   font-family:var(--mono);font-size:calc(9px * var(--fs));color:var(--faint-solid);
   white-space:nowrap;flex:0 0 auto;
 }
-/* The last row while the transcripts are being read. Last, always — hits land
-   above it, so nothing already drawn moves when the slow half arrives. */
-.arcbusy{
-  display:flex;align-items:center;gap:7px;padding:6px 14px 8px;
-  font-family:var(--mono);font-size:calc(9px * var(--fs));color:var(--ghost);
+
+/* The search palette (`renderPalette` in rail.js): centred over the window, one
+   32px line per result so nothing reflows, and a bar that runs while transcripts
+   are read. Above every overlay and card, under menus (100). */
+.cpal-scrim{position:fixed;inset:0;z-index:89;background:rgba(0,0,0,.38)}
+.cpal{
+  position:fixed;z-index:90;left:50%;top:12vh;transform:translateX(-50%);
+  width:min(640px, calc(100vw - 32px));height:min(452px, 76vh);
+  display:flex;flex-direction:column;overflow:hidden;
+  background:var(--raised);border:1px solid var(--line);border-radius:14px;
+  box-shadow:0 30px 80px -10px rgba(0,0,0,.8);
 }
-.arcspin{
-  width:9px;height:9px;border-radius:50%;flex:0 0 auto;
-  border:1.4px solid var(--line);border-top-color:var(--dim);
-  animation:arcspin .8s linear infinite;
-}
-@keyframes arcspin{to{transform:rotate(360deg)}}
-/* What a transcript hit matched, in place of the state a name hit shows. One line
-   like every other sub-line: the row says what was said, the transcript has the
-   rest. */
-/* The search results (`renderSearch` in rail.js): a sheet over the rail, under
-   the field and at the rail's width, so the rows beneath stay as they were. */
-.srch{position:fixed;z-index:85;display:flex;flex-direction:column;background:var(--raised);
-  border-top:1px solid var(--line);border-right:1px solid var(--line);box-shadow:8px 10px 24px rgba(0,0,0,.4)}
-.srch-list{flex:1;min-height:0;overflow-y:auto;padding:2px 0 6px}
-.srch-group{display:flex;gap:6px;padding:8px 12px 3px;font-size:calc(10.5px * var(--fs));color:var(--faint-solid);
-  text-transform:uppercase;letter-spacing:.08em}
-.srch-n{margin-left:auto;text-transform:none;letter-spacing:0}
-.srch-row{display:block;width:100%;padding:6px 12px;text-align:left;color:var(--text)}
-.srch-row:hover{background:var(--hover)}
-.srch-row.sel{background:var(--hover);box-shadow:inset 2px 0 0 var(--done)}
-.srch-top{display:flex;align-items:center;gap:7px;font-size:calc(12px * var(--fs))}
-.srch-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.srch-when{flex:none;font-size:calc(10.5px * var(--fs));color:var(--faint-solid)}
-.srch-said{display:flex;gap:6px;margin:2px 0 0 13px;min-width:0;font-size:calc(11.5px * var(--fs));color:var(--dim)}
-.srch-who{flex:none;font-family:var(--mono);font-size:calc(10px * var(--fs));color:var(--ghost);padding-top:1px}
-.srch-line{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.srch-mark{background:color-mix(in srgb, var(--done) 22%, transparent);color:var(--text);border-radius:2px;padding:0 1px}
-.srch-empty{padding:14px 12px;font-size:calc(12px * var(--fs));color:var(--faint-solid)}
-.srch-foot{display:flex;gap:12px;padding:5px 12px;border-top:1px solid var(--line);font-size:calc(10.5px * var(--fs));color:var(--ghost)}
+.cpal-scrim[hidden],.cpal[hidden]{display:none}
+.cpal-head{display:flex;align-items:center;gap:10px;height:50px;padding:0 12px 0 16px;flex:none}
+.cpal-glass{display:inline-flex;color:var(--ghost);font-size:calc(15px * var(--fs))}
+.cpal-q{flex:1;min-width:0;background:none;border:0;padding:0;color:var(--text);font-family:var(--sans);font-size:calc(14px * var(--fs))}
+.cpal-q:focus,.cpal-q:focus-visible{outline:none}
+.cpal-q::placeholder{color:var(--ghost)}
+/* Tabular figures, so a count changing never shifts the tabs. */
+.cpal-tabs{display:flex;gap:2px;padding:2px;flex:none;background:var(--bg);border:1px solid var(--line);border-radius:var(--r)}
+.cpal-tab{padding:1px 9px;border-radius:4px;font-family:var(--sans);font-size:calc(11px * var(--fs));color:var(--faint-solid);font-variant-numeric:tabular-nums;cursor:pointer}
+.cpal-tab:hover{color:var(--text)}
+.cpal-tab.on{background:var(--raised);color:var(--text);box-shadow:0 1px 2px rgba(0,0,0,.4)}
+/* The bar runs while the transcripts are read: a stripe, since the daemon answers
+   in one reply and has no "14 of 24" to say yet. */
+.cpal-bar{height:2px;flex:none;background:var(--line);position:relative;overflow:hidden;opacity:0;transition:opacity .3s}
+.cpal-bar.busy{opacity:1}
+.cpal-bar.busy::after{content:"";position:absolute;top:0;bottom:0;width:35%;background:var(--faint-solid);animation:cpalrun 1.1s ease-in-out infinite}
+@keyframes cpalrun{from{left:-35%}to{left:100%}}
+.cpal-status{display:flex;justify-content:space-between;gap:12px;min-height:21px;padding:5px 16px 2px;flex:none;font-family:var(--mono);font-size:calc(10px * var(--fs));color:var(--ghost)}
+.cpal-list{flex:1;min-height:0;overflow-y:auto;padding:2px 0 6px}
+.cpal-sect{padding:8px 16px 3px;font-family:var(--label);font-size:calc(9px * var(--fs));letter-spacing:.08em;text-transform:uppercase;color:var(--ghost)}
+.cpal-row{display:flex;align-items:center;gap:9px;height:32px;padding:0 14px;border-left:2px solid transparent;cursor:pointer;min-width:0;font-size:calc(12px * var(--fs))}
+.cpal-row:hover{background:var(--hover)}
+.cpal-row.sel{background:var(--hover);border-left-color:var(--done)}
+.cpal-nm{flex:none;max-width:180px;font-weight:500;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cpal-ln{flex:1;min-width:0;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cpal-you{color:var(--work)}
+.cpal-where{font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--ghost)}
+.cpal-when{flex:none;font-family:var(--mono);font-size:calc(10px * var(--fs));color:var(--faint-solid);white-space:nowrap}
+.cpal-mark{background:color-mix(in srgb, var(--done) 22%, transparent);color:var(--text);border-radius:2px;padding:0 1px}
+/* Hits that arrived after you moved, waiting rather than pushing rows down. */
+.cpal-more{display:flex;justify-content:space-between;align-items:center;margin:6px 14px;padding:5px 10px;cursor:pointer;
+  border:1px dashed var(--line);border-radius:var(--r);font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid)}
+.cpal-more:hover,.cpal-more.sel{border-color:var(--faint-solid);color:var(--text)}
+.cpal-empty{padding:22px 16px;font-size:calc(12px * var(--fs));color:var(--faint-solid)}
+.cpal-foot{display:flex;gap:14px;padding:7px 16px;flex:none;border-top:1px solid var(--line);font-family:var(--mono);font-size:calc(10px * var(--fs));color:var(--ghost)}
+.cpal-foot b{color:var(--dim);font-weight:500}
+.cpal-sp{flex:1}
+@media (prefers-reduced-motion: reduce){.cpal-bar.busy::after{animation:none;left:0;width:100%}}
 
 /* The rail's own foot: `+ open project`, below every project and above the PR
    pane. Outside `.rail-scroll`, so an open archive cannot push it away. */
@@ -925,14 +917,6 @@ button.ovc-who:hover{background:var(--hover)}
 /* A past conversation. Quieter than a live row, and one line rather than two, so
    twenty of them still read as a list. */
 .sess.arc{padding:6px 15px 7px}
-/* A week heading in the archive: the faint label voice the add row uses, so it
-   reads as a divider between rows rather than as a row. */
-/* Sentence case, as the pane titles are now: "This week", not spaced capitals. */
-.arcweek{
-  padding:10px 16px 3px;font-family:var(--sans);font-size:calc(11px * var(--fs));font-weight:600;
-  color:var(--ghost);
-}
-.arcweek::first-letter{text-transform:uppercase}
 /* The PR number on an archived row, in the clock's voice beside it. */
 .sess-pr{font-family:var(--mono);font-size:calc(9px * var(--fs));color:var(--faint-solid);flex:0 0 auto}
 .sess.arc .sess-name{color:var(--dim)}
@@ -1384,7 +1368,7 @@ body:not(.ready) #termempty .empty-k{display:none}
    the refresh spinner alike), and for the three modals' entrances with them. */
 @media(prefers-reduced-motion:reduce){
   .conn-dot,.connbar .d{animation:none;opacity:.7}
-  .rvrefresh.spin svg,.arcspin{animation:none}
+  .rvrefresh.spin svg{animation:none}
   .oq,#settings,#keyhelp,.overlay.find,.oppanel{animation:none}
 }
 /* Visually hidden, still read aloud — the live region that announces "needs you". */

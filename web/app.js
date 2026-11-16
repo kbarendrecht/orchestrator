@@ -1836,6 +1836,22 @@ function keymap(/** @type {KeyboardEvent} */ e) {
      behind it. The dialog draws its own Enter (`dlgOpen` in core.js), and Escape
      is the branch above. */
   if (dialogOpen()) return;
+  /* **The search palette is the topmost thing while it is open**, over every
+     overlay and card, so Escape is its. Its own field handles the rest. */
+  if (Rail.paletteOpen()) {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      Rail.closePalette();
+    }
+    return;
+  }
+  /* MOD Shift K opens it on the checkout you are in. Shift, because plain Ctrl+K
+     deletes to the end of the line in the agent's input on Linux. */
+  if (appMod(e) && e.shiftKey && !e.altKey && e.code === 'KeyK') {
+    e.preventDefault();
+    Rail.openSearch();
+    return;
+  }
   if (e.key === 'Escape' && !$('keyhelp').hidden) {
     e.preventDefault();
     closeLegend();
