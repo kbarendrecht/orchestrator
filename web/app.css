@@ -875,7 +875,7 @@ button.ovc-who:hover{background:var(--hover)}
   position:fixed;z-index:90;left:50%;top:12vh;transform:translateX(-50%);
   width:min(var(--cpal-w, 960px), calc(100vw - 32px));height:min(var(--cpal-h, 680px), calc(100vh - 12vh - 24px));
   display:flex;flex-direction:column;overflow:hidden;
-  background:var(--raised);border:1px solid var(--line);border-radius:14px;
+  background:var(--surface);border:1px solid var(--line);border-radius:14px;
   box-shadow:0 30px 80px -10px rgba(0,0,0,.8);
 }
 .cpal-scrim[hidden],.cpal[hidden]{display:none}
