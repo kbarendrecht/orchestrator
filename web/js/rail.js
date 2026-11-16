@@ -1,7 +1,7 @@
 // The rail: what is running, what is waiting on you, and the PRs beside it.
 // Twenty-four names, three out; the rest is how a row decides what it says.
 
-import { $, activeCheckout, borrowFocus, returnFocus, gateOf, AGENT_LABEL, ageLabel, bandOf, byNewest, call, callFor, callHost, callOn, caret, checkoutBadge, checkoutOf, CHECKOUTS, chooseBox, clock, confirmBox, promptBox, copyText, creating, creatingIn, creatingIntoMain, dotClass, el, enterCheckout, icon, iconLabel, getHost, getOn, handedToPr, hasPr, inTrouble, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, QUEUE_MAX, reason, refreshButton, repoSummary, safeHref, selected, sessionDot, sessionsOf, sessionOrder, setPendingSelect, setSelected, setSessionOrder, snap, snapshotFor, snapshotOf, startingShown, stateClass, stateLabel, terms, toast, paintSig, reconcile, unchanged, watchStarting } from './core.js';
+import { $, activeCheckout, BAND_NAMES, borrowFocus, returnFocus, gateOf, AGENT_LABEL, ageLabel, bandOf, byNewest, call, callFor, callHost, callOn, caret, checkoutBadge, checkoutOf, CHECKOUTS, chooseBox, clock, confirmBox, promptBox, copyText, creating, creatingIn, creatingIntoMain, dotClass, el, enterCheckout, icon, iconLabel, getHost, getOn, handedToPr, hasPr, inTrouble, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, QUEUE_MAX, reason, refreshButton, repoSummary, safeHref, selected, sessionDot, sessionsOf, sessionOrder, setPendingSelect, setSelected, setSessionOrder, snap, snapshotFor, snapshotOf, startingShown, stateClass, stateLabel, terms, toast, paintSig, reconcile, unchanged, watchStarting } from './core.js';
 import * as Open from './open.js';
 import * as Term from './term.js';
 
@@ -395,11 +395,10 @@ function colourItems(c) {
   const pick = (/** @type {number} */ band) => () => void callHost('/api/host/checkout/label', { path: c.path, band })
     .catch((e) => toast(reason(e), true));
   // The class names written out, so the dead-CSS check can see each one.
-  const swatches = [['blue', 'co1'], ['green', 'co2'], ['purple', 'co3'], ['sand', 'co4'],
-    ['rose', 'co5'], ['teal', 'co6'], ['olive', 'co7'], ['indigo', 'co8']];
+  const classes = ['co1', 'co2', 'co3', 'co4', 'co5', 'co6', 'co7', 'co8'];
   /** @type {import('./core.js').MenuItem[]} */
-  const items = swatches.map(([name, cls], i) => /** @type {import('./core.js').MenuItem} */ (
-    [name, `swatch ${cls}${c.band === i + 1 ? ' on' : ''}`, pick(i + 1)]));
+  const items = BAND_NAMES.map((name, i) => /** @type {import('./core.js').MenuItem} */ (
+    [name, `swatch ${classes[i]}${c.band === i + 1 ? ' on' : ''}`, pick(i + 1)]));
   items.push(['automatic', `swatch${c.band ? '' : ' on'}`, pick(0)]);
   return items;
 }

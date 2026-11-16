@@ -836,6 +836,19 @@ button.ovc-who:hover{background:var(--hover)}
   white-space:nowrap;flex:0 0 auto;
 }
 
+/* The settings pane's project colours: a swatch per band, ringed when picked,
+   and "auto" for the order's own. `--sw` is the band, set per button. */
+.cosw-name{display:flex;align-items:center;gap:8px}
+.cosw{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.cosw-b{width:18px;height:18px;border-radius:50%;background:var(--sw);border:0;padding:0;cursor:pointer;
+  box-shadow:0 0 0 2px var(--surface);transition:box-shadow .12s}
+.cosw-b:hover{box-shadow:0 0 0 2px var(--surface),0 0 0 3px var(--faint-solid)}
+.cosw-b[aria-pressed="true"]{box-shadow:0 0 0 2px var(--surface),0 0 0 4px var(--text)}
+.cosw-auto{margin-left:4px;padding:0 8px;height:20px;border-radius:999px;border:1px solid var(--line);background:none;
+  font-family:var(--sans);font-size:calc(11px * var(--fs));color:var(--faint-solid);cursor:pointer}
+.cosw-auto:hover{color:var(--text)}
+.cosw-auto[aria-pressed="true"]{color:var(--text);border-color:var(--faint-solid)}
+
 /* The search palette (`renderPalette` in rail.js): centred over the window, one
    32px line per result so nothing reflows, and a bar that runs while transcripts
    are read. Above every overlay and card, under menus (100). */

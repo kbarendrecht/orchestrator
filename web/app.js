@@ -2606,6 +2606,8 @@ function connectHost() {
     }
     for (const path of [...socketed]) if (!open.has(path)) socketed.delete(path);
     setCheckouts(checkouts);
+    // A colour picked in settings comes back this way; so does a project closed.
+    Settings.refreshProjects();
     // A checkout that closed takes its drop with it.
     showConnBar();
     // A selection in a checkout that is gone points at nothing.

@@ -314,6 +314,10 @@ let lastCheckout = null;
 const bands = new Map();
 const BANDS = 8;
 
+/** What each band is called, in band order (`--co-1` is blue): the rail header's
+ *  colour menu and the settings pane's Projects group both name them from here. */
+export const BAND_NAMES = ['blue', 'green', 'purple', 'sand', 'rose', 'teal', 'olive', 'indigo'];
+
 /** The band number for a checkout, or `null` past the palette.
  *
  *  @param {string} path

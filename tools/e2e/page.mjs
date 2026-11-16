@@ -591,6 +591,22 @@ try {
   await page.waitForTimeout(300)
   check(await page.$eval('#setdiscard', (b) => b.hidden),
     'changing the theme does not mark the config unsaved')
+
+  /* **A project's colour, from settings.** Eight swatches and auto per open
+     project; a pick goes to the host and comes back as the new project list, which
+     redraws the row with that swatch pressed. Put back to auto after. */
+  const swatchCount = await page.$$eval('#thprojects .settings-row', (rows) => rows.map((r) => r.querySelectorAll('.cosw-b').length))
+  check(swatchCount.length >= 1 && swatchCount.every((n) => n === 8),
+    `each open project gets eight colours, got ${JSON.stringify(swatchCount)}`)
+  await page.click('#thprojects .settings-row:first-child .cosw-b:nth-child(5)')
+  const bandPicked = await page.waitForFunction(async () => {
+    const core = await import('/js/core.js')
+    const pressed = document.querySelector('#thprojects .settings-row:first-child .cosw-b:nth-child(5)')?.getAttribute('aria-pressed')
+    return core.CHECKOUTS[0]?.band === 5 && pressed === 'true' || null
+  }, null, { timeout: 5000 }).then(() => true, () => false)
+  check(bandPicked, 'picking rose stores band 5 for the project and shows it pressed')
+  await page.click('#thprojects .settings-row:first-child .cosw-auto')
+  await page.waitForFunction(async () => !(await import('/js/core.js')).CHECKOUTS[0]?.band, null, { timeout: 5000 }).catch(() => {})
   await page.click('#setclose')
   await page.waitForTimeout(300)
 

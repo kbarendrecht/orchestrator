@@ -1,7 +1,7 @@
 // The settings panel. The zoom control it offers lives in core, because the
 // terminals read the scale too.
 
-import { AGENT_LABEL, CHECKOUTS, activeCheckout, bandOf, checkoutBadge, callOn, getOn, snapshotOf, ctl, $, WHEEL, ZOOM, borrowFocus, callHost, getHost, caret, setUiPx, uiPx, UI_PX_MAX, UI_PX_MIN, closeLegend, el, MOD_LABEL, onSelection, reason, returnFocus, loadWheel, saveWheel, saveZoom, setWheel, setZoom, snap, uiScale, wheelSpeed } from './core.js';
+import { AGENT_LABEL, BAND_NAMES, CHECKOUTS, activeCheckout, bandOf, checkoutBadge, callOn, getOn, snapshotOf, ctl, $, WHEEL, ZOOM, borrowFocus, callHost, getHost, caret, setUiPx, uiPx, UI_PX_MAX, UI_PX_MIN, closeLegend, el, MOD_LABEL, onSelection, reason, returnFocus, loadWheel, saveWheel, saveZoom, setWheel, setZoom, snap, uiScale, wheelSpeed } from './core.js';
 import { currentPreset, detectedFonts, FONTS, fontStack, onThemeChange, PRESETS, resetTheme, SEE_THROUGH, setTheme, SIZE_MAX, SIZE_MIN, theme, validFontName } from './theme.js';
 /* The arithmetic, for reading a typed hex back. A leaf with no imports of its own,
    so the module graph stays the DAG `dependency-cruiser` insists on — and the same
@@ -54,6 +54,52 @@ function renderProjects() {
     if (open) nodes.push(...projectTabs);
   }
   $('setprojects').replaceChildren(...nodes);
+}
+
+/** Each open project's colour, as a row of swatches and "auto".
+ *
+ *  The same choice as the rail header's colour menu, where it was the only way
+ *  in: a setting you look for in settings. Written to the host at once, like the
+ *  rest of the Theme tab; the host sends the new list back, and `refreshProjects`
+ *  draws it. */
+function renderProjectColours() {
+  const rows = CHECKOUTS.filter((c) => c.path).map((c) => {
+    const row = el('div', 'settings-row');
+    const k = row.appendChild(el('span', 'settings-k cosw-name'));
+    const badge = checkoutBadge(c, bandOf(c.path));
+    badge.setAttribute('aria-hidden', 'true');
+    k.append(badge, c.name);
+    const swatches = row.appendChild(el('span', 'settings-step cosw'));
+    const pick = (/** @type {number} */ band) => {
+      void callHost('/api/host/checkout/label', { path: c.path, band }).catch((e) => {
+        $('setnote').textContent = reason(e);
+      });
+    };
+    BAND_NAMES.forEach((name, i) => {
+      const b = swatches.appendChild(el('button', 'cosw-b'));
+      b.type = 'button';
+      b.style.setProperty('--sw', `var(--co-${i + 1})`);
+      b.title = `${name} for ${c.name}`;
+      b.setAttribute('aria-label', `${name} for ${c.name}`);
+      b.setAttribute('aria-pressed', String(c.band === i + 1));
+      b.onclick = () => pick(i + 1);
+    });
+    const auto = swatches.appendChild(el('button', 'cosw-auto', 'auto'));
+    auto.type = 'button';
+    auto.title = `${c.name} takes the next free colour, by the order projects were opened`;
+    auto.setAttribute('aria-pressed', String(!c.band));
+    auto.onclick = () => pick(0);
+    return row;
+  });
+  $('thprojects').replaceChildren(...rows);
+}
+
+/** Redraw what the pane shows about the open projects, after the host sent a new
+ *  list: a colour picked here, a project opened or closed elsewhere. */
+export function refreshProjects() {
+  if (!settingsOpen()) return;
+  renderProjects();
+  renderProjectColours();
 }
 
 /** Point the project tabs at another open project.
@@ -165,6 +211,7 @@ function openSettings() {
   // you came back for.
   if (!dirty || !settingsAt) settingsAt = activeCheckout().path;
   renderProjects();
+  renderProjectColours();
   $('settings').hidden = false;
   showTab(currentTab());
   $('gearbtn').setAttribute('aria-expanded', 'true');
