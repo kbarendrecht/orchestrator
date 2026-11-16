@@ -393,7 +393,7 @@ async function renameCheckout(c) {
   }
 }
 
-/** A checkout's colour, as the menu's second level: the four bands, or back to
+/** A checkout's colour, as the menu's second level: the eight bands, or back to
  *  the one it gets by order. The open one is ticked.
  *
  *  @param {import('./core.js').Target} c
@@ -402,7 +402,8 @@ function colourItems(c) {
   const pick = (/** @type {number} */ band) => () => void callHost('/api/host/checkout/label', { path: c.path, band })
     .catch((e) => toast(reason(e), true));
   // The class names written out, so the dead-CSS check can see each one.
-  const swatches = [['blue', 'co1'], ['green', 'co2'], ['purple', 'co3'], ['sand', 'co4']];
+  const swatches = [['blue', 'co1'], ['green', 'co2'], ['purple', 'co3'], ['sand', 'co4'],
+    ['rose', 'co5'], ['teal', 'co6'], ['olive', 'co7'], ['indigo', 'co8']];
   /** @type {import('./core.js').MenuItem[]} */
   const items = swatches.map(([name, cls], i) => /** @type {import('./core.js').MenuItem} */ (
     [name, `swatch ${cls}${c.band === i + 1 ? ' on' : ''}`, pick(i + 1)]));

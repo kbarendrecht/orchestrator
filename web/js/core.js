@@ -307,10 +307,12 @@ let lastCheckout = null;
  * also makes collisions impossible up to the palette length, where a hash would
  * need a probe to say the same thing.
  *
- * There are four; past that a checkout gets no band rather than a repeat, because
- * two blocks sharing a colour is worse than one having none. */
+ * There are eight (`--co-1` to `--co-8`, and the host's `BANDS`); past that a
+ * checkout gets no band rather than a repeat, because two blocks sharing a colour
+ * is worse than one having none. Four ran out with a team that keeps more
+ * projects open than that. */
 const bands = new Map();
-const BANDS = 4;
+const BANDS = 8;
 
 /** The band number for a checkout, or `null` past the palette.
  *

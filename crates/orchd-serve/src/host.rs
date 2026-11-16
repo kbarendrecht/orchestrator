@@ -48,6 +48,10 @@ use orchd::window::WindowControl;
 /// daemon plainly could start, and whatever killed it is worth one more try.
 const HEALTHY_UPTIME: Duration = Duration::from_secs(60);
 
+/// How many band colours the page has (`--co-1` to `--co-8` in `app.css`, and
+/// `BANDS` in `core.js`): a picked band above it would draw no colour at all.
+const BANDS: u8 = 8;
+
 /// One open checkout, as the page needs to see it.
 ///
 /// `token` is in here because the page holds one per checkout: every call names
@@ -99,7 +103,7 @@ pub struct Checkout {
     /// the two is named here rather than tolerated in silence — the two daemons
     /// cannot see each other's fix runs, and nothing else would ever say so.
     pub clash: Option<String>,
-    /// The band colour you picked for it, 1 to 4, or `None` for the one the page
+    /// The band colour you picked for it, 1 to [`BANDS`], or `None` for the one the page
     /// assigns by order. From [`Label`].
     pub band: Option<u8>,
 }
@@ -114,7 +118,7 @@ pub struct Label {
     /// Shown in place of the folder name. `None` keeps the computed one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// 1 to 4, the band palette. `None` is the order's band.
+    /// 1 to [`BANDS`], the band palette. `None` is the order's band.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub band: Option<u8>,
 }
@@ -377,7 +381,10 @@ impl Host {
                 label.name = (!name.is_empty()).then(|| name.to_string());
             }
             if let Some(band) = band {
-                anyhow::ensure!(band <= 4, "a band is 1 to 4, or 0 for the automatic one");
+                anyhow::ensure!(
+                    band <= BANDS,
+                    "a band is 1 to {BANDS}, or 0 for the automatic one"
+                );
                 label.band = (band > 0).then_some(band);
             }
             update_host_file(|file| put_label(&mut file.labels, path, label.clone()))?;
@@ -2213,6 +2220,37 @@ async fn dispatch(host: &Arc<Host>, cmd: orchd::window::WindowCmd) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The band palette is written three times, and all three must agree: the
+    /// colours in `app.css`, the count `core.js` assigns up to, and [`BANDS`], the
+    /// most a picked band may be. A colour added to one and not the others is a
+    /// badge with no colour, or a colour nobody can pick.
+    #[test]
+    fn the_band_palette_is_the_same_size_everywhere() {
+        const CSS: &str = include_str!("../../../web/app.css");
+        const CORE: &str = include_str!("../../../web/js/core.js");
+        for n in 1..=BANDS {
+            for token in [
+                format!("--co-{n}:"),
+                format!("--co-{n}-fill:"),
+                format!("--co-{n}-ink:"),
+            ] {
+                assert!(CSS.contains(&token), "app.css has no {token}");
+            }
+            assert!(
+                CSS.contains(&format!(r#"[data-band="{n}"]"#)),
+                "no badge rule for band {n}"
+            );
+        }
+        assert!(
+            !CSS.contains(&format!("--co-{}:", BANDS + 1)),
+            "app.css has a band past BANDS"
+        );
+        assert!(
+            CORE.contains(&format!("const BANDS = {BANDS};")),
+            "core.js assigns a different count"
+        );
+    }
 
     /// The board's landing starts from the splash's last frame, so it draws the very
     /// name the splash draws. The splash includes `web/wordmark.svg` directly; the page

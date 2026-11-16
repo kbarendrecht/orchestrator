@@ -64,13 +64,18 @@
      reinforcement for the initials on it rather than as information of their own —
      nothing is ever *only* a colour here. Chosen to sit clear of `--attn` and
      `--bad`, which mean "needs you" and "failing" everywhere else in this UI; a
-     badge the same amber as the attention amber would read as a state. Four,
-     because past that a palette stops being distinguishable at a glance and the
-     badge goes grey instead. */
+     badge the same amber as the attention amber would read as a state. Eight:
+     four ran out for a team that keeps more projects open, and the second four
+     are muted the same way and kept off amber and red too. Past eight the badge
+     goes grey rather than repeat a colour. */
   --co-1:#7E9CC4;
   --co-2:#8FAE8A;
   --co-3:#B294BB;
   --co-4:#C9A87C;
+  --co-5:#C88FA3;
+  --co-6:#6EAFAA;
+  --co-7:#A9A86A;
+  --co-8:#8B87C9;
   /* The badge's two shades of each, worked out once rather than mixed at run time:
      `color-mix()` is newer than the WebKitGTK some distributions still ship. The
      fill is the colour 86% over the board's ground, the ink 20% over black — a
@@ -80,6 +85,10 @@
   --co-2-fill:#7C9778;--co-2-ink:#1D231C;
   --co-3-fill:#9B81A2;--co-3-ink:#241E25;
   --co-4-fill:#AE926C;--co-4-ink:#282219;
+  --co-5-fill:#AD7C8E;--co-5-ink:#281D21;
+  --co-6-fill:#609894;--co-6-ink:#162322;
+  --co-7-fill:#93925D;--co-7-ink:#222215;
+  --co-8-fill:#7976AE;--co-8-ink:#1C1B28;
   /* Merged, and nothing else. GitHub's own purple, which is the colour this
      palette had deliberately left unused *because* it reads as merged there — see
      `--auto` below, where that reasoning is written down. A session row wears it
@@ -565,6 +574,10 @@ button.ovc-who:hover{background:var(--hover)}
 .co-badge[data-band="2"]{background:var(--co-2-fill);color:var(--co-2-ink)}
 .co-badge[data-band="3"]{background:var(--co-3-fill);color:var(--co-3-ink)}
 .co-badge[data-band="4"]{background:var(--co-4-fill);color:var(--co-4-ink)}
+.co-badge[data-band="5"]{background:var(--co-5-fill);color:var(--co-5-ink)}
+.co-badge[data-band="6"]{background:var(--co-6-fill);color:var(--co-6-ink)}
+.co-badge[data-band="7"]{background:var(--co-7-fill);color:var(--co-7-ink)}
+.co-badge[data-band="8"]{background:var(--co-8-fill);color:var(--co-8-ink)}
 /* 8px either side of the badge wherever it sits, from each row's own gap: the
    rail header's is 6, the settings heading's 7, and the PR and review heads
    already have 8. A flat margin on top of those spaced each one differently. */
@@ -1893,6 +1906,10 @@ button.settings-co:hover{color:var(--text);background:var(--hover)}
 .ctxmenu-item.swatch.co2::before{background:var(--co-2);border:0}
 .ctxmenu-item.swatch.co3::before{background:var(--co-3);border:0}
 .ctxmenu-item.swatch.co4::before{background:var(--co-4);border:0}
+.ctxmenu-item.swatch.co5::before{background:var(--co-5);border:0}
+.ctxmenu-item.swatch.co6::before{background:var(--co-6);border:0}
+.ctxmenu-item.swatch.co7::before{background:var(--co-7);border:0}
+.ctxmenu-item.swatch.co8::before{background:var(--co-8);border:0}
 .ctxmenu-item.swatch.on::after{content:"\2713";margin-left:auto;color:var(--dim)}
 /* A pick of one, like the changes pane's three lists: every row keeps the room
    for the tick, so the labels line up whichever is on. */

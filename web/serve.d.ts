@@ -62,7 +62,7 @@ repo: string | null,
  */
 clash: string | null, 
 /**
- * The band colour you picked for it, 1 to 4, or `None` for the one the page
+ * The band colour you picked for it, 1 to [`BANDS`], or `None` for the one the page
  * assigns by order. From [`Label`].
  */
 band: number | null, };
