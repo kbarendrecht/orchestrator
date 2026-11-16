@@ -1009,6 +1009,32 @@ try {
   check(await page.evaluate(() => !document.querySelector('.srch:not([hidden])') && document.querySelector('#rail .arcfilter .arcq')?.value === ''),
     'Esc closes the sheet and empties the field')
 
+  /* **A rebuild keeps where you scrolled to.** Results arrive in waves and live
+     rows change state while you read, and every rebuild drew the list at the top
+     again, then scrolled the first row into view on top of that: reading down the
+     hits, the sheet jumped back up, a few times over. A short window makes the
+     list scroll; a resize is the same rebuild a new wave of hits is. */
+  {
+    const size = page.viewportSize()
+    if (size) await page.setViewportSize({ width: size.width, height: 420 })
+    await page.fill('#rail .arcfilter .arcq', 'e2e')
+    const scrolled = await page.waitForFunction(() => {
+      const list = document.querySelector('.srch:not([hidden]) .srch-list')
+      if (!list || list.scrollHeight <= list.clientHeight + 40) return null
+      list.scrollTop = list.scrollHeight
+      return list.scrollTop > 0 ? list.scrollTop : null
+    }, null, { timeout: 8000 }).then((h) => h.jsonValue()).catch(() => null)
+    const after = scrolled == null ? null : await page.evaluate(async () => {
+      window.dispatchEvent(new Event('resize'))
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))
+      return document.querySelector('.srch:not([hidden]) .srch-list')?.scrollTop ?? null
+    })
+    check(scrolled != null && after === scrolled,
+      `the result list keeps its scroll through a rebuild, got ${JSON.stringify({ scrolled, after })}`)
+    await page.keyboard.press('Escape')
+    if (size) await page.setViewportSize(size)
+  }
+
   const liveName = await page.textContent(`#rail .sess[data-id="${session}"] .sess-name`)
   await page.fill('#rail .arcfilter .arcq', liveName ?? '')
   const foundLive = await page.waitForFunction((name) => {

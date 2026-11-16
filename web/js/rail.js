@@ -1580,8 +1580,12 @@ function searchingRow() {
    overlap card, because the rail rebuilds rows under the pointer and a sheet
    inside it would go with them. Rebuilt only when what it says changed, the
    guard against a snapshot replacing a row between its press and its release. */
-/** @type {{ path: string | null, sel: number, sig: string, el: HTMLElement | null }} */
-const srch = { path: null, sel: 0, sig: '', el: null };
+/** `shown` is the query and the selection the list was last drawn for, so a
+ *  rebuild that changes neither keeps your scroll rather than going back to the
+ *  top (see `renderSearch`).
+ *  @type {{ path: string | null, sel: number, sig: string, el: HTMLElement | null,
+ *           shown: { q: string, sel: number } }} */
+const srch = { path: null, sel: 0, sig: '', el: null, shown: { q: '', sel: -1 } };
 
 /** The query in checkout `c`'s field, as it is matched. */
 const searchQuery = (/** @type {import('./core.js').Target} */ c) => (arcQuery[c.path] || '').trim().toLowerCase();
@@ -1720,8 +1724,19 @@ function renderSearch() {
   else if (!results.length) list.appendChild(el('div', 'srch-empty', q.length < ARC_MIN ? 'type two letters or more' : 'nobody said that'));
   const foot = el('div', 'srch-foot');
   foot.append(el('span', '', '↑↓ move'), el('span', '', '↵ open'), el('span', '', 'esc close'));
+  /* **Where you scrolled to survives a rebuild.** Results arrive in waves (the
+     names, the archive, then the live sessions' transcripts) and a live row's
+     state changes while you read, and each of those drew a new list at the top;
+     the selected row, the first by default, was then scrolled into view as well.
+     So reading down the hits, the sheet jumped back up, a few times over. Now
+     only a new query starts at the top, and only a moved selection scrolls. */
+  const kept = srch.shown.q === q ? sheet.querySelector('.srch-list')?.scrollTop ?? 0 : 0;
   sheet.replaceChildren(list, foot);
-  sheet.querySelector('.srch-row.sel')?.scrollIntoView({ block: 'nearest' });
+  list.scrollTop = kept;
+  if (srch.shown.q !== q || srch.shown.sel !== srch.sel) {
+    if (srch.shown.q === q) sheet.querySelector('.srch-row.sel')?.scrollIntoView({ block: 'nearest' });
+    srch.shown = { q, sel: srch.sel };
+  }
 }
 
 /* A press anywhere but the field and the sheet puts the rail back: the search
