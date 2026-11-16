@@ -33,6 +33,8 @@ interface Window {
   orchTeardown: (wsId: string) => void;
   /** The macOS menu bar's Settings item, which is native and evals this name. */
   orchSettings: () => void;
+  /** The macOS Help menu's "Orchestrator Help", which is native and evals this name. */
+  orchHelp: () => void;
   /** The macOS menu bar's Close, on ⌘W, which is native and evals this name. */
   orchClose: () => void;
   /** Files dropped on the window on Linux, with their real paths; the desktop

@@ -452,6 +452,18 @@ try {
   await page.keyboard.press(chord('Shift+?'))
   await page.waitForSelector('#keyhelp:not([hidden])', { timeout: 5000 })
 
+  /* **The macOS Help menu's "Orchestrator Help"** evals `window.orchHelp()`, as the
+     Settings item evals its own name. It opens the legend, and a second choice
+     from the menu leaves it open rather than toggling it shut. */
+  const helped = await page.evaluate(() => {
+    document.getElementById('keyhelp')?.setAttribute('hidden', '')
+    window.orchHelp()
+    const once = !document.getElementById('keyhelp')?.hidden
+    window.orchHelp()
+    return once && !document.getElementById('keyhelp')?.hidden
+  })
+  check(helped, 'the Help menu item opens the legend, and choosing it again keeps it open')
+
   /* --- the settings pane's two halves stay apart ------------------------------- */
 
   /* **Both directions, because this has broken both ways.** A config field added to

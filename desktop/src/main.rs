@@ -469,6 +469,10 @@ const SETTINGS_ITEM: &str = "settings";
 #[cfg(target_os = "macos")]
 const CLOSE_ITEM: &str = "close";
 
+/// The id of the Help menu's "Orchestrator Help", in [`with_app_menu`].
+#[cfg(target_os = "macos")]
+const HELP_ITEM: &str = "help";
+
 /// Put `Settings…` in the macOS application menu, where the platform says it lives.
 ///
 /// The SPA has its own gear and no chord for it, so on a Mac the menu bar was the
@@ -531,6 +535,23 @@ fn with_app_menu(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::W
                 }
                 None => tracing::warn!("no File submenu to hang Close on"),
             }
+
+            /* **The Help menu opens the app's own help**, the legend the `?` button
+            shows. Tauri's default Help menu is empty, and macOS puts its own "Help"
+            item and search field in it, which have no help book here to open.
+            No shortcut: `⌘?` is the system's, for searching the Help menu. */
+            match items
+                .iter()
+                .filter_map(|i| i.as_submenu())
+                .find(|s| s.text().is_ok_and(|t| t == "Help"))
+            {
+                Some(help) => {
+                    let item =
+                        MenuItem::with_id(app, HELP_ITEM, "Orchestrator Help", true, None::<&str>)?;
+                    help.insert(&item, 0)?;
+                }
+                None => tracing::warn!("no Help submenu to hang the app's help on"),
+            }
             Ok(menu)
         })
         .on_menu_event(|app, event| {
@@ -538,6 +559,8 @@ fn with_app_menu(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::W
                 "window.orchSettings && window.orchSettings()"
             } else if event.id() == CLOSE_ITEM {
                 "window.orchClose && window.orchClose()"
+            } else if event.id() == HELP_ITEM {
+                "window.orchHelp && window.orchHelp()"
             } else {
                 return;
             };

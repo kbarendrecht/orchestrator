@@ -3041,6 +3041,11 @@ window.orchTeardown = teardown;
    request to close it. Absent on the splash and the first-run page, where the
    item therefore does nothing. */
 window.orchSettings = Settings.open;
+/* The macOS Help menu's "Orchestrator Help", evalled the same way: the legend,
+   the app's help. Opens rather than toggles, like Settings above. */
+window.orchHelp = () => {
+  if ($('keyhelp').hidden) toggleLegend();
+};
 /* The macOS menu's Close, on ⌘W, evalled the same way. Tauri's own item closed
    the window, and with it the app, with nothing said. **It closes what has the
    keyboard**: the drawer's process, the same as its tab's ✕, or the session, the
