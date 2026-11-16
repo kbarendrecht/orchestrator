@@ -1635,6 +1635,7 @@ function paletteEl() {
   const list = box.appendChild(el('div', 'cpal-list'));
   list.setAttribute('role', 'listbox');
   box.appendChild(el('div', 'cpal-foot'));
+  sizePalette(box);
 
   input.oninput = () => {
     const c = palCheckout();
@@ -1669,6 +1670,62 @@ function paletteEl() {
   document.body.append(scrim, box);
   pal.el = box;
   return box;
+}
+
+/** The palette's size: dragged from an edge or a bottom corner, remembered per
+ *  browser, and back to the stylesheet's default on a double-click. It is centred,
+ *  so a side edge moves both sides and the width grows twice the drag. */
+const PAL_SIZE = { key: 'orch.searchPalette', minW: 480, minH: 300 };
+
+function sizePalette(/** @type {HTMLElement} */ box) {
+  const root = document.documentElement;
+  const apply = (/** @type {{ w: number, h: number } | null} */ size) => {
+    if (!size) {
+      root.style.removeProperty('--cpal-w');
+      root.style.removeProperty('--cpal-h');
+      return;
+    }
+    root.style.setProperty('--cpal-w', `${Math.round(size.w)}px`);
+    root.style.setProperty('--cpal-h', `${Math.round(size.h)}px`);
+  };
+  try {
+    const kept = JSON.parse(localStorage.getItem(PAL_SIZE.key) ?? 'null');
+    if (kept && Number.isFinite(kept.w) && Number.isFinite(kept.h)) apply(kept);
+  } catch { /* nothing kept, or private mode: the default size */ }
+  for (const edge of ['e', 'w', 's', 'se', 'sw']) {
+    const handle = box.appendChild(el('div', 'cpal-edge'));
+    handle.dataset.edge = edge;
+    handle.onmousedown = (ev) => {
+      if (ev.button !== 0) return;
+      ev.preventDefault();
+      const r = box.getBoundingClientRect();
+      const from = { x: ev.clientX, y: ev.clientY, w: r.width, h: r.height };
+      document.body.classList.add('cpal-sizing');
+      const move = (/** @type {MouseEvent} */ e) => {
+        const dx = e.clientX - from.x;
+        const dy = e.clientY - from.y;
+        const w = edge.includes('e') ? from.w + 2 * dx : edge.includes('w') ? from.w - 2 * dx : from.w;
+        const h = edge.includes('s') ? from.h + dy : from.h;
+        apply({ w: Math.max(PAL_SIZE.minW, w), h: Math.max(PAL_SIZE.minH, h) });
+      };
+      const up = () => {
+        window.removeEventListener('mousemove', move);
+        document.body.classList.remove('cpal-sizing');
+        const now = box.getBoundingClientRect();
+        try {
+          localStorage.setItem(PAL_SIZE.key, JSON.stringify({ w: now.width, h: now.height }));
+        } catch { /* the drag still worked for this run */ }
+      };
+      window.addEventListener('mousemove', move);
+      window.addEventListener('mouseup', up, { once: true });
+    };
+    handle.ondblclick = () => {
+      apply(null);
+      try {
+        localStorage.removeItem(PAL_SIZE.key);
+      } catch { /* nothing to forget */ }
+    };
+  }
 }
 
 /** The rows the palette shows, in the order they arrived.
@@ -1759,11 +1816,11 @@ export function renderPalette() {
   }
   box.querySelector('.cpal-bar')?.classList.toggle('busy', busy);
   const status = /** @type {HTMLElement} */ (box.querySelector('.cpal-status'));
-  status.replaceChildren(
-    el('span', '', q ? (busy ? 'searching transcripts' : q.length < ARC_MIN ? 'names only, type one more letter for what was said' : 'transcripts searched')
-      : pal.tab === 'past' ? 'past conversations, newest first' : 'live sessions, then past ones'),
-    el('span', '', q ? `${counts.all} found` : 'type to search what was said'),
-  );
+  // Only while searching: browsing, the list says what it is by itself.
+  status.replaceChildren(...(q ? [
+    el('span', '', busy ? 'searching transcripts' : q.length < ARC_MIN ? 'names only, type one more letter for what was said' : 'transcripts searched'),
+    el('span', '', `${counts.all} found`),
+  ] : []));
 
   const list = /** @type {HTMLElement} */ (box.querySelector('.cpal-list'));
   const kept = list.scrollTop;

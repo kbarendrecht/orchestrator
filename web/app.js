@@ -3,7 +3,7 @@
 // The SPA is a module now, so what it reaches for is written down. `core.js` holds
 // the primitives every part needs; `queue.js` is the first seam extracted whole.
 import {
-$, AGENT_LABEL, el, icon, toast, reason, safeHref, copyText, call, callHost, get, activeCheckout, CHECKOUTS, setCheckouts, HOST, snapshotOf, repoSummary, everySession, enterCheckout, snap, receive, keyActivate, setZoom, setUiPx, uiPx, saveZoom, onScaleChange, onNoFocusBack, ZOOM, selected, setSelected, onSelection, prForWorkspace, terms, CHROME, sessionDot, isWaiting, isArchived, byNewest, currentSession, activeWorkspaceId, currentWorkspaceId, closeMenu, menuOpen, openMenu, callOn, newSession, newWorktree, newShell, mainWorkspace, workspaceById, prState, prSeverity, prsOf, handedToPr, drawerCollapsed, setDrawerCollapsed, pendingSelect, setPendingSelect, onDrawerChange, onCreatingChange, creating, creatingIn, startingShown, appMod, IS_MAC, MOD_LABEL, closeLegend, toggleLegend, typingElsewhere, mark, reportBoot, dialogOpen, dismissDialog, promptBox, bytesOn, unchanged, tick,
+$, AGENT_LABEL, el, icon, toast, reason, safeHref, copyText, call, callHost, get, activeCheckout, CHECKOUTS, setCheckouts, HOST, snapshotOf, snapshotFor, repoSummary, everySession, enterCheckout, snap, receive, keyActivate, setZoom, setUiPx, uiPx, saveZoom, onScaleChange, onNoFocusBack, ZOOM, selected, setSelected, onSelection, prForWorkspace, terms, CHROME, sessionDot, isWaiting, isArchived, byNewest, currentSession, activeWorkspaceId, currentWorkspaceId, closeMenu, menuOpen, openMenu, callOn, newSession, newWorktree, newShell, mainWorkspace, workspaceById, prState, prSeverity, prsOf, handedToPr, drawerCollapsed, setDrawerCollapsed, pendingSelect, setPendingSelect, onDrawerChange, onCreatingChange, creating, creatingIn, startingShown, appMod, IS_MAC, MOD_LABEL, closeLegend, toggleLegend, typingElsewhere, mark, reportBoot, dialogOpen, dismissDialog, promptBox, bytesOn, unchanged, tick,
 } from './js/core.js';
 import { onThemeChange } from './js/theme.js';
 import { detailEl, symbolAt } from './js/source.js';
@@ -708,34 +708,83 @@ let linkingFor = null;
 function openLinkInput(/** @type {import('./snapshot').SessionView} */ s) {
   const strip = $('ctxprs');
   linkingFor = s.id;
+  // The strip no longer shows what its signature says, so the next render redraws it.
+  delete strip.dataset.sig;
   strip.querySelector('.addchip')?.remove();
   const input = /** @type {HTMLInputElement} */ (el('input', 'chipin'));
-  input.placeholder = '123, #123 or the PR URL';
+  input.placeholder = 'number, title or URL';
   input.setAttribute('aria-label', 'link a pull request');
   input.spellcheck = false;
+  /* **Suggestions from the project's open PRs**, by number, title or branch, so a
+     PR is found by what you remember of it. The poll's list: the PRs you wrote or
+     were asked to look at. Already linked ones are left out. */
+  const list = el('div', 'prsug');
+  list.setAttribute('role', 'listbox');
+  document.body.appendChild(list);
+  let sel = -1;
+  /** @type {import('./snapshot').PrView[]} */
+  let found = [];
+  const linked = new Set(s.prs.map((p) => p.number));
+  const suggest = () => {
+    const q = input.value.trim().toLowerCase().replace(/^#/, '');
+    const pool = (snapshotFor(s.id).prs || []).filter((p) => !linked.has(p.number));
+    found = pool
+      .filter((p) => !q || String(p.number).startsWith(q) || p.title.toLowerCase().includes(q)
+        || p.head_ref.toLowerCase().includes(q))
+      .sort((a, b) => b.number - a.number)
+      .slice(0, 8);
+    if (sel >= found.length) sel = found.length - 1;
+    const at = input.getBoundingClientRect();
+    list.style.left = `${at.left}px`;
+    list.style.top = `${at.bottom + 4}px`;
+    list.hidden = !found.length;
+    list.replaceChildren(...found.map((p, i) => {
+      const row = el('div', 'prsug-row' + (i === sel ? ' sel' : ''));
+      row.setAttribute('role', 'option');
+      row.append(el('span', 'prsug-n', `#${p.number}`), el('span', 'prsug-t', p.title), el('span', 'prsug-b', p.head_ref));
+      // Not a click: the press would blur the input first and close all this.
+      row.onmousedown = (ev) => { ev.preventDefault(); link(p.number); };
+      return row;
+    }));
+  };
   const done = () => {
     linkingFor = null;
+    list.remove();
     renderContext();
   };
+  const link = (/** @type {number} */ n) => {
+    linkingFor = null;
+    list.remove();
+    void Rail.editPrs(s, { add: [n] }).then(done);
+  };
+  input.oninput = () => { sel = -1; suggest(); };
   input.onkeydown = (ev) => {
     if (ev.key === 'Escape') {
       ev.preventDefault();
       done();
       return;
     }
+    if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+      ev.preventDefault();
+      sel = Math.max(-1, Math.min(found.length - 1, sel + (ev.key === 'ArrowDown' ? 1 : -1)));
+      suggest();
+      return;
+    }
     if (ev.key !== 'Enter') return;
     ev.preventDefault();
+    const picked = found[sel];
+    if (picked) return link(picked.number);
     const n = Rail.prNumber(input.value);
     if (n == null) {
       toast(`${input.value.trim() || 'that'} is not a PR number`, true);
       return;
     }
-    linkingFor = null;
-    void Rail.editPrs(s, { add: [n] }).then(done);
+    link(n);
   };
   input.onblur = () => { if (linkingFor === s.id) done(); };
   strip.appendChild(input);
   input.focus();
+  suggest();
 }
 
 function renderContext() {
@@ -808,6 +857,16 @@ function renderContext() {
     return;
   }
   linkingFor = null;
+  /* **Rebuilt only when what it shows changed.** It was rebuilt on every snapshot,
+     so the chip under the pointer was replaced every few seconds and its hover
+     flashed off and on. */
+  const stripSig = JSON.stringify([s?.id ?? null, own.length,
+    own.slice(-5).map((p) => [p.number, p.title, p.url, prSeverity(p), prState(p)])]);
+  if (strip.dataset.sig === stripSig) {
+    $('killbtn').style.display = s && s.alive ? '' : 'none';
+    return;
+  }
+  strip.dataset.sig = stripSig;
   strip.replaceChildren();
   for (const p of own.slice(-5)) {
     const sev = prSeverity(p);
@@ -824,7 +883,7 @@ function renderContext() {
     ]);
     // The chip's own unlink, shown on hover. Inside the link, so it stops the
     // click from opening the PR.
-    const x = chip.appendChild(el('span', 'chipx', '\u00d7'));
+    const x = chip.appendChild(icon('chipx', 1.6, 'M4.5 4.5l7 7M11.5 4.5l-7 7'));
     x.title = `Unlink #${p.number} from this session`;
     x.setAttribute('role', 'button');
     x.onclick = (ev) => {

@@ -1050,6 +1050,24 @@ try {
      already on screen. */
   await page.keyboard.press(chord('Shift+KeyK'))
   check(await palOpen(), 'MOD Shift K opens the palette')
+  // Its right edge resizes it, centred, so a 60px drag is 120px wider; a
+  // double-click puts the default back.
+  {
+    const box = () => page.$eval('.cpal', (b) => b.getBoundingClientRect().width)
+    const before = await box()
+    const edge = await page.$eval('.cpal .cpal-edge[data-edge="e"]', (h) => {
+      const r = h.getBoundingClientRect()
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 }
+    })
+    await page.mouse.move(edge.x, edge.y)
+    await page.mouse.down()
+    await page.mouse.move(edge.x - 60, edge.y, { steps: 4 })
+    await page.mouse.up()
+    const after = await box()
+    check(Math.abs(after - (before - 120)) <= 2, `dragging the palette's edge resizes it, got ${JSON.stringify({ before, after })}`)
+    await page.dblclick('.cpal .cpal-edge[data-edge="e"]')
+    check(Math.abs(await box() - before) <= 2, 'and a double-click puts the default back')
+  }
   await page.fill('.cpal .cpal-q', 'e2e')
   await page.waitForFunction(() => document.querySelectorAll('.cpal .cpal-row').length > 0, null, { timeout: 5000 }).catch(() => {})
   await page.keyboard.press('ArrowDown')
