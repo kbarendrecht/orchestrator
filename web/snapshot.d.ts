@@ -550,6 +550,13 @@ agent_error: string | null,
  */
 agents: Array<Agent>, 
 /**
+ * Auto-resume is still bringing sessions back after a restart
+ * ([`AppState::auto_resuming`], or one is still in `pending_resume`). The
+ * rail's "stopped by the restart" card waits for it: shown while sessions
+ * were still coming back, it counted a few, then grew under your cursor.
+ */
+resuming: boolean, 
+/**
  * What a plain `+` starts.
  */
 default_agent: Agent, 

@@ -2345,6 +2345,12 @@ impl AppState {
             pr_error: inner.pr_error.clone(),
             agent_error: inner.agent_error.clone(),
             agents: inner.agents.clone(),
+            resuming: self.auto_resuming.load(std::sync::atomic::Ordering::SeqCst)
+                || !self
+                    .pending_resume
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .is_empty(),
             default_agent: self.default_agent(inner),
             forge: self.cfg.forge,
             machine: inner.machine.clone(),
@@ -3737,6 +3743,11 @@ pub struct Snapshot {
     /// The agents a new session can be started on. The SPA offers a choice only
     /// when there is more than one.
     pub agents: Vec<crate::agent::Agent>,
+    /// Auto-resume is still bringing sessions back after a restart
+    /// ([`AppState::auto_resuming`], or one is still in `pending_resume`). The
+    /// rail's "stopped by the restart" card waits for it: shown while sessions
+    /// were still coming back, it counted a few, then grew under your cursor.
+    pub resuming: bool,
     /// What a plain `+` starts.
     pub default_agent: crate::agent::Agent,
     /// Which forge the checkout is on, so the page can name it: "open on GitHub"

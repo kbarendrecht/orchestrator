@@ -3517,7 +3517,9 @@ try {
   })
   await page.waitForFunction(() => document.getElementById('fvpath')?.textContent === 'other.md',
     null, { timeout: 5000 })
-  // Markdown opens rendered without a line; the lines are the source.
+  // Markdown opens rendered without a line; the lines are the source. Asked once
+  // the file is drawn either way: asked before, it read neither and moved on.
+  await page.waitForSelector('#fvsrc .md, #fvsrc .fnrow', { timeout: 5000 }).catch(() => {})
   if (await page.$('#fvsrc .md')) await page.click('#fvmode')
   const plainRow = await page.waitForFunction(() => {
     const r = [...document.querySelectorAll('#fvsrc .fnrow')]

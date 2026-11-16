@@ -2858,6 +2858,19 @@ let nudgeDismissed = '';
  *  project's. */
 function renderNudge() {
   const bar = $('railnudge');
+  /* **Once every session is back, not while they are coming back.** Auto-resume
+     brings them back one at a time, and a card drawn on the first snapshot
+     counted two, then four, then six, under your cursor. Any checkout still
+     resuming, or with a session still starting, holds it. */
+  const settling = CHECKOUTS.some((c) => {
+    const s = snapshotOf(c.path);
+    return !s || s.resuming || s.sessions.some((x) => x.state.state === 'starting');
+  });
+  if (settling) {
+    bar.hidden = true;
+    delete bar.dataset.ids;
+    return;
+  }
   const by = CHECKOUTS
     .map((c) => ({ c, ids: (snapshotOf(c.path)?.sessions ?? []).filter(isNudgeable).map((s) => s.id) }))
     .filter((x) => x.ids.length);
