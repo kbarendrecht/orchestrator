@@ -592,37 +592,77 @@ try {
   check(await page.$eval('#setdiscard', (b) => b.hidden),
     'changing the theme does not mark the config unsaved')
 
-  /* **A project's colour, from settings.** Eight swatches and auto per open
-     project; a pick goes to the host and comes back as the new project list, which
-     redraws the row with that swatch pressed. Put back to auto after. */
-  const swatchCount = await page.$$eval('#thprojects .settings-row', (rows) => rows.map((r) =>
+  /* **A project's colour, on its own page.** The project's heading opens it: eight
+     swatches, a picker and auto. A pick goes to the host and comes back as the new
+     project list, which redraws the row with that swatch pressed. Put back to auto
+     after. */
+  await page.click('#setprojects .settings-co[data-open]')
+  const onPage = await page.evaluate(() => ({
+    tab: document.getElementById('settings')?.dataset.tab,
+    picked: document.querySelector('#setprojects .settings-co[data-open]')?.getAttribute('aria-selected'),
+  }))
+  check(onPage.tab === 'project' && onPage.picked === 'true',
+    `the project's heading opens its own page, got ${JSON.stringify(onPage)}`)
+  const swatchCount = await page.$$eval('#setcolour .settings-row', (rows) => rows.map((r) =>
     `${r.querySelectorAll('.cosw-b:not(.cosw-own)').length}+${r.querySelectorAll('input.cosw-own').length}`))
-  check(swatchCount.length >= 1 && swatchCount.every((n) => n === '8+1'),
-    `each open project gets eight colours and a picker, got ${JSON.stringify(swatchCount)}`)
-  await page.click('#thprojects .settings-row:first-child .cosw-b:nth-child(5)')
+  check(JSON.stringify(swatchCount) === '["8+1"]',
+    `the page holds that project's eight colours and a picker, got ${JSON.stringify(swatchCount)}`)
+  await page.click('#setcolour .settings-row:first-child .cosw-b:nth-child(5)')
   const bandPicked = await page.waitForFunction(async () => {
     const core = await import('/js/core.js')
-    const pressed = document.querySelector('#thprojects .settings-row:first-child .cosw-b:nth-child(5)')?.getAttribute('aria-pressed')
+    const pressed = document.querySelector('#setcolour .settings-row:first-child .cosw-b:nth-child(5)')?.getAttribute('aria-pressed')
     return core.CHECKOUTS[0]?.band === 5 && pressed === 'true' || null
   }, null, { timeout: 5000 }).then(() => true, () => false)
   check(bandPicked, 'picking rose stores band 5 for the project and shows it pressed')
   /* A colour of your own replaces the band, and the badges wear it. The picker is
      the platform's, so the test sets the input's value the way it would. */
-  await page.$eval('#thprojects .settings-row:first-child .cosw-own', (i) => {
+  await page.$eval('#setcolour .settings-row:first-child .cosw-own', (i) => {
     const input = /** @type {HTMLInputElement} */ (i)
     input.value = '#3366cc'
     input.dispatchEvent(new Event('change'))
   })
   const ownPicked = await page.waitForFunction(async () => {
     const core = await import('/js/core.js')
-    const own = document.querySelector('#thprojects .settings-row:first-child .cosw-own')
-    const badge = document.querySelector('#thprojects .settings-row:first-child .co-badge')
+    const own = document.querySelector('#setcolour .settings-row:first-child .cosw-own')
+    const badge = document.querySelector('#setcolour .settings-row:first-child .co-badge')
     return core.CHECKOUTS[0]?.colour === '#3366cc' && !core.CHECKOUTS[0]?.band
       && own?.classList.contains('on') && badge?.getAttribute('data-band') === 'custom' || null
   }, null, { timeout: 5000 }).then(() => true, () => false)
   check(ownPicked, 'a picked colour replaces the band, and the badge wears it')
-  await page.click('#thprojects .settings-row:first-child .cosw-auto')
+  /* Any colour you pick gets letters that read on it: the dark shade the bands
+     use, or a light one on a dark colour. 4.5 is WCAG's bar for small text. */
+  const unreadable = await page.evaluate(async () => {
+    const { badgeShades } = await import('/js/core.js')
+    const lum = (/** @type {string} */ css) => {
+      const [r, g, b] = (css.match(/\d+/g) ?? []).map(Number).map((x) => {
+        const c = x / 255
+        return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4
+      })
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b
+    }
+    const bad = []
+    for (let r = 0; r < 256; r += 51) for (let g = 0; g < 256; g += 51) for (let b = 0; b < 256; b += 51) {
+      const hex = `#${[r, g, b].map((x) => x.toString(16).padStart(2, '0')).join('')}`
+      const { fill, ink } = badgeShades(hex)
+      const [x, y] = [lum(fill), lum(ink)].sort((m, n) => n - m)
+      if ((x + 0.05) / (y + 0.05) < 4.5) bad.push(hex)
+    }
+    return bad
+  })
+  check(!unreadable.length, `a badge's letters read on every colour, got ${unreadable.length} below 4.5: ${unreadable.slice(0, 6).join(' ')}`)
+  await page.click('#setcolour .settings-row:first-child .cosw-auto')
   await page.waitForFunction(async () => !(await import('/js/core.js')).CHECKOUTS[0]?.band, null, { timeout: 5000 }).catch(() => {})
+  await page.click('#setclose')
+  await page.waitForTimeout(300)
+  /* The rail header's "colour…" lands on that page. One project draws no header to
+     right-click, so this asks the function the menu item calls. */
+  const fromRail = await page.evaluate(async () => {
+    const core = await import('/js/core.js')
+    const settings = await import('/js/settings.js')
+    settings.openProject(core.CHECKOUTS[0].path)
+    return document.getElementById('settings')?.dataset.tab
+  })
+  check(fromRail === 'project', `the rail's colour item opens the project's page, got ${fromRail}`)
   await page.click('#setclose')
   await page.waitForTimeout(300)
 
@@ -912,8 +952,7 @@ try {
   /* --- the rail row: one clock, and the PR colours it takes -------------------- */
 
   /* **The attention bar is gone**, and this is what says it stayed gone. It spent a
-     row on a count the amber dots already carry, and the one thing it owned —
-     continue every paused session — is in the checkout header's menu now. */
+     row on a count the amber dots already carry. */
   check(await page.locator('#waitbar').count() === 0,
     'the attention bar is not in the page')
 
@@ -2012,8 +2051,7 @@ try {
   })
   await page.waitForFunction(() => document.getElementById('fvpath')?.textContent === 'scrolled.txt',
     null, { timeout: 5000 })
-  /* A long name in a narrow header stays one line: the count and the key caps used
-     to wrap while the path was squeezed to a few letters. */
+  /* A long name in a narrow header stays one line, and the path keeps room. */
   const headFits = await page.$eval('#fvoverlay .fnview-head', (h) => {
     const head = /** @type {HTMLElement} */ (h)
     const path = /** @type {HTMLElement} */ (head.querySelector('#fvpath'))

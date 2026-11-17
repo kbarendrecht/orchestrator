@@ -344,6 +344,45 @@ export function badgeText(name) {
   return two.toUpperCase();
 }
 
+/** A picked colour's badge fill and letters, as `rgb()`.
+ *
+ *  The fill is mixed the way the bands' `--co-N-fill` were, 86% over the default
+ *  ground, so a picked colour sits beside the presets as one of them.
+ *  **The letters are whichever of two shades reads better on it**: a dark shade
+ *  of the same hue, the bands' own answer, or a light one, and nearer black or
+ *  white when neither tint reads: a dark colour needs light letters, and a mid
+ *  tone needs nearly black or white. `palette.js` has the same sums, and this floor imports
+ *  nothing.
+ *
+ *  @param {string} hex `#rrggbb`
+ */
+export function badgeShades(hex) {
+  const rgb = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+  const fill = rgb.map((x, i) => x + ([10, 10, 11][i] - x) * 0.14);
+  const lum = (/** @type {number[]} */ v) => {
+    const [r, g, b] = v.map((x) => {
+      const c = x / 255;
+      return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+    });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const contrast = (/** @type {number[]} */ a, /** @type {number[]} */ b) => {
+    const [x, y] = [lum(a), lum(b)].sort((m, n) => n - m);
+    return (x + 0.05) / (y + 0.05);
+  };
+  const css = (/** @type {number[]} */ v) => `rgb(${v.map(Math.round).join(',')})`;
+  /* Tinted first, deeper only when a tint does not reach 4.5, WCAG's bar for
+     small text. A mid tone needs nearly black or white, and pure black or white
+     clears 4.5 on any fill, so the last two always settle it. */
+  const shades = [0.2, 0.1, 0].flatMap((t) => [
+    rgb.map((x) => x * t),
+    rgb.map((x) => x + (255 - x) * (1 - t * 0.6)),
+  ]);
+  const ink = shades.find((v) => contrast(fill, v) >= 4.5)
+    ?? shades.reduce((a, v) => (contrast(fill, v) > contrast(fill, a) ? v : a));
+  return { fill: css(fill), ink: css(ink) };
+}
+
 /** A checkout's badge: its initials on its colour.
  *
  *  **A badge, where this was a band.** A 3px edge on the rail header, the PR pane
@@ -361,14 +400,10 @@ export function checkoutBadge(c, band) {
   const node = el('span', 'co-badge', badgeText(c.name));
   const colour = c.colour;
   if (colour) {
-    // Mixed the way the bands' `--co-N-fill` and `--co-N-ink` were, against the
-    // same default ground, so a picked colour sits beside the presets as one of them.
-    // `palette.js` has the same sum, and this floor imports nothing.
-    const rgb = [1, 3, 5].map((i) => parseInt(colour.slice(i, i + 2), 16));
-    const hex = (/** @type {number[]} */ v) => `rgb(${v.map(Math.round).join(',')})`;
+    const { fill, ink } = badgeShades(colour);
     node.dataset.band = 'custom';
-    node.style.setProperty('--cf', hex(rgb.map((x, i) => x + ([10, 10, 11][i] - x) * 0.14)));
-    node.style.setProperty('--ci', hex(rgb.map((x) => x * 0.2)));
+    node.style.setProperty('--cf', fill);
+    node.style.setProperty('--ci', ink);
   } else if (band) node.dataset.band = String(band);
   node.title = c.name;
   return node;

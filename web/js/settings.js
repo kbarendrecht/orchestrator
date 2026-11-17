@@ -19,8 +19,6 @@ let settingsAt = /** @type {string | null} */ (null);
 /** @returns {import('./core.js').Target} */
 const target = () => CHECKOUTS.find((c) => c.path === settingsAt) ?? activeCheckout();
 
-/** The tabs that belong to a project rather than to the app. */
-const PROJECT_TABS = new Set(['git', 'tracker', 'reviews', 'agent', 'processes']);
 /** The project tab buttons, as `index.html` wrote them, held so `renderProjects`
  *  can move them under whichever heading is unfolded. */
 let projectTabs = /** @type {HTMLElement[]} */ ([]);
@@ -37,33 +35,36 @@ function renderProjects() {
   const nodes = [];
   for (const c of CHECKOUTS) {
     const open = c.path === at.path;
-    /* A heading for the open project, a button only for the others: the open one
-       has nothing to do on a click, and with one project open it is the only one,
-       so a button there was a control that looked pressable and did nothing. */
-    const head = el(open ? 'div' : 'button', 'settings-tgroup settings-co');
-    if (!open) head.setAttribute('type', 'button');
+    /* Every heading is a button: it opens that project's own page, which holds its
+       colour. The open one is picked like a tab while its page shows. */
+    const head = el('button', 'settings-tgroup settings-co');
+    head.setAttribute('type', 'button');
+    if (open) {
+      head.dataset.open = '';
+      head.setAttribute('aria-selected', String(currentTab() === 'project'));
+    }
     if (several) {
       const badge = checkoutBadge(c, bandOf(c.path));
       badge.setAttribute('aria-hidden', 'true');
       head.appendChild(badge);
     }
     head.append(c.name);
-    head.title = open ? `${c.name}'s config.json` : `Show ${c.name}'s settings`;
-    if (!open) head.onclick = () => pickProject(c.path);
+    head.title = `${c.name}: its colour, and its settings under it`;
+    head.onclick = () => openProject(c.path);
     nodes.push(head);
     if (open) nodes.push(...projectTabs);
   }
   $('setprojects').replaceChildren(...nodes);
 }
 
-/** Each open project's colour, as a row of swatches and "auto".
+/** The project page's colour: eight swatches, a colour of your own, and "auto".
  *
- *  The same choice as the rail header's colour menu, where it was the only way
- *  in: a setting you look for in settings. Written to the host at once, like the
- *  rest of the Theme tab; the host sends the new list back, and `refreshProjects`
+ *  On the project's own page because it is that project's setting, and the
+ *  rail's "colour…" lands here. Written to
+ *  the host at once; the host sends the new list back, and `refreshProjects`
  *  draws it. */
 function renderProjectColours() {
-  const rows = CHECKOUTS.filter((c) => c.path).map((c) => {
+  const rows = CHECKOUTS.filter((c) => c.path === target().path).map((c) => {
     const row = el('div', 'settings-row');
     const k = row.appendChild(el('span', 'settings-k cosw-name'));
     const badge = checkoutBadge(c, bandOf(c.path));
@@ -102,7 +103,7 @@ function renderProjectColours() {
     auto.onclick = () => pick(0);
     return row;
   });
-  $('thprojects').replaceChildren(...rows);
+  $('setcolour').replaceChildren(...rows);
 }
 
 /** A warning when a picked colour is close to amber or red, which the rail uses to
@@ -126,21 +127,32 @@ export function refreshProjects() {
   renderProjectColours();
 }
 
-/** Point the project tabs at another open project.
+/** Point the project tabs at another open project, on `tab`.
  *
  *  **Refused while a draft is unsaved**, rather than asking or throwing it away:
  *  the pane keeps a draft across a close on purpose, and a switch that dropped it
- *  would be the silent loss that rule is there to stop. The foot says which. */
-function pickProject(/** @type {string} */ path) {
-  if (path === target().path) return;
+ *  would be the silent loss that rule is there to stop. The foot says which.
+ *
+ *  @returns {boolean} whether the pane now shows `path` */
+function pickProject(/** @type {string} */ path, /** @type {string} */ tab) {
+  if (path === target().path) return true;
   if (dirty) {
     $('setnote').textContent = `save or discard the changes to ${target().name} first`;
-    return;
+    return false;
   }
   settingsAt = path;
   renderProjects();
-  showTab(PROJECT_TABS.has(currentTab()) ? currentTab() : 'git');
+  renderProjectColours();
+  showTab(tab);
   void loadConfigInto(true);
+  return true;
+}
+
+/** Open the pane on a project's own page: its heading here, and "colour…" in the
+ *  rail header's menu. */
+function openProject(/** @type {string} */ path) {
+  if (!settingsOpen()) openSettings();
+  if (pickProject(path, 'project')) showTab('project');
 }
 
 /** The text boxes that stand for an argv, and the config key each carries. */
@@ -740,6 +752,7 @@ function showTheme() {
 
 /** What each tab is, and the one line that says how its settings apply. */
 const TABS = {
+  project: 'This checkout\'s colour, for its badge in the rail and the panes. Applies the moment you pick it.',
   theme: 'How this window looks. Applies the moment you touch it, and is kept in this browser.',
   git: 'This checkout\'s config. A draft until Save; the upstream ref and the remote also restart the daemon.',
   tracker: 'This checkout\'s config. A draft until Save.',
@@ -765,6 +778,7 @@ function showTab(/** @type {string} */ tab) {
     b.setAttribute('aria-selected', String(on));
     b.setAttribute('tabindex', on ? '0' : '-1');
   }
+  $('setprojects').querySelector('[data-open]')?.setAttribute('aria-selected', String(tab === 'project'));
   let lead = true;
   for (const sec of document.querySelectorAll('#settings .settings-sec')) {
     const el = /** @type {HTMLElement} */ (sec);
@@ -1180,4 +1194,4 @@ function setupSettings() {
      what changed that; see it for the rest. */
 }
 
-export { settingsOpen as isOpen, openSettings as open, closeSettings as close, setupSettings as setup };
+export { settingsOpen as isOpen, openSettings as open, openProject, closeSettings as close, setupSettings as setup };

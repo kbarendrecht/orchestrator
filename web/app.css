@@ -1860,9 +1860,11 @@ span.settings-tgroup{font-size:calc(10.5px * var(--fs));letter-spacing:.06em;tex
 /* A project heading: a button for the others, a plain heading for the open one.
    A little air above it, so a project reads as its own group under App. */
 .settings-co{width:100%;margin-top:22px;text-align:left;border-radius:var(--r);font-size:calc(12px * var(--fs))}
-div.settings-co{color:var(--dim)}
 button.settings-co{color:var(--ghost)}
 button.settings-co:hover{color:var(--text);background:var(--hover)}
+/* The open project's heading is its own page now, so it is picked like a tab. */
+button.settings-co[data-open]{color:var(--dim)}
+button.settings-co[aria-selected="true"]{color:var(--text);background:var(--raised);box-shadow:inset 0 0 0 1px var(--line)}
 .settings-projects{display:flex;flex-direction:column;gap:2px}
 .settings-projects>.settings-tab{padding-left:18px}
 /* Help: one header across the top, the tabs and the open half below it. */
@@ -1932,20 +1934,6 @@ button.settings-co:hover{color:var(--text);background:var(--hover)}
 .ctxmenu-item:disabled{color:var(--ghost);cursor:default}
 .ctxmenu-item.bad:hover:not(:disabled){color:var(--bad)}
 /* A colour choice: the band itself before the name, and a tick on the one in use. */
-.ctxmenu-item.swatch{display:flex;align-items:center;gap:8px}
-.ctxmenu-item.swatch::before{content:"";width:10px;height:10px;border-radius:2px;flex:none;border:1px dashed var(--faint-solid)}
-.ctxmenu-item.swatch.co1::before{background:var(--co-1);border:0}
-.ctxmenu-item.swatch.co2::before{background:var(--co-2);border:0}
-.ctxmenu-item.swatch.co3::before{background:var(--co-3);border:0}
-.ctxmenu-item.swatch.co4::before{background:var(--co-4);border:0}
-.ctxmenu-item.swatch.co5::before{background:var(--co-5);border:0}
-.ctxmenu-item.swatch.co6::before{background:var(--co-6);border:0}
-.ctxmenu-item.swatch.co7::before{background:var(--co-7);border:0}
-.ctxmenu-item.swatch.co8::before{background:var(--co-8);border:0}
-.ctxmenu-item.swatch.custom::before{background:conic-gradient(#DB7A72,#E0A244,#A9A86A,#6EAFAA,#7E9CC4,#8B87C9,#DB7A72);border:0}
-/* Off the page, not `display:none`: a hidden input will not open its picker. */
-.colour-probe{position:fixed;left:-100px;top:0;width:1px;height:1px;opacity:0}
-.ctxmenu-item.swatch.on::after{content:"\2713";margin-left:auto;color:var(--dim)}
 /* A pick of one, like the changes pane's three lists: every row keeps the room
    for the tick, so the labels line up whichever is on. */
 .ctxmenu-item.pick{position:relative;padding-left:22px}
@@ -2846,10 +2834,9 @@ select.opfield,input.opfield{appearance:none}
 /* The count takes the slack, so it and the two buttons after it group at the
    right while the path keeps the left. */
 .fnview-head .ov-count{margin-left:auto}
-/* **Nothing in it wraps, and the path gives way last.** A long file name used to
-   squeeze the path to a few letters while the count and the key caps broke onto a
-   second line. Now the buttons keep their size, the count shortens first, the path
-   keeps a floor, and a narrow header drops the key caps and then the count. */
+/* **Nothing in it wraps, and the path gives way last.** The buttons keep their
+   size, the count shortens first, the path keeps a floor, and a narrow header
+   drops the key caps and then the count. */
 .fnview-head{container-type:inline-size}
 .fnview-head>.head-btn,.fnview-head>.ov-crumbs{flex:none;white-space:nowrap}
 .fnview-head>.ov-path{flex:0 1 auto;min-width:min(40%, 220px)}

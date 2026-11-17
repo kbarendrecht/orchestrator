@@ -1,9 +1,10 @@
 // The rail: what is running, what is waiting on you, and the PRs beside it.
 // Twenty-four names, three out; the rest is how a row decides what it says.
 
-import { $, activeCheckout, BAND_NAMES, borrowFocus, returnFocus, gateOf, AGENT_LABEL, ageLabel, bandOf, byNewest, call, callFor, callHost, callOn, caret, checkoutBadge, checkoutOf, CHECKOUTS, chooseBox, clock, confirmBox, promptBox, copyText, creating, creatingIn, creatingIntoMain, dotClass, el, enterCheckout, icon, iconLabel, getHost, getOn, handedToPr, hasPr, inTrouble, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, QUEUE_MAX, reason, refreshButton, repoSummary, safeHref, selected, sessionDot, sessionsOf, sessionOrder, setPendingSelect, setSelected, setSessionOrder, snap, snapshotFor, snapshotOf, startingShown, stateClass, stateLabel, terms, toast, paintSig, reconcile, unchanged, watchStarting } from './core.js';
+import { $, activeCheckout, borrowFocus, returnFocus, gateOf, AGENT_LABEL, ageLabel, bandOf, byNewest, call, callFor, callHost, callOn, caret, checkoutBadge, checkoutOf, CHECKOUTS, chooseBox, clock, confirmBox, promptBox, copyText, creating, creatingIn, creatingIntoMain, dotClass, el, enterCheckout, icon, iconLabel, getHost, getOn, handedToPr, hasPr, inTrouble, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, QUEUE_MAX, reason, refreshButton, repoSummary, safeHref, selected, sessionDot, sessionsOf, sessionOrder, setPendingSelect, setSelected, setSessionOrder, snap, snapshotFor, snapshotOf, startingShown, stateClass, stateLabel, terms, toast, paintSig, reconcile, unchanged, watchStarting } from './core.js';
 import * as Open from './open.js';
 import * as Term from './term.js';
+import * as Settings from './settings.js';
 
 /* The conversation search, per checkout, and the two halves of its answer.
  *
@@ -388,40 +389,6 @@ async function renameCheckout(c) {
   }
 }
 
-/** A checkout's colour, as the menu's second level: the eight bands, or back to
- *  the one it gets by order. The open one is ticked.
- *
- *  @param {import('./core.js').Target} c
- *  @returns {import('./core.js').MenuItem[]} */
-function colourItems(c) {
-  const pick = (/** @type {number} */ band) => () => void callHost('/api/host/checkout/label', { path: c.path, band })
-    .catch((e) => toast(reason(e), true));
-  // The class names written out, so the dead-CSS check can see each one.
-  const classes = ['co1', 'co2', 'co3', 'co4', 'co5', 'co6', 'co7', 'co8'];
-  /** @type {import('./core.js').MenuItem[]} */
-  const items = BAND_NAMES.map((name, i) => /** @type {import('./core.js').MenuItem} */ (
-    [name, `swatch ${classes[i]}${!c.colour && c.band === i + 1 ? ' on' : ''}`, pick(i + 1)]));
-  items.push(['custom…', `swatch custom${c.colour ? ' on' : ''}`, () => pickOwnColour(c)]);
-  items.push(['automatic', `swatch${c.band || c.colour ? '' : ' on'}`, pick(0)]);
-  return items;
-}
-
-/** Open the system's colour picker for a checkout, from a menu that has no room
- *  for one. A throwaway `<input type="color">`, because only that element can ask
- *  the platform for its picker, and it has to be in the document to open one.
- *
- *  @param {import('./core.js').Target} c */
-function pickOwnColour(c) {
-  const input = el('input', 'colour-probe');
-  input.type = 'color';
-  input.value = c.colour ?? '#7E9CC4';
-  document.body.appendChild(input);
-  input.onchange = () => void callHost('/api/host/checkout/label', { path: c.path, colour: input.value })
-    .catch((e) => toast(reason(e), true));
-  input.onblur = () => input.remove();
-  input.click();
-}
-
 /* Which checkouts are folded away, by path.
  *
  * **In the browser, unlike the order.** Folding is a view preference — which part
@@ -699,17 +666,11 @@ function checkoutHead(c) {
 
   head.oncontextmenu = (ev) => openMenu(ev, [
     [shut ? 'show' : 'fold away', null, () => setFolded(c.path, !shut)],
-    /* The one thing the attention bar owned that nothing else offered: type
-       "continue" into every session a restart left parked mid-turn. Greyed when
-       this checkout has none, so the item still says what it would do — and asked
-       of *this* checkout's sessions, because that is the one the menu names. */
-    ['continue every paused session', null,
-      (snapshotOf(c.path)?.sessions ?? []).some(isNudgeable) ? () => void nudgeAll(c) : null],
     // A dead checkout's row exists so this can be pressed; a live one has nothing
     // to reopen.
     ['reopen', null, c.live ? null : () => reopenCheckout(c)],
     ['rename\u2026', null, () => void renameCheckout(c)],
-    ['colour', null, colourItems(c)],
+    ['colour…', null, () => Settings.openProject(c.path)],
     ['close', 'bad', () => closeCheckout(c)],
   ]);
 
@@ -740,9 +701,9 @@ function checkoutHead(c) {
 
 /** How many live sessions a checkout holds.
  *
- *  **No "needs you" beside it any more.** It counted `wants_attention`, which a
- *  finished turn sets too, so a header said "1 needs you" over a project where
- *  nothing was asking anything. The rows' own dots say which session wants you.
+ *  **Only the total.** `wants_attention` is set by a finished turn too, so a
+ *  count of it here would claim something is waiting when nothing asked. The
+ *  rows' own dots say which session wants you.
  *
  *  @param {import('./core.js').Target} c
  */
@@ -1412,9 +1373,9 @@ function fillSessions(/** @type {HTMLElement} */ group, /** @type {import('./cor
  *  are in, like `MOD Shift K`. A button drawn like a field; the typing happens in
  *  the palette.
  *
- *  **One, above the scroller, where it was one per project.** Three projects open
- *  was three fields for one palette, each pinned under its own header; the palette's
- *  project pill is how another project is searched now. */
+ *  **One, above the scroller, for every open project**: there is one palette, so
+ *  there is one way in. The palette's project pill is how another project is
+ *  searched. */
 function searchField() {
   const field = el('button', 'arcfield');
   field.type = 'button';

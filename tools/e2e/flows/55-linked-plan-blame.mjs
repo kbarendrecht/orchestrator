@@ -1,9 +1,9 @@
 // A file reached through a link out of the checkout is read, and has no blame.
 //
 // A checkout whose `.plan` links to a plans folder outside the repo opens those
-// files read-only (#48). The viewer then asks who last changed the lines it drew,
-// and blame still refused the link, so every plan opened with an error on screen.
-// It is in no history of this repo, so the answer is nothing, not a refusal.
+// files read-only (#48), and the viewer asks who last changed the lines it drew.
+// Such a file is in no history of this repo, so the answer is nothing, not a
+// refusal.
 
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
