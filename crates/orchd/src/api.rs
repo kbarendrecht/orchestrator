@@ -195,7 +195,7 @@ fn is_ask_route(path: &str) -> bool {
 /// into it, so any process that can reach loopback can read it and then hold
 /// everything. That is a deliberate trade — the threat model is a machine you do
 /// not share, where a hostile local process can ptrace this daemon anyway — but it
-/// is a trade, not a boundary, and the README says so in those words now. What the
+/// is a trade, not a boundary, and `docs/security.md` says so in those words. What the
 /// token *does* close is the cross-origin hole, together with the Host and Origin
 /// checks: a web page you visit cannot read the token, so it cannot forge these
 /// calls.

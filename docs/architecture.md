@@ -50,6 +50,34 @@ where a session's state comes from. [README.md](../README.md) is what it does;
 The web UI is compiled into the binary with `include_str!`, so it can never drift
 from the daemon serving it — and a change under `web/` needs a rebuild.
 
+## The review loop
+
+This is what the app is for. A PR row carries the verb that its state calls for,
+and pressing it starts an agent in that PR's worktree:
+
+- **`handle`** — threads are waiting. `handle-review` runs in a pane you watch and
+  can take over: it judges each thread, applies what is right, asks you about the
+  rest with a blocking question, and drafts the replies.
+- **`fix`** — the checks are red. `fix-pr` takes the base branch in, fixes the red,
+  amends, pushes and watches CI until it settles.
+- **Where a session already holds the branch**, the press hands the job to that
+  session as a typed turn rather than starting a second one.
+
+While a run is live the row reads `handling` or `fixing`, and pressing that takes
+you to the session doing it.
+
+**Nothing goes out without a separate go.** That rule is in each skill rather than
+in a setting, so it holds whichever agent runs it:
+
+| Skill | What it does | What it will not do |
+| --- | --- | --- |
+| `handle-review` | works a PR's threads in a pane, drafts each reply, and files a story for a fair point that is out of scope | post anything without an explicit go; resolve a thread |
+| `fix-pr` | takes a red PR green: base in, fix, amend, push, watch CI | comment, re-request a review, open or merge a PR |
+| `orch` | reaches the daemon from inside a session: ask a blocking question, start a second session, list what is running before touching a branch | reach GitHub; the daemon's own guard decides the rest |
+
+**Marking a thread resolved stays your button, by design.** The agent answers; the
+reviewer decides the answer was enough.
+
 ## The module map
 
 Four crates, split so `cargo` enforces the layering rather than a script counting

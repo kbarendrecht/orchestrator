@@ -1,7 +1,6 @@
 # Security, and what each guard does not cover
 
-The short version is in [README.md](../README.md#security). This is the reasoning
-behind each line of it.
+What guards the daemon and the agents, and the reasoning behind each line.
 
 Bound to `127.0.0.1` only, with Origin/Host validation and a per-start token
 required on the WebSocket and every mutating route. Hook endpoints are exempt from

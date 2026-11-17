@@ -206,6 +206,21 @@ the systemd user manager's, holding no checkout's variables, so `env_source` ask
 the tool per spawn. *Kind:* platform reality. *Breaks:* anything expanding a
 variable gets the empty string and fails in its own words.
 
+## Claude Code and Codex, side by side
+
+**Either agent is enough.** The board offers what it finds on `PATH`, and `+`
+starts the one `default_agent` names — or the one you picked last. The rail, the
+worktrees, the diff and PR panes, and the resume after a restart are the same for
+both. These five things are not:
+
+| | Claude Code | Codex |
+| --- | --- | --- |
+| The conversation's id | the daemon's, handed over with `--session-id` | Codex's own, learned from its first hook |
+| The skills | a plugin dir, called as `/orchd:fix-pr` | named in `developer_instructions`, called as `orchd:fix-pr` |
+| The hooks | a settings file that merges with your repo's | `-c` overrides per invocation, each trusted by hash |
+| Rewind | offered in the row's menu | not offered: two escapes mean whatever Codex makes of them |
+| Workspace trust | accepted once per checkout, or sessions die on spawn | nothing to accept |
+
 ## Codex
 
 Measured on 0.162.1, and every one of these is Codex's behaviour rather than a

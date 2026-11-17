@@ -175,8 +175,7 @@ points `reviews_command` at it:
 
 That is an ordinary documented setting, not a patch: nothing in a release reads
 that file, no default points at it, and the repository the rows describe is the
-same throwaway fixture the rest of the recording uses. The README says so under
-the picture.
+same throwaway fixture the rest of the recording uses.
 
 ## Which workspace a scene wants
 

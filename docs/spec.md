@@ -867,7 +867,7 @@ execution:
   — *Superseded in one respect:* this said it "closes the 'any local process' hole
   too". It does not. `GET /` returns the page with the token in it and is exempt,
   so any local process can read it. That is a deliberate trade, not a boundary;
-  `README.md` § Security states it plainly and `api::guard` carries the reasoning.
+  `docs/security.md` states it plainly and `api::guard` carries the reasoning.
 - **Hook endpoints are the exception** — they come from `claude` subprocesses that
   can't easily carry the token. Keep them on a separate path prefix, accept only
   the documented hook schema, and treat them as write-only observers: they update
