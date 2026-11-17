@@ -1857,12 +1857,13 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 .settings-tgroup{display:flex;align-items:center;gap:7px;padding:12px 10px 4px;font-family:var(--sans);font-weight:600}
 .settings-tgroup:first-child{padding-top:2px}
 span.settings-tgroup{font-size:calc(10.5px * var(--fs));letter-spacing:.06em;text-transform:uppercase;color:var(--ghost)}
-/* A project heading: a button for the others, a plain heading for the open one.
-   A little air above it, so a project reads as its own group under App. */
-.settings-co{width:100%;margin-top:22px;text-align:left;border-radius:var(--r);font-size:calc(12px * var(--fs))}
+/* A project heading: a button that opens the project's page. The height and
+   padding of a tab, so its highlight sits around the name like a tab's does, and
+   a little air above it, so a project reads as its own group under App. */
+.settings-tgroup.settings-co{width:100%;height:30px;padding:0 10px;margin-top:14px;text-align:left;border-radius:var(--r);font-size:calc(12px * var(--fs))}
 button.settings-co{color:var(--ghost)}
 button.settings-co:hover{color:var(--text);background:var(--hover)}
-/* The open project's heading is its own page now, so it is picked like a tab. */
+/* The open project's heading is picked like a tab while its page shows. */
 button.settings-co[data-open]{color:var(--dim)}
 button.settings-co[aria-selected="true"]{color:var(--text);background:var(--raised);box-shadow:inset 0 0 0 1px var(--line)}
 .settings-projects{display:flex;flex-direction:column;gap:2px}
