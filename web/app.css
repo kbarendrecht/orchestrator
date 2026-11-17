@@ -582,7 +582,6 @@ button.ovc-who:hover{background:var(--hover)}
 }
 /* Only when something is actually waiting, so amber keeps meaning "needs you"
    here as it does everywhere else. */
-.co-count.attn{color:var(--attn)}
 /* A checkout's badge: its initials on its colour, in the rail header, the PR
    pane, the review queue and the settings list. `checkoutBadge`
    says why it replaced the band. Sized on the UI scale, so it grows with the text

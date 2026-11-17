@@ -738,25 +738,18 @@ function checkoutHead(c) {
   return head;
 }
 
-/** How many live sessions a checkout holds, and whether any of them want you.
+/** How many live sessions a checkout holds.
  *
- *  **The reason a fold is safe.** Folded, a checkout with an agent waiting on you
- *  looks exactly like an idle one, and the rail is where you would have seen it.
- *  Amber only when something is actually waiting, so the colour keeps meaning what
- *  it means everywhere else in this UI.
+ *  **No "needs you" beside it any more.** It counted `wants_attention`, which a
+ *  finished turn sets too, so a header said "1 needs you" over a project where
+ *  nothing was asking anything. The rows' own dots say which session wants you.
  *
  *  @param {import('./core.js').Target} c
  */
 function checkoutCount(c) {
   const mine = (snapshotOf(c.path)?.sessions ?? []).filter((s) => !isArchived(s));
-  const waiting = mine.filter(isWaiting).length;
-  const label = waiting
-    ? `${mine.length} · ${waiting} need${waiting === 1 ? 's' : ''} you`
-    : `${mine.length}`;
-  const count = el('span', 'co-count' + (waiting ? ' attn' : ''), mine.length ? label : 'idle');
-  count.title = waiting
-    ? `${waiting} of ${mine.length} session(s) here need you`
-    : `${mine.length} live session(s)`;
+  const count = el('span', 'co-count', mine.length ? `${mine.length}` : 'idle');
+  count.title = `${mine.length} live session(s)`;
   return count;
 }
 
