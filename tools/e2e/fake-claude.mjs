@@ -212,8 +212,12 @@ await fire('SessionStart')
 /** A turn, as the daemon sees one: `UserPromptSubmit` enters `Working` and sets
  *  `had_a_turn`, `Stop` leaves it at `YourTurn`. */
 async function turn(text) {
-  note(`turn: ${text}`)
   await fire('UserPromptSubmit')
+  /* **After the hook, not before it.** A flow waits for this line and then for
+     `settled`, and a line written first let `settled` read the idle state from
+     before the turn: the flow went on, and this turn's hooks then landed on top
+     of what it did next. Written here, the line says the daemon is in `Working`. */
+  note(`turn: ${text}`)
   append({ type: 'user', sessionId, message: { role: 'user', content: text } })
   /* **A turn a flow can hold open.** An ordinary turn here is 60ms, which is far
      too short to catch a session in `Working` by polling — so the refusals that
