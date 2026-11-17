@@ -55,17 +55,42 @@ pub(super) fn run(cwd: &Path, args: &[&str]) -> std::io::Result<std::process::Ou
     out
 }
 
+/// How long [`git`] waits on an index lock somebody else holds.
+///
+/// git takes `.git/index.lock` for a moment on any command that refreshes the
+/// index, `stash create` among them, and refuses outright when it is taken: there
+/// is no wait of its own. The daemon runs git on one checkout from several places
+/// at once (a route, the reconcile, the overlap check), so two of its own calls
+/// meet there. A lock that outlives this is a crashed git, which is worth the
+/// error.
+const INDEX_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Run git, again while another git holds the index lock, up to [`INDEX_LOCK_WAIT`].
+/// Only on that refusal: anything else is the answer.
+fn run_waiting_for_index(cwd: &Path, args: &[&str]) -> Result<std::process::Output> {
+    let until = std::time::Instant::now() + INDEX_LOCK_WAIT;
+    loop {
+        let out = run(cwd, args).with_context(|| format!("running git {}", args.join(" ")))?;
+        let held = !out.status.success()
+            && String::from_utf8_lossy(&out.stderr).contains("index.lock': File exists");
+        if !held || std::time::Instant::now() >= until {
+            return Ok(out);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
 /// Shell out to `git` rather than a library binding — you need fsmonitor and
 /// the real worktree/remote semantics (§1).
 pub fn git(cwd: &Path, args: &[&str]) -> Result<String> {
-    let out = run(cwd, args).with_context(|| format!("running git {}", args.join(" ")))?;
+    let out = run_waiting_for_index(cwd, args)?;
     Ok(String::from_utf8_lossy(&checked(cwd, args, out)?).into_owned())
 }
 
 /// Like [`git`] but returns the raw bytes, for `-z` output that is not valid
 /// UTF-8 in the general case.
 pub(super) fn git_raw(cwd: &Path, args: &[&str]) -> Result<Vec<u8>> {
-    let out = run(cwd, args).with_context(|| format!("running git {}", args.join(" ")))?;
+    let out = run_waiting_for_index(cwd, args)?;
     checked(cwd, args, out)
 }
 

@@ -1889,6 +1889,31 @@ fn excludes_the_configured_prefix_not_a_hardcoded_one() {
     assert_eq!(set.untracked[0].path, ".claude/worktrees/x.php");
 }
 
+/// A git call that meets another git's index lock waits for it, and one that
+/// meets a lock nobody releases still fails, naming the lock.
+#[test]
+fn a_held_index_lock_is_waited_out_and_a_stuck_one_is_reported() {
+    let dir = scratch_repo();
+    std::fs::write(dir.join("f.txt"), "two\n").unwrap();
+    let lock = dir.join(".git/index.lock");
+    std::fs::write(&lock, "").unwrap();
+    let released = {
+        let lock = lock.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            std::fs::remove_file(lock).unwrap();
+        })
+    };
+    let made = super::exec::git(&dir, &["stash", "create"]).expect("waited for the lock");
+    assert!(!made.trim().is_empty(), "the change was stashed");
+    released.join().unwrap();
+
+    std::fs::write(&lock, "").unwrap();
+    let err = super::exec::git(&dir, &["stash", "create"]).unwrap_err();
+    assert!(format!("{err:#}").contains("index.lock"), "{err:#}");
+    std::fs::remove_file(lock).unwrap();
+}
+
 /// One commit carrying `f.txt`, which the ancestry and blame tests read back.
 fn scratch_repo() -> std::path::PathBuf {
     let dir = crate::testutil::scratch("git");
