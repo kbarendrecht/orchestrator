@@ -905,7 +905,6 @@ button.ovc-who:hover{background:var(--hover)}
 .cpal-row.sel{background:var(--hover);border-left-color:var(--done)}
 .cpal-nm{flex:none;max-width:260px;font-weight:500;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .cpal-ln{flex:1;min-width:0;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.cpal-you{color:var(--work)}
 .cpal-where{font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--ghost)}
 .cpal-when{flex:none;font-family:var(--mono);font-size:calc(10px * var(--fs));color:var(--faint-solid);white-space:nowrap}
 .cpal-mark{background:color-mix(in srgb, var(--done) 22%, transparent);color:var(--text);border-radius:2px;padding:0 1px}

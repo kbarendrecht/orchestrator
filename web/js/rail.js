@@ -1782,13 +1782,12 @@ function act(/** @type {import('./core.js').Target} */ c) {
   openResult(c, r);
 }
 
-/** The line a row shows: the hit, cut so the match is in view, with `you:` in
- *  front when it was yours; or, for a name match, where it ran.
+/** The line a row shows: the hit, cut so the match is in view; or, for a name
+ *  match, where it ran.
  *  @param {Result} r @param {string} q */
 function rowLine(r, q) {
   const span = el('span', 'cpal-ln');
   if (r.hit && q) {
-    if (r.hit.who === 'you') span.appendChild(el('span', 'cpal-you', 'you: '));
     const line = r.hit.line;
     const at = line.toLowerCase().indexOf(q);
     // A match deep in a long line is cut to, so it is never past the ellipsis.
