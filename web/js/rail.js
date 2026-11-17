@@ -2936,14 +2936,17 @@ function renderNudge() {
      Continue is safe to press. */
   const mark = icon('railnudge-ic', 1.5, 'M13.5 8a5.5 5.5 0 1 1-1.6-3.9', 'M13.5 2.5v3h-3');
   const say = el('span', 'railnudge-say', `${n} session${n === 1 ? '' : 's'} stopped by the restart`);
-  const why = el('span', 'railnudge-why', 'They were mid-turn or waiting on work.');
+  const why = el('span', 'railnudge-why', 'They were mid-turn.');
   const acts = el('span', 'railnudge-acts');
   const go = iconLabel('button', 'railnudge-go', 'Continue', 'M5 3.5l7 4.5-7 4.5z');
   go.title = 'Types "continue" into each of them, and names a monitor, agent or wake-up '
     + 'the restart stopped so it is started again; a finished turn, a question and a '
     + 'permission prompt are left alone.';
+  // The press is the answer, so the card goes with it: a session that does not
+  // leave `ready` at once would otherwise hold it up beside a done Dismiss.
   go.onclick = async () => {
-    go.disabled = true;
+    nudgeDismissed = ids;
+    renderNudge();
     for (const x of by) await nudgeAll(x.c);
   };
   const close = el('button', 'railnudge-x', 'Dismiss');

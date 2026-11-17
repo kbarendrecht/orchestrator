@@ -164,16 +164,10 @@ pub async fn run_due(app: &Arc<AppState>) {
             return;
         };
         tracing::info!(session = %id, "restarting on the installed agent");
-        /* **Owed a Continue the way a boot restart leaves it.** The respawn kills
-        what the last turn left out (a monitor, an agent) as surely as a restart
-        of the app does, and that path marks the session owed and brings it back
-        at `Ready`. This one brought it back as it stood, `TurnComplete` with
-        nothing owed, so Continue never offered it. */
+        /* **Owed a Continue the way a boot restart leaves it**: a turn cut off
+        mid-way comes back at `Ready`, and a finished one as it stood. */
         let owed = app
             .with_session(id, |s| {
-                if s.left_work == Some(true) {
-                    s.interrupted = true;
-                }
                 s.interrupted.then(|| crate::model::State::YourTurn {
                     since: std::time::SystemTime::now(),
                     reason: crate::model::TurnReason::Ready,

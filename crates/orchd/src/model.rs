@@ -641,21 +641,11 @@ pub struct Session {
     /// Maintained by [`Session::set_state`], because a turn starting and a turn
     /// ending are the only two things that change the answer.
     pub interrupted: bool,
-    /// Whether the last `Stop` left work out that would have woken the session
-    /// later (a monitor, an agent, a scheduled wake-up, not a plain shell), as
-    /// the hook said (`hooks::leaves_work`). A restart kills all of it, so a
-    /// session with work out is as owed a "continue" as one cut off mid-turn.
-    ///
-    /// `None` until a `Stop` has said, which includes every record from before
-    /// this existed: then the restart falls back to reading the transcript
-    /// (`store::left_background_work`). A new turn sets it to `Some(false)`, since
-    /// that turn's own `Stop` is the next answer.
-    pub left_work: Option<bool>,
-    /// What that work was, in words: "monitor", "background agent", "workflow",
-    /// "scheduled wake-up". The restart's Continue names them ("continue, and
-    /// start your monitor again"), because a bare "continue" left the agent to
-    /// guess that the restart had stopped its watcher. Empty with `left_work`
-    /// false, and for a record from before this existed.
+    /// What the last `Stop` left out that a restart kills, in words: "monitor",
+    /// "background agent", "workflow", "scheduled wake-up". Continue names them
+    /// to a session the restart cut off ("continue, and start your monitor
+    /// again"), so the agent knows its watcher is gone. Empty when nothing was
+    /// left out, and for a record from before this existed.
     pub left_kinds: Vec<String>,
     /// The idle state a respawn under the same id comes back in, instead of `Ready`.
     ///
@@ -863,7 +853,6 @@ impl Session {
             boundary_violations: Vec::new(),
             last_reconcile: None,
             interrupted: false,
-            left_work: None,
             left_kinds: Vec::new(),
             comes_back_as: None,
             had_a_turn: false,
@@ -963,7 +952,6 @@ impl Session {
         match &state {
             State::Working => {
                 self.interrupted = true;
-                self.left_work = Some(false);
                 self.left_kinds.clear();
                 // `Working` is only ever entered off a prompt (`UserPromptSubmit`,
                 // or the nudge that resumes a polling agent), so it is the moment a

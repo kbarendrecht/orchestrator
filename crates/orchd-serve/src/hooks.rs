@@ -60,13 +60,12 @@ pub struct HookPayload {
     #[serde(default)]
     pub reason: Option<String>,
     /// What is still in flight when a `Stop` fires ([`waits_on_agents`]).
-    /// `None` when the agent sent no such field, which [`leaves_work`] has to tell
-    /// apart from an empty list.
+    /// `None` when the agent sent no such field.
     #[serde(default)]
     pub background_tasks: Option<Vec<BackgroundTask>>,
     /// The session's own scheduled wake-ups when a `Stop` fires: `CronCreate`,
     /// `ScheduleWakeup`, `/loop`. Counted, never read: a restart drops every one of
-    /// them, and that is all [`leaves_work`] needs to know. Codex sends none.
+    /// them, and that is all [`left_kinds`] needs to know. Codex sends none.
     #[serde(default)]
     pub session_crons: Option<Vec<serde_json::Value>>,
     /// The turn a Codex hook belongs to, which is how [`watch_turn_end`] finds
@@ -102,42 +101,14 @@ fn waits_on_agents(payload: &HookPayload) -> bool {
         .any(|t| matches!(t.kind.as_str(), "subagent" | "workflow"))
 }
 
-/// Whether this `Stop` leaves work out that would wake the session later, and
-/// that a restart kills without a word: a monitor, an agent, a workflow, or a
-/// scheduled wake-up. Recorded on the session so the next restart can offer to
-/// continue it (`Session::left_work`).
+/// What this `Stop` leaves out that a restart kills, in the words Continue says
+/// it in, each once, in the order the hook listed them: a monitor, an agent, a
+/// workflow, a scheduled wake-up (`Session::left_kinds`).
 ///
 /// **Not a plain shell.** A dev server started with `run_in_background` is in
-/// `background_tasks` for as long as it runs, so counting shells would nudge that
-/// session after every restart. An unknown kind counts: it is something Claude
-/// Code tracks as in flight, and it is not the dev server case.
-///
-/// From the `Stop` payload, which describes these fields as the difference
-/// between "the session is done" and "it is waiting for background work to wake
-/// it". Read off the 2.1.311 binary's hook schema rather than its docs.
-///
-/// `None` when the payload carries neither field: an agent that does not report
-/// them (Codex, an older Claude Code) has said nothing, and reading that as "no
-/// work out" would turn off the transcript fallback for good.
-fn leaves_work(payload: &HookPayload) -> Option<bool> {
-    if payload.session_crons.is_none() && payload.background_tasks.is_none() {
-        return None;
-    }
-    let crons = payload
-        .session_crons
-        .as_ref()
-        .is_some_and(|c| !c.is_empty());
-    let tasks = payload
-        .background_tasks
-        .iter()
-        .flatten()
-        .any(|t| t.kind != "shell");
-    Some(crons || tasks)
-}
-
-/// The work [`leaves_work`] counts, in the words Continue says it in, each once,
-/// in the order the hook listed them. An unknown kind is said as Claude Code
-/// named it rather than dropped: it is still something the restart stopped.
+/// `background_tasks` for as long as it runs, and is not work the agent waits on.
+/// An unknown kind is said as Claude Code named it rather than dropped: it is
+/// still something the restart stopped.
 fn left_kinds(payload: &HookPayload) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for t in payload.background_tasks.iter().flatten() {
@@ -880,13 +851,8 @@ pub async fn stop(
 
     // Recorded before the state moves, and whatever the state does: a `Stop` that
     // stays `Working` for its agents has left those agents out too.
-    let (left, kinds, waits) = (
-        leaves_work(&payload),
-        left_kinds(&payload),
-        waits_on_agents(&payload),
-    );
+    let (kinds, waits) = (left_kinds(&payload), waits_on_agents(&payload));
     app.with_session(id, |s| {
-        s.left_work = left;
         s.left_kinds = kinds;
         // Still `Working`: its own agents will wake it, and the turn is not yours yet.
         if waits {
@@ -1629,10 +1595,9 @@ mod tests {
             ),
             "a dev server left running does not hold the turn open"
         );
-        let left = || async { app.inner.read().await.sessions[&id].left_work };
-        assert_eq!(
-            left().await,
-            Some(false),
+        let left = || async { app.inner.read().await.sessions[&id].left_kinds.clone() };
+        assert!(
+            left().await.is_empty(),
             "and a shell alone is no work left out"
         );
 
@@ -1644,13 +1609,8 @@ mod tests {
         .await;
         assert_eq!(
             left().await,
-            Some(true),
-            "a monitor is work a restart would kill"
-        );
-        assert_eq!(
-            app.inner.read().await.sessions[&id].left_kinds,
             ["monitor"],
-            "and it is named, the shell beside it is not"
+            "a monitor is work a restart would kill, and the shell beside it is not"
         );
         let _ = stop(
             AxState(app.clone()),
@@ -1661,16 +1621,11 @@ mod tests {
             }),
         )
         .await;
-        assert_eq!(left().await, Some(true), "and so is a scheduled wake-up");
-        // An agent that reports neither field said nothing, so the transcript
-        // stays the answer at the next restart.
-        let _ = stop(
-            AxState(app.clone()),
-            headers.clone(),
-            Json(HookPayload::default()),
-        )
-        .await;
-        assert_eq!(left().await, None, "no fields is not \"no work\"");
+        assert_eq!(
+            left().await,
+            ["scheduled wake-up"],
+            "and so is a scheduled wake-up"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
