@@ -560,7 +560,7 @@ button.ovc-who:hover{background:var(--hover)}
 .co-head{
   display:flex;align-items:center;gap:6px;width:100%;
   padding:8px 15px 5px 12px;position:sticky;top:0;z-index:3;
-  background:var(--panel-ground,var(--surface));border-bottom:1px solid var(--line-soft);
+  background:var(--panel-ground,var(--surface));
 }
 /* Grabbable, because the whole strip is the drag handle. `:active` is the only
    feedback a drag gets before the browser takes over. */
@@ -823,10 +823,12 @@ button.ovc-who:hover{background:var(--hover)}
 .railsearch{flex:0 0 auto;padding:8px 10px;border-bottom:1px solid var(--line-soft)}
 .railsearch:empty{display:none}
 .arcfield{
-  display:flex;align-items:center;gap:7px;width:100%;height:28px;padding:0 9px;cursor:pointer;
+  display:flex;align-items:center;gap:7px;width:100%;height:32px;padding:0 9px;cursor:pointer;
   background:var(--bg);border:1px solid var(--line);border-radius:var(--r);text-align:left;
 }
-.arcfield:hover{border-color:var(--faint-solid)}
+/* Quiet on hover: a fill one step up, not a bright border, for a field the
+   pointer crosses on its way to the sessions under it. */
+.arcfield:hover{background:var(--hover)}
 .arcglass{display:inline-flex;color:var(--ghost);font-size:calc(12px * var(--fs))}
 /* A field, not a row of text: it is the one thing in this rail you type into, so
    it gets the height a text input needs rather than the height of the rows around
@@ -875,7 +877,7 @@ button.ovc-who:hover{background:var(--hover)}
 .cpal-scrim[hidden],.cpal[hidden]{display:none}
 .cpal-head{display:flex;align-items:center;gap:10px;height:50px;padding:0 12px 0 16px;flex:none}
 .cpal-glass{display:inline-flex;color:var(--ghost);font-size:calc(15px * var(--fs))}
-.cpal-scope{display:inline-flex;align-items:center;gap:6px;flex:none;max-width:200px;padding:2px 9px 2px 4px;
+.cpal-scope{display:inline-flex;align-items:center;gap:7px;flex:none;max-width:200px;padding:4px 11px 4px 6px;
   border:1px solid var(--line);border-radius:999px;background:none;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
   font-family:var(--sans);font-size:calc(11.5px * var(--fs));color:var(--dim)}
 .cpal-scope:hover{border-color:var(--faint-solid);color:var(--text)}
