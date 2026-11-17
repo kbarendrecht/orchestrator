@@ -71,8 +71,9 @@ fn run_waiting_for_index(cwd: &Path, args: &[&str]) -> Result<std::process::Outp
     let until = std::time::Instant::now() + INDEX_LOCK_WAIT;
     loop {
         let out = run(cwd, args).with_context(|| format!("running git {}", args.join(" ")))?;
-        let held = !out.status.success()
-            && String::from_utf8_lossy(&out.stderr).contains("index.lock': File exists");
+        // The path, not git's sentence: that is translated, and so is the errno.
+        let held =
+            !out.status.success() && String::from_utf8_lossy(&out.stderr).contains("index.lock");
         if !held || std::time::Instant::now() >= until {
             return Ok(out);
         }

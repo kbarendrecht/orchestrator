@@ -35,35 +35,33 @@ not ask again.
    Never stop it with `pgrep -f` or `pkill`: a pattern also matches this shell's
    own command line, and that has taken the app down before.
 
-3. **Close it**, in a call of its own:
+3. **Close it, wait, and start the local build, in one detached script.** This
+   session is most likely running inside the app, and closing the app kills
+   every session in it, this one too. So the kill, the wait and the start go in
+   one detached shell that outlives this one; a separate call after the kill
+   never runs:
 
    ```
-   kill -TERM <pid>
+   cd <checkout> && setsid nohup sh -c '
+     kill -TERM <app>
+     for i in $(seq 1 20); do ps -p <app>,<child>,... >/dev/null || break; timeout 1 tail -f /dev/null; done
+     if ps -p <app>,<child>,... >/dev/null; then
+       ps -p <app>,<child>,... -o pid= > /tmp/orchd-new-stuck; exit 1
+     fi
+     exec ./target/release/orchestrator-desktop
+   ' >/dev/null 2>&1 &
    ```
 
-4. **Wait for the app and its children to exit**, up to about 20 seconds, then
-   start the local build. Foreground `sleep` is blocked, so wait with
-   `timeout 1 tail -f /dev/null` in a loop:
-
-   ```
-   for i in $(seq 1 20); do ps -p <app>,<child>,... >/dev/null || break; timeout 1 tail -f /dev/null; done
-   ```
-
-   If something is still alive after that, stop and say which pid. Do not
+   It waits up to about 20 seconds (foreground `sleep` is blocked, hence the
+   `timeout 1 tail -f /dev/null`). If something is still alive after that it
+   does not start, and writes the pids left to `/tmp/orchd-new-stuck`. Do not
    `kill -9`. A child that still holds its checkout's lock makes the new app
-   refuse that project.
+   refuse that project. A start while another app runs only hands over to that
+   app, which is why the start waits.
 
-5. **Start the local build**, detached so it outlives this shell:
-
-   ```
-   cd <checkout> && setsid nohup ./target/release/orchestrator-desktop >/dev/null 2>&1 &
-   ```
-
-   A start while another app runs only hands over to that app. Step 4 is what
-   makes this a real start.
-
-6. **Check it came up.** After about ten seconds, run the `ps` line from step 2
-   again. Report the new app pid and which projects have an `orchd --main`
+4. **Check it came up**, if this session is still alive (outside the app it
+   is; inside, the new app resumes it). After about ten seconds, run the `ps`
+   line from step 2 again, and read `/tmp/orchd-new-stuck` if it exists. Report the new app pid and which projects have an `orchd --main`
    child. A project missing from that list is either closed in the app (look
    for `asked=true` in `~/.config/orchd/orchd.log`) or failed to start (that
    checkout's own `orchd.log` under `~/.config/orchd/checkouts/`).

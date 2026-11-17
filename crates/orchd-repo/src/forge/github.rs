@@ -483,6 +483,15 @@ fn search_nodes(v: &Value) -> Vec<Value> {
     out
 }
 
+/// How a PR node from the API ended, or `None` while it is open.
+fn outcome_of(n: &Value) -> Option<PrOutcome> {
+    match n.get("state").and_then(|s| s.as_str())? {
+        "MERGED" => Some(PrOutcome::Merged),
+        "CLOSED" => Some(PrOutcome::Closed),
+        _ => None,
+    }
+}
+
 /// What became of one PR: merged, closed, or still open.
 ///
 /// **Issued only when a PR the daemon was tracking stops appearing in the poll**,
@@ -506,13 +515,10 @@ pub fn outcome(token: &str, owner: &str, name: &str, pr: u64) -> Result<Option<E
     let Some(n) = v.pointer("/data/repository/pullRequest") else {
         return Ok(None);
     };
-    let state = n.get("state").and_then(|s| s.as_str()).unwrap_or_default();
-    let outcome = match state {
-        "MERGED" => PrOutcome::Merged,
-        "CLOSED" => PrOutcome::Closed,
-        // `OPEN`, or a state this build does not know: say nothing rather than
-        // guess, and ask again when it disappears again.
-        _ => return Ok(None),
+    // `OPEN`, or a state this build does not know: say nothing rather than
+    // guess, and ask again when it disappears again.
+    let Some(outcome) = outcome_of(n) else {
+        return Ok(None);
     };
     Ok(Some(EndedPr {
         number: n.get("number").and_then(|x| x.as_u64()).unwrap_or(pr),
@@ -578,11 +584,7 @@ fn parse_ended_on(v: &Value) -> Vec<EndedPr> {
         .iter()
         .filter(|n| n.pointer("/author/login").and_then(|x| x.as_str()) == Some(viewer))
         .filter_map(|n| {
-            let outcome = match n.get("state").and_then(|s| s.as_str())? {
-                "MERGED" => PrOutcome::Merged,
-                "CLOSED" => PrOutcome::Closed,
-                _ => return None,
-            };
+            let outcome = outcome_of(n)?;
             Some(EndedPr {
                 number: n.get("number").and_then(|x| x.as_u64())?,
                 title: text(n, "title"),
@@ -605,13 +607,14 @@ pub fn search(token: &str, owner: &str, name: &str, q: &str) -> Result<Vec<Found
         "repo:{owner}/{name} is:pr in:title sort:updated-desc {q}"
     ))
     .to_string();
-    let by_number = match q.parse::<u64>() {
-        Ok(n) => format!(
+    // GraphQL's `Int` is 32 bits, and a number past it fails the whole document.
+    let by_number = match q.parse::<i32>() {
+        Ok(n) if n > 0 => format!(
             r#"repository(owner: "{owner}", name: "{name}") {{
     pullRequest(number: {n}) {{ number title headRefName state }}
   }}"#
         ),
-        Err(_) => String::new(),
+        _ => String::new(),
     };
     let doc = format!(
         r#"{{
@@ -649,11 +652,7 @@ fn parse_search(v: &Value) -> Vec<FoundPr> {
             number,
             title: text("title"),
             head_ref: text("headRefName"),
-            outcome: match n.get("state").and_then(|s| s.as_str()) {
-                Some("MERGED") => Some(PrOutcome::Merged),
-                Some("CLOSED") => Some(PrOutcome::Closed),
-                _ => None,
-            },
+            outcome: outcome_of(n),
         });
     }
     out

@@ -1369,6 +1369,9 @@ function fillSessions(/** @type {HTMLElement} */ group, /** @type {import('./cor
 }
 
 
+/** The magnifier both search fields draw. */
+const GLASS = ['M7 2.8a4.2 4.2 0 1 0 0 8.4a4.2 4.2 0 1 0 0-8.4', 'M10.2 10.2 13.5 13.5'];
+
 /** The search field over the rail: a press opens the palette on the checkout you
  *  are in, like `MOD Shift K`. A button drawn like a field; the typing happens in
  *  the palette.
@@ -1380,7 +1383,7 @@ function searchField() {
   const field = el('button', 'arcfield');
   field.type = 'button';
   field.title = `Search conversations · ${MOD_LABEL} Shift K`;
-  field.append(icon('arcglass', 1.5, 'M7 2.8a4.2 4.2 0 1 0 0 8.4a4.2 4.2 0 1 0 0-8.4', 'M10.2 10.2 13.5 13.5'),
+  field.append(icon('arcglass', 1.5, ...GLASS),
     el('span', 'arcq', 'search conversations'), el('span', 'arcn', `${MOD_LABEL} Shift K`));
   field.onclick = () => openSearch();
   return field;
@@ -1505,6 +1508,12 @@ function browseResults(c, state) {
   ];
 }
 
+/** The palette's tabs, in the order Tab walks them. */
+const PAL_TABS = /** @type {const} */ (['all', 'live', 'past']);
+
+/** The name a result's row and the foot show. */
+const resultName = (/** @type {Result} */ r) => (r.kind === 'ext' ? (r.x.title || 'untitled') : railName(r.s, { id: r.s.workspace }));
+
 /** A result's identity in `pal.order`, whatever its row draws. */
 const resultKey = (/** @type {Result} */ r) => (r.kind === 'ext' ? `ext:${r.x.id}` : `${r.kind}:${r.s.id}`);
 
@@ -1512,7 +1521,7 @@ const resultKey = (/** @type {Result} */ r) => (r.kind === 'ext' ? `ext:${r.x.id
 const onTab = (/** @type {Result} */ r) => pal.tab === 'all' || (pal.tab === 'live' ? r.kind === 'live' : r.kind !== 'live');
 
 /** The palette's checkout, while it is open. */
-const palCheckout = () => (pal.path ? CHECKOUTS.find((x) => x.path === pal.path) : undefined);
+const palCheckout = () => (pal.path !== null ? CHECKOUTS.find((x) => x.path === pal.path) : undefined);
 
 /** Open the palette on checkout `c`, on `tab`. `q` replaces the query when given:
  *  the archive button opens it empty, the field keeps what you last searched. */
@@ -1550,13 +1559,14 @@ export function openSearch() {
   openPalette(activeCheckout(), 'all');
 }
 
-/** Whether the palette is open, for the key map's Escape. */
-export const paletteOpen = () => !!pal.path;
+/** Whether the palette is open, for the key map's Escape. `null`, not falsy: the
+ *  page-only target's path is ''. */
+export const paletteOpen = () => pal.path !== null;
 
 /** Close the palette and give the keyboard back. The query is kept, so the next
  *  open shows what you last searched. */
 export function closePalette() {
-  if (!pal.path) return;
+  if (pal.path === null) return;
   pal.path = null;
   const box = pal.el;
   if (box) {
@@ -1588,7 +1598,7 @@ function paletteEl() {
   box.setAttribute('role', 'dialog');
   box.setAttribute('aria-label', 'Search conversations');
   const head = box.appendChild(el('div', 'cpal-head'));
-  head.appendChild(icon('cpal-glass', 1.5, 'M7 2.8a4.2 4.2 0 1 0 0 8.4a4.2 4.2 0 1 0 0-8.4', 'M10.2 10.2 13.5 13.5'));
+  head.appendChild(icon('cpal-glass', 1.5, ...GLASS));
   /* Which project this searches, and a press moves to the next one. Shown only
      with more than one open: the field over the rail opens on the one you are in,
      and this is how you search another without leaving it. */
@@ -1608,7 +1618,7 @@ function paletteEl() {
   input.setAttribute('aria-label', 'search conversations');
   const tabs = head.appendChild(el('div', 'cpal-tabs'));
   tabs.setAttribute('role', 'tablist');
-  for (const t of /** @type {const} */ (['all', 'live', 'past'])) {
+  for (const t of PAL_TABS) {
     const b = tabs.appendChild(el('button', 'cpal-tab'));
     b.type = 'button';
     b.dataset.tab = t;
@@ -1633,9 +1643,10 @@ function paletteEl() {
   input.onkeydown = (ev) => {
     const c = palCheckout();
     if (!c) return;
-    const { rows } = paletteRows(c);
     if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
       ev.preventDefault();
+      // Built here only: every other key reaches `renderPalette`, which builds it.
+      const { rows } = paletteRows(c);
       pal.sel = Math.max(0, Math.min(rows.length - 1, pal.sel + (ev.key === 'ArrowDown' ? 1 : -1)));
       renderPalette();
     } else if (ev.key === 'Enter') {
@@ -1643,8 +1654,8 @@ function paletteEl() {
       act(c);
     } else if (ev.key === 'Tab') {
       ev.preventDefault();
-      const order = /** @type {const} */ (['all', 'live', 'past']);
-      pal.tab = order[(order.indexOf(pal.tab) + (ev.shiftKey ? 2 : 1)) % 3];
+      const step = ev.shiftKey ? PAL_TABS.length - 1 : 1;
+      pal.tab = PAL_TABS[(PAL_TABS.indexOf(pal.tab) + step) % PAL_TABS.length];
       restart();
       renderPalette();
     } else if (ev.key === 'Escape') {
@@ -1725,10 +1736,8 @@ function paletteRows(c) {
   /** @type {Map<string, Result>} */
   const present = new Map(all.map((r) => [resultKey(r), r]));
   pal.order = pal.order.filter((k) => present.has(k));
-  for (const r of all) {
-    const k = resultKey(r);
-    if (!pal.order.includes(k)) pal.order.push(k);
-  }
+  const ordered = new Set(pal.order);
+  for (const k of present.keys()) if (!ordered.has(k)) pal.order.push(k);
   const shown = /** @type {Result[]} */ (pal.order.map((k) => present.get(k)).filter((r) => !!r));
   return {
     q,
@@ -1760,7 +1769,7 @@ function rowLine(r, q) {
     const at = line.toLowerCase().indexOf(q);
     // A match deep in a long line is cut to, so it is never past the ellipsis.
     const from = at > 24 ? at - 20 : 0;
-    span.appendChild(marked((from ? '\u2026' : '') + line.slice(from), q, 'cpal-said'));
+    span.appendChild(marked((from ? '\u2026' : '') + line.slice(from), q, ''));
     return span;
   }
   const where = r.kind === 'ext' ? (r.x.workspace === 'main' ? 'outside' : `outside · ${r.x.workspace}`)
@@ -1777,7 +1786,7 @@ const verb = (/** @type {Result} */ r) => (r.kind === 'live' ? 'go to' : r.kind 
 export function renderPalette() {
   const c = palCheckout();
   if (!c) {
-    if (pal.path) closePalette();
+    if (pal.path !== null) closePalette();
     return;
   }
   const box = paletteEl();
@@ -1820,7 +1829,7 @@ export function renderPalette() {
     const row = el('div', 'cpal-row' + (i === pal.sel ? ' sel' : ''));
     row.setAttribute('role', 'option');
     row.setAttribute('aria-selected', String(i === pal.sel));
-    const name = r.kind === 'ext' ? (r.x.title || 'untitled') : railName(r.s, { id: r.s.workspace });
+    const name = resultName(r);
     const when = r.kind === 'live' ? stateLabel(r.s)
       : `${ageLabel(r.kind === 'ext' ? r.x.last_used_ms : r.s.created_ms)} ago`;
     row.append(el('span', r.kind === 'live' ? sessionDot(r.s) : 'dot archived'), marked(name, q, 'cpal-nm'),
@@ -1843,7 +1852,7 @@ export function renderPalette() {
   }
 
   const r = rows[pal.sel];
-  const what = r ? `${verb(r)} ${r.kind === 'ext' ? (r.x.title || 'untitled') : railName(r.s, { id: r.s.workspace })}` : '';
+  const what = r ? `${verb(r)} ${resultName(r)}` : '';
   const foot = /** @type {HTMLElement} */ (box.querySelector('.cpal-foot'));
   foot.replaceChildren(el('span', '', '\u2191\u2193 move'), el('span', '', 'tab live \u00b7 past'), el('span', 'cpal-sp'));
   if (what) {
@@ -2060,14 +2069,11 @@ function archivedToggle(/** @type {import('./core.js').Target} */ c, /** @type {
   const btn = el('button', 'arctoggle');
   btn.type = 'button';
   btn.title = `${total} past conversation${total === 1 ? '' : 's'} in this checkout · search them`;
-  /* **An archive box, and the fold's open state is its fill** (option 1 of the
-     archive review). It had a caret, kept because the caret said the rows were
-     *behind* it; beside Worktree and Main as icon buttons, the fill says "open"
-     the way a pressed button does, and the box says what is in it.
-     The word stays `archived`: `stateLabel` in `core.js` prints it on the rows
-     inside the box, so a control called anything else would be the one place in the
-     app using a second word for one state. A glass was tried here and taken back:
-     it says "search", and this control is a fold before it is a search. */
+  /* **An archive box**, beside Worktree and Main as icon buttons, and the box
+     says what is behind it.
+     The word stays `archived`: `stateLabel` in `core.js` prints it on past
+     conversations, so a control called anything else would be the one place in the
+     app using a second word for one state. */
   btn.append(icon('addic', 1.5, 'M2.5 4.5h11v2h-11z', 'M3.5 6.5v6h9v-6', 'M6.5 9h3'), 'Archived');
   /* **It opens the search palette on Past, with nothing typed**: the archive is
      the palette browsing instead of searching. It folded a box of rows open in
@@ -2956,13 +2962,8 @@ function renderNudge() {
   bar.replaceChildren(mark, say, why, acts);
 }
 
-/** Send on every session a restart left parked mid-turn, in one checkout.
- *
- *  **One checkout, because the item lives in one checkout's header.** The
- *  attention bar it came from spanned them all, which was right for a bar at the
- *  top of the rail and wrong for an item under a project name: the menu says which
- *  project it is about, so acting on another one is the menu lying. The other
- *  checkouts' headers each have the same item.
+/** Send on every session a restart left parked mid-turn, in one checkout. The
+ *  restart card's Continue calls it once per checkout it counted.
  *
  *  `/api/sessions/nudge` is a daemon route and a daemon only knows its own
  *  sessions, so this is one call either way — `callOn` aims it.

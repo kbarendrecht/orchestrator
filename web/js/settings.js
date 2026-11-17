@@ -64,46 +64,48 @@ function renderProjects() {
  *  the host at once; the host sends the new list back, and `refreshProjects`
  *  draws it. */
 function renderProjectColours() {
-  const rows = CHECKOUTS.filter((c) => c.path === target().path).map((c) => {
-    const row = el('div', 'settings-row');
-    const k = row.appendChild(el('span', 'settings-k cosw-name'));
-    const badge = checkoutBadge(c, bandOf(c.path));
-    badge.setAttribute('aria-hidden', 'true');
-    k.append(badge, c.name);
-    const swatches = row.appendChild(el('span', 'settings-step cosw'));
-    const label = (/** @type {{ band?: number, colour?: string }} */ change) => {
-      void callHost('/api/host/checkout/label', { path: c.path, ...change }).catch((e) => {
-        $('setnote').textContent = reason(e);
-      });
-    };
-    const pick = (/** @type {number} */ band) => label({ band });
-    BAND_NAMES.forEach((name, i) => {
-      const b = swatches.appendChild(el('button', 'cosw-b'));
-      b.type = 'button';
-      b.style.setProperty('--sw', `var(--co-${i + 1})`);
-      b.title = `${name} for ${c.name}`;
-      b.setAttribute('aria-label', `${name} for ${c.name}`);
-      b.setAttribute('aria-pressed', String(!c.colour && c.band === i + 1));
-      b.onclick = () => pick(i + 1);
+  const c = CHECKOUTS.find((x) => x.path === target().path);
+  if (!c) {
+    $('setcolour').replaceChildren();
+    return;
+  }
+  const row = el('div', 'settings-row');
+  const k = row.appendChild(el('span', 'settings-k cosw-name'));
+  const badge = checkoutBadge(c, bandOf(c.path));
+  badge.setAttribute('aria-hidden', 'true');
+  k.append(badge, c.name);
+  const swatches = row.appendChild(el('span', 'settings-step cosw'));
+  const label = (/** @type {{ band?: number, colour?: string }} */ change) => {
+    void callHost('/api/host/checkout/label', { path: c.path, ...change }).catch((e) => {
+      $('setnote').textContent = reason(e);
     });
-    const own = swatches.appendChild(el('input', 'cosw-b cosw-own'));
-    own.type = 'color';
-    own.value = c.colour ?? '#7E9CC4';
-    own.classList.toggle('on', !!c.colour);
-    own.title = `a colour of your own for ${c.name}`;
-    own.setAttribute('aria-label', own.title);
-    own.onchange = () => {
-      label({ colour: own.value });
-      $('setnote').textContent = nearState(own.value);
-    };
-    const auto = swatches.appendChild(el('button', 'cosw-auto', 'auto'));
-    auto.type = 'button';
-    auto.title = `${c.name} takes the next free colour, by the order projects were opened`;
-    auto.setAttribute('aria-pressed', String(!c.band && !c.colour));
-    auto.onclick = () => pick(0);
-    return row;
+  };
+  const pick = (/** @type {number} */ band) => label({ band });
+  BAND_NAMES.forEach((name, i) => {
+    const b = swatches.appendChild(el('button', 'cosw-b'));
+    b.type = 'button';
+    b.style.setProperty('--sw', `var(--co-${i + 1})`);
+    b.title = `${name} for ${c.name}`;
+    b.setAttribute('aria-label', `${name} for ${c.name}`);
+    b.setAttribute('aria-pressed', String(!c.colour && c.band === i + 1));
+    b.onclick = () => pick(i + 1);
   });
-  $('setcolour').replaceChildren(...rows);
+  const own = swatches.appendChild(el('input', 'cosw-b cosw-own'));
+  own.type = 'color';
+  own.value = c.colour ?? '#7E9CC4';
+  own.classList.toggle('on', !!c.colour);
+  own.title = `a colour of your own for ${c.name}`;
+  own.setAttribute('aria-label', own.title);
+  own.onchange = () => {
+    label({ colour: own.value });
+    $('setnote').textContent = nearState(own.value);
+  };
+  const auto = swatches.appendChild(el('button', 'cosw-auto', 'auto'));
+  auto.type = 'button';
+  auto.title = `${c.name} takes the next free colour, by the order projects were opened`;
+  auto.setAttribute('aria-pressed', String(!c.band && !c.colour));
+  auto.onclick = () => pick(0);
+  $('setcolour').replaceChildren(row);
 }
 
 /** A warning when a picked colour is close to amber or red, which the rail uses to
@@ -114,8 +116,9 @@ function nearState(/** @type {string} */ hex) {
     const [a, b] = [Palette.parseHex(hex), Palette.parseHex(state)];
     return !!a && !!b && Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]) < 60;
   };
-  if (near('#E0A244')) return 'that colour is close to the amber that means a session needs you';
-  if (near('#DB7A72')) return 'that colour is close to the red that means a session failed';
+  const token = (/** @type {string} */ name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  if (near(token('--attn'))) return 'that colour is close to the amber that means a session needs you';
+  if (near(token('--bad'))) return 'that colour is close to the red that means a session failed';
   return '';
 }
 
@@ -127,14 +130,14 @@ export function refreshProjects() {
   renderProjectColours();
 }
 
-/** Point the project tabs at another open project, on `tab`.
+/** Point the project tabs at another open project.
  *
  *  **Refused while a draft is unsaved**, rather than asking or throwing it away:
  *  the pane keeps a draft across a close on purpose, and a switch that dropped it
  *  would be the silent loss that rule is there to stop. The foot says which.
  *
  *  @returns {boolean} whether the pane now shows `path` */
-function pickProject(/** @type {string} */ path, /** @type {string} */ tab) {
+function pickProject(/** @type {string} */ path) {
   if (path === target().path) return true;
   if (dirty) {
     $('setnote').textContent = `save or discard the changes to ${target().name} first`;
@@ -143,7 +146,6 @@ function pickProject(/** @type {string} */ path, /** @type {string} */ tab) {
   settingsAt = path;
   renderProjects();
   renderProjectColours();
-  showTab(tab);
   void loadConfigInto(true);
   return true;
 }
@@ -152,7 +154,7 @@ function pickProject(/** @type {string} */ path, /** @type {string} */ tab) {
  *  rail header's menu. */
 function openProject(/** @type {string} */ path) {
   if (!settingsOpen()) openSettings();
-  if (pickProject(path, 'project')) showTab('project');
+  if (pickProject(path)) showTab('project');
 }
 
 /** The text boxes that stand for an argv, and the config key each carries. */

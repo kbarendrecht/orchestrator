@@ -735,6 +735,8 @@ function openLinkInput(/** @type {import('./snapshot').SessionView} */ s) {
   /** @type {AbortController | null} */
   let inflight = null;
   const linked = new Set(s.prs.map((p) => p.number));
+  // Asked from the typing only: a redraw for an arrow key or an answer must not
+  // cancel the question in flight.
   const ask = (/** @type {string} */ q) => {
     clearTimeout(pause);
     inflight?.abort();
@@ -762,7 +764,6 @@ function openLinkInput(/** @type {import('./snapshot').SessionView} */ s) {
       ? asked.prs.filter((p) => !linked.has(p.number) && !open.some((o) => o.number === p.number))
       : [];
     found = [...open, ...more].slice(0, 8);
-    ask(q);
     if (sel >= found.length) sel = found.length - 1;
     const at = input.getBoundingClientRect();
     list.style.left = `${at.left}px`;
@@ -791,7 +792,11 @@ function openLinkInput(/** @type {import('./snapshot').SessionView} */ s) {
     list.remove();
     void Rail.editPrs(s, { add: [n] }).then(done);
   };
-  input.oninput = () => { sel = -1; suggest(); };
+  input.oninput = () => {
+    sel = -1;
+    suggest();
+    ask(input.value.trim().toLowerCase().replace(/^#/, ''));
+  };
   input.onkeydown = (ev) => {
     if (ev.key === 'Escape') {
       ev.preventDefault();
@@ -883,23 +888,18 @@ function renderContext() {
   /* **Every PR this session opened, oldest first.** The rail can only name one,
      the worst; this is where the rest are, next to the session you are reading.
      Five at most, because the strip shares the bar with the name and the branch. */
+  $('killbtn').style.display = s && s.alive ? '' : 'none';
   const strip = $('ctxprs');
   // Left alone while you type a number into it: a snapshot lands every few
   // seconds, and rebuilding the strip threw the half-typed input away.
-  if (s && linkingFor === s.id && strip.querySelector('.chipin')) {
-    $('killbtn').style.display = s.alive ? '' : 'none';
-    return;
-  }
+  if (s && linkingFor === s.id && strip.querySelector('.chipin')) return;
   linkingFor = null;
   /* **Rebuilt only when what it shows changed.** It was rebuilt on every snapshot,
      so the chip under the pointer was replaced every few seconds and its hover
      flashed off and on. */
   const stripSig = JSON.stringify([s?.id ?? null, own.length,
     own.slice(-5).map((p) => [p.number, p.title, p.url, prSeverity(p), prState(p)])]);
-  if (strip.dataset.sig === stripSig) {
-    $('killbtn').style.display = s && s.alive ? '' : 'none';
-    return;
-  }
+  if (strip.dataset.sig === stripSig) return;
   strip.dataset.sig = stripSig;
   strip.replaceChildren();
   for (const p of own.slice(-5)) {
@@ -936,8 +936,6 @@ function renderContext() {
     add.title = 'Link a pull request to this session';
     add.onclick = () => openLinkInput(s);
   }
-  $('killbtn').style.display = s && s.alive ? '' : 'none';
-
 }
 
 // ---------------------------------------------------------------------------
@@ -1933,6 +1931,12 @@ function keymap(/** @type {KeyboardEvent} */ e) {
   if (dialogOpen()) return;
   /* **The search palette is the topmost thing while it is open**, over every
      overlay and card, so Escape is its. Its own field handles the rest. */
+  // A menu floats over everything, the palette included, so Escape is its first.
+  if (e.key === 'Escape' && menuOpen()) {
+    e.preventDefault();
+    closeMenu();
+    return;
+  }
   if (Rail.paletteOpen()) {
     if (e.key === 'Escape') {
       e.preventDefault();
@@ -1950,13 +1954,6 @@ function keymap(/** @type {KeyboardEvent} */ e) {
   if (e.key === 'Escape' && !$('keyhelp').hidden) {
     e.preventDefault();
     closeLegend();
-    return;
-  }
-  // First, or Escape closes the overlay underneath and leaves the menu floating
-  // over it.
-  if (e.key === 'Escape' && menuOpen()) {
-    e.preventDefault();
-    closeMenu();
     return;
   }
   if (e.key === 'Escape' && Settings.isOpen()) {

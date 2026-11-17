@@ -1501,9 +1501,9 @@ fn read_head(path: &Path, n: u64) -> std::io::Result<Vec<u8>> {
     Ok(buf)
 }
 
-/// A watcher started an hour before the restart is still in the last turn or two,
-/// and those are rarely more than this.
-const BACKGROUND_TAIL_BYTES: u64 = 256 * 1024;
+/// How much of the transcript's end [`not_resumed`] reads: Claude Code's "didn't
+/// resume" lines land right after a restart, in the last turn or two.
+const NOT_RESUMED_TAIL_BYTES: u64 = 256 * 1024;
 
 /// What Claude Code said did not come back when this session resumed, since the
 /// agent last spoke: `Artifact comment monitor for <url>`, from its own line
@@ -1517,7 +1517,7 @@ pub fn not_resumed(id: uuid::Uuid, cwd: &Path, recorded: Option<&Path>) -> Vec<S
     let Some(path) = transcript_file(id, cwd, recorded) else {
         return Vec::new();
     };
-    let Ok(tail) = read_tail(&path, BACKGROUND_TAIL_BYTES) else {
+    let Ok(tail) = read_tail(&path, NOT_RESUMED_TAIL_BYTES) else {
         return Vec::new();
     };
     not_resumed_in(&String::from_utf8_lossy(&tail))

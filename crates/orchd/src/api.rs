@@ -2881,12 +2881,12 @@ pub async fn search_prs(
     State(app): State<Arc<AppState>>,
     Query(q): Query<PrSearch>,
 ) -> Result<Json<Vec<crate::forge::FoundPr>>, ApiError> {
-    let (owner, name) =
-        repo_of(&app).context("no GitHub repo configured and none on the remote")?;
-    let kind = app.cfg.forge;
-    let file = app.cfg.github_token_file.clone();
+    // `repo_of` in here too: its fallback shells out to git.
     let found = crate::proc::run_blocking("searching PRs", move || {
-        let token = crate::forge::resolve_token(file.as_deref())?;
+        let (owner, name) =
+            repo_of(&app).context("no GitHub repo configured and none on the remote")?;
+        let kind = app.cfg.forge;
+        let token = crate::forge::resolve_token(app.cfg.github_token_file.as_deref())?;
         crate::forge::ForgeImpl::for_kind(kind, owner, name, token.value).search_prs(&q.q)
     })
     .await??;
