@@ -64,6 +64,18 @@ export type FoldKind = "imports" | "comment" | "code";
 export type ForgeKind = "github";
 
 /**
+ * A PR found by what you typed when linking one to a session, in any state.
+ *
+ * Its own shape rather than [`Pr`]: the poll's PR carries checks, threads and
+ * push rights, and a suggestion needs the four things a row shows.
+ */
+export type FoundPr = { number: number, title: string, head_ref: string, 
+/**
+ * `None` while it is open.
+ */
+outcome: PrOutcome | null, };
+
+/**
  * One matching line. `col` and `len` are **byte** offsets within the line, the
  * same units `diff::Row::words` uses and for the same reason: they come from
  * Rust and the page converts, rather than the daemon guessing at UTF-16.

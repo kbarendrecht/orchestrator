@@ -2862,6 +2862,32 @@ pub async fn refresh_reviews(State(app): State<Arc<AppState>>) -> impl IntoRespo
     (StatusCode::ACCEPTED, Json(json!({ "refreshing": true })))
 }
 
+#[derive(Deserialize)]
+pub struct PrSearch {
+    pub q: String,
+}
+
+/// PRs in any state matching what was typed in the header's link box. The poll
+/// only holds open ones, and a PR worth linking may have merged already.
+///
+/// Its own request per question rather than a cached list: it runs while you
+/// type, after the page has already shown what the poll holds.
+pub async fn search_prs(
+    State(app): State<Arc<AppState>>,
+    Query(q): Query<PrSearch>,
+) -> Result<Json<Vec<crate::forge::FoundPr>>, ApiError> {
+    let (owner, name) =
+        repo_of(&app).context("no GitHub repo configured and none on the remote")?;
+    let kind = app.cfg.forge;
+    let file = app.cfg.github_token_file.clone();
+    let found = crate::proc::run_blocking("searching PRs", move || {
+        let token = crate::forge::resolve_token(file.as_deref())?;
+        crate::forge::ForgeImpl::for_kind(kind, owner, name, token.value).search_prs(&q.q)
+    })
+    .await??;
+    Ok(Json(found))
+}
+
 /// Ask the PR poller to fetch now, the same way `refresh_reviews` does.
 pub async fn refresh_prs(State(app): State<Arc<AppState>>) -> impl IntoResponse {
     app.pr_refresh.notify_one();

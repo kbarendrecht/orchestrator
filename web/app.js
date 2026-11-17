@@ -3,7 +3,7 @@
 // The SPA is a module now, so what it reaches for is written down. `core.js` holds
 // the primitives every part needs; `queue.js` is the first seam extracted whole.
 import {
-$, AGENT_LABEL, el, icon, toast, reason, safeHref, copyText, call, callHost, get, activeCheckout, CHECKOUTS, setCheckouts, HOST, snapshotOf, snapshotFor, repoSummary, everySession, enterCheckout, snap, receive, keyActivate, setZoom, setUiPx, uiPx, saveZoom, onScaleChange, onNoFocusBack, ZOOM, selected, setSelected, onSelection, prForWorkspace, terms, CHROME, sessionDot, isWaiting, isArchived, byNewest, currentSession, activeWorkspaceId, currentWorkspaceId, closeMenu, menuOpen, openMenu, callOn, newSession, newWorktree, newShell, mainWorkspace, workspaceById, prState, prSeverity, prsOf, handedToPr, drawerCollapsed, setDrawerCollapsed, pendingSelect, setPendingSelect, onDrawerChange, onCreatingChange, creating, creatingIn, startingShown, appMod, IS_MAC, MOD_LABEL, closeLegend, toggleLegend, typingElsewhere, mark, reportBoot, dialogOpen, dismissDialog, promptBox, bytesOn, unchanged, tick,
+$, AGENT_LABEL, checkoutOf, getOn, el, icon, toast, reason, safeHref, copyText, call, callHost, get, activeCheckout, CHECKOUTS, setCheckouts, HOST, snapshotOf, snapshotFor, repoSummary, everySession, enterCheckout, snap, receive, keyActivate, setZoom, setUiPx, uiPx, saveZoom, onScaleChange, onNoFocusBack, ZOOM, selected, setSelected, onSelection, prForWorkspace, terms, CHROME, sessionDot, isWaiting, isArchived, byNewest, currentSession, activeWorkspaceId, currentWorkspaceId, closeMenu, menuOpen, openMenu, callOn, newSession, newWorktree, newShell, mainWorkspace, workspaceById, prState, prSeverity, prsOf, handedToPr, drawerCollapsed, setDrawerCollapsed, pendingSelect, setPendingSelect, onDrawerChange, onCreatingChange, creating, creatingIn, startingShown, appMod, IS_MAC, MOD_LABEL, closeLegend, toggleLegend, typingElsewhere, mark, reportBoot, dialogOpen, dismissDialog, promptBox, bytesOn, unchanged, tick,
 } from './js/core.js';
 import { onThemeChange } from './js/theme.js';
 import { detailEl, symbolAt } from './js/source.js';
@@ -717,22 +717,52 @@ function openLinkInput(/** @type {import('./snapshot').SessionView} */ s) {
   input.spellcheck = false;
   /* **Suggestions from the project's open PRs**, by number, title or branch, so a
      PR is found by what you remember of it. The poll's list: the PRs you wrote or
-     were asked to look at. Already linked ones are left out. */
+     were asked to look at. Already linked ones are left out.
+
+     **Then GitHub, for the rest**: a merged or closed PR, or somebody else's, is
+     not in the poll. Asked once the typing pauses, and added under the open ones,
+     so what is already listed never moves. */
   const list = el('div', 'prsug');
   list.setAttribute('role', 'listbox');
   document.body.appendChild(list);
   let sel = -1;
-  /** @type {import('./snapshot').PrView[]} */
+  /** @type {import('./repo').FoundPr[]} */
   let found = [];
+  /** @type {{ q: string, prs: import('./repo').FoundPr[] }} */
+  let asked = { q: '', prs: [] };
+  /** @type {ReturnType<typeof setTimeout> | undefined} */
+  let pause;
+  /** @type {AbortController | null} */
+  let inflight = null;
   const linked = new Set(s.prs.map((p) => p.number));
+  const ask = (/** @type {string} */ q) => {
+    clearTimeout(pause);
+    inflight?.abort();
+    if (q.length < 2 || asked.q === q) return;
+    pause = setTimeout(() => {
+      const ctl = new AbortController();
+      inflight = ctl;
+      getOn(checkoutOf(s.id) ?? activeCheckout(), `/api/prs/search?q=${encodeURIComponent(q)}`, ctl.signal)
+        .then((/** @type {import('./repo').FoundPr[]} */ prs) => {
+          asked = { q, prs };
+          if (input.isConnected) suggest();
+        })
+        .catch(() => undefined);
+    }, 300);
+  };
   const suggest = () => {
     const q = input.value.trim().toLowerCase().replace(/^#/, '');
     const pool = (snapshotFor(s.id).prs || []).filter((p) => !linked.has(p.number));
-    found = pool
+    const open = pool
       .filter((p) => !q || String(p.number).startsWith(q) || p.title.toLowerCase().includes(q)
         || p.head_ref.toLowerCase().includes(q))
       .sort((a, b) => b.number - a.number)
-      .slice(0, 8);
+      .map((p) => ({ number: p.number, title: p.title, head_ref: p.head_ref, outcome: null }));
+    const more = asked.q === q
+      ? asked.prs.filter((p) => !linked.has(p.number) && !open.some((o) => o.number === p.number))
+      : [];
+    found = [...open, ...more].slice(0, 8);
+    ask(q);
     if (sel >= found.length) sel = found.length - 1;
     const at = input.getBoundingClientRect();
     list.style.left = `${at.left}px`;
@@ -741,7 +771,9 @@ function openLinkInput(/** @type {import('./snapshot').SessionView} */ s) {
     list.replaceChildren(...found.map((p, i) => {
       const row = el('div', 'prsug-row' + (i === sel ? ' sel' : ''));
       row.setAttribute('role', 'option');
-      row.append(el('span', 'prsug-n', `#${p.number}`), el('span', 'prsug-t', p.title), el('span', 'prsug-b', p.head_ref));
+      row.append(el('span', 'prsug-n', `#${p.number}`), el('span', 'prsug-t', p.title));
+      if (p.outcome) row.append(el('span', `prsug-s ${p.outcome}`, p.outcome));
+      row.append(el('span', 'prsug-b', p.head_ref));
       // Not a click: the press would blur the input first and close all this.
       row.onmousedown = (ev) => { ev.preventDefault(); link(p.number); };
       return row;
@@ -749,6 +781,8 @@ function openLinkInput(/** @type {import('./snapshot').SessionView} */ s) {
   };
   const done = () => {
     linkingFor = null;
+    clearTimeout(pause);
+    inflight?.abort();
     list.remove();
     renderContext();
   };
@@ -895,7 +929,9 @@ function renderContext() {
   }
   if (own.length > 5) strip.appendChild(el('span', 'ctx-sep', `+${own.length - 5}`));
   if (s) {
-    const add = strip.appendChild(el('button', 'prchip addchip', '+'));
+    // Drawn like the rail's `+ Worktree`: a verb you press, not a PR.
+    const add = strip.appendChild(el('button', 'addbtn addchip'));
+    add.append(icon('addic', 1.6, 'M8 3.5v9M3.5 8h9'), 'PR');
     add.type = 'button';
     add.title = 'Link a pull request to this session';
     add.onclick = () => openLinkInput(s);

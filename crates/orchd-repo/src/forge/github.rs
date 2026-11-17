@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
 
-use super::model::{Checks, EndedPr, Pr, PrOutcome};
+use super::model::{Checks, EndedPr, FoundPr, Pr, PrOutcome};
 use super::Forge;
 
 /// Where the daemon's GitHub token came from.
@@ -305,6 +305,10 @@ impl Forge for GitHubForge {
         ended_on(&self.token, &self.owner, &self.name, head)
     }
 
+    fn search_prs(&self, q: &str) -> Result<Vec<FoundPr>> {
+        search(&self.token, &self.owner, &self.name, q)
+    }
+
     /// github.com's blob grammar. The host is a constant rather than carried on
     /// the forge because `repo_from_remote` only recognises github.com remotes
     /// in the first place — an Enterprise host never gets this far, so storing
@@ -588,6 +592,71 @@ fn parse_ended_on(v: &Value) -> Vec<EndedPr> {
             })
         })
         .collect()
+}
+
+/// PRs in any state whose title matches `q`, and the one numbered `q`.
+///
+/// One request: the search, plus a direct lookup when `q` is a number, because
+/// GitHub's search does not match a PR by its number.
+pub fn search(token: &str, owner: &str, name: &str, q: &str) -> Result<Vec<FoundPr>> {
+    let q = q.trim().trim_start_matches('#');
+    // JSON-encoded, so a quote in what was typed cannot break the document.
+    let terms = serde_json::Value::String(format!(
+        "repo:{owner}/{name} is:pr in:title sort:updated-desc {q}"
+    ))
+    .to_string();
+    let by_number = match q.parse::<u64>() {
+        Ok(n) => format!(
+            r#"repository(owner: "{owner}", name: "{name}") {{
+    pullRequest(number: {n}) {{ number title headRefName state }}
+  }}"#
+        ),
+        Err(_) => String::new(),
+    };
+    let doc = format!(
+        r#"{{
+  search(query: {terms}, type: ISSUE, first: 10) {{
+    nodes {{ ... on PullRequest {{ number title headRefName state }} }}
+  }}
+  {by_number}
+}}"#
+    );
+    Ok(parse_search(&graphql(token, &doc)?))
+}
+
+fn parse_search(v: &Value) -> Vec<FoundPr> {
+    let exact = v.pointer("/data/repository/pullRequest").into_iter();
+    let found = v
+        .pointer("/data/search/nodes")
+        .and_then(|n| n.as_array())
+        .into_iter()
+        .flatten();
+    let mut out: Vec<FoundPr> = Vec::new();
+    for n in exact.chain(found) {
+        let Some(number) = n.get("number").and_then(|x| x.as_u64()) else {
+            continue;
+        };
+        if out.iter().any(|p| p.number == number) {
+            continue;
+        }
+        let text = |k: &str| {
+            n.get(k)
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_string()
+        };
+        out.push(FoundPr {
+            number,
+            title: text("title"),
+            head_ref: text("headRefName"),
+            outcome: match n.get("state").and_then(|s| s.as_str()) {
+                Some("MERGED") => Some(PrOutcome::Merged),
+                Some("CLOSED") => Some(PrOutcome::Closed),
+                _ => None,
+            },
+        });
+    }
+    out
 }
 
 /// Threads come back 100 at a time when a PR's first page was capped. The poll
@@ -1056,6 +1125,34 @@ pub fn remote_url(cwd: &Path, remote: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The number lookup leads, a search hit repeating it is dropped, and a node
+    /// that is not a PR (the search's `... on` leaves an empty object) is skipped.
+    #[test]
+    fn a_pr_search_puts_the_numbered_one_first_and_says_how_each_ended() {
+        let v = serde_json::json!({ "data": {
+            "repository": { "pullRequest":
+                { "number": 7, "title": "seven", "headRefName": "b7", "state": "MERGED" } },
+            "search": { "nodes": [
+                { "number": 9, "title": "nine", "headRefName": "b9", "state": "OPEN" },
+                {},
+                { "number": 7, "title": "seven", "headRefName": "b7", "state": "MERGED" },
+                { "number": 3, "title": "three", "headRefName": "b3", "state": "CLOSED" },
+            ] },
+        } });
+        let got: Vec<_> = parse_search(&v)
+            .into_iter()
+            .map(|p| (p.number, p.outcome))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (7, Some(PrOutcome::Merged)),
+                (9, None),
+                (3, Some(PrOutcome::Closed)),
+            ]
+        );
+    }
 
     /// A configured `repo` is final, and a malformed one is `None` rather than the
     /// remote.

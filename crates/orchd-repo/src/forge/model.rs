@@ -61,6 +61,25 @@ pub struct EndedPr {
     pub outcome: PrOutcome,
 }
 
+/// A PR found by what you typed when linking one to a session, in any state.
+///
+/// Its own shape rather than [`Pr`]: the poll's PR carries checks, threads and
+/// push rights, and a suggestion needs the four things a row shows.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[cfg_attr(
+    any(test, feature = "test-util"),
+    derive(ts_rs::TS),
+    ts(export, export_to = "repo.d.ts")
+)]
+pub struct FoundPr {
+    #[cfg_attr(any(test, feature = "test-util"), ts(type = "number"))]
+    pub number: u64,
+    pub title: String,
+    pub head_ref: String,
+    /// `None` while it is open.
+    pub outcome: Option<PrOutcome>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(
     any(test, feature = "test-util"),

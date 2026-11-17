@@ -42,7 +42,7 @@ pub use github::{
     graphql, latest_release, remote_url, repo_from_remote, resolve_token, upstream_repo,
     warn_if_world_readable, GitHubForge, Token, TokenSource,
 };
-pub use model::{Checks, EndedPr, Pr, PrOutcome};
+pub use model::{Checks, EndedPr, FoundPr, Pr, PrOutcome};
 
 /// Reads against one repo on one forge.
 ///
@@ -68,6 +68,11 @@ pub trait Forge: Send + Sync + Clone + 'static {
     /// that opened and ended while nobody was polling left none behind. The branch
     /// is all a session remembers of it.
     fn prs_ended_on(&self, head: &str) -> Result<Vec<EndedPr>>;
+
+    /// PRs in any state whose title matches `q`, newest first, plus the one
+    /// numbered `q` when it is a number. For the header's link box, where the
+    /// poll's open PRs are not enough: a PR you want to link may have merged.
+    fn search_prs(&self, q: &str) -> Result<Vec<FoundPr>>;
 
     /// A browser URL for one file at one ref.
     ///
@@ -167,6 +172,11 @@ impl Forge for ForgeImpl {
     fn prs_ended_on(&self, head: &str) -> Result<Vec<EndedPr>> {
         match self {
             ForgeImpl::GitHub(f) => f.prs_ended_on(head),
+        }
+    }
+    fn search_prs(&self, q: &str) -> Result<Vec<FoundPr>> {
+        match self {
+            ForgeImpl::GitHub(f) => f.search_prs(q),
         }
     }
     fn blob_url(&self, r#ref: &str, path: &str) -> String {

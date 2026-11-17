@@ -340,9 +340,8 @@ body[data-chrome="custom"] .resizers{display:block}
 .chipx svg{display:block}
 .prchip:hover .chipx,.prchip:focus-within .chipx{display:inline-grid}
 .chipx:hover{color:var(--text);background:var(--raised)}
-/* Link one more: dashed, because it is a place to add rather than a PR. */
-.prchip.addchip{border-style:dashed;color:var(--ghost);background:none;cursor:pointer}
-.prchip.addchip:hover{color:var(--text)}
+/* Link one more: the rail's add button, without its pull to the left edge. */
+.addbtn.addchip{margin-left:0;height:22px;padding:0 7px}
 .chipin{
   width:190px;font-family:var(--mono);font-size:calc(10.5px * var(--fs));line-height:1.7;
   color:var(--text);background:var(--bg);border:1px solid var(--faint-solid);border-radius:var(--r);padding:0 6px;
@@ -356,6 +355,9 @@ body[data-chrome="custom"] .resizers{display:block}
 .prsug-row:hover,.prsug-row.sel{background:var(--bg)}
 .prsug-n{flex:none;font-family:var(--mono);font-size:calc(11px * var(--fs));color:var(--dim)}
 .prsug-t{flex:1;min-width:0;font-size:calc(12px * var(--fs));color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.prsug-s{flex:none;font-family:var(--mono);font-size:calc(10px * var(--fs))}
+.prsug-s.merged{color:var(--merged)}
+.prsug-s.closed{color:var(--bad)}
 .prsug-b{flex:none;max-width:140px;font-family:var(--mono);font-size:calc(10px * var(--fs));color:var(--ghost);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ctx-right{margin-left:auto;display:flex;align-items:center;gap:12px;flex:0 0 auto}
 .ctx-btn{font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid)}

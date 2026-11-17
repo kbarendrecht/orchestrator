@@ -818,6 +818,7 @@ fn daemon_router(app: Arc<AppState>) -> Router {
         .route("/api/process/:id/close", post(api::close_process))
         .route("/api/reviews/refresh", post(api::refresh_reviews))
         .route("/api/prs/refresh", post(api::refresh_prs))
+        .route("/api/prs/search", get(api::search_prs))
         // The agent's own version: check it now, and install it in the drawer.
         .route(
             "/api/agent/upgrade/dismiss",
