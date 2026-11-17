@@ -2791,9 +2791,14 @@ pub async fn blame(
         .workspace_path(&q.workspace)
         .await
         .ok_or_else(|| anyhow::anyhow!("unknown workspace {}", q.workspace))?;
-    // The same bound the editor reads under, so blame cannot name a file the
-    // viewer could not have shown.
-    crate::edit::resolve_in_workspace(&root, &q.path, &app.cfg.main_checkout)?;
+    // The same bound the viewer reads under, so blame cannot name a file the
+    // viewer could not have shown. A file it reached through a link out of the
+    // checkout (#48) is in no history of this repo, so it has nothing to blame,
+    // and saying so is not an error the viewer should put on screen.
+    let (_, outside) = crate::edit::resolve_to_read(&root, &q.path, &app.cfg.main_checkout)?;
+    if outside {
+        return Ok(Json(Vec::new()));
+    }
     // A band is 320 lines; more than a few of those is not a viewer asking.
     let to = q.to.min(q.from.saturating_add(2000));
     let (path, from) = (q.path.clone(), q.from);
