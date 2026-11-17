@@ -817,17 +817,9 @@ button.ovc-who:hover{background:var(--hover)}
    holds it to the right of the add row. */
 
 
-/* **The filter is inside the box, and it stays while the rows scroll.** Inside,
-   because the box is what the caret opens and a field over a closed archive is a
-   control for something that is not on screen; sticky, because the box scrolls
-   about ten rows and a filter that scrolls away is one you cannot correct.
-   No bottom rule under the box any more: it sat directly above the next project's
-   header and read as a line between two projects, which is not what it was for. */
-/* The strip is the rail's own ground, so rows scrolling under it are covered; the
-   field inside it is the rounded box. */
-.arcfilter{
-  position:sticky;top:0;z-index:1;padding:4px 10px 6px;background:var(--panel-ground,var(--surface));
-}
+/* The search field's strip, over the scroller: one for every open project. */
+.railsearch{flex:0 0 auto;padding:8px 10px;border-bottom:1px solid var(--line-soft)}
+.railsearch:empty{display:none}
 .arcfield{
   display:flex;align-items:center;gap:7px;width:100%;height:28px;padding:0 9px;cursor:pointer;
   background:var(--bg);border:1px solid var(--line);border-radius:var(--r);text-align:left;
@@ -881,6 +873,11 @@ button.ovc-who:hover{background:var(--hover)}
 .cpal-scrim[hidden],.cpal[hidden]{display:none}
 .cpal-head{display:flex;align-items:center;gap:10px;height:50px;padding:0 12px 0 16px;flex:none}
 .cpal-glass{display:inline-flex;color:var(--ghost);font-size:calc(15px * var(--fs))}
+.cpal-scope{display:inline-flex;align-items:center;gap:6px;flex:none;max-width:200px;padding:2px 9px 2px 4px;
+  border:1px solid var(--line);border-radius:999px;background:none;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  font-family:var(--sans);font-size:calc(11.5px * var(--fs));color:var(--dim)}
+.cpal-scope:hover{border-color:var(--faint-solid);color:var(--text)}
+.cpal-scope[hidden]{display:none}
 .cpal-q{flex:1;min-width:0;background:none;border:0;padding:0;color:var(--text);font-family:var(--sans);font-size:calc(14px * var(--fs))}
 .cpal-q:focus,.cpal-q:focus-visible{outline:none}
 .cpal-q::placeholder{color:var(--ghost)}

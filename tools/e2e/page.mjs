@@ -1107,6 +1107,20 @@ try {
   check(await page.evaluate(async () => (await import('/js/core.js')).selected) === session && !(await palOpen()),
     'Enter goes to the result and gives the board back')
 
+  /* One field over the rail, not one per project: it opens the palette on the
+     checkout you are in. With one project open the pill would name the only
+     choice, so it is hidden. */
+  check(await page.evaluate(() => document.querySelectorAll('.arcfield').length === 1 && !document.querySelector('#rail .arcfield')),
+    'there is one search field, above the scroller')
+  await page.click('#railsearch .arcfield')
+  const fieldOpens = await page.waitForFunction(async () => {
+    const box = document.querySelector('.cpal:not([hidden])')
+    const pill = box?.querySelector('.cpal-scope')
+    return !!box && pill instanceof HTMLElement && pill.hidden || null
+  }, null, { timeout: 5000 }).then(() => true, () => false)
+  check(fieldOpens, 'the field opens the palette, with no project pill for a single project')
+  await page.keyboard.press('Escape')
+
   /* --- Backspace is not a way out of the board -------------------------------- */
 
   /* **The other half of #14, and the half that can be proven here.** A bare

@@ -188,6 +188,8 @@ function renderRail() {
   // snapshot loses a click in WebKit.
   const addco = addCheckoutButton();
   reconcile($('railfoot'), [{ key: 'addco', sig: addco.outerHTML, build: () => addco }]);
+  // Built once: it draws nothing a snapshot changes.
+  if (!$('railsearch').firstChild) $('railsearch').appendChild(searchField());
   reconcile(rail, items);
   if (spotFor) spotlight(spotFor);
   renderPalette();
@@ -1248,7 +1250,7 @@ function fillSessions(/** @type {HTMLElement} */ group, /** @type {import('./cor
   /* One reader for both the header's verbs and this list — see `checkoutFacts`.
      `main` is still a parameter because the caller has it, and the two must be the
      same workspace. */
-  const { mainActive, treeActive, archived, external } = checkoutFacts(c, state);
+  const { mainActive, treeActive, archived } = checkoutFacts(c, state);
 
   /** @type {any[]} */
   const items = [];
@@ -1285,12 +1287,6 @@ function fillSessions(/** @type {HTMLElement} */ group, /** @type {import('./cor
     }
   }
 
-  /* **The search field, over the whole list.** A field that opens the search
-     palette (`renderPalette`) in the middle of the window, so the rail never moves
-     while you search. Built once and kept, like any row that takes a press. */
-  if (mainActive.length + treeActive.length + archived.length + external.length) {
-    items.push({ key: 'filter', sig: 'filter', build: () => searchField(c) });
-  }
 
   /* **The press shows before the daemon answers.** A worktree is a POST, the
      repo's hooks and a `claude` boot; a session in main is a spawn — ten seconds
@@ -1419,23 +1415,21 @@ function fillSessions(/** @type {HTMLElement} */ group, /** @type {import('./cor
 }
 
 
-/** The search field, at the top of a checkout's list: a press opens the
- *  palette for this checkout (`openPalette`). A field you never type into, so it
- *  is a button drawn like a field; the typing happens in the palette.
+/** The search field over the rail: a press opens the palette on the checkout you
+ *  are in, like `MOD Shift K`. A button drawn like a field; the typing happens in
+ *  the palette.
  *
- *  @param {import('./core.js').Target} c
- */
-function searchField(c) {
-  const wrap = el('div', 'arcfilter');
-  wrap.dataset.checkout = c.path;
+ *  **One, above the scroller, where it was one per project.** Three projects open
+ *  was three fields for one palette, each pinned under its own header; the palette's
+ *  project pill is how another project is searched now. */
+function searchField() {
   const field = el('button', 'arcfield');
   field.type = 'button';
   field.title = `Search conversations · ${MOD_LABEL} Shift K`;
   field.append(icon('arcglass', 1.5, 'M7 2.8a4.2 4.2 0 1 0 0 8.4a4.2 4.2 0 1 0 0-8.4', 'M10.2 10.2 13.5 13.5'),
     el('span', 'arcq', 'search conversations'), el('span', 'arcn', `${MOD_LABEL} Shift K`));
-  field.onclick = () => openPalette(c, 'all');
-  wrap.appendChild(field);
-  return wrap;
+  field.onclick = () => openSearch();
+  return field;
 }
 
 /** Ask the daemon what the transcripts say, once the typing stops.
@@ -1576,6 +1570,15 @@ export function openPalette(/** @type {import('./core.js').Target} */ c, /** @ty
   restart();
   box.hidden = false;
   /** @type {HTMLElement} */ (box.previousElementSibling).hidden = false;
+  const scope = /** @type {HTMLElement} */ (box.querySelector('.cpal-scope'));
+  const several = CHECKOUTS.filter((x) => x.path).length > 1;
+  scope.hidden = !several;
+  if (several) {
+    const badge = checkoutBadge(c, bandOf(c.path));
+    badge.setAttribute('aria-hidden', 'true');
+    scope.replaceChildren(badge, c.name);
+    scope.title = `Searching ${c.name}, press for the next project`;
+  }
   const input = /** @type {HTMLInputElement} */ (box.querySelector('.cpal-q'));
   input.value = arcQuery[c.path] || '';
   borrowFocus('palette');
@@ -1632,6 +1635,17 @@ function paletteEl() {
   box.setAttribute('aria-label', 'Search conversations');
   const head = box.appendChild(el('div', 'cpal-head'));
   head.appendChild(icon('cpal-glass', 1.5, 'M7 2.8a4.2 4.2 0 1 0 0 8.4a4.2 4.2 0 1 0 0-8.4', 'M10.2 10.2 13.5 13.5'));
+  /* Which project this searches, and a press moves to the next one. Shown only
+     with more than one open: the field over the rail opens on the one you are in,
+     and this is how you search another without leaving it. */
+  const scope = head.appendChild(el('button', 'cpal-scope'));
+  scope.type = 'button';
+  scope.onclick = () => {
+    const open = CHECKOUTS.filter((x) => x.path);
+    const at = open.findIndex((x) => x.path === pal.path);
+    const next = open[(at + 1) % open.length];
+    if (next && next.path !== pal.path) openPalette(next, pal.tab, input.value);
+  };
   const input = /** @type {HTMLInputElement} */ (head.appendChild(el('input', 'cpal-q')));
   input.type = 'text';
   input.placeholder = 'search names and what was said';

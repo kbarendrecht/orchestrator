@@ -145,6 +145,9 @@
   <nav class="rail" aria-label="Sessions">
     <!-- After a restart: the sessions it cut off mid-turn, and one press to send
          them on. Hidden the rest of the time; `renderNudge` in rail.js. -->
+    <!-- One search field for every open project, out of the scroller so it never
+         scrolls away; `searchField` in rail.js. -->
+    <div class="railsearch" id="railsearch"></div>
     <div class="railnudge" id="railnudge" role="status" hidden></div>
     <div class="rail-scroll" id="rail"></div>
     <!-- `+ open project` lives here rather than inside the scroller. It is the
