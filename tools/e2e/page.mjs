@@ -2012,6 +2012,24 @@ try {
   })
   await page.waitForFunction(() => document.getElementById('fvpath')?.textContent === 'scrolled.txt',
     null, { timeout: 5000 })
+  /* A long name in a narrow header stays one line: the count and the key caps used
+     to wrap while the path was squeezed to a few letters. */
+  const headFits = await page.$eval('#fvoverlay .fnview-head', (h) => {
+    const head = /** @type {HTMLElement} */ (h)
+    const path = /** @type {HTMLElement} */ (head.querySelector('#fvpath'))
+    const was = path.textContent
+    path.textContent = 'tools/a-very-long-directory-name/and-a-file-name-that-goes-on-for-a-while.mjs'
+    const fits = [520, 760].map((w) => {
+      head.style.width = `${w}px`
+      const tall = [...head.children].filter((c) => !(/** @type {HTMLElement} */ (c)).hidden && c.getBoundingClientRect().height > 30).map((c) => c.id)
+      return { w, tall, path: Math.round(path.getBoundingClientRect().width) }
+    })
+    head.style.width = ''
+    path.textContent = was
+    return fits
+  })
+  check(headFits.every((f) => !f.tall.length && f.path >= 150),
+    `the file header stays one line with a long name, and the path keeps room, got ${JSON.stringify(headFits)}`)
   await page.$eval('#fvsrc', (m) => { m.scrollTop = 4000 })
   await page.waitForTimeout(300)
   await press('#fvedit')

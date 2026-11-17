@@ -2845,6 +2845,16 @@ select.opfield,input.opfield{appearance:none}
 /* The count takes the slack, so it and the two buttons after it group at the
    right while the path keeps the left. */
 .fnview-head .ov-count{margin-left:auto}
+/* **Nothing in it wraps, and the path gives way last.** A long file name used to
+   squeeze the path to a few letters while the count and the key caps broke onto a
+   second line. Now the buttons keep their size, the count shortens first, the path
+   keeps a floor, and a narrow header drops the key caps and then the count. */
+.fnview-head{container-type:inline-size}
+.fnview-head>.head-btn,.fnview-head>.ov-crumbs{flex:none;white-space:nowrap}
+.fnview-head>.ov-path{flex:0 1 auto;min-width:min(40%, 220px)}
+.fnview-head>.ov-count{flex:0 3 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@container (max-width:620px){.fnview-head .head-btn kbd{display:none}}
+@container (max-width:460px){.fnview-head>.ov-count{display:none}}
 
 /* Find in the file on screen: a row of its own under the file's header, in the
    same chrome, so the query box lines up with the path above it. */
