@@ -592,6 +592,19 @@ try {
   check(await page.$eval('#setdiscard', (b) => b.hidden),
     'changing the theme does not mark the config unsaved')
 
+  /* "Always show project badges" draws the rail's project header, badge and all,
+     with one project open, and unticking it takes the header away again. */
+  const railBadge = () => page.evaluate(() => !!document.querySelector('#rail .co-head .co-badge'))
+  const badgeBefore = await railBadge()
+  await page.click('#thbadges')
+  const badgeShown = await page.waitForFunction(() => !!document.querySelector('#rail .co-head .co-badge') || null,
+    null, { timeout: 5000 }).then(() => true, () => false)
+  await page.click('#thbadges')
+  const badgeHidden = await page.waitForFunction(() => !document.querySelector('#rail .co-head') || null,
+    null, { timeout: 5000 }).then(() => true, () => false)
+  check(!badgeBefore && badgeShown && badgeHidden,
+    `always show badges draws the rail's project header with one project, got ${JSON.stringify({ badgeBefore, badgeShown, badgeHidden })}`)
+
   /* **A project's colour, on its own page.** The project's heading opens it: eight
      swatches, a picker and auto. A pick goes to the host and comes back as the new
      project list, which redraws the row with that swatch pressed. Put back to auto

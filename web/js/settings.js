@@ -1,7 +1,7 @@
 // The settings panel. The zoom control it offers lives in core, because the
 // terminals read the scale too.
 
-import { AGENT_LABEL, BAND_NAMES, CHECKOUTS, activeCheckout, bandOf, checkoutBadge, callOn, getOn, snapshotOf, ctl, $, WHEEL, ZOOM, borrowFocus, callHost, getHost, caret, setUiPx, uiPx, UI_PX_MAX, UI_PX_MIN, closeLegend, el, MOD_LABEL, onSelection, reason, returnFocus, loadWheel, saveWheel, saveZoom, setWheel, setZoom, snap, uiScale, wheelSpeed } from './core.js';
+import { AGENT_LABEL, badgesAlways, badgesShown, setBadgesAlways, BAND_NAMES, CHECKOUTS, activeCheckout, bandOf, checkoutBadge, callOn, getOn, snapshotOf, ctl, $, WHEEL, ZOOM, borrowFocus, callHost, getHost, caret, setUiPx, uiPx, UI_PX_MAX, UI_PX_MIN, closeLegend, el, MOD_LABEL, onSelection, reason, returnFocus, loadWheel, saveWheel, saveZoom, setWheel, setZoom, snap, uiScale, wheelSpeed } from './core.js';
 import { currentPreset, detectedFonts, FONTS, fontStack, onThemeChange, PRESETS, resetTheme, SEE_THROUGH, setTheme, SIZE_MAX, SIZE_MIN, theme, validFontName } from './theme.js';
 /* The arithmetic, for reading a typed hex back. A leaf with no imports of its own,
    so the module graph stays the DAG `dependency-cruiser` insists on — and the same
@@ -30,7 +30,7 @@ let projectTabs = /** @type {HTMLElement[]} */ ([]);
  *  than one project, as in the rail. */
 function renderProjects() {
   const at = target();
-  const several = CHECKOUTS.length > 1;
+  const several = badgesShown();
   /** @type {HTMLElement[]} */
   const nodes = [];
   for (const c of CHECKOUTS) {
@@ -962,6 +962,11 @@ function setupSettings() {
   $('wsup').onclick = () => saveWheel(setWheel(stepped(wheelSpeed + WHEEL.step)));
   $('wsreset').onclick = () => saveWheel(setWheel(WHEEL.def));
   ctl('setping').onchange = () => void saveUsagePing();
+  ctl('thbadges').checked = badgesAlways();
+  ctl('thbadges').onchange = () => {
+    setBadgesAlways(!!ctl('thbadges').checked);
+    renderProjects();
+  };
   /* A picked preset lands whole — the three colours and the opacity — because that
      is what a theme is now: a board at 72% is not Paper, so picking Paper has to
      put the slider back or the dropdown would be naming something the window is

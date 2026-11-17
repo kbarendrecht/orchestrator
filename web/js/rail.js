@@ -1,7 +1,7 @@
 // The rail: what is running, what is waiting on you, and the PRs beside it.
 // Twenty-four names, three out; the rest is how a row decides what it says.
 
-import { $, activeCheckout, borrowFocus, returnFocus, gateOf, AGENT_LABEL, ageLabel, bandOf, byNewest, call, callFor, callHost, callOn, caret, checkoutBadge, checkoutOf, CHECKOUTS, chooseBox, clock, confirmBox, promptBox, copyText, creating, creatingIn, creatingIntoMain, dotClass, el, enterCheckout, icon, iconLabel, getHost, getOn, handedToPr, hasPr, inTrouble, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, QUEUE_MAX, reason, refreshButton, repoSummary, safeHref, selected, sessionDot, sessionsOf, sessionOrder, setPendingSelect, setSelected, setSessionOrder, snap, snapshotFor, snapshotOf, startingShown, stateClass, stateLabel, terms, toast, paintSig, reconcile, unchanged, watchStarting } from './core.js';
+import { $, activeCheckout, badgesShown, borrowFocus, returnFocus, gateOf, AGENT_LABEL, ageLabel, bandOf, byNewest, call, callFor, callHost, callOn, caret, checkoutBadge, checkoutOf, CHECKOUTS, chooseBox, clock, confirmBox, promptBox, copyText, creating, creatingIn, creatingIntoMain, dotClass, el, enterCheckout, icon, iconLabel, getHost, getOn, handedToPr, hasPr, inTrouble, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, QUEUE_MAX, reason, refreshButton, repoSummary, safeHref, selected, sessionDot, sessionsOf, sessionOrder, setPendingSelect, setSelected, setSessionOrder, snap, snapshotFor, snapshotOf, startingShown, stateClass, stateLabel, terms, toast, paintSig, reconcile, unchanged, watchStarting } from './core.js';
 import * as Open from './open.js';
 import * as Term from './term.js';
 import * as Settings from './settings.js';
@@ -110,7 +110,7 @@ function renderRail() {
      the palette and the answer coming back both change what it draws. */
   if (unchanged(drawn, [states, CHECKOUTS, activeCheckout().path, [...folded],
     arcQuery, arcHits, showPrs, picked, selected, swapInFlight, creating(), creatingIn(),
-    sessionOrder], NOT_DRAWN)) {
+    sessionOrder, badgesShown()], NOT_DRAWN)) {
     return;
   }
 
@@ -138,7 +138,7 @@ function renderRail() {
   /* One block per checkout, in the order the host opened them. A checkout is a
      daemon and a daemon describes only itself, so each block is built from that
      checkout's own snapshot — there is no combined one to build from. */
-  const several = CHECKOUTS.length > 1;
+  const several = badgesShown();
   /** @type {any[]} */
   const items = [];
   for (const [i, c] of CHECKOUTS.entries()) {
@@ -963,7 +963,7 @@ function fillPrGroup(/** @type {HTMLElement} */ block, /** @type {HTMLElement} *
      scroller, so the header whose badge would have said which has scrolled away.
      Its own head wears the badge instead. Only with several checkouts open, like
      every other piece of this chrome. */
-  const owner = CHECKOUTS.length > 1 ? activeCheckout() : null;
+  const owner = badgesShown() ? activeCheckout() : null;
   const band = owner ? bandOf(owner.path) : null;
 
   /* Whether there is an age to show, not what it says: `paintSig` drops every
@@ -972,7 +972,7 @@ function fillPrGroup(/** @type {HTMLElement} */ block, /** @type {HTMLElement} *
      `refreshButton` clears the spinner it started when that counter moves. */
   const hasAge = snap.pr_age_ms != null && !snap.pr_polling;
   const headSig = paintSig([showPrs, prs, snap.pr_error, snap.pr_poll ?? 0,
-    !!snap.pr_polling, hasAge, band, owner?.name]);
+    !!snap.pr_polling, hasAge, band, owner?.name, owner?.colour]);
 
   /** @type {any[]} */
   const items = [{ key: 'head', sig: headSig, build: () => prHead(prs, owner, band) }];

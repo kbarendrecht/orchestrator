@@ -3,7 +3,7 @@
 // The first seam to become a real module: five names, one of which leaves. What
 // it needs from elsewhere is now an import list rather than an assumption about
 // what happens to be in scope.
-import { $, activeCheckout, bandOf, call, caret, checkoutBadge, CHECKOUTS, CHROME, clock, compactAge, confirmBox, copyText, el, icon, keyActivate, openMenu, QUEUE_MAX, refreshButton, safeHref, snap, toast, unchanged } from './core.js';
+import { $, activeCheckout, badgesShown, bandOf, call, caret, checkoutBadge, CHROME, clock, compactAge, confirmBox, copyText, el, icon, keyActivate, openMenu, QUEUE_MAX, refreshButton, safeHref, snap, toast, unchanged } from './core.js';
 
 /** Above this many, the press asks first.
  *
@@ -166,7 +166,7 @@ function renderReviews() {
      a pair (yours bottom-left, your colleagues' bottom-right) and one of them
      saying which checkout it means while the other does not is the pair
      disagreeing about a question they both answer. */
-  const owner = CHECKOUTS.length > 1 ? activeCheckout() : null;
+  const owner = badgesShown() ? activeCheckout() : null;
   const band = owner ? bandOf(owner.path) : null;
   /* Whether there is an age to show, not what it says: the text itself is a
      `data-clock` node that `tick` rewrites in place once a second, and
@@ -175,7 +175,7 @@ function renderReviews() {
      started when that counter moves, and it can only do that when it is built. */
   const hasAge = snap.reviews_age_ms != null && !snap.reviews_polling;
   const drawHead = !unchanged(headDrawn, [showReviews, rv,
-    snap.reviews_poll ?? 0, !!snap.reviews_polling, hasAge, requestedOnly, band, owner?.name]);
+    snap.reviews_poll ?? 0, !!snap.reviews_polling, hasAge, requestedOnly, band, owner?.name, owner?.colour]);
   const drawList = !unchanged(listDrawn, [showReviews, showBlockedReviews, rv, requestedOnly]);
   if (!drawHead && !drawList) return;
   if (drawHead) head.replaceChildren();

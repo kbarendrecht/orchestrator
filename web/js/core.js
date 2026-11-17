@@ -318,6 +318,35 @@ const BANDS = 8;
  *  colour menu and the settings pane's Projects group both name them from here. */
 export const BAND_NAMES = ['blue', 'green', 'purple', 'sand', 'rose', 'teal', 'olive', 'indigo'];
 
+/* **Badges only with several projects, unless you ask for them always.** With one
+ * project open a badge names the only choice there is, so the rail draws no project
+ * header and the panes no badge; some people want the colour anyway. This browser's
+ * preference, like the zoom. */
+const BADGES_KEY = 'orch.alwaysBadges';
+let alwaysBadges = (() => {
+  try {
+    return localStorage.getItem(BADGES_KEY) === '1';
+  } catch (e) {
+    return false;
+  }
+})();
+/** @type {(() => void)[]} */
+const badgeListeners = [];
+
+/** Whether badges and the rail's project headers show: with several projects
+ *  open, or always when you asked for it. */
+export const badgesShown = () => alwaysBadges || CHECKOUTS.length > 1;
+export const badgesAlways = () => alwaysBadges;
+export function onBadgesChange(/** @type {() => void} */ fn) { badgeListeners.push(fn); }
+export function setBadgesAlways(/** @type {boolean} */ on) {
+  alwaysBadges = on;
+  try {
+    if (on) localStorage.setItem(BADGES_KEY, '1');
+    else localStorage.removeItem(BADGES_KEY);
+  } catch (e) { /* kept for this page only */ }
+  for (const fn of badgeListeners) fn();
+}
+
 /** The band number for a checkout, or `null` past the palette.
  *
  *  @param {string} path

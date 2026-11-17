@@ -3,7 +3,7 @@
 // The SPA is a module now, so what it reaches for is written down. `core.js` holds
 // the primitives every part needs; `queue.js` is the first seam extracted whole.
 import {
-$, AGENT_LABEL, checkoutOf, getOn, el, icon, toast, reason, safeHref, copyText, call, callHost, get, activeCheckout, CHECKOUTS, setCheckouts, HOST, snapshotOf, snapshotFor, repoSummary, everySession, enterCheckout, snap, receive, keyActivate, setZoom, setUiPx, uiPx, saveZoom, onScaleChange, onNoFocusBack, ZOOM, selected, setSelected, onSelection, prForWorkspace, terms, CHROME, sessionDot, isWaiting, isArchived, byNewest, currentSession, activeWorkspaceId, currentWorkspaceId, closeMenu, menuOpen, openMenu, callOn, newSession, newWorktree, newShell, mainWorkspace, workspaceById, prState, prSeverity, prsOf, handedToPr, drawerCollapsed, setDrawerCollapsed, pendingSelect, setPendingSelect, onDrawerChange, onCreatingChange, creating, creatingIn, startingShown, appMod, IS_MAC, MOD_LABEL, closeLegend, toggleLegend, typingElsewhere, mark, reportBoot, dialogOpen, dismissDialog, promptBox, bytesOn, unchanged, tick,
+$, AGENT_LABEL, checkoutOf, getOn, onBadgesChange, el, icon, toast, reason, safeHref, copyText, call, callHost, get, activeCheckout, CHECKOUTS, setCheckouts, HOST, snapshotOf, snapshotFor, repoSummary, everySession, enterCheckout, snap, receive, keyActivate, setZoom, setUiPx, uiPx, saveZoom, onScaleChange, onNoFocusBack, ZOOM, selected, setSelected, onSelection, prForWorkspace, terms, CHROME, sessionDot, isWaiting, isArchived, byNewest, currentSession, activeWorkspaceId, currentWorkspaceId, closeMenu, menuOpen, openMenu, callOn, newSession, newWorktree, newShell, mainWorkspace, workspaceById, prState, prSeverity, prsOf, handedToPr, drawerCollapsed, setDrawerCollapsed, pendingSelect, setPendingSelect, onDrawerChange, onCreatingChange, creating, creatingIn, startingShown, appMod, IS_MAC, MOD_LABEL, closeLegend, toggleLegend, typingElsewhere, mark, reportBoot, dialogOpen, dismissDialog, promptBox, bytesOn, unchanged, tick,
 } from './js/core.js';
 import { onThemeChange } from './js/theme.js';
 import { detailEl, symbolAt } from './js/source.js';
@@ -3128,6 +3128,8 @@ import * as Settings from './js/settings.js';
 import * as Open from './js/open.js';
 
 Settings.setup();
+// Badges on or off redraws everything that wears one.
+onBadgesChange(() => render());
 setupColumns();
 setupChrome();
 connectAll();
