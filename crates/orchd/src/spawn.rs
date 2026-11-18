@@ -1926,8 +1926,9 @@ pub(crate) fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<
         // transcript is deleted here, outside the lock. `(cwd, recorded)` is what
         // finds the file.
         let mut forget: Option<(PathBuf, Option<PathBuf>)> = None;
-        // Quit for a fold, and coming back: see `crate::sleep`.
-        let mut asleep = false;
+        // Quit for a fold, or killed from outside: either way the conversation is
+        // coming back to this workspace. See `crate::sleep` and `Session::killed`.
+        let mut coming_back = false;
         let workspace = {
             let mut inner = app.inner.write().await;
             // A relocation resumes under the *same id*, so by the time this wakes the
@@ -1951,7 +1952,20 @@ pub(crate) fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<
                     // to hand out again — and the next start kills whatever a
                     // record's pid names. See `store::SessionRecord::pid`.
                     s.pid = None;
-                    asleep = s.asleep;
+                    /* **A signal orchd did not send.** Every stop orchd makes goes
+                    through `kill_gracefully`, which marks the handle first, and a
+                    shutdown is its own kill; anything else that ends the agent with
+                    a signal came from outside, and the usual sender is memory
+                    pressure. */
+                    if handle.killed_by_signal()
+                        && !handle.stopped_deliberately()
+                        && !s.asleep
+                        && !app.shutting_down.load(std::sync::atomic::Ordering::SeqCst)
+                    {
+                        s.killed = Some(crate::model::Killed::Outside);
+                        tracing::warn!(session = %id, "killed by a signal orchd did not send; resume it from its pane");
+                    }
+                    coming_back = s.asleep || s.killed.is_some();
                     // An exit is an answer too: whatever auto-resume meant for
                     // this session, it has run and stopped since.
                     app.resume_settled(id);
@@ -2063,10 +2077,11 @@ pub(crate) fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<
         if let Some(exit) = ended {
             app.run_ended(exit).await;
         }
-        /* **Not for a session the fold quit.** Its conversation is coming back
-        to this workspace, so the drawer's processes stay up and main stays on
-        the branch it was on, the reason a shutdown does not park main either. */
-        if let Some(ws) = workspace.filter(|_| !asleep) {
+        /* **Not for a session the fold quit or something else killed.** Its
+        conversation is coming back to this workspace, so the drawer's processes
+        stay up and main stays on the branch it was on, the reason a shutdown does
+        not park main either. */
+        if let Some(ws) = workspace.filter(|_| !coming_back) {
             left_workspace(&app, &ws).await;
         }
         app.notify().await;
@@ -2136,6 +2151,60 @@ pub fn worktree_of(path: &Path, worktrees_dir: &Path) -> Option<(String, PathBuf
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A session with a turn behind it and a real pty under the exit watcher.
+    /// `cat` stands in for the agent: the watcher only reads how the pty ended.
+    async fn watched(app: &Arc<AppState>, dir: &Path) -> (SessionId, Arc<PtyHandle>, u32) {
+        let id = uuid::Uuid::new_v4();
+        let spawned =
+            PtyHandle::spawn(&["cat".to_string()], dir, &[], &[], (24, 80)).expect("spawn cat");
+        let mut s = Session::new(id, "main".to_string(), dir.to_path_buf(), None);
+        s.set_state(State::Working);
+        s.had_a_turn = true;
+        s.pty = Some(spawned.handle.clone());
+        app.inner.write().await.sessions.insert(id, s);
+        watch_session_exit(app.clone(), id, spawned.handle.clone());
+        (id, spawned.handle, spawned.pid.expect("a pid"))
+    }
+
+    async fn settled(app: &Arc<AppState>, id: SessionId) -> Option<crate::model::Killed> {
+        for _ in 0..100 {
+            if let Some(killed) = app
+                .with_session(id, |s| (!s.state.is_live()).then_some(s.killed))
+                .await
+                .flatten()
+            {
+                return killed;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!("the exit watcher never settled {id}");
+    }
+
+    /// The rule phase one turns on: a signal from outside leaves the session owed a
+    /// resume, and orchd's own stop does not. The second half is the one with power,
+    /// because the kill button ends a session with a signal too.
+    #[tokio::test]
+    async fn only_a_signal_orchd_did_not_send_marks_a_session_killed() {
+        let (app, dir) = crate::testutil::app("killed-outside");
+        let (outside, _h, pid) = watched(&app, &dir).await;
+        std::process::Command::new("kill")
+            .args(["-9", &pid.to_string()])
+            .status()
+            .expect("kill");
+        assert_eq!(
+            settled(&app, outside).await,
+            Some(crate::model::Killed::Outside)
+        );
+
+        let (ours, handle, _) = watched(&app, &dir).await;
+        handle.kill_gracefully().await;
+        assert_eq!(
+            settled(&app, ours).await,
+            None,
+            "the kill button is not an outside kill"
+        );
+    }
 
     /// A resumed fix run is held to the one-run-per-PR rule and leaves no record
     /// behind when it cannot start.

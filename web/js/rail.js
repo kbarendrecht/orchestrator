@@ -3405,4 +3405,4 @@ document.addEventListener('scroll', (ev) => {
 window.addEventListener('blur', () => { if (ovFor !== null || ovOpenT) closeOverlapCard(); });
 document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape' && ovFor !== null) closeOverlapCard(); }, true);
 
-export { renderRail as render, railName as rowName, closeSession };
+export { renderRail as render, railName as rowName, closeSession, openArchived as resume };

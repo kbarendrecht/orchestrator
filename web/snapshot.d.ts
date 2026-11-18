@@ -190,6 +190,11 @@ value: string, label: string, sub: string,
 free: boolean, };
 
 /**
+ * Why a session ended when orchd did not end it. See [`Session::killed`].
+ */
+export type Killed = "outside";
+
+/**
  * What the update bar may offer for this install.
  *
  * Three arms because there are three honest answers, not because there are three
@@ -457,6 +462,11 @@ interrupted: boolean,
  * restarts itself the moment you finish a turn is a surprise otherwise.
  */
 restart_queued: boolean, 
+/**
+ * Ended by a signal orchd did not send; see `Session::killed`. The rail keeps
+ * the row and draws it **stopped**.
+ */
+killed: Killed | null, 
 /**
  * Messages from other agents waiting for this session to be idle
  * (`orch tell`). Shown so a message the daemon cannot deliver is not

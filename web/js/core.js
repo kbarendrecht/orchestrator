@@ -1662,8 +1662,10 @@ export function stateLabel(/** @type {import('../snapshot').SessionView} */ s) {
     case 'error': return s.state.message || 'error';
     // One word for both: a session whose process ended and one archived by a
     // restart are the same thing to you, a conversation you are not in.
-    case 'exited': return 'archived';
-    case 'archived': return s.state.resumable ? 'archived' : 'archived, transcript only';
+    case 'exited': return s.killed ? 'stopped' : 'archived';
+    case 'archived':
+      if (s.killed) return 'stopped';
+      return s.state.resumable ? 'archived' : 'archived, transcript only';
     default: return /** @type {{ state: string }} */ (s.state).state;
   }
 }
@@ -1693,6 +1695,8 @@ export function dotClass(/** @type {import('../snapshot').SessionView} */ s) {
      what the session is doing — which stopped being true the moment a pass meant
      a pane you sit in as often as a run nobody watches. The state is the signal. */
   if (k === 'working' || k === 'starting') return 'working';
+  // The error colour: something ended it, and it waits on you to resume it.
+  if (s.killed && (k === 'archived' || k === 'exited')) return 'build';
   if (k === 'archived' || k === 'exited') return 'archived';
   return 'idle';
 }
@@ -1700,6 +1704,7 @@ export function dotClass(/** @type {import('../snapshot').SessionView} */ s) {
 export function stateClass(/** @type {import('../snapshot').SessionView} */ s) {
   const k = s.state.state;
   if (k === 'build_failing' || k === 'error') return 'build';
+  if (isStopped(s)) return 'build';
   // The same severity the dot takes, so the words and the dot cannot disagree.
   const parked = handedToPr(s);
   if (parked) return prSeverity(parked) || 'pr';
@@ -1997,7 +2002,13 @@ export function sessionsOf(/** @type {string | null} */ wsId, state = snap) {
 /* A session is one of two things: active, or a past conversation you can come
  * back to. The daemon's `exited` and `archived` are the same fact from here, and
  * neither is a state worth a word of its own in the rail. */
-export const isArchived = (/** @type {import('../snapshot').SessionView} */ s) => s.state.state === 'archived' || s.state.state === 'exited';
+/** Ended by a signal orchd did not send, and owed a resume you start. Its row stays
+ *  among the live ones, and the centre pane offers Resume rather than a terminal. */
+export const isStopped = (/** @type {import('../snapshot').SessionView} */ s) =>
+  !!s.killed && (s.state.state === 'archived' || s.state.state === 'exited');
+
+export const isArchived = (/** @type {import('../snapshot').SessionView} */ s) =>
+  (s.state.state === 'archived' || s.state.state === 'exited') && !s.killed;
 
 /** `spawn::PENDING_WORKTREE`: the workspace a worktree session sits in until
  *  `SessionStart` reports the name Claude Code gave it. */

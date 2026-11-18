@@ -3,7 +3,7 @@
 // The SPA is a module now, so what it reaches for is written down. `core.js` holds
 // the primitives every part needs; `queue.js` is the first seam extracted whole.
 import {
-$, AGENT_LABEL, checkoutOf, getOn, onBadgesChange, el, icon, toast, reason, safeHref, copyText, call, callHost, get, activeCheckout, CHECKOUTS, setCheckouts, HOST, snapshotOf, snapshotFor, repoSummary, everySession, enterCheckout, snap, receive, keyActivate, setZoom, setUiPx, uiPx, saveZoom, onScaleChange, onNoFocusBack, ZOOM, selected, setSelected, onSelection, prForWorkspace, terms, CHROME, sessionDot, isWaiting, isArchived, byNewest, currentSession, activeWorkspaceId, currentWorkspaceId, closeMenu, menuOpen, openMenu, callOn, newSession, newWorktree, newShell, mainWorkspace, workspaceById, prState, prSeverity, prsOf, handedToPr, drawerCollapsed, setDrawerCollapsed, pendingSelect, setPendingSelect, onDrawerChange, onCreatingChange, creating, creatingIn, startingShown, appMod, IS_MAC, MOD_LABEL, closeLegend, toggleLegend, typingElsewhere, mark, reportBoot, dialogOpen, dismissDialog, promptBox, bytesOn, unchanged, tick,
+$, AGENT_LABEL, checkoutOf, getOn, onBadgesChange, el, icon, toast, reason, safeHref, copyText, call, callHost, get, activeCheckout, CHECKOUTS, setCheckouts, HOST, snapshotOf, snapshotFor, repoSummary, everySession, enterCheckout, snap, receive, keyActivate, setZoom, setUiPx, uiPx, saveZoom, onScaleChange, onNoFocusBack, ZOOM, selected, setSelected, onSelection, prForWorkspace, terms, CHROME, sessionDot, isWaiting, isArchived, isStopped, byNewest, currentSession, activeWorkspaceId, currentWorkspaceId, closeMenu, menuOpen, openMenu, callOn, newSession, newWorktree, newShell, mainWorkspace, workspaceById, prState, prSeverity, prsOf, handedToPr, drawerCollapsed, setDrawerCollapsed, pendingSelect, setPendingSelect, onDrawerChange, onCreatingChange, creating, creatingIn, startingShown, appMod, IS_MAC, MOD_LABEL, closeLegend, toggleLegend, typingElsewhere, mark, reportBoot, dialogOpen, dismissDialog, promptBox, bytesOn, unchanged, tick,
 } from './js/core.js';
 import { onThemeChange } from './js/theme.js';
 import { detailEl, symbolAt } from './js/source.js';
@@ -160,6 +160,7 @@ function render() {
   // The create in flight reports through the snapshot, so its overlay is redrawn
   // with everything else rather than only when the press changed.
   renderStarting();
+  renderStopped();
   renderContext();
   Drawer.renderDrawer();
   Diff.renderFiles();
@@ -174,6 +175,29 @@ function render() {
   stackBars();
   renderLegalNotice();
 }
+
+/** What the centre pane says about why a stopped session ended, by `killed`. */
+const KILLED_BY = {
+  outside: 'Killed from outside orchd, usually for memory. Free some, then resume.',
+};
+
+/** The centre pane of a stopped session: why it ended, and Resume in place of a
+ *  terminal. There is no pty to attach to, and attaching to a gone one only
+ *  flaps between reconnecting and exited. */
+function renderStopped() {
+  const s = currentSession();
+  const stopped = !!s && isStopped(s);
+  $('termstopped').hidden = !stopped;
+  if (!s || !stopped) return;
+  Term.show(null, null, $('termwrap'));
+  $('termempty').hidden = true;
+  $('termstoppedwhy').textContent = s.killed ? KILLED_BY[s.killed] : '';
+}
+
+$('termresume').onclick = () => {
+  const s = currentSession();
+  if (s && isStopped(s)) void Rail.resume(s);
+};
 
 const askDrawn = { sig: null, name: 'ask' };
 
@@ -1093,7 +1117,8 @@ onSelection((id, auto) => {
   // A session created a moment ago is not in the snapshot yet. Blanking the
   // terminal here would strand it: the next snapshot sees `selected` already
   // set and never opens one.
-  const shown = s ? Term.show(activeCheckout(), `session:${s.id}`, $('termwrap')) : null;
+  // A stopped session has no pty; `renderStopped` puts Resume where the terminal was.
+  const shown = s && !isStopped(s) ? Term.show(activeCheckout(), `session:${s.id}`, $('termwrap')) : null;
   render();
   // Picking a session is picking where you are about to type. After the frame
   // that un-hides it, for the same reason the drawer waits: xterm refuses focus
@@ -2580,7 +2605,7 @@ function connect(path) {
          be idle is the blank pane this stage exists to remove. */
       const running = CHECKOUTS.flatMap((c) =>
         (snapshotOf(c.path)?.sessions ?? [])
-          .filter((x) => !isArchived(x))
+          .filter((x) => !isArchived(x) && !isStopped(x))
           .map((x) => ({ checkout: c, session: x })));
       const landing = running.find((r) => isWaiting(r.session)) || running[0];
       if (landing) {

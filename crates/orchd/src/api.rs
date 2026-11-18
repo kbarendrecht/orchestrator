@@ -530,6 +530,20 @@ pub async fn kill_session(
     State(app): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
 ) -> ApiResult<serde_json::Value> {
+    /* **Closing a stopped row puts it in the archive.** Its process is gone, so
+    there is nothing to kill, and the row would otherwise stay owed a resume you
+    do not want. */
+    let dismissed = app
+        .with_session(id, |s| {
+            (!s.state.is_live() && s.killed.is_some()).then(|| s.killed = None)
+        })
+        .await
+        .flatten()
+        .is_some();
+    if dismissed {
+        app.notify().await;
+        return Ok(Json(json!({ "archived": id })));
+    }
     let handle = {
         let inner = app.inner.read().await;
         inner.sessions.get(&id).and_then(|s| s.pty.clone())

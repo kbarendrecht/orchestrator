@@ -244,6 +244,20 @@ impl CreateRun {
 // Session
 // ---------------------------------------------------------------------------
 
+/// Why a session ended when orchd did not end it. See [`Session::killed`].
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(
+    any(test, feature = "test-util"),
+    derive(ts_rs::TS),
+    ts(export, export_to = "snapshot.d.ts")
+)]
+pub enum Killed {
+    /// A signal orchd did not send: `kill -9` from a terminal, the kernel's OOM
+    /// killer, or systemd-oomd.
+    Outside,
+}
+
 /// Why a session is waiting on you.
 ///
 /// Running in auto-accept mode, permission prompts almost never fire; what
@@ -818,6 +832,14 @@ pub struct Session {
     /// auto-resumed, and the unfold after it is what brings it back. Cleared the
     /// way [`Session::restart_queued`] is: the resume's fresh record carries `false`.
     pub asleep: bool,
+    /// Ended by a signal orchd did not send, and owed a resume you start.
+    ///
+    /// The row stays among the live ones, says **stopped**, and its pane names the
+    /// reason and offers Resume. **No auto-resume**: the usual sender is memory
+    /// pressure, and a resume into the same pressure is killed again. Persisted,
+    /// so a restart keeps the row where it was; cleared by the resume's fresh
+    /// record, like [`Session::asleep`].
+    pub killed: Option<Killed>,
     /// The file this session's agent was executed from, symlinks resolved — see
     /// [`orchd_base::pty::which`]. `None` until the pty exists.
     ///
@@ -899,6 +921,7 @@ impl Session {
             pending_prompt: None,
             restart_queued: false,
             asleep: false,
+            killed: None,
             agent_exe: None,
             agent_stale: false,
             agent: crate::agent::Agent::Claude,

@@ -4342,6 +4342,9 @@ pub struct SessionView {
     /// [`Session::restart_queued`]. The row says so, because a session that
     /// restarts itself the moment you finish a turn is a surprise otherwise.
     pub restart_queued: bool,
+    /// Ended by a signal orchd did not send; see `Session::killed`. The rail keeps
+    /// the row and draws it **stopped**.
+    pub killed: Option<crate::model::Killed>,
     /// Messages from other agents waiting for this session to be idle
     /// (`orch tell`). Shown so a message the daemon cannot deliver is not
     /// invisible: a turn that ended on an escape sends no `Stop`, and the state
@@ -4402,6 +4405,7 @@ impl SessionView {
             prs_unlinked: s.prs_unlinked.clone(),
             interrupted: s.interrupted,
             restart_queued: s.restart_queued,
+            killed: s.killed,
             inbox: s.inbox.len(),
             agent_stale: s.agent_stale,
             agent: s.agent,

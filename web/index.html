@@ -333,6 +333,15 @@
         <span class="empty-k" data-mod><kbd>MOD .</kbd> a shell here · <kbd>MOD Shift ?</kbd> all shortcuts</span>
       </div>
 
+      <!-- A session something outside orchd killed. Its row stays in the rail, and
+           this takes the terminal's place: there is no pty to attach to, and a
+           resume is the one thing to do here. No automatic resume, because the
+           usual killer is memory pressure, which is still there. -->
+      <div class="fempty" id="termstopped" hidden>
+        <span class="empty-big" id="termstoppedwhy"></span>
+        <button class="head-btn" id="termresume" type="button">Resume</button>
+      </div>
+
       <!-- **What a press of `+` looks like before the daemon has answered.** Cutting
            a worktree is a POST, the repo's hooks and a `claude` boot — ten seconds
            in which the old pane sat there unchanged and the button looked dead. It
