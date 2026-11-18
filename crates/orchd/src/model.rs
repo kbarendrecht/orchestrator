@@ -461,6 +461,21 @@ impl Pass {
     /// The pane pass over a PR's review threads, and the rail's default review verb.
     pub const HANDLE_REVIEW: &'static str = "handle-review";
 
+    /// The pass a prompt asks for: `/orchd:fix-pr 4` from Claude Code,
+    /// `orchd:fix-pr 4` from Codex, the shapes [`Agent::skill_line`] types.
+    ///
+    /// [`Agent::skill_line`]: crate::agent::Agent::skill_line
+    pub fn prompted(prompt: &str) -> Option<&'static str> {
+        let word = prompt.split_whitespace().next()?;
+        let skill = word
+            .strip_prefix('/')
+            .unwrap_or(word)
+            .strip_prefix("orchd:")?;
+        [Self::FIX_PR, Self::HANDLE_REVIEW]
+            .into_iter()
+            .find(|c| *c == skill)
+    }
+
     /// The refusal for a press on a tree this pass is working in.
     ///
     /// One sentence for the press (`triage::hand_to_live_session`) and for the PR
@@ -705,6 +720,11 @@ pub struct Session {
     /// agent's, finishes while the question is still open. Memory only, like the
     /// state it qualifies.
     pub waits_on_tool: Option<String>,
+    /// The PR pass the last prompt asked for, typed by a PR row's button or by
+    /// hand (`/orchd:fix-pr`). While the session works, the row shows the pass
+    /// running rather than offering it again. Memory only, like the state it
+    /// qualifies.
+    pub prompted_pass: Option<String>,
     /// The session whose `orch new` created this one.
     ///
     /// What makes `orch kill` an undo rather than a remote control: the ask token
@@ -870,6 +890,7 @@ impl Session {
             prs: Vec::new(),
             prs_unlinked: Vec::new(),
             waits_on_tool: None,
+            prompted_pass: None,
             spawned_by: None,
             spawn_cut_worktree: false,
             launch: Default::default(),
@@ -1442,6 +1463,24 @@ mod tests {
         State::YourTurn {
             since: SystemTime::now(),
             reason,
+        }
+    }
+
+    /// Both agents' spellings name the pass, and nothing else does.
+    #[test]
+    fn a_prompt_names_the_pass_it_types() {
+        assert_eq!(Pass::prompted("/orchd:fix-pr 4"), Some(Pass::FIX_PR));
+        assert_eq!(
+            Pass::prompted("orchd:handle-review"),
+            Some(Pass::HANDLE_REVIEW)
+        );
+        for not in [
+            "fix-pr 4",
+            "/orchd:fix-pr-later",
+            "please /orchd:fix-pr",
+            "",
+        ] {
+            assert_eq!(Pass::prompted(not), None, "{not:?}");
         }
     }
 

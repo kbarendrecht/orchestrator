@@ -72,6 +72,10 @@ pub struct HookPayload {
     /// that turn's end in the rollout. Claude Code sends none.
     #[serde(default)]
     pub turn_id: Option<String>,
+    /// What `UserPromptSubmit` was asked, read for the PR pass it names
+    /// ([`Pass::prompted`](orchd::model::Pass::prompted)).
+    #[serde(default)]
+    pub prompt: Option<String>,
 }
 
 /// One entry of `Stop`'s `background_tasks`, as far as the daemon reads it.
@@ -503,9 +507,14 @@ async fn prompt_observed(app: Arc<AppState>, headers: HeaderMap, payload: HookPa
         learn_agent_id(&app, id, &payload, false).await;
         // Sending the next prompt is one of exactly two ways YourTurn
         // clears (§2). Both change the underlying reality.
+        let pass = payload
+            .prompt
+            .as_deref()
+            .and_then(orchd::model::Pass::prompted);
         let silent = app
             .with_session(id, |s| {
                 s.set_state(State::Working);
+                s.prompted_pass = pass.map(str::to_string);
                 s.agent.fails_a_turn_silently()
             })
             .await

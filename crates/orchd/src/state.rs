@@ -3954,6 +3954,16 @@ impl Inner {
                 command: Pass::HANDLE_REVIEW.to_string(),
             };
         }
+        /* A pass typed into the conversation on the branch, by a press or by hand.
+        It has no record of its own, so it shows as running for as long as the
+        session works on the prompt that asked for it. */
+        let prompted = session
+            .and_then(|id| self.sessions.get(&id))
+            .filter(|s| matches!(s.state, State::Working))
+            .and_then(|s| Some((s.id, s.prompted_pass.clone()?)));
+        if let Some((session, command)) = prompted {
+            return Press::Running { session, command };
+        }
         if let Some(why) = self.foreign_heads.get(&p.number) {
             return Press::Refused {
                 why: cannot_open_pr(p.number, why),
@@ -5102,6 +5112,40 @@ mod tests {
         assert!(
             matches!(inner.press_for(&pr(5, true), Some(pane)), Press::Refused { why } if why.contains("handle-review")),
         );
+    }
+
+    /// A fix typed into the conversation on the branch shows as running while
+    /// that prompt is worked on, and the row offers the button again after.
+    #[tokio::test]
+    async fn a_prompted_fix_shows_as_running_until_the_turn_ends() {
+        let app = app().await;
+        let pr = crate::forge::Pr {
+            head_ref: "feature/6".into(),
+            head_repo: Some("acme/repo".into()),
+            head_pushable: Some(true),
+            ..crate::testutil::pr(6)
+        };
+        let mut inner = app.inner.write().await;
+        inner.viewer = Some("me".into());
+        let id = Uuid::new_v4();
+        let mut s = Session::new(id, "feature-6".into(), "/tmp".into(), None);
+        s.set_state(State::Working);
+        s.prompted_pass = Pass::prompted("/orchd:fix-pr 6").map(str::to_string);
+        inner.sessions.insert(id, s);
+        assert_eq!(
+            inner.press_for(&pr, Some(id)),
+            Press::Running {
+                session: id,
+                command: Pass::FIX_PR.into()
+            }
+        );
+        if let Some(s) = inner.sessions.get_mut(&id) {
+            s.set_state(State::YourTurn {
+                reason: TurnReason::TurnComplete,
+                since: SystemTime::now(),
+            });
+        }
+        assert_eq!(inner.press_for(&pr, Some(id)), Press::Open);
     }
 
     /// The page is handed the holder the daemon refuses on, not the bare claim: a

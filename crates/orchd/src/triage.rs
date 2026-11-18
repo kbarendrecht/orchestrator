@@ -329,6 +329,7 @@ pub(crate) async fn hand_to_live_session(
             is refused as mid-turn, and `UserPromptSubmit` agrees a moment later. */
             if let Some(s) = app.inner.write().await.sessions.get_mut(&id) {
                 s.set_state(crate::model::State::Working);
+                s.prompted_pass = Some(command.to_string());
             }
             app.notify().await;
             Ok(Some(id))
