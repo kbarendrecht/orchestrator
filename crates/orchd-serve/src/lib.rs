@@ -1255,7 +1255,8 @@ fn start_sweeper(app: Arc<AppState>) {
     });
 }
 
-/// One GraphQL query per 5 minutes, read-only (§6).
+/// Two GraphQL queries per 5 minutes, read-only (§6): the search, then the review
+/// threads of the PRs it found. Why two is on `threads_query` in the GitHub forge.
 ///
 /// No ETag caching: conditional requests are a REST feature and the GraphQL
 /// endpoint is a POST, so the budget is points rather than round trips.

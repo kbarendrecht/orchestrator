@@ -374,25 +374,23 @@ fn query_for(owner: &str, name: &str) -> String {
     searches**, because a PR assigned to you is yours too (#54) and the search
     has no OR between two qualifiers. Aliased into one request, and the second
     leaves out what the first already has. */
-    let nodes = pr_nodes();
     format!(
         r#"{{
   viewer {{ login }}
   search(query: "repo:{owner}/{name} is:pr is:open author:@me", type: ISSUE, first: {PAGE}) {{
-    {nodes}
+    {PR_NODES}
   }}
   assigned: search(query: "repo:{owner}/{name} is:pr is:open assignee:@me -author:@me", type: ISSUE, first: {PAGE}) {{
-    {nodes}
+    {PR_NODES}
   }}
 }}"#
     )
 }
 
 /// What [`query_for`] reads off each PR, once for both searches.
-fn pr_nodes() -> String {
-    format!(
-        r#"nodes {{
-      ... on PullRequest {{
+const PR_NODES: &str = r#"nodes {
+      ... on PullRequest {
+        id
         number
         title
         url
@@ -401,17 +399,11 @@ fn pr_nodes() -> String {
         isDraft
         mergeable
         mergeStateStatus
-        headRepository {{ nameWithOwner viewerPermission }}
-        commits(last: 1) {{ nodes {{ commit {{ oid committedDate statusCheckRollup {{ state }} }} }} }}
-        reviewThreads(first: {PAGE}) {{
-          pageInfo {{ hasNextPage endCursor }}
-          {SLIM_THREAD_NODES}
-        }}
-        latestOpinionatedReviews(first: 20) {{ nodes {{ state author {{ login }} submittedAt }} }}
-      }}
-    }}"#
-    )
-}
+        headRepository { nameWithOwner viewerPermission }
+        commits(last: 1) { nodes { commit { oid committedDate statusCheckRollup { state } } } }
+        latestOpinionatedReviews(first: 20) { nodes { state author { login } submittedAt } }
+      }
+    }"#;
 
 /// The open PRs you authored or are assigned, plus your own login.
 ///
@@ -426,7 +418,10 @@ pub fn poll(token: &str, owner: &str, name: &str) -> Result<(String, Vec<Pr>)> {
         .and_then(|s| s.as_str())
         .unwrap_or_default()
         .to_string();
-    let nodes = search_nodes(&v);
+    let mut nodes = search_nodes(&v);
+    if let Some(q) = threads_query(&nodes) {
+        attach_threads(&mut nodes, &graphql(token, &q)?);
+    }
 
     let mut prs: Vec<Pr> = Vec::with_capacity(nodes.len());
     for n in &nodes {
@@ -456,6 +451,60 @@ pub fn poll(token: &str, owner: &str, name: &str) -> Result<(String, Vec<Pr>)> {
     }
     link_stacks(&mut prs);
     Ok((viewer, prs))
+}
+
+/// The first page of review threads for every PR the search found, by node id.
+///
+/// **A second round trip, because GitHub prices a query by the page sizes it
+/// declares, not by what comes back.** Inside `search(first: 50)` the threads cost
+/// 50 × 50 `comments(last: 1)` per search whether you have one open PR or none:
+/// 53 points a poll, measured, and nine checkouts polling every five minutes spent
+/// 5,724 of the 5,000 points an hour GitHub gives a user (#59). Asked by id, the
+/// cost follows the PRs that exist — the search is 2 points and this one is 1 per
+/// two PRs. `None` when the search found nothing, which is then the whole poll.
+fn threads_query(nodes: &[Value]) -> Option<String> {
+    let ids: Vec<String> = nodes
+        .iter()
+        .filter_map(|n| n.get("id"))
+        .filter(|id| id.is_string())
+        .map(|id| id.to_string())
+        .collect();
+    if ids.is_empty() {
+        return None;
+    }
+    let ids = ids.join(", ");
+    Some(format!(
+        r#"{{
+  nodes(ids: [{ids}]) {{
+    ... on PullRequest {{
+      id
+      reviewThreads(first: {PAGE}) {{
+        pageInfo {{ hasNextPage endCursor }}
+        {SLIM_THREAD_NODES}
+      }}
+    }}
+  }}
+}}"#
+    ))
+}
+
+/// Put each PR's `reviewThreads` back on its search node, where [`parse_pr`] and
+/// the paging read it. A PR missing from the answer keeps no threads, which is
+/// what a nulled connection inside the old single query read as too.
+fn attach_threads(nodes: &mut [Value], answer: &Value) {
+    let found = answer
+        .pointer("/data/nodes")
+        .and_then(|n| n.as_array())
+        .into_iter()
+        .flatten();
+    for t in found {
+        let (Some(id), Some(threads)) = (t.get("id"), t.get("reviewThreads")) else {
+            continue;
+        };
+        if let Some(n) = nodes.iter_mut().find(|n| n.get("id") == Some(id)) {
+            n["reviewThreads"] = threads.clone();
+        }
+    }
 }
 
 /// Both searches' PRs, authored first. `-author:@me` already keeps the second
@@ -667,7 +716,8 @@ const MAX_THREAD_PAGES: usize = 100;
 
 /// One PR's remaining review-thread pages, with the poll's slim per-thread fields
 /// rather than comment bodies. Only issued for a PR the first
-/// page reported as capped, so the poll's fan-out over every PR stays one query.
+/// page reported as capped, so the poll's fan-out over every PR stays one query
+/// for the first page of all of them.
 fn summary_threads_query(owner: &str, name: &str, pr: u64, after: &str) -> String {
     // JSON-encode the cursor rather than pasting it in quotes, so a stray quote in
     // GitHub's opaque string cannot break the document.
@@ -688,7 +738,7 @@ fn summary_threads_query(owner: &str, name: &str, pr: u64, after: &str) -> Strin
 
 /// The per-thread fields the poll reads: enough to count and to tell whose turn a
 /// thread is, and no comment bodies. One constant, because it appears in the
-/// first page (inside [`query_for`]) and in every following page
+/// first page (inside [`threads_query`]) and in every following page
 /// ([`summary_threads_query`]), and the two had to be kept identical by hand.
 const SLIM_THREAD_NODES: &str = "nodes { isResolved isOutdated \
     comments(last: 1) { nodes { author { login } \
@@ -1542,6 +1592,32 @@ mod tests {
             .collect();
         assert_eq!(got, vec![1, 2, 3]);
         assert!(query_for("o", "n").contains("assignee:@me -author:@me"));
+    }
+
+    /// The search must not ask for threads: inside it they are priced at the page
+    /// size times fifty, whatever exists (#59).
+    #[test]
+    fn threads_are_asked_by_id_and_land_on_their_own_pr() {
+        assert!(!query_for("o", "n").contains("reviewThreads"));
+        assert_eq!(threads_query(&[]), None);
+        let mut nodes = vec![
+            serde_json::json!({ "id": "PR_a", "number": 1 }),
+            serde_json::json!({
+                "id": "PR_b", "number": 2, "title": "t", "url": "u", "headRefName": "x",
+                "baseRefName": "develop", "isDraft": false,
+                "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN",
+            }),
+        ];
+        let q = threads_query(&nodes).expect("two PRs");
+        assert!(q.contains(r#"nodes(ids: ["PR_a", "PR_b"])"#), "{q}");
+        let answer = serde_json::json!({ "data": { "nodes": [
+            { "id": "PR_b", "reviewThreads": { "pageInfo": { "hasNextPage": true }, "nodes": [] } },
+            null,
+        ] } });
+        attach_threads(&mut nodes, &answer);
+        assert!(nodes[0].get("reviewThreads").is_none());
+        assert_eq!(nodes[1]["reviewThreads"]["pageInfo"]["hasNextPage"], true);
+        assert!(parse_pr(&nodes[1], "me").expect("parses").unresolved_capped);
     }
 
     /// GitHub's cursor is opaque, so a quote in it must not break the document.
