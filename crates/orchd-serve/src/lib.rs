@@ -746,6 +746,7 @@ fn daemon_router(app: Arc<AppState>) -> Router {
         )
         .route("/api/session/:id/rewind", post(api::rewind_session))
         .route("/api/session/:id/resume", post(api::resume_session))
+        .route("/api/fold", post(api::set_fold))
         .route("/api/session/:id/restart", post(api::restart_session))
         .route("/api/sessions/restart", post(api::restart_sessions))
         .route("/api/external/refresh", post(api::refresh_external))
@@ -2071,6 +2072,7 @@ fn start_restart_watcher(app: Arc<AppState>) {
                 // records, so any wake-up is as good as the one it missed.
                 Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                     orchd::restart::run_due(&app).await;
+                    orchd::sleep::run_due(&app).await;
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
             }

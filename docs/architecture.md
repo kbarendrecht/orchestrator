@@ -132,6 +132,7 @@ crates/orchd/         the runtime core: the `orchd` library, what the daemon kno
   push.rs         what an agent is told when it pushes: restack, order, upstream, base
   restack.rs      the upper branch of a stack follows the one under it, and leaves it on a merge
   restart.rs      respawn sessions in place on the installed agent, each when idle
+  sleep.rs        quit a folded checkout's idle agents, resume them on the unfold
   review_api.rs   the PR routes that start work, and the file pane's reads and
                   writes
   state.rs        the daemon's owned state, snapshots, reconcile, durable writes

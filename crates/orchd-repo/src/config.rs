@@ -205,6 +205,23 @@ pub struct Config {
     /// it costs another whole checkout.
     #[serde(default = "default_spare_worktrees")]
     pub spare_worktrees: u32,
+
+    /// Quit the idle agents of a checkout folded away on the rail for this many
+    /// minutes, and resume them when it unfolds. `0` never quits them.
+    ///
+    /// Each agent holds 300 to 500 MB while it sits at its prompt, and a folded
+    /// checkout is one you are not looking at. The wait is what keeps a fold to
+    /// tidy the rail free: unfolding before it runs out changes nothing. Only a
+    /// session at its prompt goes, so a busy one goes when its turn ends and one
+    /// holding a question waits for the answer.
+    #[serde(default = "default_sleep_folded_after_minutes")]
+    pub sleep_folded_after_minutes: u32,
+}
+
+/// Ten minutes: longer than a fold to look past a project, short enough that a
+/// checkout you put away for the afternoon gives its memory back.
+fn default_sleep_folded_after_minutes() -> u32 {
+    10
 }
 
 /// One. Enough to make the common case — one new session at a time — cost a
@@ -408,6 +425,9 @@ pub struct Settings {
     pub reviews_rules: QueueRules,
     pub main_processes: Vec<ManagedSpec>,
     pub worktree_retention_days: u32,
+    /// Defaulted, so a save from a page that predates it still parses.
+    #[serde(default = "default_sleep_folded_after_minutes")]
+    pub sleep_folded_after_minutes: u32,
     pub allow_several_in_main: bool,
     /// Defaulted on, so a save from a page that predates it keeps the guard.
     #[serde(default = "default_protect_base")]
@@ -461,6 +481,7 @@ impl Settings {
             reviews_rules: cfg.reviews_rules.clone(),
             main_processes: cfg.main_processes.clone(),
             worktree_retention_days: cfg.worktree_retention_days,
+            sleep_folded_after_minutes: cfg.sleep_folded_after_minutes,
             allow_several_in_main: cfg.allow_several_in_main,
             protect_base: cfg.protect_base,
             default_agent: cfg.default_agent,
@@ -1833,6 +1854,7 @@ mod tests {
             reviews_rules: QueueRules::default(),
             main_processes: vec![],
             worktree_retention_days: 60,
+            sleep_folded_after_minutes: 10,
             allow_several_in_main: false,
             protect_base: true,
             default_agent: None,
@@ -1918,6 +1940,7 @@ mod tests {
             reviews_rules: QueueRules::default(),
             main_processes: vec![],
             worktree_retention_days: 60,
+            sleep_folded_after_minutes: 10,
             allow_several_in_main: false,
             protect_base: true,
             default_agent: None,

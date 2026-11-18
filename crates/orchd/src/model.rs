@@ -790,6 +790,14 @@ pub struct Session {
     /// Not persisted, deliberately: a daemon that goes down respawns every
     /// session at boot, which is the restart this was waiting to do.
     pub restart_queued: bool,
+    /// Quit because its checkout was folded away, and owed a resume when it
+    /// unfolds — see [`crate::sleep`].
+    ///
+    /// Persisted, because the fold outlives the daemon: an app restart with the
+    /// checkout still folded leaves this session archived rather than
+    /// auto-resumed, and the unfold after it is what brings it back. Cleared the
+    /// way [`Session::restart_queued`] is: the resume's fresh record carries `false`.
+    pub asleep: bool,
     /// The file this session's agent was executed from, symlinks resolved — see
     /// [`orchd_base::pty::which`]. `None` until the pty exists.
     ///
@@ -869,6 +877,7 @@ impl Session {
             outside_ask: None,
             pending_prompt: None,
             restart_queued: false,
+            asleep: false,
             agent_exe: None,
             agent_stale: false,
             agent: crate::agent::Agent::Claude,

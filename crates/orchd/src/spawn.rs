@@ -1926,6 +1926,8 @@ pub(crate) fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<
         // transcript is deleted here, outside the lock. `(cwd, recorded)` is what
         // finds the file.
         let mut forget: Option<(PathBuf, Option<PathBuf>)> = None;
+        // Quit for a fold, and coming back: see `crate::sleep`.
+        let mut asleep = false;
         let workspace = {
             let mut inner = app.inner.write().await;
             // A relocation resumes under the *same id*, so by the time this wakes the
@@ -1949,6 +1951,7 @@ pub(crate) fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<
                     // to hand out again — and the next start kills whatever a
                     // record's pid names. See `store::SessionRecord::pid`.
                     s.pid = None;
+                    asleep = s.asleep;
                     // An exit is an answer too: whatever auto-resume meant for
                     // this session, it has run and stopped since.
                     app.resume_settled(id);
@@ -2060,7 +2063,10 @@ pub(crate) fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<
         if let Some(exit) = ended {
             app.run_ended(exit).await;
         }
-        if let Some(ws) = workspace {
+        /* **Not for a session the fold quit.** Its conversation is coming back
+        to this workspace, so the drawer's processes stay up and main stays on
+        the branch it was on, the reason a shutdown does not park main either. */
+        if let Some(ws) = workspace.filter(|_| !asleep) {
             left_workspace(&app, &ws).await;
         }
         app.notify().await;

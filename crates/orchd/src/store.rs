@@ -111,6 +111,9 @@ pub struct SessionRecord {
     /// afterwards which sessions were actually going.
     #[serde(default)]
     pub was_live: bool,
+    /// See `Session::asleep`.
+    #[serde(default)]
+    pub asleep: bool,
     /// Survives a restart, or every fork in the archive loses the one thing that
     /// explains why two rows share a title.
     #[serde(default)]
@@ -202,6 +205,7 @@ impl SessionRecord {
             created_at: s.created_at,
             pid: s.pid,
             was_live: s.state.is_live(),
+            asleep: s.asleep,
             forked_from: s.forked_from,
             pr: s.pr,
             branches: s.branches.clone(),
@@ -245,6 +249,7 @@ impl SessionRecord {
         s.interrupted = self.interrupted;
         s.left_kinds = self.left_kinds;
         s.had_a_turn = self.had_a_turn;
+        s.asleep = self.asleep;
         s.branch = self.branch;
         s.arrival_notice = self.arrival_notice;
         s.spawned_by = self.spawned_by;
@@ -1765,6 +1770,7 @@ mod tests {
                 created_at: SystemTime::now(),
                 pid: None,
                 was_live: false,
+                asleep: false,
                 forked_from: None,
                 pr: None,
                 branches: Vec::new(),

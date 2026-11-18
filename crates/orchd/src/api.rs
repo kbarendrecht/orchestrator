@@ -1898,6 +1898,60 @@ pub async fn resume_session(
     revive(&app, id).await
 }
 
+#[derive(Deserialize)]
+pub struct FoldBody {
+    pub folded: bool,
+}
+
+/// The page folded or unfolded this checkout on the rail. See [`crate::sleep`].
+///
+/// An unfold answers at once and resumes what the fold quit in the background,
+/// one at a time with auto-resume's stagger, for auto-resume's reason: several
+/// agents starting on one tick compete for the same instant.
+pub async fn set_fold(
+    State(app): State<Arc<AppState>>,
+    Json(body): Json<FoldBody>,
+) -> ApiResult<serde_json::Value> {
+    let owed = crate::sleep::set_folded(&app, body.folded).await;
+    let waking = owed.len();
+    if waking > 0 {
+        let app = app.clone();
+        tokio::spawn(async move { wake(&app, owed).await });
+    }
+    Ok(Json(json!({ "folded": body.folded, "waking": waking })))
+}
+
+async fn wake(app: &Arc<AppState>, owed: Vec<Uuid>) {
+    for (n, id) in owed.into_iter().enumerate() {
+        if n > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+        }
+        // Folded again meanwhile: the rest stay asleep for the next unfold.
+        if crate::sleep::folded_again(app) {
+            return;
+        }
+        // A quit asked for a moment ago may not have landed yet, and a session
+        // still live cannot be resumed. The kill escalates within seconds.
+        for _ in 0..100 {
+            let live = app
+                .with_session(id, |s| s.state.is_live())
+                .await
+                .unwrap_or(false);
+            if !live {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        if let Err(e) = revive(app, id).await {
+            /* Cleared rather than left for the next unfold, which would only fail
+            the same way. The conversation stays in the archive, resumable by hand. */
+            app.with_session(id, |s| s.asleep = false).await;
+            app.notify().await;
+            tracing::warn!(session = %id, "could not resume a session the fold quit: {}", e.0);
+        }
+    }
+}
+
 /// What a restart route may be told. Optional, for the reason [`AdoptOutside`]
 /// gives: a bare `curl -X POST` should get the ordinary answer.
 #[derive(Default, Deserialize)]

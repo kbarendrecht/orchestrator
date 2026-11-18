@@ -83,6 +83,7 @@ function renderRail() {
      its closing event froze it for good: the selection moved, the terminal
      followed, and the highlight stayed on the row it was on. */
   renderNudge();
+  tellFolds();
   if (editingName !== null && !document.querySelector('#rail .sess-rename')) editingName = null;
   if (editingName !== null || dragging !== null || rowDrag !== null) return;
 
@@ -412,6 +413,34 @@ function setFolded(/** @type {string} */ path, /** @type {boolean} */ on) {
     localStorage.setItem(FOLDED_KEY, JSON.stringify([...folded]));
   } catch (e) { /* private mode: the fold still holds for this session */ }
   renderRail();
+}
+
+/* What each checkout's daemon was last told about its fold, while the snapshot
+   has not caught up: without it every snapshot in between posts again. */
+/** @type {Map<string, boolean>} */
+const foldTold = new Map();
+
+/** Tell each checkout's daemon whether it is folded, when its snapshot says
+ *  otherwise. The daemon quits a folded checkout's idle agents after
+ *  `sleep_folded_after_minutes` and resumes them on the unfold.
+ *
+ *  **Compared with the snapshot rather than sent from `setFolded`**, because the
+ *  fold lives here and a restarted daemon starts with `folded: null`: the first
+ *  snapshot after it is what tells it, and what wakes sessions it put to sleep
+ *  before the restart. */
+function tellFolds() {
+  for (const c of CHECKOUTS) {
+    const said = snapshotOf(c.path)?.folded;
+    if (said === undefined) continue;
+    const want = folded.has(c.path);
+    if (said === want) { foldTold.delete(c.path); continue; }
+    if (foldTold.get(c.path) === want) continue;
+    foldTold.set(c.path, want);
+    callOn(c, '/api/fold', { folded: want }).catch((e) => {
+      foldTold.delete(c.path);
+      toast(reason(e), true);
+    });
+  }
 }
 
 /** Which checkout is being dragged, while one is.

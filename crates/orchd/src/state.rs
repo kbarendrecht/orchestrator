@@ -86,6 +86,16 @@ pub type RunObserver =
 /// on it — the snapshot goes out immediately either way.
 const PERSIST_COALESCE: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// What the page last said about this checkout's fold. See [`crate::sleep`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Fold {
+    /// No page has said since this daemon started.
+    Unknown,
+    Open,
+    /// Folded at this instant; the wait is counted from it.
+    Folded(std::time::Instant),
+}
+
 pub struct AppState {
     /// The config as it was read at start. The fields [`Settings::needs_restart`]
     /// names are read from here, because the running daemon is built on them.
@@ -246,6 +256,9 @@ pub struct AppState {
     /// while this is set. Cleared when auto-resume is done, so a resume that failed
     /// does not hold main for the life of the process.
     pub auto_resuming: std::sync::atomic::AtomicBool,
+    /// Whether the page has this checkout folded away on the rail, and since when.
+    /// See [`crate::sleep`].
+    pub fold: std::sync::Mutex<Fold>,
     /// The file pane's preview tokens, keyed by token. For the life of the process:
     /// one per page, so the map grows by the pages somebody previewed and no more.
     pub previews: std::sync::Mutex<HashMap<String, PreviewGrant>>,
@@ -1632,6 +1645,7 @@ impl AppState {
             restored: std::sync::atomic::AtomicBool::new(false),
             pending_resume: std::sync::Mutex::new(std::collections::HashSet::new()),
             auto_resuming: std::sync::atomic::AtomicBool::new(false),
+            fold: std::sync::Mutex::new(Fold::Unknown),
             previews: std::sync::Mutex::new(HashMap::new()),
             events,
             chrome,
@@ -2348,6 +2362,11 @@ impl AppState {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .is_empty(),
+            folded: match *self.fold.lock().unwrap_or_else(|e| e.into_inner()) {
+                Fold::Unknown => None,
+                Fold::Open => Some(false),
+                Fold::Folded(_) => Some(true),
+            },
             default_agent: self.default_agent(inner),
             forge: self.cfg.forge,
             machine: inner.machine.clone(),
@@ -3745,6 +3764,11 @@ pub struct Snapshot {
     /// rail's "stopped by the restart" card waits for it: shown while sessions
     /// were still coming back, it counted a few, then grew under your cursor.
     pub resuming: bool,
+    /// Whether this daemon thinks its checkout is folded on the rail, or `None`
+    /// before a page has said. The rail compares it with its own fold and posts
+    /// `/api/fold` when they differ, which is also how a restarted daemon learns
+    /// it: the fold is the page's, kept in the browser.
+    pub folded: Option<bool>,
     /// What a plain `+` starts.
     pub default_agent: crate::agent::Agent,
     /// Which forge the checkout is on, so the page can name it: "open on GitHub"

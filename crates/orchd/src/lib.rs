@@ -39,6 +39,7 @@ pub mod relocate;
 pub mod restack;
 pub mod restart;
 pub mod review_api;
+pub mod sleep;
 pub mod spare;
 pub mod spawn;
 pub mod state;
