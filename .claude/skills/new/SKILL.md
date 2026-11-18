@@ -48,9 +48,14 @@ not ask again.
      if ps -p <app>,<child>,... >/dev/null; then
        ps -p <app>,<child>,... -o pid= > /tmp/orchd-new-stuck; exit 1
      fi
-     exec ./target/release/orchestrator-desktop
+     exec env -u ORCHD_CONFIG_DIR -u ORCHD_ADOPTED_LOGIN_PATH -u ORCH_URL \
+       -u ORCH_SESSION_ID -u ORCH_ASK_TOKEN ./target/release/orchestrator-desktop
    ' >/dev/null 2>&1 &
    ```
+
+   The `env -u` is required. A session in the app carries its daemon's
+   `ORCHD_CONFIG_DIR`, and an app started with it uses that checkout's directory
+   as the host's: it finds no `host.json` there and opens only one project.
 
    It waits up to about 20 seconds (foreground `sleep` is blocked, hence the
    `timeout 1 tail -f /dev/null`). If something is still alive after that it
