@@ -786,12 +786,63 @@ function prDot(/** @type {import('../snapshot').PrView} */ p) {
      `auto` class after `.dot.auto` was gone, so a green PR with a session in it
      drew the grey default. The row's `session` button already says one is there. */
   if (p.is_draft) return 'idle';
-  if (p.needs_you) return 'blocked';
+  if (needsYou(p)) return 'blocked';
   if (p.checks === 'passing') return 'ok';
   return 'idle';
 }
 
 let showPrs = true;
+
+/* PRs whose `handle` you hid, by checkout path and number, with the count of
+ * threads waiting on you at the time. A comment that needs no answer ("nice!")
+ * keeps a PR waiting until you reply or 👍 it on GitHub; this hides it without
+ * posting. **A different count brings it back**, so a new waiting thread does;
+ * a second comment on a thread already waiting does not, which is the price of
+ * needing nothing from the poll. In the browser, like the folds: it is your view. */
+const HANDLE_HIDDEN_KEY = 'orch.handleHidden';
+/** @type {Record<string, number>} */
+const handleHidden = (() => {
+  try {
+    return JSON.parse(localStorage.getItem(HANDLE_HIDDEN_KEY) || '{}');
+  } catch (e) {
+    return {};
+  }
+})();
+
+function saveHandleHidden() {
+  try {
+    localStorage.setItem(HANDLE_HIDDEN_KEY, JSON.stringify(handleHidden));
+  } catch (e) { /* private mode: the hide still holds for this session */ }
+}
+
+const hiddenKey = (/** @type {number} */ number) => `${activeCheckout().path}#${number}`;
+
+/** `needs_you`, unless you hid it at the count it still has. */
+function needsYou(/** @type {import('../snapshot').PrView} */ p) {
+  return p.needs_you && handleHidden[hiddenKey(p.number)] !== p.awaiting_you;
+}
+
+/** Drop the hides of this checkout that no longer hold: the PR left the open
+ *  list, or its count moved, so it cannot come back hidden at an old count. */
+function pruneHandleHidden(/** @type {any[]} */ prs) {
+  const prefix = `${activeCheckout().path}#`;
+  const open = new Map(prs.map((p) => [hiddenKey(p.number), p.awaiting_you]));
+  let changed = false;
+  for (const [k, count] of Object.entries(handleHidden)) {
+    if (k.startsWith(prefix) && open.get(k) !== count) {
+      delete handleHidden[k];
+      changed = true;
+    }
+  }
+  if (changed) saveHandleHidden();
+}
+
+function setHandleHidden(/** @type {import('../snapshot').PrView} */ p, /** @type {boolean} */ on) {
+  if (on) handleHidden[hiddenKey(p.number)] = p.awaiting_you;
+  else delete handleHidden[hiddenKey(p.number)];
+  saveHandleHidden();
+  renderRail();
+}
 
 /** The session a pointer just picked, so the `click` behind it does not pick it
  *  again. See `sessionRow`. */
@@ -848,6 +899,11 @@ function prMenu(/** @type {import('../snapshot').PrView} */ p, /** @type {HTMLBu
     ['open in worktree', null, () => openPr(p.number, 'worktree')],
     // Greyed where the row offers no press, for the reason the row's chip gives.
     ['handle review', null, p.press.kind === 'refused' ? null : () => startHandleReview(p.number, btn)],
+    ...(/** @type {[string, string | null, (() => void) | null][]} */ (p.needs_you
+      ? [needsYou(p)
+        ? ['hide handle', null, () => setHandleHidden(p, true)]
+        : ['show handle', null, () => setHandleHidden(p, false)]]
+      : [])),
     ['copy PR number', null, () => { void copyText(String(p.number)).then((ok) => { if (ok) toast(`copied ${p.number}`); }); }],
   ]);
 }
@@ -1090,8 +1146,10 @@ function prRowItems(/** @type {any[]} */ prs) {
     }];
   }
   if (!prs.length) {
+    pruneHandleHidden(prs);
     return [{ key: 'empty', sig: 'none', build: () => el('div', 'railbtn', 'none open') }];
   }
+  pruneHandleHidden(prs);
   /* Everything a row reads from outside the PR itself is named here: whether its
      session is the one you are in, which marks the `session` chip. A reused row
      keeps the closures it was built with, so a signature that missed one would
@@ -1100,7 +1158,7 @@ function prRowItems(/** @type {any[]} */ prs) {
     key: `pr:${p.number}`,
     /* `press` rides inside `p`, so a run starting or ending repaints the row
        through `p` alone: it is the daemon's answer to what the row draws. */
-    sig: paintSig([p, p.session === selected]),
+    sig: paintSig([p, p.session === selected, needsYou(p)]),
     build: () => prRow(p),
   }));
 }
@@ -1121,7 +1179,7 @@ function prRow(/** @type {any} */ p) {
     row.appendChild(el('span', 'num', `#${p.number}`));
     row.appendChild(el('span', 'ttl', p.title, p.title));
 
-    const needsResolve = p.needs_you;
+    const needsResolve = needsYou(p);
     const needsFix = inTrouble(p);
 
     // A reason chip next to a button just repeats it and steals width from the
