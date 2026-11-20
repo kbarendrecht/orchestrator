@@ -689,6 +689,21 @@ pub fn has_conversation(id: uuid::Uuid, cwd: &Path, recorded: Option<&Path>) -> 
     String::from_utf8_lossy(&head).contains(r#""type":"user""#)
 }
 
+/// Whether a transcript holds anything said, for the delete guard: a `user` or an
+/// `assistant` entry, or a rollout turn. Stricter than [`has_conversation`] where
+/// it matters: a file it cannot read counts as holding one, because the question
+/// here is whether deleting it could lose work.
+fn holds_a_conversation(path: &Path) -> bool {
+    if crate::codex::rollout_id(path).is_some() {
+        return rollout_has_turn(path);
+    }
+    let Ok(head) = read_head(path, FIRST_TURN_BYTES) else {
+        return true;
+    };
+    let text = String::from_utf8_lossy(&head);
+    text.contains(r#""type":"user""#) || text.contains(r#""type":"assistant""#)
+}
+
 /// Whether a Codex rollout holds a turn: a `task_started` line, which opens each.
 ///
 /// **Not the fixed 8KB window a Claude Code transcript gets.** The rollout opens
@@ -1209,10 +1224,24 @@ pub fn clear_worktree_pin(id: uuid::Uuid, cwd: &Path, transcript: &Path) -> Resu
 ///
 /// The recorded path is preferred, then the cwd slug, then the id scan, so it
 /// finds the file even when a `--worktree` session filed it under main's slug.
+///
+/// **It refuses a file that holds a conversation**, whoever asks. Every caller
+/// means "the headers-only remnant of a session nobody used", and they decide that
+/// from `had_a_turn`, which only hooks set: a session whose hooks never reached the
+/// daemon looked turnless, and its whole conversation was deleted on a restart.
+/// The file is the evidence, so the file decides.
 pub fn delete_transcript(id: uuid::Uuid, cwd: &Path, recorded: Option<&Path>) -> bool {
     let Some(path) = transcript_file(id, cwd, recorded).or_else(|| find_transcript(id)) else {
         return false;
     };
+    if holds_a_conversation(&path) {
+        tracing::warn!(
+            session = %id,
+            "not deleting {}: it holds a conversation",
+            path.display()
+        );
+        return false;
+    }
     match std::fs::remove_file(&path) {
         Ok(()) => true,
         Err(e) => {
@@ -1578,6 +1607,36 @@ fn read_tail(path: &Path, n: u64) -> std::io::Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    /// The delete guard: a remnant with only headers goes, a file with anything
+    /// said in it stays, whatever the caller believed.
+    #[test]
+    fn delete_transcript_refuses_a_file_that_holds_a_conversation() {
+        let dir = std::env::temp_dir().join(format!("orchd-delete-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let talked = dir.join("talked.jsonl");
+        let empty = dir.join("empty.jsonl");
+        std::fs::write(
+            &talked,
+            "{\"type\":\"mode\"}\n{\"type\":\"user\",\"message\":{}}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &empty,
+            "{\"type\":\"mode\"}\n{\"type\":\"permission-mode\"}\n",
+        )
+        .unwrap();
+
+        assert!(!delete_transcript(
+            uuid::Uuid::new_v4(),
+            &dir,
+            Some(&talked)
+        ));
+        assert!(talked.exists(), "a conversation is never deleted");
+        assert!(delete_transcript(uuid::Uuid::new_v4(), &dir, Some(&empty)));
+        assert!(!empty.exists(), "a headers-only remnant still goes");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// What Claude Code said did not resume is read off its own lines, once each,
     /// and only since the agent last spoke.
     #[test]
@@ -1610,6 +1669,7 @@ mod tests {
     #[test]
     fn only_a_live_record_s_pid_is_reaped_and_a_restore_drops_it() {
         use super::*;
+
         let mut bystander = std::process::Command::new("sleep")
             .arg("30")
             .spawn()

@@ -1932,6 +1932,32 @@ pub(crate) fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<
         // transcript is deleted here, outside the lock. `(cwd, recorded)` is what
         // finds the file.
         let mut forget: Option<(PathBuf, Option<PathBuf>)> = None;
+        /* **The file, not the flag, says whether there was a conversation.**
+        `had_a_turn` is set by hooks, and a session whose hooks never reached the
+        daemon reads as turnless however long you worked in it — so this used to
+        forget the row and delete the transcript of a real conversation. Asked of
+        the disk before the lock, off the runtime; a read that fails counts as a
+        conversation, because the cost of being wrong here is somebody's work. */
+        let on_disk = {
+            let looks_empty = app
+                .inner
+                .read()
+                .await
+                .sessions
+                .get(&id)
+                .filter(|s| s.pass.is_none() && !s.had_a_turn)
+                .map(|s| (s.cwd.clone(), s.transcript_path.clone()));
+            match looks_empty {
+                Some((cwd, recorded)) => {
+                    crate::proc::run_blocking("reading a closed session's transcript", move || {
+                        crate::store::has_conversation(id, &cwd, recorded.as_deref())
+                    })
+                    .await
+                    .unwrap_or(true)
+                }
+                None => false,
+            }
+        };
         // Quit for a fold, or killed from outside: either way the conversation is
         // coming back to this workspace. See `crate::sleep` and `Session::killed`.
         let mut coming_back = false;
@@ -1993,6 +2019,13 @@ pub(crate) fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<
                     // fresh worktree. A session started as a pass is exempt — a run
                     // that never got going keeps its row and its pane, so what it
                     // printed on the way down can still be read.
+                    if on_disk && !s.had_a_turn {
+                        s.had_a_turn = true;
+                        tracing::warn!(
+                            session = %id,
+                            "no hook ever reported a turn, but the transcript has one; kept"
+                        );
+                    }
                     if s.pass.is_none() && !s.had_a_turn {
                         forget = Some((s.cwd.clone(), s.transcript_path.clone()));
                         inner.sessions.remove(&id);
@@ -2185,6 +2218,51 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
         panic!("the exit watcher never settled {id}");
+    }
+
+    /// A session whose hooks never reported a turn, closed: the transcript on
+    /// disk decides. One with a conversation keeps its row and its file; one with
+    /// only headers is forgotten, as before.
+    #[tokio::test]
+    async fn a_conversation_no_hook_reported_survives_its_exit() {
+        let (app, dir) = crate::testutil::app("unreported-turn");
+        let mut closed = Vec::new();
+        for (name, body) in [
+            ("talked", "{\"type\":\"user\",\"message\":{}}\n"),
+            ("empty", "{\"type\":\"mode\"}\n"),
+        ] {
+            let file = dir.join(format!("{name}.jsonl"));
+            std::fs::write(&file, body).unwrap();
+            let id = uuid::Uuid::new_v4();
+            let spawned = PtyHandle::spawn(&["cat".to_string()], &dir, &[], &[], (24, 80))
+                .expect("spawn cat");
+            // Left in `Starting`, where a session whose hooks never arrive stays.
+            let mut s = Session::new(id, "main".to_string(), dir.clone(), None);
+            s.transcript_path = Some(file.clone());
+            s.pty = Some(spawned.handle.clone());
+            app.inner.write().await.sessions.insert(id, s);
+            watch_session_exit(app.clone(), id, spawned.handle.clone());
+            spawned.handle.kill_gracefully().await;
+            closed.push((id, file));
+        }
+        let (talked, empty) = (&closed[0], &closed[1]);
+        for _ in 0..100 {
+            if !app.inner.read().await.sessions.contains_key(&empty.0) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let inner = app.inner.read().await;
+        assert!(
+            inner.sessions.get(&talked.0).is_some_and(|s| s.had_a_turn),
+            "the conversation keeps its row"
+        );
+        assert!(talked.1.exists(), "and its transcript");
+        assert!(
+            !inner.sessions.contains_key(&empty.0),
+            "a remnant is forgotten"
+        );
+        assert!(!empty.1.exists(), "and its file removed");
     }
 
     /// The rule phase one turns on: a signal from outside leaves the session owed a
