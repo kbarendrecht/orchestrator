@@ -323,7 +323,7 @@ if (has('--panes')) {
   await beat(2200);
 
   // 1 — a changed file is a diff, not a filename.
-  await page.locator('.frow').first().click();
+  await page.locator('#filepanes .trow:not(.dir)').first().click();
   await beat(3000);
   // 2 — stepped through, the way you would read it.
   await page.locator('text=NEXT').first().click().catch(() => {});
@@ -407,7 +407,7 @@ if (has('--panes')) {
   }
   await page.locator(`#rail button.sess:not(.arc)[data-id="${wt}"]`).click();
   await beat(1800);
-  await page.locator('.frow').first().click();
+  await page.locator('#filepanes .trow:not(.dir)').first().click();
   await beat(3200);
   await page.locator('#ovnext').click().catch(() => {});
   await beat(2600);

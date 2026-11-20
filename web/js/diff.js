@@ -234,6 +234,9 @@ async function fileVerb(/** @type {import('../snapshot').WorkspaceView} */ w, /*
 function fileMenu(/** @type {import('../snapshot').WorkspaceView} */ w, /** @type {import('../base').DiffFile} */ f) {
   /** @type {[string, string | null, (() => void) | null][]} */
   const items = [];
+  /* Greyed rather than hidden where the forge has nothing, because a missing item
+     reads as a missing feature: git has no blob for an untracked file, so the
+     link is a guaranteed 404. The daemon refuses it too (`api::open_file`). */
   const linkable = f.status !== '?' && !f.path.endsWith('/');
   items.push([`open on ${FORGE_LABEL[snap.forge]}`, null, linkable ? () => openFileOnForge(w, f.path) : null]);
   if (f.unstaged || f.status === '?') items.push(['stage', null, () => fileVerb(w, f, 'stage')]);
@@ -274,65 +277,6 @@ const NOT_SHOWN = [
 /** What the pane was last built from — see `unchanged`. */
 const drawn = { sig: null, name: 'changed-files' };
 
-/** One changed file: what happened to it, and what git can be asked to do.
- *
- *  Its own function so `renderFiles` can key it — see `core.reconcile`. */
-function fileRow(/** @type {import('../snapshot').WorkspaceView} */ w, /** @type {any} */ f, /** @type {any} */ sum) {
-    const row = el('button', sum ? 'dfrow' : 'frow');
-    if (sum) row.setAttribute('aria-current', String(f.path === diffState.path));
-    const letter = (f.status || 'M')[0];
-    /* The letter is the class too: `.fst.M`, `.fst.A`, `.fst.D`, `.fst.R` and
-       `.fst.U` colour git's modified, added, deleted, renamed and untracked. Named
-       here because `check-dead-css` looks for a class by its literal name, and
-       `.fst.R` had only ever passed by the legend's MOD+Shift+R. */
-    row.appendChild(el('span', 'fst ' + letter, letter));
-    const n = el('span', 'fname');
-    /* The directory dim and the name in the text colour, so a column of paths
-       scans by name. The embedding mark leads the first part: the cell is
-       right-to-left so a long path loses its *start*, and the mark keeps the
-       characters in order across both parts. A whole untracked directory
-       (`src/`) is all name. */
-    const cut = f.path.lastIndexOf('/', f.path.length - 2);
-    n.append(el('i', null, '\u202a' + f.path.slice(0, cut + 1)), f.path.slice(cut + 1));
-    n.title = f.old_path ? `${f.old_path} → ${f.path}` : f.path;
-    row.appendChild(n);
-    const nums = el('span', 'dfnum');
-    if (f.binary) {
-      nums.textContent = 'bin';
-    } else if (f.status === '?') {
-      // Untracked: entirely new by definition, so a count would only ever say
-      // "all of it".
-      nums.appendChild(el('span', 'p', 'new'));
-    } else {
-      nums.appendChild(el('span', 'p', `+${f.added}`));
-      nums.appendChild(document.createTextNode(' '));
-      nums.appendChild(el('span', 'm', `\u2212${f.deleted}`));
-    }
-    row.appendChild(nums);
-    row.onclick = () => {
-      if (sum) {
-        diffState.cursor = 0;
-        diffState.context = 3;
-        void loadFile(f.path);
-      } else {
-        void openDiff(f.path);
-      }
-    };
-    /* The row's menu: the file on the forge, and what git can be asked to do with
-       it. `open on <forge>` is greyed rather than hidden for the two rows the forge
-       cannot serve, because a missing item reads as a missing feature:
-
-         * `status: '?'` is untracked (`DiffFile::untracked`). Git has never seen
-           it, so no ref has a blob for it and the link is a guaranteed 404.
-         * a path ending in `/` is a whole untracked *directory*, collapsed by
-           `--untracked-files=normal`. GitHub spells those `/tree/`, not `/blob/`.
-
-       The daemon refuses the same two anyway (`api::open_file`), the way the fork
-       guard lives on both sides. */
-    row.oncontextmenu = (ev) => openMenu(ev, fileMenu(w, f));
-  return row;
-}
-
 function renderFiles() {
   // The diff overlay is opened against a workspace and keeps describing it while
   // it is open, session or no session.
@@ -367,13 +311,11 @@ function renderFiles() {
   const listSum = w && fetched && !diffState.open ? listedSummary(w) : null;
   const known = w ? changedOf(w) : [];
   const tree = diffState.view === 'files' && !diffState.open;
-  // The changes themselves, grouped by folder: the toggle in the Changes menu.
-  const asTree = !tree && changesTree;
   // Only the changes view's tooltip reads them, so the tree does not fetch them.
   const commits = w && !tree ? commitsOf(w) : null;
   if (unchanged(drawn, [wsId, w, cur?.id ?? null, !!(cur && pending(cur)), snap.upstream_ref,
     diffState.open, diffState.path, diffState.summary, mode, listSum, known, commits, diffState.view,
-    changesTree, Tree.rev()], NOT_SHOWN)) return;
+    Tree.rev()], NOT_SHOWN)) return;
   if (w) renderDivergence(w);
   const panes = $('filepanes');
 
@@ -431,34 +373,10 @@ function renderFiles() {
 
 
 
-  /* **Keyed on the path, and the container is kept**, because this pane draws up
-     to five hundred buttons and a rebuild destroys the one under the pointer.
-     `core.reconcile` carries the measurements. A row's signature is its own file
-     record plus the two things its handlers read from outside it — which list it
-     belongs to, and whether it is the row the open diff is showing. */
-  /** @type {any[]} */
-  const items = files.map((/** @type {any} */ f) => ({
-    key: `f:${f.path}`,
-    sig: paintSig([f, !!sum, sum ? f.path === diffState.path : false, w.id]),
-    build: () => fileRow(w, f, sum),
-  }));
-  if (!files.length) {
-    items.push({
-      key: 'empty',
-      sig: paintSig([!!sum, w.measured, w.is_main, mode, !!listSum, known === null]),
-      build: () => (fetched && !sum
-        ? (listSum ? el('div', 'fempty', mode === 'head' ? 'Nothing uncommitted.' : 'Nothing to push.') : counting())
-        // An omitted list still on its way is not counted yet, not empty.
-        : sum || (w.measured && known !== null)
-          ? el('div', 'fempty',
-            w.is_main ? 'Nothing changed in the main checkout.' : 'Nothing changed in this worktree yet.')
-          : counting()),
-    });
-  }
-  /* **The same list as a tree**, when the Changes menu says so: only the changed
-     files and the folders on the way to them, and a row does what the list's row
-     does. Not for an empty list, whose sentence says more than an empty tree. */
-  if (asTree && files.length) {
+  /* **The changes as a tree**: only the changed files and the folders on the way
+     to them (#46). Not for an empty list, whose sentence says more than an empty
+     tree. */
+  if (files.length) {
     Tree.render(panes, w.id, files, renderFiles, {
       onlyChanged: true,
       picked: sum ? diffState.path : null,
@@ -471,9 +389,20 @@ function renderFiles() {
           void openDiff(path);
         }
       },
+      menu: (f) => fileMenu(w, f),
     });
   } else {
-    reconcile(panes, items);
+    reconcile(panes, [{
+      key: 'empty',
+      sig: paintSig([!!sum, w.measured, w.is_main, mode, !!listSum, known === null]),
+      build: () => (fetched && !sum
+        ? (listSum ? el('div', 'fempty', mode === 'head' ? 'Nothing uncommitted.' : 'Nothing to push.') : counting())
+        // An omitted list still on its way is not counted yet, not empty.
+        : sum || (w.measured && known !== null)
+          ? el('div', 'fempty',
+            w.is_main ? 'Nothing changed in the main checkout.' : 'Nothing changed in this worktree yet.')
+          : counting()),
+    }]);
   }
 
   /* **"Nothing changed" and "not counted yet" are different sentences.** Every
@@ -688,14 +617,6 @@ const WS_KEY = 'orch.diffIgnoreWs';
 try {
   diffState.ignoreWs = localStorage.getItem(WS_KEY) === '1';
 } catch (err) { /* no storage: whitespace counts */ }
-/* Whether the Changes view draws its list as a tree. It was "Only changed files"
-   on the Files view, which made Files mean two things; Files is the whole tree
-   now, and the changed files as a tree belong to the view about changes. */
-const TREE_KEY = 'orch.changesTree';
-let changesTree = false;
-try {
-  changesTree = localStorage.getItem(TREE_KEY) === '1';
-} catch (err) { /* no storage: the list */ }
 const VIEW_KEY = 'orch.changesView';
 try {
   if (localStorage.getItem(VIEW_KEY) === 'files') diffState.view = 'files';
@@ -763,13 +684,6 @@ function baseMenu(/** @type {MouseEvent} */ ev) {
     `pick${key === diffState.base ? ' on' : ''}`,
     () => void setBase(key),
   ]));
-  items.push(['Show as a tree', `pick${changesTree ? ' on' : ''}`, () => {
-    changesTree = !changesTree;
-    try {
-      localStorage.setItem(TREE_KEY, changesTree ? '1' : '0');
-    } catch (err) { /* private mode: it still switched for this session */ }
-    renderFiles();
-  }]);
   openMenu(ev, items);
 }
 

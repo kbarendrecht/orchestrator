@@ -6,7 +6,7 @@
 // big is drawn anyway and listed when you open it, the way the finder lists it
 // when you type its name.
 
-import { activeCheckout, el, icon, paintSig, reason, reconcile, workspaceById } from './core.js';
+import { activeCheckout, el, icon, openMenu, paintSig, reason, reconcile, workspaceById } from './core.js';
 import * as FileView from './fileview.js';
 
 /** How long a fetched list is trusted without a reason to ask again. A change to
@@ -142,14 +142,16 @@ function sorted(/** @type {Folder} */ f) {
  *
  *  @param {HTMLElement} mount
  *  @param {string} ws
- *  @param {{ path: string, status: string }[]} changed
+ *  @param {import('../base').DiffFile[]} changed
  *  @param {() => void} redraw
  *  `onlyChanged` keeps only the folders and files that hold a change: the
  *  changed files grouped by folder, as JetBrains' "group by directory" lists
  *  them (#46). Its folders start open, since the point is to see the files, and
- *  one closed by hand stays closed.
+ *  one closed by hand stays closed. Its file rows carry their line counts, and
+ *  `menu` is what a right-click on one offers.
  *
- *  @param {{ pick?: (path: string, ev: MouseEvent) => void, picked?: string | null, onlyChanged?: boolean }} [how]
+ *  @param {{ pick?: (path: string, ev: MouseEvent) => void, picked?: string | null, onlyChanged?: boolean,
+ *            menu?: (f: import('../base').DiffFile) => import('./core.js').MenuItem[] }} [how]
  *  @returns {string} what the footer says */
 export function render(mount, ws, changed, redraw, how = {}) {
   /* Keyed on the snapshot's own list, not on `changed`: the pane hands over its
@@ -171,11 +173,18 @@ export function render(mount, ws, changed, redraw, how = {}) {
     return '';
   }
 
+  const byPath = new Map(changed.map((f) => [f.path, f]));
   const status = new Map(changed.map((f) => [f.path, (f.status || 'M')[0] ?? 'M']));
   /* Git reports a new folder as one row, `src/new/`, so what is in it carries that
-     row's mark rather than none. */
+     row's mark rather than none, and that row's record under its own path. */
   const fresh = [...status.keys()].filter((p) => p.endsWith('/'));
   const inFresh = (/** @type {string} */ p) => fresh.some((d) => p.startsWith(d));
+  const recordOf = (/** @type {string} */ p) => {
+    const own = byPath.get(p);
+    if (own) return own;
+    const dir = byPath.get(fresh.find((d) => p.startsWith(d)) ?? '');
+    return dir ? { ...dir, path: p } : null;
+  };
   const tree = state.tree;
   fold(tree, changed.map((f) => f.path));
   /* The folders on the way to a change, for the dot. An untracked directory comes
@@ -213,7 +222,8 @@ export function render(mount, ws, changed, redraw, how = {}) {
       items.push({
         key: `td:${d}`,
         sig: paintSig([isOpen, marked, note, depth]),
-        build: () => dirRow(d, depth, isOpen, marked, note, () => {
+        // Every folder in the changed-only tree holds a change, so a dot there says nothing.
+        build: () => dirRow(d, depth, isOpen, marked && !only, note, () => {
           if (toggled.has(d)) toggled.delete(d);
           else toggled.add(d);
           if (isOpenDir(d)) {
@@ -234,7 +244,11 @@ export function render(mount, ws, changed, redraw, how = {}) {
       const st = status.get(p) ?? (inFresh(p) ? '?' : '');
       if (only && !st) continue;
       const on = p === how.picked;
-      items.push({ key: `tf:${p}`, sig: paintSig([st, depth, ws, on]), build: () => fileRow(ws, p, depth, st, on, how.pick) });
+      const f = only ? recordOf(p) : null;
+      items.push({
+        key: `tf:${p}`, sig: paintSig([st, depth, ws, on, f]),
+        build: () => fileRow(ws, p, depth, st, on, how.pick, f, how.menu),
+      });
     }
   };
   walk('', 0);
@@ -280,15 +294,30 @@ function dirRow(
 function fileRow(
   /** @type {string} */ ws, /** @type {string} */ path, /** @type {number} */ depth, /** @type {string} */ st,
   /** @type {boolean} */ on, /** @type {((path: string, ev: MouseEvent) => void) | undefined} */ pick,
+  /** @type {import('../base').DiffFile | null} */ f,
+  /** @type {((f: import('../base').DiffFile) => import('./core.js').MenuItem[]) | undefined} */ menu,
 ) {
-  const row = el('button', 'trow' + (st === 'D' ? ' gone' : '') + (on ? ' on' : ''));
+  /* A deleted file has nothing on disk to show, so in the whole tree its row only
+     says where it was. A `pick` opens the diff, which can show a deletion. */
+  const inert = st === 'D' && !pick;
+  const row = el('button', 'trow' + (st === 'D' ? ' gone' : '') + (inert ? ' inert' : '') + (on ? ' on' : ''));
   row.style.setProperty('--d', String(depth));
   row.append(icon('tic', 1.3, ...FILE), el('span', 'tname', leaf(path)));
-  /* The letter is the class, as in the changes list: `.tcd.M`, `.tcd.A`,
-     `.tcd.D`, `.tcd.R`, and `?` for untracked, which CSS spells `.tcd.U`. */
+  if (f) row.appendChild(counts(f));
+  /* The letter is the class: `.tcd.M`, `.tcd.A`, `.tcd.D`, `.tcd.R`, and `?` for
+     untracked, which CSS spells `.tcd.U`. */
   if (st) row.appendChild(el('span', 'tcd ' + (st === '?' ? 'U' : st)));
-  row.title = st ? `${path} · ${SAID[st] ?? st}` : path;
-  // A deleted file has nothing on disk to show; its row is there to say where it was.
-  if (st !== 'D') row.onclick = (ev) => (pick ? pick(path, ev) : void FileView.open(ws, [path], 0, undefined, ev));
+  row.title = [f?.old_path ? `${f.old_path} → ${path}` : path, ...(st ? [SAID[st] ?? st] : [])].join(' · ');
+  if (!inert) row.onclick = (ev) => (pick ? pick(path, ev) : void FileView.open(ws, [path], 0, undefined, ev));
+  if (f && menu) row.oncontextmenu = (ev) => openMenu(ev, menu(f));
   return row;
+}
+
+/** `+12 −3`, `bin`, or `new` for an untracked file, which is all of it by definition. */
+function counts(/** @type {import('../base').DiffFile} */ f) {
+  const nums = el('span', 'dfnum');
+  if (f.binary) nums.textContent = 'bin';
+  else if (f.status === '?') nums.appendChild(el('span', 'p', 'new'));
+  else nums.append(el('span', 'p', `+${f.added}`), ' ', el('span', 'm', `\u2212${f.deleted}`));
+  return nums;
 }

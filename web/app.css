@@ -1330,19 +1330,6 @@ kbd{
 
 /* ---------- files ---------- */
 .files{border-left:1px solid var(--line);background:var(--panel-ground,var(--surface));display:flex;flex-direction:column;overflow:hidden}
-/* One line per file. Three columns, because a row is status, path and counts —
-   with two, the counts wrapped onto a second grid row and every file took two
-   lines. Shared with `.dfrow`: the pane and the changeset list render the same
-   markup now. */
-.frow,.dfrow{
-  width:100%;display:grid;grid-template-columns:11px 1fr auto;gap:8px;align-items:center;
-  padding:4px 12px;text-align:left;font-family:var(--mono);font-size:calc(11.5px * var(--fs));
-}
-.frow:hover{background:var(--hover)}
-.fst{font-size:calc(10.5px * var(--fs));font-weight:600;text-align:center}
-.fst.M{color:var(--attn)}.fst.A{color:var(--ok)}.fst.D{color:var(--bad)}.fst.U{color:var(--faint-solid)}.fst.R{color:var(--work)}
-.fname{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;direction:rtl;text-align:left}
-.fname i{font-style:normal;color:var(--faint-solid)}
 #filepanes{flex:1;min-height:0;overflow-y:auto}
 /* The file tree (`tree.js`): flat rows inset from the edge, an outline glyph
    for folder and file, names in the interface font and a dot for a change. */
@@ -1358,7 +1345,7 @@ kbd{
 .trow .tname{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .trow.dir .tname{color:var(--dim)}
 .trow.gone .tname{color:var(--ghost);text-decoration:line-through}
-.trow.gone{cursor:default}
+.trow.inert{cursor:default}
 .trow .tdot,.trow .tcd{width:6px;height:6px;border-radius:50%;flex:none}
 .trow .tdot{background:var(--attn);opacity:.7}
 .tcd.M{background:var(--attn)}.tcd.A{background:var(--ok)}.tcd.D{background:var(--bad)}.tcd.R{background:var(--work)}.tcd.U{background:var(--faint-solid)}
@@ -2196,9 +2183,7 @@ button.settings-co[aria-selected="true"]{color:var(--text);background:var(--rais
   border-top:1px solid var(--line-soft);border-bottom:1px solid var(--line);
 }
 
-/* diff file list in the right pane */
-.dfrow:hover{background:var(--hover)}
-.dfrow[aria-current="true"]{background:var(--raised)}
+/* a changed file's line counts, in the changes tree */
 .dfnum{font-size:calc(9px * var(--fs));color:var(--faint-solid);letter-spacing:-.02em;white-space:nowrap}
 .dfnum .p{color:var(--ok)}.dfnum .m{color:var(--bad)}
 

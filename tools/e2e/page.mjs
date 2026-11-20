@@ -388,28 +388,28 @@ try {
   await page.click('#filestitle')
   check(await page.$eval('#filestitle', (b) => b.getAttribute('aria-pressed') === 'true'),
     'pressing Changes from the tree goes back to the changes, not to the base menu')
-  /* "Show as a tree" in the Changes menu: the same changes, grouped by folder (#46),
-     and no row without a change. */
-  const asTree = async () => {
-    await page.click('#filestitle')
-    const item = page.locator('#ctxmenu button', { hasText: 'Show as a tree' })
-    await item.waitFor({ timeout: 5000 })
-    await item.click()
-    await page.waitForTimeout(300)
-  }
+  /* **The Changes view is a tree** of the changed files alone (#46): no row
+     without a change, a changed file carries its counts, and a right-click on it
+     is the row's git menu. */
   // A change to show: at this point the worktree has none.
   const treeMark = path.join(t.worktreePath('page'), 'tree-mark.txt')
   fs.writeFileSync(treeMark, 'x\n')
   await t.api('POST', '/api/workspace/page/reconcile')
-  await page.waitForSelector('#filepanes .frow, #filepanes .dfrow', { timeout: 10_000 }).catch(() => {})
-  await asTree()
-  const treeShown = await page.waitForSelector('#filepanes .trow', { timeout: 5000 }).then(() => true, () => false)
+  const markRow = '#filepanes .trow[title^="tree-mark.txt"]'
+  const treeShown = await page.waitForSelector(markRow, { timeout: 10_000 }).then(() => true, () => false)
   const changedOnly = treeShown && await page.$$eval('#filepanes .trow', (rows) => rows.every((r) =>
-    r.classList.contains('dir') ? !!r.querySelector('.tdot') : !!r.querySelector('.tcd')))
-  check(treeShown && changedOnly, `the Changes view as a tree keeps no row without a change, got ${JSON.stringify(
+    r.classList.contains('dir') ? !r.querySelector('.tdot') : !!r.querySelector('.tcd')))
+  check(treeShown && changedOnly, `the Changes view is a tree with no file row without a change and no folder dot, got ${JSON.stringify(
     await page.$$eval('#filepanes > *', (rows) => rows.slice(0, 6).map((r) => r.className + ':' + (r.textContent ?? '').trim())))}`)
-  await asTree()
-  check(await page.$$eval('#filepanes .trow', (r) => r.length) === 0, 'and turned off it is the list again')
+  check(treeShown && await page.$eval(markRow, (r) => r.querySelector('.dfnum')?.textContent === 'new'),
+    'and an untracked file says it is new')
+  if (treeShown) {
+    await page.click(markRow, { button: 'right' })
+    const staged = await page.locator('#ctxmenu:not([hidden]) button', { hasText: 'stage' }).waitFor({ timeout: 5000 })
+      .then(() => true, () => false)
+    check(staged, 'and a right-click on it offers to stage it')
+    await page.keyboard.press('Escape')
+  }
   fs.rmSync(treeMark)
   await t.api('POST', '/api/workspace/page/reconcile')
 
@@ -427,10 +427,9 @@ try {
   /* Waited for in `Changes`, which draws the snapshot's rows: until the page's own
      snapshot has them, the fetched list is all there is and the double cannot show.
      Without this the check passed on the code it was written against. */
-  const folderRow = await page.waitForFunction(() => [...document.querySelectorAll('#filepanes .frow .fname')]
-    .some((n) => (n.textContent || '').replace(/[\u202a-\u202e]/g, '') === 'src/'), null, { timeout: 15_000 })
+  const folderRow = await page.waitForSelector('#filepanes .trow.dir[title="src/"]', { timeout: 15_000 })
     .then(() => true, () => false)
-  check(folderRow, 'Changes lists a new folder as one row')
+  check(folderRow, 'Changes shows a new folder as a folder')
   for (const mode of ['Unpushed', 'Uncommitted', 'Changes']) {
     await page.click('#filestitle')
     await page.waitForSelector('#ctxmenu:not([hidden]) button', { timeout: 5000 })
@@ -439,11 +438,12 @@ try {
     }
     if (mode === 'Changes') break
     const rows = await page.waitForFunction(() => {
-      const names = [...document.querySelectorAll('#filepanes .frow .fname')]
-        .map((n) => (n.textContent || '').replace(/[\u202a-\u202e]/g, ''))
+      const names = [...document.querySelectorAll('#filepanes .trow:not(.dir)')]
+        .map((r) => (r.getAttribute('title') ?? '').split(' · ')[0])
       return names.includes('src/index.ts') ? names : null
     }, null, { timeout: 10_000 }).then((h) => h.jsonValue(), () => [])
-    check(JSON.stringify(rows) === JSON.stringify(news),
+    // Sorted, because the tree draws a folder before the files beside it.
+    check(JSON.stringify([...rows].sort()) === JSON.stringify([...news].sort()),
       `${mode} lists each untracked file once, got ${JSON.stringify(rows)}`)
   }
   // Gone again, so the text and tree checks after this read the tree they always did.
@@ -2563,7 +2563,7 @@ try {
     await Diff.open('newfolder/')
     const opened = Diff.state.path
     await Diff.loadFile('empty-new.txt')
-    const rows = [...document.querySelectorAll('#filepanes .dfrow .fname')].map((n) => (n.textContent ?? '').replace('\u202a', ''))
+    const rows = [...document.querySelectorAll('#filepanes .trow:not(.dir)')].map((r) => (r.getAttribute('title') ?? '').split(' · ')[0])
     return { opened, rows, note: document.querySelector('#diffbody .diffnote')?.textContent }
   })
   check(untrackedSeen.opened === 'newfolder/inside.txt'

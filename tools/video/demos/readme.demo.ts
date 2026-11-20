@@ -192,7 +192,7 @@ test('readme', async ({ page, narration }) => {
 
   // 6 — what the agent changed, as a diff you can type into
   narration.mark('diff');
-  await cursor.click(page.locator('.frow').first());
+  await cursor.click(page.locator('#filepanes .trow:not(.dir)').first());
   await page.locator('#overlay').waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
   await beat(1500);
   await cursor.click(page.locator('#ovmode')).catch(() => {});
