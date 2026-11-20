@@ -2199,13 +2199,19 @@ async function openArchived(/** @type {import('../snapshot').SessionView} */ s) 
     toast(`${AGENT_LABEL[s.agent]} is not on this checkout's PATH`, true);
     return false;
   }
+  /* A resumed session keeps its id, because `claude --resume <id>` continues that
+     same conversation. So the dead terminal is still in `terms` under the key the
+     new pty wants, and `openTerm` would hand back the corpse — you resume and stare
+     at the old scrollback with a closed socket.
+
+     **Closed before the request, not after it.** The snapshot that shows the
+     session live can arrive before the answer does, and the pane opens a terminal
+     the moment it sees that; a close after the answer then took away the fresh
+     one, and the pane went black until you switched away and back. The corpse has
+     no socket to lose, and the pane shows its card until the session is up. */
+  Term.close(checkoutOf(s.id) ?? activeCheckout(), `session:${s.id}`);
   try {
     const r = await callFor(s.id, `/api/session/${s.id}/resume`);
-    // A resumed session keeps its id, because `claude --resume <id>` continues
-    // that same conversation. So the dead terminal is still in `terms` under the
-    // key the new pty wants, and `openTerm` would hand back the corpse — you
-    // resume and stare at the old scrollback with a closed socket.
-    Term.close(checkoutOf(s.id) ?? activeCheckout(), `session:${r.session}`);
     setPendingSelect(r.session);
     // The branch moved since the conversation happened, so the files it talks
     // about are not the files on disk. Worth saying, not worth refusing over.

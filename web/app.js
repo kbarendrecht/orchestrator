@@ -181,14 +181,36 @@ const KILLED_BY = {
   outside: 'Killed from outside orchd, usually for memory. Free some, then resume.',
 };
 
+/** The stopped session whose terminal this pane put away, so its return can
+ *  bring one back. */
+/** @type {string | null} */
+let stoppedShown = null;
+
 /** The centre pane of a stopped session: why it ended, and Resume in place of a
  *  terminal. There is no pty to attach to, and attaching to a gone one only
- *  flaps between reconnecting and exited. */
+ *  flaps between reconnecting and exited.
+ *
+ *  **And the terminal back when it comes back.** A wake selects the session while
+ *  it is still stopped, so the selection opens no terminal, and the snapshot that
+ *  shows it live selects nothing new: without this the pane stayed black until you
+ *  switched away and back. */
 function renderStopped() {
   const s = currentSession();
   const stopped = !!s && isStopped(s);
   $('termstopped').hidden = !stopped;
+  if (s && !stopped && stoppedShown === s.id) {
+    stoppedShown = null;
+    const shown = Term.show(activeCheckout(), `session:${s.id}`, $('termwrap'));
+    if (shown && !typingElsewhere()) {
+      requestAnimationFrame(() => {
+        try {
+          shown.term.focus();
+        } catch (e) { /* disposed while we waited */ }
+      });
+    }
+  }
   if (!s || !stopped) return;
+  stoppedShown = s.id;
   Term.show(null, null, $('termwrap'));
   $('termempty').hidden = true;
   const waking = Rail.isWaking(s.id);
