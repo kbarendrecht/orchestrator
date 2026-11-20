@@ -1,7 +1,7 @@
 // The rail: what is running, what is waiting on you, and the PRs beside it.
 // Twenty-four names, three out; the rest is how a row decides what it says.
 
-import { $, activeCheckout, badgesShown, borrowFocus, returnFocus, gateOf, AGENT_LABEL, ageLabel, bandOf, byNewest, call, callFor, callHost, callOn, caret, checkoutBadge, checkoutOf, CHECKOUTS, chooseBox, clock, confirmBox, promptBox, copyText, creating, creatingIn, creatingIntoMain, dotClass, el, enterCheckout, icon, iconLabel, getHost, getOn, handedToPr, hasPr, inTrouble, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, QUEUE_MAX, reason, refreshButton, repoSummary, safeHref, selected, sessionDot, sessionsOf, sessionOrder, setPendingSelect, setSelected, setSessionOrder, snap, snapshotFor, snapshotOf, startingShown, stateClass, stateLabel, terms, toast, paintSig, reconcile, unchanged, watchStarting } from './core.js';
+import { $, activeCheckout, badgesShown, borrowFocus, returnFocus, gateOf, AGENT_LABEL, ageLabel, bandOf, byNewest, call, callFor, callHost, callOn, caret, checkoutBadge, checkoutOf, CHECKOUTS, chooseBox, clock, confirmBox, promptBox, copyText, creating, creatingIn, creatingIntoMain, dotClass, el, enterCheckout, icon, iconLabel, getHost, getOn, handedToPr, hasPr, inTrouble, isArchived, isConversation, isStopped, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, QUEUE_MAX, reason, refreshButton, repoSummary, safeHref, selected, sessionDot, sessionsOf, sessionOrder, setPendingSelect, setSelected, setSessionOrder, snap, snapshotFor, snapshotOf, startingShown, stateClass, stateLabel, terms, toast, paintSig, reconcile, unchanged, watchStarting } from './core.js';
 import * as Open from './open.js';
 import * as Term from './term.js';
 import * as Settings from './settings.js';
@@ -84,6 +84,11 @@ function renderRail() {
      followed, and the highlight stayed on the row it was on. */
   renderNudge();
   tellFolds();
+  // A session the snapshot shows live again is woken; its mark has done its job.
+  for (const id of waking) {
+    const s = snapshotFor(id).sessions.find((x) => x.id === id);
+    if (!s || !isStopped(s)) waking.delete(id);
+  }
   if (editingName !== null && !document.querySelector('#rail .sess-rename')) editingName = null;
   if (editingName !== null || dragging !== null || rowDrag !== null) return;
 
@@ -2182,15 +2187,46 @@ function agentHere(/** @type {import('../snapshot').SessionView} */ s) {
   return snapshotFor(s.id).agents.includes(s.agent);
 }
 
-/** Continue a past conversation, rebuilding its worktree first if it is gone. */
+/* Sessions a resume is on its way for. Kept until the snapshot shows them live,
+   not until the request answers: in between, the pane would flash back to
+   "sleeping" and a second press would start a second resume of one conversation. */
+/** @type {Set<string>} */
+const waking = new Set();
+
+/** Whether a resume is on its way for this session; the pane says "Waking…". */
+export const isWaking = (/** @type {string} */ id) => waking.has(id);
+
+/** A press on a session row: select it, and wake it if it is asleep.
+ *
+ *  **A press, not a selection, wakes it.** Arrowing through the rail selects each
+ *  row it passes, and waking every one of those would undo the sleep. A stopped
+ *  row (killed from outside) is not woken here: its pane says why, and the usual
+ *  why is memory, so the resume is left to its button. */
+function pick(/** @type {import('../snapshot').SessionView} */ s) {
+  // Before the selection, so the pane it draws already says "Waking…".
+  if (s.asleep && isStopped(s)) void wake(s);
+  setSelected(s.id);
+}
+
+/** Resume a sleeping or stopped session, once however often it is pressed. */
+async function wake(/** @type {import('../snapshot').SessionView} */ s) {
+  if (waking.has(s.id)) return;
+  waking.add(s.id);
+  // A refused resume leaves it stopped, so the mark goes and a press can try again;
+  // a taken one keeps it until the rail sees the session live.
+  if (!await openArchived(s)) waking.delete(s.id);
+}
+
+/** Continue a past conversation, rebuilding its worktree first if it is gone.
+ *  Answers whether the daemon took the resume; a refusal has been toasted. */
 async function openArchived(/** @type {import('../snapshot').SessionView} */ s) {
   if (!s.resumable) {
     toast('transcript only: the branch is gone and the commit is unreachable', true);
-    return;
+    return false;
   }
   if (!agentHere(s)) {
     toast(`${AGENT_LABEL[s.agent]} is not on this checkout's PATH`, true);
-    return;
+    return false;
   }
   try {
     const r = await callFor(s.id, `/api/session/${s.id}/resume`);
@@ -2203,8 +2239,10 @@ async function openArchived(/** @type {import('../snapshot').SessionView} */ s) 
     // The branch moved since the conversation happened, so the files it talks
     // about are not the files on disk. Worth saying, not worth refusing over.
     if (r.warning) toast(r.warning, true);
+    return true;
   } catch (e) {
     toast(reason(e), true);
+    return false;
   }
 }
 
@@ -2439,11 +2477,11 @@ function sessionRow(/** @type {import('../snapshot').SessionView} */ s, /** @typ
   btn.onpointerdown = (ev) => {
     if (ev.button !== 0) return;      // the secondary button opens the menu
     picked = s.id;
-    setSelected(s.id);
+    pick(s);
   };
   btn.onclick = () => {
     if (picked === s.id) { picked = null; return; }
-    setSelected(s.id);
+    pick(s);
   };
   /* Which way the branch moves, as one item with three answers. Asked of the
      snapshot's own main row rather than of `w`, which is a `{ id }` stub on a
@@ -3405,4 +3443,4 @@ document.addEventListener('scroll', (ev) => {
 window.addEventListener('blur', () => { if (ovFor !== null || ovOpenT) closeOverlapCard(); });
 document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape' && ovFor !== null) closeOverlapCard(); }, true);
 
-export { renderRail as render, railName as rowName, closeSession, openArchived as resume };
+export { renderRail as render, railName as rowName, closeSession, wake as resume };

@@ -191,7 +191,9 @@ function renderStopped() {
   if (!s || !stopped) return;
   Term.show(null, null, $('termwrap'));
   $('termempty').hidden = true;
-  $('termstoppedwhy').textContent = s.killed
+  const waking = Rail.isWaking(s.id);
+  $('termresume').hidden = waking;
+  $('termstoppedwhy').textContent = waking ? 'Waking…' : s.killed
     ? KILLED_BY[s.killed]
     : 'Sleeping: quit while idle, to give its memory back. Resume picks the conversation up again.';
 }
