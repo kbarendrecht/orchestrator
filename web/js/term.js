@@ -285,6 +285,18 @@ function linkPaths(term, checkout, target) {
   term.element?.addEventListener('mousedown', (/** @type {MouseEvent} */ e) => {
     down = { x: e.clientX, y: e.clientY };
   }, true);
+  /* **An OSC 8 hyperlink is xterm's own link, and it never reaches the provider
+     below.** xterm checks its built-in OSC 8 provider first, and with no
+     `linkHandler` it opens the link with `confirm()` and `window.open()`, which
+     both do nothing in this webview. Claude Code prints its links that way. */
+  term.options.linkHandler = {
+    activate: (/** @type {MouseEvent} */ ev, /** @type {string} */ uri) => {
+      if (ev.button !== 0) return;
+      if (Math.hypot(ev.clientX - down.x, ev.clientY - down.y) > DRAG_PX) return;
+      ev.preventDefault();
+      openUrl(checkout, uri);
+    },
+  };
   term.registerLinkProvider({
     provideLinks(/** @type {number} */ y, /** @type {(l: any) => void} */ callback) {
       const ask = ++newest;
