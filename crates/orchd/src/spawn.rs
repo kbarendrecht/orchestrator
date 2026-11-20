@@ -503,6 +503,10 @@ struct Carried {
     /// read the conversation as empty and started a new one. A Claude Code
     /// transcript is found from the id, so it needs no carry.
     transcript: Option<PathBuf>,
+    /// Messages queued for a session that was asleep when they came: the message
+    /// is what woke it, and dropping it here would wake it for nothing. Resume only;
+    /// a fork is a new conversation the sender never wrote to.
+    inbox: Vec<String>,
 }
 
 impl Carried {
@@ -557,6 +561,7 @@ impl Carried {
             transcript: (prev.agent.names_its_own_session() && !fork)
                 .then(|| prev.transcript_path.clone())
                 .flatten(),
+            inbox: if fork { Vec::new() } else { prev.inbox.clone() },
         }
     }
 
@@ -597,6 +602,7 @@ impl Carried {
         session.told_upstream = self.told_upstream;
         session.agent = self.agent;
         session.agent_session_id = self.agent_session_id;
+        session.inbox = self.inbox;
         if self.transcript.is_some() {
             session.transcript_path = self.transcript;
         }
@@ -3175,6 +3181,22 @@ mod tests {
         // And the one that does: a fork replays the parent's turns, so it opens on
         // a conversation rather than an empty pane.
         assert!(next.had_a_turn);
+    }
+
+    /// A message that woke a session rides its resume, and a fork starts without
+    /// it: the sender wrote to the conversation, not to a copy of it.
+    #[test]
+    fn the_inbox_rides_a_resume_and_not_a_fork() {
+        let mut prev = Session::new(Uuid::new_v4(), "wt".into(), PathBuf::from("/tmp"), None);
+        prev.inbox = vec!["rebase on develop".into()];
+
+        let mut resumed = Session::new(prev.id, "wt".into(), PathBuf::from("/tmp"), None);
+        Carried::from(Some(&prev), false).apply(&mut resumed);
+        assert_eq!(resumed.inbox, vec!["rebase on develop".to_string()]);
+
+        let mut forked = Session::new(Uuid::new_v4(), "wt".into(), PathBuf::from("/tmp"), None);
+        Carried::from(Some(&prev), true).apply(&mut forked);
+        assert!(forked.inbox.is_empty());
     }
 
     /// **A Codex conversation is found by what Codex named it**, so both of those

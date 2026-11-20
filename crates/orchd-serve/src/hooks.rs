@@ -456,6 +456,16 @@ pub async fn session_start(
             tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
             pty.type_and_send(prompt.as_bytes(), std::time::Duration::from_millis(300));
         });
+    } else {
+        /* **A message that woke this session goes in now**, not at its next `Stop`:
+        a session woken for a message has no turn coming until it reads it. The
+        same wait as the prompt above, for the same reason; a refusal puts the
+        messages back for the next `Stop`, as it always has. */
+        let app = app.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+            app.deliver_inbox(id).await;
+        });
     }
 
     app.notify().await;

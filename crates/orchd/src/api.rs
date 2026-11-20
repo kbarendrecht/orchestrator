@@ -1283,8 +1283,34 @@ pub async fn tell_session(
         );
     }
 
+    if is_asleep(&app, id).await {
+        app.with_session(id, |s| s.inbox.push(text)).await;
+        let waking = wake_for_a_message(&app, id).await;
+        return Ok(Json(json!({ "told": false, "waking": waking })));
+    }
     type_user_turn(&app, id, &text).await?;
     Ok(Json(json!({ "told": true })))
+}
+
+async fn is_asleep(app: &Arc<AppState>, id: SessionId) -> bool {
+    app.with_session(id, |s| s.asleep && !s.state.is_live())
+        .await
+        .unwrap_or(false)
+}
+
+/// Wake `id` if it is asleep, for a message now in its inbox; answers whether it
+/// did. The inbox rides the resume (`spawn::Carried`) and `SessionStart` types it
+/// in once the prompt is up.
+///
+/// **A message wakes it whatever the fold says.** An unfold waits for you; a
+/// message is somebody asking for this one session now.
+async fn wake_for_a_message(app: &Arc<AppState>, id: SessionId) -> bool {
+    if !is_asleep(app, id).await {
+        return false;
+    }
+    let app = app.clone();
+    tokio::spawn(async move { wake(&app, vec![id], false).await });
+    true
 }
 
 /// See [`AppState::type_user_turn`]; kept here for the routes and `bank` that
@@ -1512,7 +1538,8 @@ pub async fn message_session(
         refuse!("that is {} KB; a message is a few lines", text.len() / 1024);
     }
     let delivered = app.message_session(id, body.to, text).await?;
-    Ok(Json(json!({ "delivered": delivered })))
+    let waking = wake_for_a_message(&app, body.to).await;
+    Ok(Json(json!({ "delivered": delivered, "waking": waking })))
 }
 
 /// The overlap card's "Send now": type a session's waiting messages in, past the
@@ -1930,18 +1957,18 @@ pub async fn set_fold(
     let waking = owed.len();
     if waking > 0 {
         let app = app.clone();
-        tokio::spawn(async move { wake(&app, owed).await });
+        tokio::spawn(async move { wake(&app, owed, true).await });
     }
     Ok(Json(json!({ "folded": body.folded, "waking": waking })))
 }
 
-async fn wake(app: &Arc<AppState>, owed: Vec<Uuid>) {
+async fn wake(app: &Arc<AppState>, owed: Vec<Uuid>, for_the_fold: bool) {
     for (n, id) in owed.into_iter().enumerate() {
         if n > 0 {
             tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
         }
         // Folded again meanwhile: the rest stay asleep for the next unfold.
-        if crate::sleep::folded_again(app) {
+        if for_the_fold && crate::sleep::folded_again(app) {
             return;
         }
         // A quit asked for a moment ago may not have landed yet, and a session

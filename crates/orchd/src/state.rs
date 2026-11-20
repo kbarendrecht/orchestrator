@@ -2468,7 +2468,8 @@ impl AppState {
                 .get(&from)
                 .ok_or_else(|| no_such_session(from))?;
             let them = inner.sessions.get(&to).ok_or_else(|| no_such_session(to))?;
-            if !them.state.is_live() {
+            // A sleeping one takes the message: it queues, and the route wakes it.
+            if !them.state.is_live() && !them.asleep {
                 anyhow::bail!("{} is not running", crate::model::short_id(&to));
             }
             let (mine, theirs) = (me.workspace.clone(), them.workspace.clone());
@@ -5830,6 +5831,41 @@ mod tests {
                 .await,
             None,
             "a stack shares files on purpose"
+        );
+    }
+
+    /// A message to a sleeping session queues in its inbox for the wake to carry,
+    /// and one to a session that is simply over is still refused.
+    #[tokio::test]
+    async fn a_message_to_a_sleeping_session_queues_and_one_to_a_closed_one_is_refused() {
+        let app = app().await;
+        let me = live_worktree(&app, "mine", "/tmp/mine", &[]).await;
+        let them = live_worktree(&app, "theirs", "/tmp/theirs", &["src/a.rs"]).await;
+        app.claim_overlap_warning(me, Path::new("/tmp/mine/src/a.rs"))
+            .await
+            .expect("held, which opens `orch tell`");
+        app.with_session(them, |s| {
+            s.set_state(crate::model::State::Exited);
+            s.asleep = true;
+        })
+        .await;
+
+        let delivered = app.message_session(me, them, "you take a.rs?").await;
+        assert_eq!(
+            delivered.ok(),
+            Some(false),
+            "queued, not typed: nothing runs yet"
+        );
+        let inbox = app.inner.read().await.sessions[&them].inbox.clone();
+        assert!(
+            inbox.iter().any(|m| m.contains("you take a.rs?")),
+            "{inbox:?}"
+        );
+
+        app.with_session(them, |s| s.asleep = false).await;
+        assert!(
+            app.message_session(me, them, "still there?").await.is_err(),
+            "closed, not asleep"
         );
     }
 

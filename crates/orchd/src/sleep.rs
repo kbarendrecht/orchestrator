@@ -4,7 +4,7 @@
 //! with its MCP servers. Two clocks decide: a checkout folded away on the rail for
 //! `sleep_folded_after_minutes` puts all its agents to sleep, and one agent idle
 //! for `sleep_idle_after_minutes` sleeps on its own. The row stays and says
-//! sleeping; an unfold or Resume in its pane brings it back.
+//! sleeping; an unfold, Resume in its pane or a message brings it back.
 //!
 //! **The fold is the page's, and the daemon only hears about it.** It lives in the
 //! browser beside the rail's other view state, so the page posts `/api/fold`
