@@ -712,6 +712,10 @@ button.ovc-who:hover{background:var(--hover)}
 .dot.sdot.ring{background:none;border:1px solid var(--d)}
 /* An archived session with a PR still says so, so the ring takes back its shape. */
 .dot.sdot.archived.ring{height:6px;border-radius:50%}
+/* Sleeping: quit while idle and coming back on a press. A crescent rather than
+   the dash, which says "over", and rather than a ring, which says "PR"; drawn as
+   an inset shadow so a PR's ring (a border) still stacks on it. */
+.dot.sdot.sleeping{--d:var(--faint-solid);background:none;border-radius:50%;box-shadow:inset 2px -1px 0 0 var(--d)}
 
 /* **The name takes the leftover width, and gives way last (#37).** `flex:1` with
    `min-width:0` is what lets it shrink past its content; everything else on the

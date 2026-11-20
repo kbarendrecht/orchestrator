@@ -374,7 +374,6 @@ async function loadConfigInto(force = false) {
   // Numbers go in as numbers: `value = 0` on a number input renders "0", which is
   // the setting being off said out loud, where '' would read as unset.
   ctl('setretain').value = String(cfg.worktree_retention_days ?? 0);
-  ctl('setsleep').value = String(cfg.sleep_folded_after_minutes ?? 10);
   ctl('setidle').value = String(cfg.sleep_idle_after_minutes ?? 60);
   ctl('setseveral').checked = !!cfg.allow_several_in_main;
   ctl('setprotect').checked = cfg.protect_base !== false;
@@ -571,7 +570,6 @@ function draftBody() {
     // A blank box means "keep forever" rather than NaN, and a negative number is
     // not a shorter retention.
     worktree_retention_days: Math.max(0, Math.trunc(Number(ctl('setretain').value) || 0)),
-    sleep_folded_after_minutes: Math.max(0, Math.trunc(Number(ctl('setsleep').value) || 0)),
     sleep_idle_after_minutes: Math.max(0, Math.trunc(Number(ctl('setidle').value) || 0)),
     allow_several_in_main: !!ctl('setseveral').checked,
     protect_base: !!ctl('setprotect').checked,

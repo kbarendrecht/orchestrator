@@ -1035,22 +1035,12 @@
         restart.</p>
 
       <label class="settings-field">
-        <span class="settings-k">Quit folded agents after</span>
-        <input class="settings-in" id="setsleep" type="number" min="0" step="1"
-               inputmode="numeric" placeholder="0 = never">
-      </label>
-      <p class="settings-help">Minutes this project stays folded on the rail before
-        its agents at their prompt are quit. Unfolding resumes them. A busy agent goes
-        when its turn ends, and one waiting on your answer stays. <code>0</code> never
-        quits them.</p>
-
-      <label class="settings-field">
         <span class="settings-k">Quit idle agents after</span>
         <input class="settings-in" id="setidle" type="number" min="0" step="1"
                inputmode="numeric" placeholder="0 = never">
       </label>
-      <p class="settings-help">Minutes an agent sits at its prompt, folded or not, before it
-        is quit. Its row stays and says sleeping; resume it from its pane. Anything it left
+      <p class="settings-help">Minutes an agent sits at its prompt before it is quit, to give
+        its memory back. Its row stays and says sleeping; resume it from its pane. Anything it left
         running in the background keeps it awake. <code>0</code> never quits them.</p>
     </section>
 
@@ -1183,6 +1173,7 @@
       <dt><span class="dot sdot blocked"></span></dt><dd>needs you: a question, a permission, an interrupted turn, or its turn is done</dd>
       <dt><span class="dot sdot working"></span></dt><dd>working, starting, or ready for a prompt</dd>
       <dt><span class="dot sdot build"></span></dt><dd>build failing or an agent error, or its PR is failing</dd>
+      <dt><span class="dot sdot sleeping"></span></dt><dd>sleeping: quit while idle, a press wakes it</dd>
       <dt><span class="dot sdot archived"></span></dt><dd>archived, or its process ended</dd>
       <dt><span class="dot sdot working ring"></span></dt><dd>a ring: the session has a PR, in the colour of what it is doing</dd>
 

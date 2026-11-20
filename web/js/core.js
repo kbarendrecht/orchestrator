@@ -1700,6 +1700,8 @@ export function dotClass(/** @type {import('../snapshot').SessionView} */ s) {
   if (k === 'working' || k === 'starting') return 'working';
   // The error colour: something ended it, and it waits on you to resume it.
   if (s.killed && (k === 'archived' || k === 'exited')) return 'build';
+  // A moon, not the archived dash: it is coming back, and a press brings it.
+  if (s.asleep && (k === 'archived' || k === 'exited')) return 'sleeping';
   if (k === 'archived' || k === 'exited') return 'archived';
   return 'idle';
 }

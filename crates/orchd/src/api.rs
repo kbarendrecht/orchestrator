@@ -1314,7 +1314,7 @@ pub async fn wake_for_a_list(app: &Arc<AppState>, deadline: std::time::Duration)
     }
     {
         let (app, owed) = (app.clone(), owed.clone());
-        tokio::spawn(async move { wake(&app, owed, false).await });
+        tokio::spawn(async move { wake(&app, owed).await });
     }
     let up = |inner: &crate::state::Inner| {
         owed.iter()
@@ -1345,14 +1345,12 @@ async fn is_asleep(app: &Arc<AppState>, id: SessionId) -> bool {
 /// did. The inbox rides the resume (`spawn::Carried`) and `SessionStart` types it
 /// in once the prompt is up.
 ///
-/// **A message wakes it whatever the fold says.** An unfold waits for you; a
-/// message is somebody asking for this one session now.
 async fn wake_for_a_message(app: &Arc<AppState>, id: SessionId) -> bool {
     if !is_asleep(app, id).await {
         return false;
     }
     let app = app.clone();
-    tokio::spawn(async move { wake(&app, vec![id], false).await });
+    tokio::spawn(async move { wake(&app, vec![id]).await });
     true
 }
 
@@ -1982,37 +1980,10 @@ pub async fn resume_session(
     revive(&app, id).await
 }
 
-#[derive(Deserialize)]
-pub struct FoldBody {
-    pub folded: bool,
-}
-
-/// The page folded or unfolded this checkout on the rail. See [`crate::sleep`].
-///
-/// An unfold answers at once and resumes what the fold quit in the background,
-/// one at a time with auto-resume's stagger, for auto-resume's reason: several
-/// agents starting on one tick compete for the same instant.
-pub async fn set_fold(
-    State(app): State<Arc<AppState>>,
-    Json(body): Json<FoldBody>,
-) -> ApiResult<serde_json::Value> {
-    let owed = crate::sleep::set_folded(&app, body.folded).await;
-    let waking = owed.len();
-    if waking > 0 {
-        let app = app.clone();
-        tokio::spawn(async move { wake(&app, owed, true).await });
-    }
-    Ok(Json(json!({ "folded": body.folded, "waking": waking })))
-}
-
-async fn wake(app: &Arc<AppState>, owed: Vec<Uuid>, for_the_fold: bool) {
+async fn wake(app: &Arc<AppState>, owed: Vec<Uuid>) {
     for (n, id) in owed.into_iter().enumerate() {
         if n > 0 {
             tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
-        }
-        // Folded again meanwhile: the rest stay asleep for the next unfold.
-        if for_the_fold && crate::sleep::folded_again(app) {
-            return;
         }
         // A quit asked for a moment ago may not have landed yet, and a session
         // still live cannot be resumed. The kill escalates within seconds.

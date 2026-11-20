@@ -572,13 +572,6 @@ agents: Array<Agent>,
  */
 resuming: boolean, 
 /**
- * Whether this daemon thinks its checkout is folded on the rail, or `None`
- * before a page has said. The rail compares it with its own fold and posts
- * `/api/fold` when they differ, which is also how a restarted daemon learns
- * it: the fold is the page's, kept in the browser.
- */
-folded: boolean | null, 
-/**
  * What a plain `+` starts.
  */
 default_agent: Agent, 
