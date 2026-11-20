@@ -878,6 +878,8 @@ fn daemon_router(app: Arc<AppState>) -> Router {
         // cancelling them.
         .route("/hooks/pre-edit", post(hooks::pre_edit))
         .route("/hooks/list-agents", post(hooks::list_agents))
+        .route("/hooks/send-message", post(hooks::send_message))
+        .route("/hooks/wake-by-name", post(hooks::wake_by_name))
         .route("/hooks/user-prompt-submit", post(hooks::user_prompt_submit))
         .merge(observer_hooks())
         .layer(axum::middleware::from_fn_with_state(

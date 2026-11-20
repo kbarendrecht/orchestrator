@@ -114,27 +114,37 @@ fn sleepable(s: &Session) -> bool {
         && s.pty.as_ref().is_some_and(|h| h.is_alive())
 }
 
-/// How many sessions sleep in each *other* open project, by its folder name.
+/// Which sessions sleep in each *other* open project: the project's folder name,
+/// and each sleeper as `ListAgents` would name it without its suffix — its
+/// worktree, or the folder name for one in main.
 ///
 /// For the line `ListAgents` gets: a sleeping session has no process, so Claude
 /// Code's own list cannot show it, and this daemon only knows its own. The other
 /// projects' daemons persist `asleep` in their `sessions.json`, under the host's
 /// `checkouts/<key>`, so this **reads** them; it writes nothing that is not its own.
 /// Blocking: call it off the runtime. A file that will not read counts as none.
-pub fn asleep_elsewhere(own: &std::path::Path) -> Vec<(String, usize)> {
-    let Ok(here) = crate::config::Config::config_dir() else {
+pub fn asleep_elsewhere(own: &std::path::Path) -> Vec<(String, Vec<String>)> {
+    let Some(host) = host_dir() else {
         return Vec::new();
     };
-    asleep_under(&crate::instance::host_config_dir(&here), own)
+    asleep_under(&host, own)
 }
 
-/// [`asleep_elsewhere`] under a given host config dir, so a test needs no
-/// process-wide `ORCHD_CONFIG_DIR`.
-fn asleep_under(host: &std::path::Path, own: &std::path::Path) -> Vec<(String, usize)> {
-    let read = |p: std::path::PathBuf| -> Option<serde_json::Value> {
-        serde_json::from_str(&std::fs::read_to_string(p).ok()?).ok()
-    };
-    let Some(open) = read(host.join("host.json")) else {
+fn host_dir() -> Option<std::path::PathBuf> {
+    let here = crate::config::Config::config_dir().ok()?;
+    Some(crate::instance::host_config_dir(&here))
+}
+
+fn read_json(p: std::path::PathBuf) -> Option<serde_json::Value> {
+    serde_json::from_str(&std::fs::read_to_string(p).ok()?).ok()
+}
+
+/// The other open projects, each with its folder name and its state directory.
+fn other_projects(
+    host: &std::path::Path,
+    own: &std::path::Path,
+) -> Vec<(String, std::path::PathBuf)> {
+    let Some(open) = read_json(host.join("host.json")) else {
         return Vec::new();
     };
     open.get("checkouts")
@@ -144,23 +154,92 @@ fn asleep_under(host: &std::path::Path, own: &std::path::Path) -> Vec<(String, u
         .filter_map(|c| c.as_str().map(std::path::PathBuf::from))
         .filter(|c| c != own)
         .filter_map(|c| {
-            let dir = host
-                .join("checkouts")
-                .join(crate::instance::checkout_key(&c));
-            let records = read(dir.join("sessions.json"))?;
-            let n = records
-                .as_array()?
-                .iter()
-                .filter(|r| r.get("asleep").and_then(|a| a.as_bool()) == Some(true))
-                .count();
             let name = c.file_name()?.to_string_lossy().into_owned();
-            (n > 0).then_some((name, n))
+            Some((
+                name,
+                host.join("checkouts")
+                    .join(crate::instance::checkout_key(&c)),
+            ))
         })
         .collect()
 }
 
+/// [`asleep_elsewhere`] under a given host config dir, so a test needs no
+/// process-wide `ORCHD_CONFIG_DIR`.
+fn asleep_under(host: &std::path::Path, own: &std::path::Path) -> Vec<(String, Vec<String>)> {
+    other_projects(host, own)
+        .into_iter()
+        .filter_map(|(project, dir)| {
+            let records = read_json(dir.join("sessions.json"))?;
+            let names: Vec<String> = records
+                .as_array()?
+                .iter()
+                .filter(|r| r.get("asleep").and_then(|a| a.as_bool()) == Some(true))
+                .filter_map(|r| r.get("workspace")?.as_str())
+                .map(|ws| {
+                    if ws == "main" {
+                        project.clone()
+                    } else {
+                        ws.to_string()
+                    }
+                })
+                .collect();
+            (!names.is_empty()).then_some((project, names))
+        })
+        .collect()
+}
+
+/// Each other open project's daemon port, read off the hook settings it wrote:
+/// every HTTP hook there names `http://127.0.0.1:<port>/hooks/…`. For waking a
+/// sleeper over there; a project whose file will not read is left out.
+pub fn other_ports(own: &std::path::Path) -> Vec<(String, u16)> {
+    let Some(host) = host_dir() else {
+        return Vec::new();
+    };
+    ports_under(&host, own)
+}
+
+fn ports_under(host: &std::path::Path, own: &std::path::Path) -> Vec<(String, u16)> {
+    other_projects(host, own)
+        .into_iter()
+        .filter_map(|(project, dir)| {
+            let raw = std::fs::read_to_string(dir.join("hooks.json")).ok()?;
+            let rest = raw.split("http://127.0.0.1:").nth(1)?;
+            let port = rest.split('/').next()?.parse().ok()?;
+            Some((project, port))
+        })
+        .collect()
+}
+
+/// The workspace a `ListAgents` name points at: the name less its two-character
+/// suffix (`striped-rambling-hippo-3a`), and `main` when that is the project's
+/// own folder name, which is what Claude Code calls a session in main. `None`
+/// for anything without the suffix — a ref like `[3c0ef9]` names a process, and
+/// a sleeper has none.
+pub fn workspace_of_name(name: &str, checkout: &std::path::Path) -> Option<String> {
+    let base = base_of_name(name)?;
+    let project = checkout.file_name()?.to_string_lossy();
+    Some(if base == project {
+        "main".to_string()
+    } else {
+        base.to_string()
+    })
+}
+
+/// A `ListAgents` name less its two-character suffix: what [`asleep_elsewhere`]
+/// lists a sleeper as.
+pub fn base_of_name(name: &str) -> Option<&str> {
+    let (base, suffix) = name.rsplit_once('-')?;
+    (suffix.len() == 2 && suffix.chars().all(|c| c.is_ascii_hexdigit()) && !base.is_empty())
+        .then_some(base)
+}
+
 /// The line `ListAgents` is given, or `None` when there is nothing to say.
-pub fn list_note(woken: usize, waking: usize, elsewhere: &[(String, usize)]) -> Option<String> {
+pub fn list_note(
+    woken: usize,
+    waking: usize,
+    elsewhere: &[(String, Vec<String>)],
+) -> Option<String> {
     let plural = |n: usize| if n == 1 { "session" } else { "sessions" };
     let mut lines = Vec::new();
     if woken > 0 {
@@ -178,11 +257,11 @@ pub fn list_note(woken: usize, waking: usize, elsewhere: &[(String, usize)]) -> 
     if !elsewhere.is_empty() {
         let each: Vec<String> = elsewhere
             .iter()
-            .map(|(name, n)| format!("{n} in {name}"))
+            .map(|(project, names)| format!("{project}: {}", names.join(", ")))
             .collect();
         lines.push(format!(
-            "Also asleep in other projects, not listed: {}. `orch tell <id>` wakes one.",
-            each.join(", ")
+            "Also asleep in other projects, not listed: {}. A SendMessage to one by that name wakes it.",
+            each.join("; ")
         ));
     }
     (!lines.is_empty()).then(|| lines.join("\n"))
@@ -457,13 +536,27 @@ mod tests {
     #[test]
     fn the_list_note_says_what_happened_and_nothing_more() {
         assert_eq!(list_note(0, 0, &[]), None);
-        let note = list_note(2, 1, &[("scienta".into(), 4), ("werkenbij".into(), 1)]).unwrap();
+        let note = list_note(
+            2,
+            1,
+            &[
+                (
+                    "scienta".into(),
+                    vec!["dense-nudging-hollow".into(), "scienta".into()],
+                ),
+                ("werkenbij".into(), vec!["fix-x".into()]),
+            ],
+        )
+        .unwrap();
         assert!(
             note.contains("woke 2 sleeping sessions in this project"),
             "{note}"
         );
         assert!(note.contains("1 more is still waking"), "{note}");
-        assert!(note.contains("4 in scienta, 1 in werkenbij"), "{note}");
+        assert!(
+            note.contains("scienta: dense-nudging-hollow, scienta; werkenbij: fix-x"),
+            "{note}"
+        );
         assert_eq!(
             list_note(1, 0, &[]).as_deref(),
             Some("orchd woke 1 sleeping session in this project for this list.")
@@ -488,20 +581,56 @@ mod tests {
             std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(dir.join("sessions.json"), records).unwrap();
         };
-        write(own, r#"[{"asleep":true}]"#);
+        write(own, r#"[{"asleep":true,"workspace":"w"}]"#);
         write(
             other,
-            r#"[{"asleep":true},{"asleep":true},{"asleep":false},{}]"#,
+            r#"[{"asleep":true,"workspace":"dense"},{"asleep":true,"workspace":"main"},{"asleep":false,"workspace":"x"},{}]"#,
         );
-        write(quiet, r#"[{"asleep":false}]"#);
-        write(closed, r#"[{"asleep":true}]"#);
+        write(quiet, r#"[{"asleep":false,"workspace":"q"}]"#);
+        write(closed, r#"[{"asleep":true,"workspace":"c"}]"#);
         std::fs::write(
             host.join("host.json"),
             r#"{"checkouts":["/w/orchestrator","/w/scienta","/w/werkenbij"]}"#,
         )
         .unwrap();
 
-        assert_eq!(asleep_under(&host, own), vec![("scienta".to_string(), 2)]);
+        assert_eq!(
+            asleep_under(&host, own),
+            vec![(
+                "scienta".to_string(),
+                vec!["dense".to_string(), "scienta".to_string()]
+            )],
+            "a sleeper in main goes by the project's folder name"
+        );
+        let hooks = host
+            .join("checkouts")
+            .join(crate::instance::checkout_key(other));
+        std::fs::write(
+            hooks.join("hooks.json"),
+            r#"{"hooks":{"Stop":[{"hooks":[{"type":"http","url":"http://127.0.0.1:41749/hooks/stop"}]}]}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            ports_under(&host, own),
+            vec![("scienta".to_string(), 41749)]
+        );
         let _ = std::fs::remove_dir_all(&host);
+    }
+
+    /// A `ListAgents` name points at a worktree, or at main by the project's
+    /// folder name; a ref or a name with no suffix points at nothing.
+    #[test]
+    fn a_list_name_points_at_its_workspace() {
+        let checkout = std::path::Path::new("/w/scienta");
+        for (name, want) in [
+            ("striped-rambling-hippo-3a", Some("striped-rambling-hippo")),
+            ("scienta-49", Some("main")),
+            ("[3c0ef9]", None),
+            ("plain", None),
+            ("ends-in-word", None),
+            ("-3a", None),
+        ] {
+            assert_eq!(workspace_of_name(name, checkout).as_deref(), want, "{name}");
+        }
     }
 }

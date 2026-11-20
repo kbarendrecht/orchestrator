@@ -1309,6 +1309,44 @@ pub async fn wake_for_a_list(app: &Arc<AppState>, deadline: std::time::Duration)
         owed.sort_by_key(|s| s.created_at);
         owed.iter().map(|s| s.id).collect()
     };
+    wake_and_wait(app, owed, deadline).await
+}
+
+/// Wake the sleeper `ListAgents` would have called by `workspace`, for a
+/// `SendMessage` aimed at it, and wait as [`wake_for_a_list`] does. `None` when
+/// nothing here sleeps in that workspace; `Some(Err)` when there is no memory to
+/// wake it, which is said rather than waited out.
+///
+/// **Two sleepers in one workspace: the one used last.** A session and its fork
+/// can share a tree, and the one you were in most recently is the one somebody
+/// is most likely writing to.
+pub async fn wake_named(
+    app: &Arc<AppState>,
+    workspace: &str,
+    deadline: std::time::Duration,
+) -> Option<Result<(usize, usize), String>> {
+    let id = {
+        let inner = app.inner.read().await;
+        inner
+            .sessions
+            .values()
+            .filter(|s| s.asleep && !s.state.is_live() && s.workspace == workspace)
+            .max_by_key(|s| s.state_since)
+            .map(|s| s.id)
+    }?;
+    if let Err(why) = crate::headroom::check() {
+        return Some(Err(why));
+    }
+    Some(Ok(wake_and_wait(app, vec![id], deadline).await))
+}
+
+/// Wake `owed` with the stagger, detached, and wait until each is at its prompt
+/// or `deadline` passes: how many came up, and how many are still on their way.
+async fn wake_and_wait(
+    app: &Arc<AppState>,
+    owed: Vec<SessionId>,
+    deadline: std::time::Duration,
+) -> (usize, usize) {
     if owed.is_empty() {
         return (0, 0);
     }

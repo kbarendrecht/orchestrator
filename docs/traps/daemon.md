@@ -9,14 +9,17 @@ They answer immediately and finish
 their work detached, because Claude gives a hook one second and a dropped
 future silently loses the state change. Do not make a hook wait on anything.
 
-**One hook waits, and it is the only one: `PreToolUse` on `ListAgents`.** Claude
-Code builds that list from running processes, so a session orchd put to sleep is
-missing from it, and a wake started detached would land after the list was
-already answered. So `hooks::list_agents` wakes this project's sleepers and waits
-for them, in an entry of its own with a 20-second timeout and a 17-second wait
-inside it; every other hook keeps its second. With nothing asleep it answers at
-once. Do not copy it: a hook that waits holds up the agent that fired it, and this
-one is only worth that because the wait is the whole point of the call.
+**Two hooks wait, and only these two: `PreToolUse` on `ListAgents` and on
+`SendMessage`.** Claude Code builds its list from running processes and sends to
+them, so a session orchd put to sleep is missing from both, and a wake started
+detached would land after the call was already answered. So `hooks::list_agents`
+wakes this project's sleepers and waits for them, and `hooks::send_message` wakes
+the one a message is aimed at, here or through another project's daemon, then
+refuses the call once so the sender looks up the woken session's new name. Each
+has an entry of its own with a 20-second timeout and a 17-second wait inside it;
+every other hook keeps its second. With nothing asleep they answer at once. Do not
+copy them: a hook that waits holds up the agent that fired it, and these are only
+worth that because the wait is the whole point of the call.
 
 ## Every hook finds its session, and the window where one did not is closed.
 `insert_and_spawn` puts the record in *before* `PtyHandle::spawn` and takes it out

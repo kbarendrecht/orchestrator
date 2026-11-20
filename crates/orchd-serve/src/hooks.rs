@@ -1242,6 +1242,130 @@ pub async fn list_agents(AxState(app): AxState<Arc<AppState>>) -> HookResult {
     }
 }
 
+/// `PreToolUse` for `SendMessage`: a message aimed at a sleeping session wakes it,
+/// here or in another project, and the call is refused once so the sender looks
+/// the new name up. A target that is awake, or that nothing here or elsewhere
+/// knows, passes untouched.
+///
+/// **Refused, not passed on**: the woken process has a new `ListAgents` name, and
+/// orchd cannot read it, so the call as written would find nobody. The same
+/// waiting exception as [`list_agents`].
+pub async fn send_message(
+    AxState(app): AxState<Arc<AppState>>,
+    Json(payload): Json<HookPayload>,
+) -> HookResult {
+    let Some(to) = payload
+        .tool_input
+        .as_ref()
+        .and_then(|i| i.get("to"))
+        .and_then(|t| t.as_str())
+        .map(str::to_owned)
+    else {
+        return ok();
+    };
+    let own = app.cfg.main_checkout.clone();
+    if let Some(ws) = orchd::sleep::workspace_of_name(&to, &own) {
+        match orchd::api::wake_named(&app, &ws, LIST_AGENTS_WAIT).await {
+            Some(Ok(_)) => return deny(woke_reason(&ws, None)),
+            Some(Err(why)) => {
+                return deny(format!("{to} is asleep and cannot be woken now: {why}"))
+            }
+            None => {}
+        }
+    }
+    // Not asleep here. One other project may hold a sleeper by that name; only
+    // that project's daemon is asked, and a failure lets the message pass.
+    let Some(base) = orchd::sleep::base_of_name(&to).map(str::to_owned) else {
+        return ok();
+    };
+    let answer = orchd::proc::run_blocking("waking a sleeper in another project", move || {
+        let project = orchd::sleep::asleep_elsewhere(&own)
+            .into_iter()
+            .find(|(_, names)| names.contains(&base))?
+            .0;
+        let port = orchd::sleep::other_ports(&own)
+            .into_iter()
+            .find(|(p, _)| *p == project)?
+            .1;
+        let argv: Vec<String> = [
+            "curl",
+            "-sS",
+            "--connect-timeout",
+            "1",
+            "-m",
+            "16",
+            "-X",
+            "POST",
+            "-H",
+            "Content-Type: application/json",
+            "--data-binary",
+        ]
+        .iter()
+        .map(|a| a.to_string())
+        .chain([
+            json!({ "name": base }).to_string(),
+            format!("http://127.0.0.1:{port}/hooks/wake-by-name"),
+        ])
+        .collect();
+        let out =
+            orchd::proc::run_bounded(std::path::Path::new("/"), 17, &argv, "wake-by-name").ok()?;
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+        Some((project, v))
+    })
+    .await
+    .ok()
+    .flatten();
+    match answer {
+        Some((project, v)) => match (
+            v.get("woke").and_then(|w| w.as_str()),
+            v.get("refused").and_then(|r| r.as_str()),
+        ) {
+            (Some(ws), _) => deny(woke_reason(ws, Some(&project))),
+            (None, Some(why)) => deny(format!(
+                "{to} is asleep in {project} and cannot be woken now: {why}"
+            )),
+            _ => ok(),
+        },
+        None => ok(),
+    }
+}
+
+/// What a sender reads after a wake: the session is up under a new name.
+fn woke_reason(workspace: &str, project: Option<&str>) -> String {
+    let where_ = project.map(|p| format!(" ({p})")).unwrap_or_default();
+    format!(
+        "orchd woke {workspace}{where_}, which was asleep. It is running again under a new \
+         name: call ListAgents, then send the message again."
+    )
+}
+
+/// Another project's daemon asking this one to wake a sleeper for a message;
+/// not a Claude Code hook, but served beside them, from the same loopback port.
+/// Answers `{ "woke": <workspace> }`, `{ "refused": <why> }` or `{}`.
+pub async fn wake_by_name(
+    AxState(app): AxState<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> HookResult {
+    let Some(base) = body.get("name").and_then(|n| n.as_str()) else {
+        return ok();
+    };
+    let project = app
+        .cfg
+        .main_checkout
+        .file_name()
+        .map(|f| f.to_string_lossy().into_owned());
+    let ws = if project.as_deref() == Some(base) {
+        "main".to_string()
+    } else {
+        base.to_string()
+    };
+    match orchd::api::wake_named(&app, &ws, LIST_AGENTS_WAIT).await {
+        Some(Ok(_)) => (StatusCode::OK, Json(json!({ "woke": ws }))),
+        Some(Err(why)) => (StatusCode::OK, Json(json!({ "refused": why }))),
+        None => ok(),
+    }
+}
+
 /// Refuse one tool call and tell the model why.
 ///
 /// One of the two ways the daemon says something an agent will read; the other is
@@ -1503,6 +1627,13 @@ pub fn write_settings(
         hook["timeout"] = json!(LIST_AGENTS_TIMEOUT_SECS);
         json!({ "matcher": "ListAgents", "hooks": [hook] })
     };
+    // And `SendMessage`, for the same reason: a message to a sleeper's name finds
+    // no process until something wakes it.
+    let send_message = {
+        let mut hook = http("send-message");
+        hook["timeout"] = json!(LIST_AGENTS_TIMEOUT_SECS);
+        json!({ "matcher": "SendMessage", "hooks": [hook] })
+    };
 
     let mut settings = json!({
         // Repo config cannot redirect the daemon's HTTP hooks elsewhere (§11).
@@ -1540,6 +1671,7 @@ pub fn write_settings(
                 // (`edited_paths`), so one costs a loopback round trip.
                 entry("pre-edit"),
                 list_agents,
+                send_message,
             ],
             // Every tool, not just the two that write files. `Bash` is the one
             // that moves files the daemon cannot predict, and any tool at all is
@@ -2508,6 +2640,11 @@ mod tests {
             list["hooks"][0]["url"],
             "http://127.0.0.1:7777/hooks/list-agents"
         );
+        let send = pre
+            .iter()
+            .find(|e| e["matcher"] == "SendMessage")
+            .expect("a SendMessage entry");
+        assert_eq!(send["hooks"][0]["timeout"], LIST_AGENTS_TIMEOUT_SECS);
         assert_eq!(pre[0]["hooks"][0]["timeout"], 1, "pre-edit stays short");
         assert!(LIST_AGENTS_WAIT.as_secs() < u64::from(LIST_AGENTS_TIMEOUT_SECS));
 
@@ -2697,12 +2834,16 @@ mod tests {
 
     /// Routes one agent registers and the other does not, each with why. A route
     /// the daemon serves must be registered for both agents or be named here.
-    const ONE_AGENT: [(&str, &str); 6] = [
+    const ONE_AGENT: [(&str, &str); 8] = [
         // Codex has no `StopFailure`: a failed turn is read off its rollout
         // (`watch_turn_end`).
         ("stop-failure", "claude"),
         // Codex has no `ListAgents` tool to wake sleeping sessions for.
         ("list-agents", "claude"),
+        // Nor `SendMessage`.
+        ("send-message", "claude"),
+        // Called by another project's daemon, not by either agent.
+        ("wake-by-name", "neither"),
         // Claude Code never says it was interrupted (`ws::note_interrupt`).
         ("interrupt", "codex"),
         // Codex has no `Notification` event; its permission prompt arrives as
