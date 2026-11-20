@@ -582,6 +582,7 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
     start_worktree_reaper(app.clone());
     start_external_poller(app.clone());
     start_restart_watcher(app.clone());
+    start_sleep_tick(app.clone());
     orchd::update::start_stale_poller(app.clone());
     /* The spare pool, re-attached to the worktrees `adopt_existing_worktrees`
     just rediscovered. Spawned for the same reason the sweep above is: the
@@ -2051,6 +2052,21 @@ fn start_external_poller(app: Arc<AppState>) {
         loop {
             app.rescan_external().await;
             tokio::time::sleep(interval).await;
+        }
+    });
+}
+
+/// Ask once a minute whether an idle session is due to sleep.
+///
+/// The restart watcher already asks on every snapshot, which covers a fold and a
+/// turn that just ended; an idle session sends no snapshots, so without a clock
+/// it would sleep only when some other session happened to do something.
+fn start_sleep_tick(app: Arc<AppState>) {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            tick.tick().await;
+            orchd::sleep::run_due(&app).await;
         }
     });
 }

@@ -314,7 +314,7 @@ pub(crate) async fn insert_and_spawn(
     env: &[(String, String)],
     unset: &[&str],
 ) -> Result<crate::pty::Spawned> {
-    crate::headroom::check().map_err(|why| anyhow::anyhow!("not starting a session: {why}"))?;
+    crate::headroom::check().map_err(|why| anyhow::Error::new(crate::headroom::NoRoom(why)))?;
     /* **Behind `orch exec-disclaimed` the agent is the word after `--`** (macOS,
     [`disclaimed`]). Resolved here, before anything is inserted, so a missing agent
     is refused in the words it always was rather than by `orch` inside the pane,

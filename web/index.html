@@ -1043,6 +1043,15 @@
         its agents at their prompt are quit. Unfolding resumes them. A busy agent goes
         when its turn ends, and one waiting on your answer stays. <code>0</code> never
         quits them.</p>
+
+      <label class="settings-field">
+        <span class="settings-k">Quit idle agents after</span>
+        <input class="settings-in" id="setidle" type="number" min="0" step="1"
+               inputmode="numeric" placeholder="0 = never">
+      </label>
+      <p class="settings-help">Minutes an agent sits at its prompt, folded or not, before it
+        is quit. Its row stays and says sleeping; resume it from its pane. Anything it left
+        running in the background keeps it awake. <code>0</code> never quits them.</p>
     </section>
 
     <!-- `data-config` marks the half that is a *draft* until Save, which is what

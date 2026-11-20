@@ -1957,6 +1957,14 @@ async fn wake(app: &Arc<AppState>, owed: Vec<Uuid>) {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
         if let Err(e) = revive(app, id).await {
+            /* **Not enough memory is the one failure that stays asleep.** It is the
+            common one on a full machine, and it passes: the row keeps saying
+            sleeping, and a click resumes it once something has been closed. The
+            rest wait too, since they would be refused the same way. */
+            if e.0.downcast_ref::<crate::headroom::NoRoom>().is_some() {
+                tracing::warn!(session = %id, "left asleep: {}", e.0);
+                return;
+            }
             /* Cleared rather than left for the next unfold, which would only fail
             the same way. The conversation stays in the archive, resumable by hand. */
             app.with_session(id, |s| s.asleep = false).await;

@@ -840,6 +840,11 @@ pub struct Session {
     /// so a restart keeps the row where it was; cleared by the resume's fresh
     /// record, like [`Session::asleep`].
     pub killed: Option<Killed>,
+    /// The last `Stop` listed a shell the agent left running in the background: a
+    /// dev server, a test watcher. `left_kinds` leaves shells out, because a
+    /// restart's Continue has nothing to say about them; a sleep has to see them,
+    /// because quitting the agent kills them. Not persisted: a resume starts none.
+    pub background_shell: bool,
     /// The file this session's agent was executed from, symlinks resolved — see
     /// [`orchd_base::pty::which`]. `None` until the pty exists.
     ///
@@ -922,6 +927,7 @@ impl Session {
             restart_queued: false,
             asleep: false,
             killed: None,
+            background_shell: false,
             agent_exe: None,
             agent_stale: false,
             agent: crate::agent::Agent::Claude,

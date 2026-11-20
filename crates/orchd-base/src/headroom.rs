@@ -47,6 +47,22 @@ fn read_available(path: &Path) -> Option<u64> {
     None
 }
 
+/// A spawn refused for memory, told apart from every other failure.
+///
+/// A caller that will try again when memory frees up needs to know it was this:
+/// a wake refused here leaves the session asleep, where any other failure gives
+/// up on it.
+#[derive(Debug)]
+pub struct NoRoom(pub String);
+
+impl std::fmt::Display for NoRoom {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "not starting a session: {}", self.0)
+    }
+}
+
+impl std::error::Error for NoRoom {}
+
 /// Refuse the spawn if it would leave the machine with nothing.
 ///
 /// The error is the whole point of the feature, so it says the numbers: a message

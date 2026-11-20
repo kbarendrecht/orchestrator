@@ -4345,6 +4345,9 @@ pub struct SessionView {
     /// Ended by a signal orchd did not send; see `Session::killed`. The rail keeps
     /// the row and draws it **stopped**.
     pub killed: Option<crate::model::Killed>,
+    /// Quit for a fold or for being idle, and owed a resume; see `Session::asleep`.
+    /// The rail keeps the row and draws it **sleeping**.
+    pub asleep: bool,
     /// Messages from other agents waiting for this session to be idle
     /// (`orch tell`). Shown so a message the daemon cannot deliver is not
     /// invisible: a turn that ended on an escape sends no `Stop`, and the state
@@ -4406,6 +4409,7 @@ impl SessionView {
             interrupted: s.interrupted,
             restart_queued: s.restart_queued,
             killed: s.killed,
+            asleep: s.asleep,
             inbox: s.inbox.len(),
             agent_stale: s.agent_stale,
             agent: s.agent,

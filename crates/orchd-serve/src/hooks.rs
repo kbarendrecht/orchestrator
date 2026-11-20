@@ -861,8 +861,14 @@ pub async fn stop(
     // Recorded before the state moves, and whatever the state does: a `Stop` that
     // stays `Working` for its agents has left those agents out too.
     let (kinds, waits) = (left_kinds(&payload), waits_on_agents(&payload));
+    let shell = payload
+        .background_tasks
+        .iter()
+        .flatten()
+        .any(|t| t.kind == "shell");
     app.with_session(id, |s| {
         s.left_kinds = kinds;
+        s.background_shell = shell;
         // Still `Working`: its own agents will wake it, and the turn is not yours yet.
         if waits {
             return;

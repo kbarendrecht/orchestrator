@@ -216,6 +216,21 @@ pub struct Config {
     /// holding a question waits for the answer.
     #[serde(default = "default_sleep_folded_after_minutes")]
     pub sleep_folded_after_minutes: u32,
+
+    /// Quit an agent that has sat idle at its prompt for this many minutes, in an
+    /// open project too, and keep its row so a click resumes it. `0` never does.
+    ///
+    /// The fold's rule with an idle clock in place of the fold: an agent holds 300
+    /// to 800 MB with its MCP servers, and one left since the morning is memory
+    /// nobody uses. Anything it left running in the background keeps it awake.
+    #[serde(default = "default_sleep_idle_after_minutes")]
+    pub sleep_idle_after_minutes: u32,
+}
+
+/// An hour: rarely noticed on a machine with room to spare. A full machine sets
+/// it lower per project.
+fn default_sleep_idle_after_minutes() -> u32 {
+    60
 }
 
 /// Ten minutes: longer than a fold to look past a project, short enough that a
@@ -428,6 +443,9 @@ pub struct Settings {
     /// Defaulted, so a save from a page that predates it still parses.
     #[serde(default = "default_sleep_folded_after_minutes")]
     pub sleep_folded_after_minutes: u32,
+    /// Defaulted, so a save from a page that predates it still parses.
+    #[serde(default = "default_sleep_idle_after_minutes")]
+    pub sleep_idle_after_minutes: u32,
     pub allow_several_in_main: bool,
     /// Defaulted on, so a save from a page that predates it keeps the guard.
     #[serde(default = "default_protect_base")]
@@ -482,6 +500,7 @@ impl Settings {
             main_processes: cfg.main_processes.clone(),
             worktree_retention_days: cfg.worktree_retention_days,
             sleep_folded_after_minutes: cfg.sleep_folded_after_minutes,
+            sleep_idle_after_minutes: cfg.sleep_idle_after_minutes,
             allow_several_in_main: cfg.allow_several_in_main,
             protect_base: cfg.protect_base,
             default_agent: cfg.default_agent,
@@ -1855,6 +1874,7 @@ mod tests {
             main_processes: vec![],
             worktree_retention_days: 60,
             sleep_folded_after_minutes: 10,
+            sleep_idle_after_minutes: 60,
             allow_several_in_main: false,
             protect_base: true,
             default_agent: None,
@@ -1941,6 +1961,7 @@ mod tests {
             main_processes: vec![],
             worktree_retention_days: 60,
             sleep_folded_after_minutes: 10,
+            sleep_idle_after_minutes: 60,
             allow_several_in_main: false,
             protect_base: true,
             default_agent: None,

@@ -468,6 +468,11 @@ restart_queued: boolean,
  */
 killed: Killed | null, 
 /**
+ * Quit for a fold or for being idle, and owed a resume; see `Session::asleep`.
+ * The rail keeps the row and draws it **sleeping**.
+ */
+asleep: boolean, 
+/**
  * Messages from other agents waiting for this session to be idle
  * (`orch tell`). Shown so a message the daemon cannot deliver is not
  * invisible: a turn that ended on an escape sends no `Stop`, and the state

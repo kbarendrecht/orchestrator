@@ -252,6 +252,13 @@ pub struct PtyHandle {
     /// is read; `exit_text_names_a_signal` pins it, and 0.9's `signal()` is the
     /// clean replacement when the crate is upgraded.
     signaled: Arc<std::sync::atomic::AtomicBool>,
+    /// When input last went to the child, in ms since the epoch; `0` before any.
+    ///
+    /// The idle clock a sleep reads: a keystroke into a prompt box fires no hook,
+    /// so without this a draft you are typing looks like a session nobody uses.
+    /// An atomic here rather than a field on the session, because every keystroke
+    /// passes through and a daemon lock per key is not a price worth paying.
+    last_input_ms: std::sync::atomic::AtomicU64,
 }
 
 /// How long a child gets to honour `SIGHUP` before it is `SIGKILL`ed.
@@ -398,6 +405,7 @@ impl PtyHandle {
             pid,
             stopping: std::sync::atomic::AtomicBool::new(false),
             signaled: signaled.clone(),
+            last_input_ms: std::sync::atomic::AtomicU64::new(0),
         });
 
         // The pty reader is blocking, so it gets a dedicated blocking thread
@@ -483,6 +491,11 @@ impl PtyHandle {
     /// keep them apart at the fd: that no longer works, because the first write
     /// may still be going out when the sleep ends. [`Self::pause`] is the gap.
     pub fn write(&self, data: &[u8]) -> Result<()> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis() as u64);
+        self.last_input_ms
+            .store(now, std::sync::atomic::Ordering::Relaxed);
         self.input
             .send(Input::Bytes(data.to_vec()))
             .map_err(|_| anyhow::anyhow!("this pty's writer has gone"))
@@ -701,6 +714,18 @@ impl PtyHandle {
     /// See the field.
     pub fn killed_by_signal(&self) -> bool {
         self.signaled.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// When input last went to the child: a keystroke, a paste, or text orchd
+    /// typed for you. `None` before any.
+    pub fn last_input(&self) -> Option<std::time::SystemTime> {
+        match self
+            .last_input_ms
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            0 => None,
+            ms => Some(std::time::UNIX_EPOCH + std::time::Duration::from_millis(ms)),
+        }
     }
 
     pub fn stopped_deliberately(&self) -> bool {
