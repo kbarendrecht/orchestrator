@@ -1292,6 +1292,49 @@ pub async fn tell_session(
     Ok(Json(json!({ "told": true })))
 }
 
+/// Wake every session asleep in this checkout and wait until each is at its
+/// prompt, or until `deadline`. Answers how many came up and how many are still
+/// on their way. For `ListAgents`, which can only list a session that runs.
+///
+/// The wake runs detached, so a deadline that passes stops the waiting, never a
+/// resume half-way through.
+pub async fn wake_for_a_list(app: &Arc<AppState>, deadline: std::time::Duration) -> (usize, usize) {
+    let owed: Vec<SessionId> = {
+        let inner = app.inner.read().await;
+        let mut owed: Vec<&crate::model::Session> = inner
+            .sessions
+            .values()
+            .filter(|s| s.asleep && !s.state.is_live())
+            .collect();
+        owed.sort_by_key(|s| s.created_at);
+        owed.iter().map(|s| s.id).collect()
+    };
+    if owed.is_empty() {
+        return (0, 0);
+    }
+    {
+        let (app, owed) = (app.clone(), owed.clone());
+        tokio::spawn(async move { wake(&app, owed, false).await });
+    }
+    let up = |inner: &crate::state::Inner| {
+        owed.iter()
+            .filter(|id| {
+                inner.sessions.get(id).is_some_and(|s| {
+                    s.state.is_live() && !matches!(s.state, crate::model::State::Starting)
+                })
+            })
+            .count()
+    };
+    let began = std::time::Instant::now();
+    loop {
+        let woken = up(&*app.inner.read().await);
+        if woken == owed.len() || began.elapsed() >= deadline {
+            return (woken, owed.len() - woken);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+}
+
 async fn is_asleep(app: &Arc<AppState>, id: SessionId) -> bool {
     app.with_session(id, |s| s.asleep && !s.state.is_live())
         .await

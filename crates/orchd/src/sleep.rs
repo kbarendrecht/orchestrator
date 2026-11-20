@@ -189,6 +189,80 @@ fn sleepable(s: &Session) -> bool {
         && s.pty.as_ref().is_some_and(|h| h.is_alive())
 }
 
+/// How many sessions sleep in each *other* open project, by its folder name.
+///
+/// For the line `ListAgents` gets: a sleeping session has no process, so Claude
+/// Code's own list cannot show it, and this daemon only knows its own. The other
+/// projects' daemons persist `asleep` in their `sessions.json`, under the host's
+/// `checkouts/<key>`, so this **reads** them; it writes nothing that is not its own.
+/// Blocking: call it off the runtime. A file that will not read counts as none.
+pub fn asleep_elsewhere(own: &std::path::Path) -> Vec<(String, usize)> {
+    let Ok(here) = crate::config::Config::config_dir() else {
+        return Vec::new();
+    };
+    asleep_under(&crate::instance::host_config_dir(&here), own)
+}
+
+/// [`asleep_elsewhere`] under a given host config dir, so a test needs no
+/// process-wide `ORCHD_CONFIG_DIR`.
+fn asleep_under(host: &std::path::Path, own: &std::path::Path) -> Vec<(String, usize)> {
+    let read = |p: std::path::PathBuf| -> Option<serde_json::Value> {
+        serde_json::from_str(&std::fs::read_to_string(p).ok()?).ok()
+    };
+    let Some(open) = read(host.join("host.json")) else {
+        return Vec::new();
+    };
+    open.get("checkouts")
+        .and_then(|c| c.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|c| c.as_str().map(std::path::PathBuf::from))
+        .filter(|c| c != own)
+        .filter_map(|c| {
+            let dir = host
+                .join("checkouts")
+                .join(crate::instance::checkout_key(&c));
+            let records = read(dir.join("sessions.json"))?;
+            let n = records
+                .as_array()?
+                .iter()
+                .filter(|r| r.get("asleep").and_then(|a| a.as_bool()) == Some(true))
+                .count();
+            let name = c.file_name()?.to_string_lossy().into_owned();
+            (n > 0).then_some((name, n))
+        })
+        .collect()
+}
+
+/// The line `ListAgents` is given, or `None` when there is nothing to say.
+pub fn list_note(woken: usize, waking: usize, elsewhere: &[(String, usize)]) -> Option<String> {
+    let plural = |n: usize| if n == 1 { "session" } else { "sessions" };
+    let mut lines = Vec::new();
+    if woken > 0 {
+        lines.push(format!(
+            "orchd woke {woken} sleeping {} in this project for this list.",
+            plural(woken)
+        ));
+    }
+    if waking > 0 {
+        lines.push(format!(
+            "{waking} more {} still waking; list again in a few seconds.",
+            if waking == 1 { "is" } else { "are" }
+        ));
+    }
+    if !elsewhere.is_empty() {
+        let each: Vec<String> = elsewhere
+            .iter()
+            .map(|(name, n)| format!("{n} in {name}"))
+            .collect();
+        lines.push(format!(
+            "Also asleep in other projects, not listed: {}. `orch tell <id>` wakes one.",
+            each.join(", ")
+        ));
+    }
+    (!lines.is_empty()).then(|| lines.join("\n"))
+}
+
 /// How long a `ps` answer about child processes is reused.
 const CHILDREN_FRESH: Duration = Duration::from_secs(30);
 
@@ -512,5 +586,58 @@ mod tests {
             "a ! command started an hour later"
         );
         assert!(!child_at_work(&rows, 400), "no children at all");
+    }
+
+    /// The line `ListAgents` gets says only what is true, and nothing at all when
+    /// nothing was woken and nobody sleeps elsewhere.
+    #[test]
+    fn the_list_note_says_what_happened_and_nothing_more() {
+        assert_eq!(list_note(0, 0, &[]), None);
+        let note = list_note(2, 1, &[("scienta".into(), 4), ("werkenbij".into(), 1)]).unwrap();
+        assert!(
+            note.contains("woke 2 sleeping sessions in this project"),
+            "{note}"
+        );
+        assert!(note.contains("1 more is still waking"), "{note}");
+        assert!(note.contains("4 in scienta, 1 in werkenbij"), "{note}");
+        assert_eq!(
+            list_note(1, 0, &[]).as_deref(),
+            Some("orchd woke 1 sleeping session in this project for this list.")
+        );
+    }
+
+    /// Other projects' sleepers are counted from their own records, this project
+    /// and a project with none are left out, and a closed project is not read.
+    #[test]
+    fn other_projects_sleepers_are_counted_from_their_records() {
+        let host = std::env::temp_dir().join(format!("orchd-sleepers-{}", uuid::Uuid::new_v4()));
+        let (own, other, quiet, closed) = (
+            std::path::Path::new("/w/orchestrator"),
+            std::path::Path::new("/w/scienta"),
+            std::path::Path::new("/w/werkenbij"),
+            std::path::Path::new("/w/old"),
+        );
+        let write = |checkout: &std::path::Path, records: &str| {
+            let dir = host
+                .join("checkouts")
+                .join(crate::instance::checkout_key(checkout));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("sessions.json"), records).unwrap();
+        };
+        write(own, r#"[{"asleep":true}]"#);
+        write(
+            other,
+            r#"[{"asleep":true},{"asleep":true},{"asleep":false},{}]"#,
+        );
+        write(quiet, r#"[{"asleep":false}]"#);
+        write(closed, r#"[{"asleep":true}]"#);
+        std::fs::write(
+            host.join("host.json"),
+            r#"{"checkouts":["/w/orchestrator","/w/scienta","/w/werkenbij"]}"#,
+        )
+        .unwrap();
+
+        assert_eq!(asleep_under(&host, own), vec![("scienta".to_string(), 2)]);
+        let _ = std::fs::remove_dir_all(&host);
     }
 }

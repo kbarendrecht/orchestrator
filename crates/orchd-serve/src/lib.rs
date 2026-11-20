@@ -878,6 +878,7 @@ fn daemon_router(app: Arc<AppState>) -> Router {
         // merged in below, behind the layer that stops a one-second timeout
         // cancelling them.
         .route("/hooks/pre-edit", post(hooks::pre_edit))
+        .route("/hooks/list-agents", post(hooks::list_agents))
         .route("/hooks/user-prompt-submit", post(hooks::user_prompt_submit))
         .merge(observer_hooks())
         .layer(axum::middleware::from_fn_with_state(

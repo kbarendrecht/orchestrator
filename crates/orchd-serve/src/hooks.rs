@@ -21,6 +21,15 @@ use orchd::state::AppState;
 /// as possible (§3).
 const HOOK_TIMEOUT_SECS: u32 = 1;
 
+/// The one hook allowed to wait: [`list_agents`] wakes this project's sleeping
+/// sessions so `ListAgents` can list them. Its own entry carries this, so every
+/// other hook keeps its second.
+const LIST_AGENTS_TIMEOUT_SECS: u32 = 20;
+
+/// How long [`list_agents`] waits, inside its timeout: a reply that arrives after
+/// it would be dropped, and the agent would get no line at all.
+const LIST_AGENTS_WAIT: std::time::Duration = std::time::Duration::from_secs(17);
+
 /// Reconcile at most this often while `Working`, to catch Bash-driven changes
 /// no `Edit` hook reported (§4).
 const RECONCILE_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
@@ -1204,6 +1213,35 @@ async fn lift_interrupt_on_a_new_tool(app: &Arc<AppState>, id: uuid::Uuid) {
 /// How long after an interrupt a tool start may still belong to the stopped turn.
 const INTERRUPT_SETTLE: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// `PreToolUse` for `ListAgents`: wake this project's sleeping sessions so the
+/// list has them, and name the other projects' sleepers in a line it gets beside.
+///
+/// **The one hook that waits**, and `docs/traps/daemon.md` says why it may.
+/// `ListAgents` runs after this answers and lists only sessions with a process,
+/// so waking them detached would list nothing new. The wait is bounded inside its
+/// own timeout, and with nothing asleep it answers at once.
+pub async fn list_agents(AxState(app): AxState<Arc<AppState>>) -> HookResult {
+    let (woken, waking) = orchd::api::wake_for_a_list(&app, LIST_AGENTS_WAIT).await;
+    let own = app.cfg.main_checkout.clone();
+    let elsewhere = orchd::proc::run_blocking("counting other projects' sleepers", move || {
+        orchd::sleep::asleep_elsewhere(&own)
+    })
+    .await
+    .unwrap_or_default();
+    match orchd::sleep::list_note(woken, waking, &elsewhere) {
+        Some(text) => (
+            StatusCode::OK,
+            Json(json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "additionalContext": text,
+                }
+            })),
+        ),
+        None => ok(),
+    }
+}
+
 /// Refuse one tool call and tell the model why.
 ///
 /// One of the two ways the daemon says something an agent will read; the other is
@@ -1457,6 +1495,15 @@ pub fn write_settings(
         }]
     });
 
+    // `ListAgents` lists running processes, so a sleeping session is missing from
+    // it until something wakes it. This does, and waits: the one exception to the
+    // one-second rule every other hook here keeps.
+    let list_agents = {
+        let mut hook = http("list-agents");
+        hook["timeout"] = json!(LIST_AGENTS_TIMEOUT_SECS);
+        json!({ "matcher": "ListAgents", "hooks": [hook] })
+    };
+
     let mut settings = json!({
         // Repo config cannot redirect the daemon's HTTP hooks elsewhere (§11).
         "allowedHttpHookUrls": [format!("http://127.0.0.1:{port}/*")],
@@ -1492,6 +1539,7 @@ pub fn write_settings(
                 // reason; the handler finds no edited path in a Bash call
                 // (`edited_paths`), so one costs a loopback round trip.
                 entry("pre-edit"),
+                list_agents,
             ],
             // Every tool, not just the two that write files. `Bash` is the one
             // that moves files the daemon cannot predict, and any tool at all is
@@ -2448,6 +2496,21 @@ mod tests {
         assert_eq!(stop["timeout"], 1);
         assert_eq!(v["allowedHttpHookUrls"][0], "http://127.0.0.1:7777/*");
 
+        // `ListAgents` gets the one hook that may wait, in an entry of its own, so
+        // every other `PreToolUse` keeps its second.
+        let pre = v["hooks"]["PreToolUse"].as_array().expect("PreToolUse");
+        let list = pre
+            .iter()
+            .find(|e| e["matcher"] == "ListAgents")
+            .expect("a ListAgents entry");
+        assert_eq!(list["hooks"][0]["timeout"], LIST_AGENTS_TIMEOUT_SECS);
+        assert_eq!(
+            list["hooks"][0]["url"],
+            "http://127.0.0.1:7777/hooks/list-agents"
+        );
+        assert_eq!(pre[0]["hooks"][0]["timeout"], 1, "pre-edit stays short");
+        assert!(LIST_AGENTS_WAIT.as_secs() < u64::from(LIST_AGENTS_TIMEOUT_SECS));
+
         // SessionStart must stay a command hook: the http form is silently
         // never delivered, which would leave every session stuck in Starting.
         let start = &v["hooks"]["SessionStart"][0]["hooks"][0];
@@ -2634,10 +2697,12 @@ mod tests {
 
     /// Routes one agent registers and the other does not, each with why. A route
     /// the daemon serves must be registered for both agents or be named here.
-    const ONE_AGENT: [(&str, &str); 5] = [
+    const ONE_AGENT: [(&str, &str); 6] = [
         // Codex has no `StopFailure`: a failed turn is read off its rollout
         // (`watch_turn_end`).
         ("stop-failure", "claude"),
+        // Codex has no `ListAgents` tool to wake sleeping sessions for.
+        ("list-agents", "claude"),
         // Claude Code never says it was interrupted (`ws::note_interrupt`).
         ("interrupt", "codex"),
         // Codex has no `Notification` event; its permission prompt arrives as
