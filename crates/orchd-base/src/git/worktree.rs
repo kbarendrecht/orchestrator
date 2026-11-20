@@ -835,9 +835,10 @@ pub fn swap_branches(main: &Path, worktree: &Path, base: Option<&str>) -> Result
     Taken as a name, it let main take the worktree's branch and then failed in
     step three on `git switch -c HEAD`, with a rollback that could not put main
     back on a branch it never had (#50). Refused here, before anything moves,
-    except for a worktree detached at the base, which gives main the base branch.
-    Only *at* the base: its work is re-applied on the base branch in main, and a
-    detached commit of its own would lose that commit and could conflict. */
+    except for a worktree detached on the base, which gives main the base branch.
+    Only *on* the base, at it or behind it: its work is re-applied on the base
+    branch in main, and a commit of its own would be dropped. Behind is allowed
+    because somebody may have moved the base branch while main was off it. */
     let mut returns_to_base = None;
     for (tree, branch) in [(main, &main_branch), (worktree, &tree_branch)] {
         if branch != "HEAD" {
@@ -845,16 +846,21 @@ pub fn swap_branches(main: &Path, worktree: &Path, base: Option<&str>) -> Result
         }
         if tree == worktree {
             if let Some(b) = base {
-                let at =
-                    |cwd: &Path, rev: &str| git(cwd, &["rev-parse", "--verify", "-q", rev]).ok();
-                if at(worktree, "HEAD").is_some()
-                    && at(worktree, "HEAD") == at(main, &format!("refs/heads/{b}"))
-                {
+                let on_base = git_ok(
+                    worktree,
+                    &[
+                        "merge-base",
+                        "--is-ancestor",
+                        "HEAD",
+                        &format!("refs/heads/{b}"),
+                    ],
+                );
+                if on_base {
                     returns_to_base = Some(b);
                     continue;
                 }
                 bail!(
-                    "{} is on a detached HEAD that is not {b}, so it has no branch to \
+                    "{} is on a detached HEAD that is not on {b}, so it has no branch to \
                      exchange; check a branch out there first",
                     tree.display()
                 );
@@ -865,6 +871,11 @@ pub fn swap_branches(main: &Path, worktree: &Path, base: Option<&str>) -> Result
              check a branch out there first",
             tree.display()
         );
+    }
+    // Main on the base and the worktree detached on it: neither has a branch the
+    // other wants, and going ahead would move the sessions for nothing.
+    if let (Some(b), Some(_)) = (leaves_base, returns_to_base) {
+        bail!("both are on {b}, so there is nothing to exchange");
     }
     let main_gets = returns_to_base.unwrap_or(&tree_branch).to_string();
     // The worktree back where it was after a failure: on its branch, or still

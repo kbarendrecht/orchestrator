@@ -1532,15 +1532,46 @@ fn a_swap_keeps_the_base_branch_out_of_the_worktree_and_back() {
         "the story\n"
     );
 
-    // A worktree detached anywhere but the base has a commit main would drop.
-    git(&tree, &["switch", "-q", "--detach"]).unwrap();
-    git(&tree, &["commit", "-qam", "detached work"]).unwrap();
+    // Both on the base is nothing to exchange, and refused before anything moves.
+    git(&tree, &["switch", "-q", "--detach", "develop"]).unwrap();
+    let Err(e) = swap_branches(&main, &tree, Some("develop")) else {
+        panic!("a swap of develop with develop went ahead");
+    };
+    assert!(format!("{e:#}").contains("nothing to exchange"), "{e:#}");
+    assert_eq!(
+        current_branch(&tree).unwrap(),
+        "HEAD",
+        "the worktree did not move"
+    );
+
+    // Behind the base is still on it: somebody moved develop while main was off it.
     git(&main, &["switch", "-q", "-c", "other"]).unwrap();
+    git(&main, &["switch", "-q", "develop"]).unwrap();
+    git(
+        &main,
+        &["commit", "-q", "--allow-empty", "-m", "develop moved"],
+    )
+    .unwrap();
+    git(&main, &["switch", "-q", "other"]).unwrap();
+    let s = swap_branches(&main, &tree, Some("develop")).expect("behind the base");
+    assert_eq!(
+        (s.main_now.as_str(), s.worktree_now.as_str()),
+        ("develop", "other")
+    );
+
+    // A worktree detached off the base has a commit main would drop.
+    git(&tree, &["switch", "-q", "--detach"]).unwrap();
+    git(
+        &tree,
+        &["commit", "-q", "--allow-empty", "-m", "detached work"],
+    )
+    .unwrap();
+    git(&main, &["switch", "-q", "story"]).unwrap();
     let Err(e) = swap_branches(&main, &tree, Some("develop")) else {
         panic!("a worktree off the base went ahead");
     };
-    assert!(format!("{e:#}").contains("not develop"), "{e:#}");
-    assert_eq!(current_branch(&main).unwrap(), "other", "main did not move");
+    assert!(format!("{e:#}").contains("not on develop"), "{e:#}");
+    assert_eq!(current_branch(&main).unwrap(), "story", "main did not move");
 
     let _ = std::fs::remove_dir_all(&dir);
 }
