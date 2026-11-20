@@ -31,11 +31,12 @@ export async function run(t) {
 
   const r = await t.api('POST', '/api/workspace/invoice/swap-main')
 
-  // The branches traded places.
+  // The worktree's branch went into main, and the base did not go the other way:
+  // the worktree is detached at it, so main can always take its base back.
   assert.equal(r.main, 'worktree-invoice')
-  assert.equal(r.worktree, 'main')
+  assert.equal(r.worktree, 'HEAD')
   assert.equal(branchOf(t.repo), 'worktree-invoice')
-  assert.equal(branchOf(dir), 'main')
+  assert.equal(branchOf(dir), 'HEAD')
   assert.equal(r.wip_error ?? null, null, 'the banked work should have re-applied')
 
   // Both directories are still there. "Swapping into main" is not a move.

@@ -756,7 +756,7 @@ fn a_wip_that_cannot_reapply_still_leaves_the_branches_swapped() {
     // the apply has nowhere to put main's copy.
     std::fs::write(tree.join("x.txt"), "already here, untracked\n").unwrap();
 
-    let s = swap_branches(&main, &tree).expect("a failed re-apply is not a failed swap");
+    let s = swap_branches(&main, &tree, None).expect("a failed re-apply is not a failed swap");
     assert_eq!(current_branch(&main).unwrap(), "feature/b");
     assert_eq!(current_branch(&tree).unwrap(), "main");
     let why = s.wip_error.expect("the re-apply failure is reported");
@@ -1343,7 +1343,7 @@ fn swapping_exchanges_two_branches_and_is_its_own_inverse() {
         "unexpected refusal: {naive:#}"
     );
 
-    let s = swap_branches(&main, &tree).expect("the swap");
+    let s = swap_branches(&main, &tree, None).expect("the swap");
     assert_eq!(
         (s.main_now.as_str(), s.worktree_now.as_str()),
         ("feature/b", "main")
@@ -1362,7 +1362,7 @@ fn swapping_exchanges_two_branches_and_is_its_own_inverse() {
 
     // Swapping again is the undo, which is what makes the menu item safe to
     // press twice.
-    swap_branches(&main, &tree).expect("swap back");
+    swap_branches(&main, &tree, None).expect("swap back");
     assert_eq!(current_branch(&main).unwrap(), "main");
     assert_eq!(current_branch(&tree).unwrap(), "feature/b");
 
@@ -1377,7 +1377,7 @@ fn swapping_exchanges_two_branches_and_is_its_own_inverse() {
     std::fs::write(tree.join("staged.txt"), "staged in the worktree\n").unwrap();
     git(&tree, &["add", "staged.txt"]).unwrap();
 
-    let s = swap_branches(&main, &tree).expect("swap with work in both trees");
+    let s = swap_branches(&main, &tree, None).expect("swap with work in both trees");
     assert!(
         s.wip_error.is_none(),
         "both sides re-applied: {:?}",
@@ -1408,7 +1408,7 @@ fn swapping_exchanges_two_branches_and_is_its_own_inverse() {
     );
 
     // Nothing was left banked behind either: a clean tree means no reset ran.
-    swap_branches(&main, &tree).expect("swap back with the work");
+    swap_branches(&main, &tree, None).expect("swap back with the work");
     assert_eq!(
         std::fs::read_to_string(tree.join("f.txt")).unwrap(),
         "the worktree was editing this\n",
@@ -1424,7 +1424,10 @@ fn swapping_exchanges_two_branches_and_is_its_own_inverse() {
     .unwrap();
     git(&same, &["switch", "-q", "-c", "third"]).unwrap();
     git(&same, &["switch", "-q", "--detach"]).unwrap();
-    assert!(swap_branches(&main, &main).is_err(), "main against itself");
+    assert!(
+        swap_branches(&main, &main, None).is_err(),
+        "main against itself"
+    );
 
     /* **A detached checkout is refused before anything moves** (#50). Its branch
     reads as `HEAD`, and the swap used to hand main the worktree's branch, fail
@@ -1432,7 +1435,7 @@ fn swapping_exchanges_two_branches_and_is_its_own_inverse() {
     there to show the refusal also leaves the work where it was. */
     std::fs::write(tree.join("f.txt"), "still editing\n").unwrap();
     git(&main, &["switch", "-q", "--detach"]).unwrap();
-    let Err(e) = swap_branches(&main, &tree) else {
+    let Err(e) = swap_branches(&main, &tree, None) else {
         panic!("main is detached, and the swap went ahead");
     };
     assert!(format!("{e:#}").contains("detached HEAD"), "{e:#}");
@@ -1449,11 +1452,95 @@ fn swapping_exchanges_two_branches_and_is_its_own_inverse() {
     );
     git(&main, &["switch", "-q", "main"]).unwrap();
     git(&tree, &["switch", "-q", "--detach"]).unwrap();
-    let Err(e) = swap_branches(&main, &tree) else {
+    let Err(e) = swap_branches(&main, &tree, None) else {
         panic!("the worktree is detached, and the swap went ahead");
     };
     assert!(format!("{e:#}").contains("detached HEAD"), "{e:#}");
     assert_eq!(current_branch(&main).unwrap(), "main", "main did not move");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The base branch never goes into a worktree (#60): a swap off it detaches the
+/// worktree at it, and the swap back gives main the base branch again. Work in
+/// both trees, so the crosswise carry is exercised on the detached side too.
+#[test]
+fn a_swap_keeps_the_base_branch_out_of_the_worktree_and_back() {
+    let dir = std::env::temp_dir().join(format!(
+        "orchd-swap-base-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let main = dir.join("repo");
+    git(&dir, &["init", "-q", "-b", "develop", "repo"]).unwrap();
+    git(&main, &["config", "user.email", "t@t"]).unwrap();
+    git(&main, &["config", "user.name", "t"]).unwrap();
+    std::fs::write(main.join("f.txt"), "base\n").unwrap();
+    git(&main, &["add", "-A"]).unwrap();
+    git(&main, &["commit", "-qm", "base"]).unwrap();
+    let tree = main.join(".claude/worktrees/w");
+    git(
+        &main,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "story",
+            tree.to_str().unwrap(),
+        ],
+    )
+    .unwrap();
+    std::fs::write(main.join("f.txt"), "main on develop\n").unwrap();
+    std::fs::write(tree.join("f.txt"), "the story\n").unwrap();
+
+    let s = swap_branches(&main, &tree, Some("develop")).expect("into main");
+    assert_eq!(
+        (s.main_now.as_str(), s.worktree_now.as_str()),
+        ("story", "HEAD")
+    );
+    assert!(s.wip_error.is_none(), "{:?}", s.wip_error);
+    assert_eq!(
+        current_branch(&tree).unwrap(),
+        "HEAD",
+        "detached, not develop"
+    );
+    assert_eq!(
+        git(&tree, &["rev-parse", "HEAD"]).unwrap(),
+        git(&main, &["rev-parse", "develop"]).unwrap(),
+        "at the base"
+    );
+    assert_eq!(
+        std::fs::read_to_string(tree.join("f.txt")).unwrap(),
+        "main on develop\n"
+    );
+
+    let s = swap_branches(&main, &tree, Some("develop")).expect("back out of main");
+    assert_eq!(
+        (s.main_now.as_str(), s.worktree_now.as_str()),
+        ("develop", "story")
+    );
+    assert!(s.wip_error.is_none(), "{:?}", s.wip_error);
+    assert_eq!(
+        std::fs::read_to_string(main.join("f.txt")).unwrap(),
+        "main on develop\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(tree.join("f.txt")).unwrap(),
+        "the story\n"
+    );
+
+    // A worktree detached anywhere but the base has a commit main would drop.
+    git(&tree, &["switch", "-q", "--detach"]).unwrap();
+    git(&tree, &["commit", "-qam", "detached work"]).unwrap();
+    git(&main, &["switch", "-q", "-c", "other"]).unwrap();
+    let Err(e) = swap_branches(&main, &tree, Some("develop")) else {
+        panic!("a worktree off the base went ahead");
+    };
+    assert!(format!("{e:#}").contains("not develop"), "{e:#}");
+    assert_eq!(current_branch(&main).unwrap(), "other", "main did not move");
 
     let _ = std::fs::remove_dir_all(&dir);
 }

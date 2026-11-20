@@ -1,7 +1,8 @@
 // Main reclaiming its base branch from the worktree that is holding it.
 //
-// A swap is what hands the base out: main rests on it, a worktree swaps in, and
-// the tree leaves holding base. Nothing can put main back until it comes home —
+// A swap no longer hands the base out (it detaches the worktree instead), but a
+// tree can still hold it: switched by hand, or left there by an older build.
+// Nothing can put main back until it comes home —
 // git allows one checkout per branch, so "main returns to base" is not refused but
 // *impossible*, and it surfaced days later as `fatal: 'main' is already used by
 // worktree at …` from four calls deep. `park_main` takes it back at the moment it
@@ -29,7 +30,8 @@ export async function run(t) {
 
   await t.api('POST', '/api/workspace/invoice/swap-main')
   assert.equal(branchOf(t.repo), 'worktree-invoice')
-  assert.equal(branchOf(dir), base, 'the swap is what hands the base out')
+  assert.equal(branchOf(dir), 'HEAD', 'the swap left the base in nobody')
+  git(dir, ['switch', '-q', base])
   const held = git(dir, ['rev-parse', 'HEAD'])
   const readme = fs.readFileSync(path.join(dir, 'README.md'), 'utf8')
 
@@ -79,7 +81,7 @@ export async function run(t) {
   await t.settled(second)
   const bdir = t.worktreePath('billing')
   await t.api('POST', '/api/workspace/billing/swap-main')
-  assert.equal(branchOf(bdir), base, 'the second swap hands the base out again')
+  git(bdir, ['switch', '-q', base])
   await until('the second conversation to arrive in main', async () =>
     (await t.session(second))?.workspace === 'main')
 

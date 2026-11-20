@@ -23,7 +23,7 @@ export async function run(t) {
 
   const r = await t.api('POST', '/api/workspace/invoice/swap-main', { session: inTree })
   assert.equal(branchOf(t.repo), 'worktree-invoice')
-  assert.equal(branchOf(dir), 'main')
+  assert.equal(branchOf(dir), 'HEAD', 'the base stays out of the worktree')
 
   // Off the response first, so a carry that failed says why instead of timing out.
   assert.equal(r.into_main?.error ?? null, null, `main got ${JSON.stringify(r.into_main)}`)

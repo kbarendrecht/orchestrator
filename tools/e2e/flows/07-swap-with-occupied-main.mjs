@@ -28,7 +28,7 @@ export async function run(t) {
   const r = await t.api('POST', '/api/workspace/invoice/swap-main')
   assert.equal(r.wip_error ?? null, null)
   assert.equal(branchOf(t.repo), 'worktree-invoice')
-  assert.equal(branchOf(dir), 'main')
+  assert.equal(branchOf(dir), 'HEAD', 'the base stays out of the worktree')
 
   // Each tree's work followed its own branch, crosswise.
   assert.equal(

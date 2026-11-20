@@ -213,6 +213,7 @@ async fn swap_with_main_inner(
     // Uncommitted work is carried, not refused — see `git::swap_branches`. Only a
     // stopped rebase is still a refusal: a tree mid-rebase cannot switch at all.
     let (m, t) = (main.clone(), tree.clone());
+    let base = app.cfg.base();
     let (swapped, carried) = tokio::task::spawn_blocking(
         move || -> anyhow::Result<(crate::git::Swap, crate::git::Carried)> {
             for (label, path) in [("the main checkout", &m), ("this worktree", &t)] {
@@ -231,7 +232,8 @@ async fn swap_with_main_inner(
             // your checkout, and what is untracked there is as often the machine's
             // as any session's, which nothing here can tell apart.
             let left = crate::git::untracked_in(&t, None)?;
-            let swapped = crate::git::swap_branches(&m, &t)?;
+            let base = base.checkout_branch(&m);
+            let swapped = crate::git::swap_branches(&m, &t, base.as_deref())?;
             let carried = crate::git::carry_untracked(&t, &m, &left);
             Ok((swapped, carried))
         },
@@ -246,7 +248,11 @@ async fn swap_with_main_inner(
     rather than guarded, because the exchange has already happened and the
     branches are where git says they are; what is uncertain is only who should
     follow them. */
-    if swapped.main_now != tree_was || swapped.worktree_now != main_was {
+    /* The base branch is the one exception (`git::swap_branches`): it stays out
+    of the worktree, which is detached instead, and a detached worktree hands
+    main the base branch rather than a `HEAD`. */
+    let traded = |now: &str, was: &str| now == was || now == "HEAD" || was == "HEAD";
+    if !traded(&swapped.main_now, &tree_was) || !traded(&swapped.worktree_now, &main_was) {
         tracing::warn!(
             %workspace,
             "the branches moved between reading them ({main_was} in main, {tree_was} here) \
@@ -267,6 +273,9 @@ async fn swap_with_main_inner(
     // world git no longer agrees with, which is worse than the failure itself.
     app.forget_branch(&workspace, &swapped.main_now).await;
     app.forget_branch(MAIN, &swapped.worktree_now).await;
+    // Main gave the base branch away to nobody when the worktree was detached
+    // instead, and the reconcile below adds back whatever main still holds.
+    app.forget_branch(MAIN, &main_was).await;
 
     // Both panes describe a tree whose every file just changed.
     let _ = app.reconcile(MAIN).await;
@@ -693,10 +702,15 @@ async fn undo_swap(
     } = undo;
     let mut left = Vec::new();
     let (m, t) = (main.to_path_buf(), tree.to_path_buf());
+    let base = app.cfg.base();
     // The files first, while main still holds the branch they belong to.
     let back = tokio::task::spawn_blocking(move || {
         let files_back = crate::git::carry_untracked(&m, &t, &files);
-        (files_back, crate::git::swap_branches(&m, &t))
+        let base = base.checkout_branch(&m);
+        (
+            files_back,
+            crate::git::swap_branches(&m, &t, base.as_deref()),
+        )
     })
     .await
     .map(|(files_back, swapped_back)| {
@@ -1045,6 +1059,72 @@ mod tests {
             "worktree-wt",
             "the tree moved"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// With a remote base, main's local base branch is not handed to the worktree
+    /// either (#60): the worktree is detached at it, and the swap back out of main
+    /// puts main on it again.
+    #[tokio::test]
+    async fn a_swap_off_the_base_detaches_the_worktree_and_swaps_back() {
+        let dir = crate::testutil::scratch("swap-remote-base");
+        let git = |at: &std::path::Path, args: &[&str]| crate::testutil::git(at, args);
+        git(&dir, &["init", "-q", "-b", "develop"]);
+        git(
+            &dir,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "a",
+            ],
+        );
+        let wt = dir.join("wt");
+        git(
+            &dir,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "story",
+                &wt.to_string_lossy(),
+            ],
+        );
+
+        let app = crate::testutil::app_at(&dir, r#""upstream_ref":"upstream/develop""#);
+        app.inner.write().await.workspaces.insert(
+            "wt".into(),
+            crate::model::Workspace {
+                id: "wt".into(),
+                path: wt.clone(),
+                kind: crate::model::WorkspaceKind::Worktree { name: "wt".into() },
+                branches: Default::default(),
+                processes: Vec::new(),
+                occupant: None,
+                tree: Default::default(),
+                banked: None,
+            },
+        );
+        let branches = || {
+            (
+                crate::git::current_branch(&dir).unwrap(),
+                crate::git::current_branch(&wt).unwrap(),
+            )
+        };
+        if let Err(e) = swap_with_main_inner(app.clone(), "wt".into(), None).await {
+            panic!("into main: {:#}", e.0);
+        }
+        assert_eq!(branches(), ("story".into(), "HEAD".into()));
+        if let Err(e) = swap_with_main_inner(app, "wt".into(), None).await {
+            panic!("back out of main: {:#}", e.0);
+        }
+        assert_eq!(branches(), ("develop".into(), "story".into()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

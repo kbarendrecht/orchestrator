@@ -3266,8 +3266,8 @@ mod tests {
 
         // --- and now the case that could not be fixed from inside main ---
         //
-        // A worktree holding base is what a swap leaves behind when main was resting
-        // on base, and `git switch main` in main then fails outright.
+        // A worktree holding base, switched there by hand or by an older build's swap,
+        // and `git switch main` in main then fails outright.
         let tree = repo.join(".claude/worktrees/w");
         git(
             &["worktree", "add", "-q", tree.to_str().unwrap(), "feature/x"],

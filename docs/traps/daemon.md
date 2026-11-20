@@ -115,14 +115,17 @@ branch nobody is about is parked, and a dirty main with nobody about it is still
 left alone: there is no conversation to keep the work beside.
 **The other half is that base can be somewhere else entirely.** Git allows one
 checkout per branch, so a worktree sitting on `develop` makes main's return
-*impossible* rather than refused, and a swap is how it gets there: main resting
+*impossible* rather than refused. A swap used to be how it got there: main resting
 on base, a worktree swapped in, base handed out as the exchange. It surfaced days
 later as `fatal: 'develop' is already used by worktree at …` from four calls deep
-inside `move_branch_out`. So `park_main` reclaims it — `git::holder_of_branch`
+inside `move_branch_out`, and the swap back out of main was refused too, since a
+tree on base has nothing to trade for main's branch (#60). **The swap no longer
+hands it out**: `git::swap_branches` detaches the worktree at base instead, and a
+worktree detached at base gives main the base branch on the way back. A tree can
+still hold base by hand or from an older build, so `park_main` reclaims it — `git::holder_of_branch`
 finds the tree and `git::release_branch` gives that tree a `worktree-<name>` at
 the commit it already has, so every file and commit stays put and only the name
-changes. Reclaimed at park rather than refused at the swap, because pressing swap
-twice has to stay the undo. Two things it will not do: a tree with a **live
+changes. Two things it will not do: a tree with a **live
 session** keeps its branch (a name changing under a working agent is a surprise
 the log cannot undo) and a directory that is not a workspace of ours is never
 touched; both leave main where it is and say why.

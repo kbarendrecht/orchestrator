@@ -816,25 +816,63 @@ pub struct Swap {
 /// fails with the worktree *detached* — a state nobody asked for. So a failure
 /// there puts the worktree back on its own branch before returning the error, and
 /// the caller sees "nothing happened" rather than a repo it has to unpick.
-pub fn swap_branches(main: &Path, worktree: &Path) -> Result<Swap> {
+///
+/// # The base branch stays home
+///
+/// `base` is the local branch of the base (`develop` for `upstream/develop`).
+/// When main is on it, the worktree gets that commit **detached** instead of the
+/// branch: a worktree that holds the base branch keeps main from ever going back
+/// to it, and a swap back out of main then has no branch to exchange (#60). The
+/// other way round, a worktree detached at the base gives main the base branch.
+pub fn swap_branches(main: &Path, worktree: &Path, base: Option<&str>) -> Result<Swap> {
     let main_branch = current_branch(main)?;
     let tree_branch = current_branch(worktree)?;
     if main_branch == tree_branch {
         bail!("both are on {main_branch}, so there is nothing to exchange");
     }
+    let leaves_base = base.filter(|b| *b == main_branch);
     /* **A detached tree has no branch to give, and `current_branch` says `HEAD`.**
     Taken as a name, it let main take the worktree's branch and then failed in
     step three on `git switch -c HEAD`, with a rollback that could not put main
-    back on a branch it never had (#50). Refused here, before anything moves. */
+    back on a branch it never had (#50). Refused here, before anything moves,
+    except for a worktree detached at the base, which gives main the base branch.
+    Only *at* the base: its work is re-applied on the base branch in main, and a
+    detached commit of its own would lose that commit and could conflict. */
+    let mut returns_to_base = None;
     for (tree, branch) in [(main, &main_branch), (worktree, &tree_branch)] {
-        if branch == "HEAD" {
-            bail!(
-                "{} is on a detached HEAD, so it has no branch to exchange; \
-                 check a branch out there first",
-                tree.display()
-            );
+        if branch != "HEAD" {
+            continue;
         }
+        if tree == worktree {
+            if let Some(b) = base {
+                let at =
+                    |cwd: &Path, rev: &str| git(cwd, &["rev-parse", "--verify", "-q", rev]).ok();
+                if at(worktree, "HEAD").is_some()
+                    && at(worktree, "HEAD") == at(main, &format!("refs/heads/{b}"))
+                {
+                    returns_to_base = Some(b);
+                    continue;
+                }
+                bail!(
+                    "{} is on a detached HEAD that is not {b}, so it has no branch to \
+                     exchange; check a branch out there first",
+                    tree.display()
+                );
+            }
+        }
+        bail!(
+            "{} is on a detached HEAD, so it has no branch to exchange; \
+             check a branch out there first",
+            tree.display()
+        );
     }
+    let main_gets = returns_to_base.unwrap_or(&tree_branch).to_string();
+    // The worktree back where it was after a failure: on its branch, or still
+    // detached, which it never left.
+    let tree_home = || match returns_to_base {
+        Some(_) => Ok(()),
+        None => switch_branch(worktree, &tree_branch),
+    };
 
     // Uncommitted work travels with its branch, or the swap moves the code and
     // leaves the edits behind — which is worse than refusing, because you would
@@ -872,10 +910,10 @@ pub fn swap_branches(main: &Path, worktree: &Path) -> Result<Swap> {
         return Err(home(e, &tree_wip));
     }
 
-    if let Err(e) = switch_branch(main, &tree_branch) {
+    if let Err(e) = switch_branch(main, &main_gets) {
         // Undo the detach, or the worktree is left off its branch for a failure
         // that changed nothing else.
-        if let Err(back) = switch_branch(worktree, &tree_branch) {
+        if let Err(back) = tree_home() {
             return Err(home(
                 anyhow::anyhow!(
                     "{e:#} — and {} could not be put back on {tree_branch}: {back:#}",
@@ -885,12 +923,16 @@ pub fn swap_branches(main: &Path, worktree: &Path) -> Result<Swap> {
             ));
         }
         return Err(home(
-            e.context(format!("{} could not take {tree_branch}", main.display())),
+            e.context(format!("{} could not take {main_gets}", main.display())),
             &tree_wip,
         ));
     }
 
-    if let Err(e) = switch_branch(worktree, &main_branch) {
+    let tree_took = match leaves_base {
+        Some(b) => git(worktree, &["switch", "--detach", "-q", b]).map(|_| ()),
+        None => switch_branch(worktree, &main_branch),
+    };
+    if let Err(e) = tree_took {
         // Main already moved. Putting it back frees `tree_branch` again, so the
         // worktree can return to it and the pair is where it started.
         //
@@ -898,10 +940,9 @@ pub fn swap_branches(main: &Path, worktree: &Path) -> Result<Swap> {
         // results were dropped, and the error said "both were put back" over a
         // main still on the worktree's branch and a worktree left detached (#50).
         let undone = switch_branch(main, &main_branch)
-            .with_context(|| format!("main is still on {tree_branch}"))
+            .with_context(|| format!("main is still on {main_gets}"))
             .and_then(|()| {
-                switch_branch(worktree, &tree_branch)
-                    .with_context(|| format!("{} is left detached", worktree.display()))
+                tree_home().with_context(|| format!("{} is left detached", worktree.display()))
             });
         let said = match undone {
             Ok(()) => format!(
@@ -932,8 +973,13 @@ pub fn swap_branches(main: &Path, worktree: &Path) -> Result<Swap> {
     }
 
     Ok(Swap {
-        main_now: tree_branch,
-        worktree_now: main_branch,
+        main_now: main_gets,
+        // `HEAD` is what `current_branch` reads for a detached tree, so the caller
+        // stamps and compares the same word it would read back.
+        worktree_now: match leaves_base {
+            Some(_) => "HEAD".to_string(),
+            None => main_branch,
+        },
         wip_error: carried.err().map(|e| format!("{e:#}")),
     })
 }
