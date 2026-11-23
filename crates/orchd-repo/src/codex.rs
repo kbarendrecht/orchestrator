@@ -260,7 +260,7 @@ fn list_hooks(
         .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null());
+        .stderr(std::process::Stdio::piped());
     for k in unset {
         cmd.env_remove(k);
     }
@@ -269,6 +269,18 @@ fn list_hooks(
         .with_context(|| format!("running {} app-server", exe.display()))?;
     let mut stdin = child.stdin.take().context("no stdin")?;
     let stdout = child.stdout.take().context("no stdout")?;
+    // Drained on its own thread so a chatty server never blocks on a full pipe,
+    // and kept because it is the only place a server that exits says why: a
+    // mise shim in an untrusted worktree prints its refusal there and nowhere else.
+    // Never joined: `codex` is a node wrapper, and a native child that outlives
+    // the kill can hold the pipe open.
+    let stderr = child.stderr.take().context("no stderr")?;
+    let (said_tx, said) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut text = String::new();
+        let _ = std::io::Read::read_to_string(&mut std::io::BufReader::new(stderr), &mut text);
+        let _ = said_tx.send(text);
+    });
     let cwd_json = serde_json::to_string(&cwd.to_string_lossy())?;
     let ask = format!(
         "{}\n{}\n{}\n",
@@ -298,7 +310,16 @@ fn list_hooks(
     drop(stdin);
     let _ = child.kill();
     let _ = child.wait();
-    let answer = answer.context("codex app-server did not answer hooks/list")?;
+    let answer = answer.with_context(|| {
+        match said
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap_or_default()
+            .trim()
+        {
+            "" => "codex app-server did not answer hooks/list".to_string(),
+            said => format!("codex app-server did not answer hooks/list, and said: {said}"),
+        }
+    })?;
     if let Some(e) = answer.get("error") {
         bail!("hooks/list refused: {e}");
     }
@@ -539,6 +560,20 @@ mod tests {
         assert_eq!(
             hook_overrides(Ok(r#"["hooks.Stop=[]"]"#.into())).unwrap(),
             ["hooks.Stop=[]"]
+        );
+    }
+
+    /// A server that exits without answering says why in the error. `sh
+    /// app-server` stands in for a mise shim refusing an untrusted worktree: it
+    /// prints to stderr and exits, and that print used to go to `/dev/null`.
+    #[test]
+    fn a_server_that_exits_says_why() {
+        let err =
+            list_hooks(Path::new("/bin/sh"), &std::env::temp_dir(), &[], &[], &[]).unwrap_err();
+        let err = format!("{err:#}");
+        assert!(
+            err.contains("and said:") && err.contains("No such file"),
+            "{err}"
         );
     }
 
