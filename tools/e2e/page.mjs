@@ -389,8 +389,7 @@ try {
   check(await page.$eval('#filestitle', (b) => b.getAttribute('aria-pressed') === 'true'),
     'pressing Changes from the tree goes back to the changes, not to the base menu')
   /* **The Changes view is a tree** of the changed files alone (#46): no row
-     without a change, a changed file carries its counts, and a right-click on it
-     is the row's git menu. */
+     without a change, and a right-click on a changed file is the row's git menu. */
   // A change to show: at this point the worktree has none.
   const treeMark = path.join(t.worktreePath('page'), 'tree-mark.txt')
   fs.writeFileSync(treeMark, 'x\n')
@@ -401,8 +400,6 @@ try {
     r.classList.contains('dir') ? !r.querySelector('.tdot') : !!r.querySelector('.tcd')))
   check(treeShown && changedOnly, `the Changes view is a tree with no file row without a change and no folder dot, got ${JSON.stringify(
     await page.$$eval('#filepanes > *', (rows) => rows.slice(0, 6).map((r) => r.className + ':' + (r.textContent ?? '').trim())))}`)
-  check(treeShown && await page.$eval(markRow, (r) => r.querySelector('.dfnum')?.textContent === 'new'),
-    'and an untracked file says it is new')
   if (treeShown) {
     await page.click(markRow, { button: 'right' })
     const staged = await page.locator('#ctxmenu:not([hidden]) button', { hasText: 'stage' }).waitFor({ timeout: 5000 })

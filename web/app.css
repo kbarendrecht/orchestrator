@@ -2187,10 +2187,6 @@ button.settings-co[aria-selected="true"]{color:var(--text);background:var(--rais
   border-top:1px solid var(--line-soft);border-bottom:1px solid var(--line);
 }
 
-/* a changed file's line counts, in the changes tree */
-.dfnum{font-size:calc(9px * var(--fs));color:var(--faint-solid);letter-spacing:-.02em;white-space:nowrap}
-.dfnum .p{color:var(--ok)}.dfnum .m{color:var(--bad)}
-
 /* ---------- PR group (§9) ---------- */
 /* At 4-6 sessions plus PRs the rail runs long, so PR rows stay single-line. */
 /* Pinned to the bottom of the rail and scrolling within itself, so a long

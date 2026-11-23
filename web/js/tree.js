@@ -147,8 +147,8 @@ function sorted(/** @type {Folder} */ f) {
  *  `onlyChanged` keeps only the folders and files that hold a change: the
  *  changed files grouped by folder, as JetBrains' "group by directory" lists
  *  them (#46). Its folders start open, since the point is to see the files, and
- *  one closed by hand stays closed. Its file rows carry their line counts, and
- *  `menu` is what a right-click on one offers.
+ *  one closed by hand stays closed. `menu` is what a right-click on one of its
+ *  file rows offers.
  *
  *  @param {{ pick?: (path: string, ev: MouseEvent) => void, picked?: string | null, onlyChanged?: boolean,
  *            menu?: (f: import('../base').DiffFile) => import('./core.js').MenuItem[] }} [how]
@@ -303,7 +303,6 @@ function fileRow(
   const row = el('button', 'trow' + (st === 'D' ? ' gone' : '') + (inert ? ' inert' : '') + (on ? ' on' : ''));
   row.style.setProperty('--d', String(depth));
   row.append(icon('tic', 1.3, ...FILE), el('span', 'tname', leaf(path)));
-  if (f) row.appendChild(counts(f));
   /* The letter is the class: `.tcd.M`, `.tcd.A`, `.tcd.D`, `.tcd.R`, and `?` for
      untracked, which CSS spells `.tcd.U`. */
   if (st) row.appendChild(el('span', 'tcd ' + (st === '?' ? 'U' : st)));
@@ -311,13 +310,4 @@ function fileRow(
   if (!inert) row.onclick = (ev) => (pick ? pick(path, ev) : void FileView.open(ws, [path], 0, undefined, ev));
   if (f && menu) row.oncontextmenu = (ev) => openMenu(ev, menu(f));
   return row;
-}
-
-/** `+12 −3`, `bin`, or `new` for an untracked file, which is all of it by definition. */
-function counts(/** @type {import('../base').DiffFile} */ f) {
-  const nums = el('span', 'dfnum');
-  if (f.binary) nums.textContent = 'bin';
-  else if (f.status === '?') nums.appendChild(el('span', 'p', 'new'));
-  else nums.append(el('span', 'p', `+${f.added}`), ' ', el('span', 'm', `\u2212${f.deleted}`));
-  return nums;
 }

@@ -427,7 +427,7 @@ function renderFiles() {
     : `${files.length} file${files.length === 1 ? '' : 's'}`];
   const lines = sum ?? listSum;
   if (w.is_main) bits.push('worktrees excluded');
-  /* The totals in the list's own green and red, as each row draws its counts. */
+  /* The totals in green and red. */
   const foot = $('filesfoot');
   if (counted || (!fetched && w.measured)) {
     foot.replaceChildren(bits[0] ?? '');
