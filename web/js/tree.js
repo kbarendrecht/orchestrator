@@ -204,7 +204,28 @@ export function render(mount, ws, changed, redraw, how = {}) {
   let set = marks.get(ws);
   if (!set) marks.set(ws, set = new Set());
   const toggled = set;
-  const isOpenDir = (/** @type {string} */ d) => (only ? !toggled.has(d) : toggled.has(d));
+  const isMarked = (/** @type {string} */ d) => holds.has(d) || inFresh(`${d}/`);
+  const statusOf = (/** @type {string} */ p) => status.get(p) ?? (inFresh(p) ? '?' : '');
+  // `src/new/` is a folder git reported whole, already drawn as one.
+  const shownFiles = (/** @type {Folder} */ f) => sorted(f).files.filter((p) => !p.endsWith('/') && (!only || statusOf(p)));
+  /* A folder the whole tree has not listed yet looks like it holds less than it
+     does, so a chain never merges through one: a left-out folder until opened, or
+     any folder in a list cut off at its cap. */
+  const listed = (/** @type {string} */ d) => only || !(state.truncated || (state.big.has(d) && !Array.isArray(state.under.get(d))));
+  /** A folder that holds one folder and no files is drawn as one row with it,
+   *  `demo-app/src/app/`, down to the first folder that holds more (#62). */
+  const chain = (/** @type {string} */ top) => {
+    const paths = [top];
+    for (let d = top; listed(d);) {
+      const f = tree.get(d);
+      if (!f) break;
+      const dirs = only ? sorted(f).dirs.filter(isMarked) : sorted(f).dirs;
+      const next = dirs[0];
+      if (dirs.length !== 1 || next === undefined || shownFiles(f).length) break;
+      paths.push(d = next);
+    }
+    return paths;
+  };
 
   /** @type {{ key: string, sig: string, build: () => Element }[]} */
   const items = [];
@@ -212,21 +233,27 @@ export function render(mount, ws, changed, redraw, how = {}) {
     const f = tree.get(dir);
     if (!f) return;
     const order = sorted(f);
-    for (const d of order.dirs) {
-      const marked = holds.has(d) || inFresh(`${d}/`);
+    for (const top of order.dirs) {
+      const marked = isMarked(top);
       if (only && !marked) continue;
-      const isOpen = isOpenDir(d);
+      const paths = chain(top);
+      const d = paths[paths.length - 1] ?? top;
+      /* Open or closed is kept on any folder of the chain, since the chain grows
+         and splits as files come and go, and a mark left on a folder that is now
+         in the middle of one still counts. */
+      const isOpen = only !== paths.some((p) => toggled.has(p));
       const big = state.big.has(d);
       const got = state.under.get(d);
       const note = got === 'loading' ? 'listing…' : typeof got === 'string' ? got : '';
+      const names = paths.map(leaf);
       items.push({
         key: `td:${d}`,
-        sig: paintSig([isOpen, marked, note, depth]),
+        sig: paintSig([isOpen, marked, note, depth, names]),
         // Every folder in the changed-only tree holds a change, so a dot there says nothing.
-        build: () => dirRow(d, depth, isOpen, marked && !only, note, () => {
-          if (toggled.has(d)) toggled.delete(d);
-          else toggled.add(d);
-          if (isOpenDir(d)) {
+        build: () => dirRow(d, names, depth, isOpen, marked && !only, note, () => {
+          for (const p of paths) toggled.delete(p);
+          if (only === isOpen) toggled.add(d);
+          if (!isOpen) {
             /* A big ignored folder is never in the list, and in a list cut off
                at its cap any folder may be missing part of what is in it, so
                either is listed on its own when opened. */
@@ -238,11 +265,8 @@ export function render(mount, ws, changed, redraw, how = {}) {
       });
       if (isOpen) walk(d, depth + 1);
     }
-    for (const p of order.files) {
-      // `src/new/` is a folder git reported whole, already drawn as one.
-      if (p.endsWith('/')) continue;
-      const st = status.get(p) ?? (inFresh(p) ? '?' : '');
-      if (only && !st) continue;
+    for (const p of shownFiles(f)) {
+      const st = statusOf(p);
       const on = p === how.picked;
       const f = only ? recordOf(p) : null;
       items.push({
@@ -276,14 +300,18 @@ const FILE = ['M9.3 2H4.6C3.7 2 3 2.7 3 3.6v8.8c0 .9.7 1.6 1.6 1.6h6.8c.9 0 1.6-
 /** What a change dot stands for, for its tooltip: the dot carries no letter. */
 const SAID = /** @type {Record<string, string>} */ ({ M: 'modified', A: 'added', D: 'deleted', R: 'renamed', '?': 'untracked' });
 
+/** `names` is the folder's chain, top first; all but the last are dimmed, so the
+ *  folder that holds the files is the one that reads. */
 function dirRow(
-  /** @type {string} */ dir, /** @type {number} */ depth, /** @type {boolean} */ isOpen,
+  /** @type {string} */ dir, /** @type {string[]} */ names, /** @type {number} */ depth, /** @type {boolean} */ isOpen,
   /** @type {boolean} */ holds, /** @type {string} */ note, /** @type {() => void} */ toggle,
 ) {
   const row = el('button', 'trow dir');
   row.style.setProperty('--d', String(depth));
   row.setAttribute('aria-expanded', String(isOpen));
-  row.append(icon('tic', 1.3, ...(isOpen ? FOLDER_OPEN : FOLDER)), el('span', 'tname', leaf(dir)));
+  const name = el('span', 'tname', names[names.length - 1]);
+  if (names.length > 1) name.prepend(el('span', 'tpre', names.slice(0, -1).map((n) => `${n}/`).join('')));
+  row.append(icon('tic', 1.3, ...(isOpen ? FOLDER_OPEN : FOLDER)), name);
   if (note) row.appendChild(el('span', 'ttag', note));
   if (holds) row.appendChild(el('span', 'tdot'));
   row.title = `${dir}/`;

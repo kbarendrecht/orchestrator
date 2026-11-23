@@ -1369,6 +1369,7 @@ kbd{
 .trow.dir .tic{color:var(--faint-solid)}
 .trow .tname{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .trow.dir .tname{color:var(--dim)}
+.trow .tpre{color:var(--ghost)}
 .trow.gone .tname{color:var(--ghost);text-decoration:line-through}
 .trow.inert{cursor:default}
 .trow .tdot,.trow .tcd{width:6px;height:6px;border-radius:50%;flex:none}
