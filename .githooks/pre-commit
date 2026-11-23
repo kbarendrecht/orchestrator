@@ -104,6 +104,26 @@ if printf '%s\n' "$staged" | grep -qE 'Cargo\.toml$|^\.github/workflows/release\
   node tools/check-ship.mjs >/dev/null || { node tools/check-ship.mjs; exit 1; }
 fi
 
+# The third-party notices, on any commit that moves a crate. `health` regenerates
+# and diffs them, and a `cargo update` that forgot `mise run notices` turned it red
+# after the push, where nothing stopped on it. ~8s, and only on a manifest or the
+# lock. Without `cargo about` it is left to `health`, which a release waits for.
+if printf '%s\n' "$staged" | grep -qE 'Cargo\.(toml|lock)$'; then
+  if command -v cargo-about >/dev/null 2>&1; then
+    fresh=$(mktemp)
+    cargo about generate --fail --workspace about.hbs > "$fresh" 2>/dev/null \
+      && cmp -s "$fresh" THIRD-PARTY-RUST.md
+    same=$?
+    rm -f "$fresh"
+    if [ "$same" != 0 ]; then
+      echo "pre-commit: THIRD-PARTY-RUST.md is stale: run 'mise run notices' and stage it" >&2
+      exit 1
+    fi
+  else
+    echo "pre-commit: cargo-about is missing, so the notices are left to health (see mise.toml § notices)" >&2
+  fi
+fi
+
 web=0
 rust=0
 e2e=0
