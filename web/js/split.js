@@ -32,30 +32,33 @@ function paint() {
   document.body.classList.toggle('agentsplit', state.on);
   document.body.classList.toggle('agentsplit-open', state.on && state.open);
   const fold = $('agentfold');
-  fold.textContent = state.open ? 'Collapse' : 'Expand';
   fold.title = state.open ? 'Collapse to the session\'s header' : 'Show the conversation';
   fold.setAttribute('aria-expanded', String(state.open));
 }
 
 /** An overlay came up: the split is there, collapsed, when there is a live
- *  session to show. A second overlay over the first leaves it as it is. */
+ *  session to show. A second overlay over the first leaves it as it is.
+ *  True for the first one, which is where a read starts. */
 export function start(/** @type {string} */ owner) {
   const fresh = state.owners.size === 0;
   state.owners.add(owner);
-  if (!fresh) return;
+  if (!fresh) return false;
   const s = currentSession();
   state.on = !!(s && s.alive);
   state.open = false;
   paint();
+  return true;
 }
 
-/** An overlay went: the pane goes back to the column once none is left. */
+/** An overlay went: the pane goes back to the column once none is left.
+ *  True for the last one, which is where a read ends. */
 export function end(/** @type {string} */ owner) {
-  state.owners.delete(owner);
-  if (state.owners.size) return;
+  const had = state.owners.delete(owner);
+  if (!had || state.owners.size) return false;
   state.on = false;
   state.open = false;
   paint();
+  return true;
 }
 
 /** Open it and hand it the keyboard. False when there is no session to show. */

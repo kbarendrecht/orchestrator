@@ -3638,8 +3638,8 @@ try {
     })
     await page.keyboard.press(chord('Semicolon'))
     const bar = await box()
-    check(bar.h <= 40 && await page.$eval('#agentfold', (b) => b.textContent) === 'Expand',
-      `MOD ; collapses it to a bar that offers Expand, got ${JSON.stringify(bar)}`)
+    check(bar.h <= 40 && await page.$eval('#agentfold', (b) => b.getAttribute('aria-expanded')) === 'false',
+      `MOD ; collapses it to the bar, got ${JSON.stringify(bar)}`)
     await page.click('#agentfold')
     await page.waitForTimeout(200)
     const before = await box()
@@ -3722,11 +3722,35 @@ try {
         && document.getElementById('ovnotes')?.hidden ? text : null
     }, null, { timeout: 5000 }).then((h) => h.jsonValue()).catch(() => null)
     check(!!sent, 'Send types the batch with the removed line into the session, and the note goes')
+
+    /* A note kept and not sent goes when the diff closes: the read is done. Read
+       off the request rather than the terminal, because the stand-in agent
+       draws only the first batch typed into its prompt. */
+    /** @type {string[]} */
+    const told = []
+    const onTell = (/** @type {import('playwright-core').Request} */ r) => {
+      if (r.method() === 'POST' && r.url().endsWith('/tell')) told.push(r.postData() ?? '')
+    }
+    page.on('request', onTell)
+    await page.hover(del, { timeout: 5000 }).catch(() => {})
+    await page.click(`${del} > .nplus`).catch(() => {})
+    await page.waitForSelector('#overlay .notebox textarea', { timeout: 3000 }).catch(() => {})
+    await page.keyboard.type('sent on close')
+    await page.keyboard.press('Enter')
     fs.writeFileSync(readme, was)
     await page.evaluate(async () => {
       const Diff = await import('/js/diff.js')
       await Diff.close()
     })
+    const gone = await page.waitForFunction(async () => {
+      const core = await import('/js/core.js')
+      const notes = await import('/js/notes.js')
+      const s = core.currentSession()
+      return !!s && !notes.list(s.workspace).length
+    }, null, { timeout: 5000 }).then(() => true).catch(() => false)
+    page.off('request', onTell)
+    check(gone && told.length === 1 && told[0].includes('Review notes') && told[0].includes('sent on close'),
+      `closing the diff sends the notes added while it was open, and they go, got ${JSON.stringify({ gone, told })}`)
   }
 
   /* --- a file opened without a line marks none, and a click marks one -------- */

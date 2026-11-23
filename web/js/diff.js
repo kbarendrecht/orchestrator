@@ -1532,7 +1532,7 @@ async function openDiff(/** @type {string} */ path) {
   $('ovcount').textContent = '';
   drawMap();
   $('overlay').classList.add('on');
-  Split.start('diff');
+  if (Split.start('diff')) Notes.begin();
   notes();
   await loadSummary();
   const files = diffState.summary?.files ?? [];
@@ -1556,7 +1556,7 @@ async function closeDiff() {
   diffState.path = null;
   Notes.closeBox();
   $('overlay').classList.remove('on');
-  Split.end('diff');
+  if (Split.end('diff')) void Notes.sendAdded();
   returnFocus('diff', $('overlay'));
   renderFiles();
 }

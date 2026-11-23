@@ -1010,9 +1010,12 @@ body.agentsplit .termwrap{
   position:fixed;z-index:21;left:var(--rail);right:var(--files);bottom:0;
   height:var(--split);padding:0;overflow:hidden;border-top:1px solid var(--line);
 }
+/* Dressed as the processes bar: the same ground, padding and word on the left,
+   so the two bottom bars read as one kind of thing. */
 body.agentsplit .agenthead{
-  display:flex;align-items:center;gap:10px;position:absolute;top:0;left:0;right:0;height:36px;
-  padding:0 10px 0 16px;user-select:none;cursor:pointer;
+  display:flex;align-items:center;gap:8px;position:absolute;top:0;left:0;right:0;height:36px;
+  padding:0 16px 0 12px;user-select:none;cursor:pointer;
+  background:var(--panel-ground,var(--surface));
 }
 body.agentsplit-open .agenthead{cursor:row-resize;border-bottom:1px solid var(--line-soft)}
 body.agentsplit .agenthead .ctx-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}

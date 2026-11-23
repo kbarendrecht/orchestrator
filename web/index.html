@@ -308,9 +308,11 @@
            file (`body.agentsplit`, see split.js). Its name and dot are the
            context bar's, painted beside them in app.js. -->
       <div class="agenthead" id="agenthead" data-mod title="Drag to resize · double-click for the default height · MOD ;">
+        <!-- The title is the toggle, the way the drawer's word is: no button
+             beside it to aim at. -->
+        <button class="dcollapse" id="agentfold" type="button" aria-expanded="false"><span class="eyebrow">Agent</span></button>
         <span class="dot sdot" id="agentdot"></span>
         <span class="ctx-name" id="agentname"></span>
-        <button class="head-btn" id="agentfold" type="button" aria-expanded="false">Expand</button>
       </div>
       <!-- An empty pane is the one moment someone is looking for what to do, so it
            names the moves and their chords. MOD is resolved to the platform

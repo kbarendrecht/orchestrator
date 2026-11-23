@@ -31,10 +31,14 @@ const memory = new Map();
 const drafts = new Map();
 /** @type {View[]} */
 const views = [];
+/** The lines noted since the diff or the file opened, by `noteKey`: the ones a
+ *  close sends. Older notes wait for the Notes list. */
+const added = new Set();
 
 const keyOf = (/** @type {string} */ ws) => `orch.notes:${activeCheckout().path}:${ws}`;
 const draftKey = (/** @type {string} */ ws, /** @type {string} */ path, /** @type {Anchor} */ a) =>
   `${keyOf(ws)}\u0000${path}\u0000${a.side}\u0000${a.line}`;
+const noteKey = (/** @type {string} */ ws, /** @type {Note} */ n) => draftKey(ws, n.path, n);
 const same = (/** @type {Note} */ n, /** @type {string} */ path, /** @type {Anchor} */ a) =>
   n.path === path && n.side === a.side && n.line === a.line;
 
@@ -61,6 +65,7 @@ function store(/** @type {string} */ ws, /** @type {Note[]} */ notes) {
 /** Add a note, or replace the one already on its line. */
 function put(/** @type {string} */ ws, /** @type {Note} */ note) {
   const at = { side: note.side, line: note.line, text: note.text };
+  added.add(noteKey(ws, note));
   store(ws, [...list(ws).filter((n) => !same(n, note.path, at)), note]);
 }
 
@@ -85,7 +90,7 @@ export function prompt(/** @type {Note[]} */ notes) {
 /** Type `text` into the session as a user turn. The daemon decides whether a
  *  keystroke would land in a prompt, a permission dialog or the middle of a turn
  *  (`api::tell_session`), so a refusal is its sentence. True once it is told. */
-async function tell(/** @type {string} */ text) {
+async function tell(/** @type {string} */ text, /** @type {string} */ kept = '') {
   const s = currentSession();
   if (!s) {
     toast('no session in this workspace to send to', true);
@@ -94,12 +99,30 @@ async function tell(/** @type {string} */ text) {
   try {
     await callFor(s.id, `/api/session/${encodeURIComponent(s.id)}/tell`, { text });
   } catch (e) {
-    toast(reason(e), true);
+    toast(`${reason(e)}${kept}`, true);
     return false;
   }
   Split.open();
   toast(`sent to ${s.title || 'the session'}`);
   return true;
+}
+
+/** A read starts: the diff or a file opened over the session. */
+export function begin() {
+  added.clear();
+}
+
+/** **A read ends, and what it noted goes.** Closing the diff is the moment the
+ *  review is done, so the notes added while it was open are sent as one batch.
+ *  Only the selected session's workspace: that is who `tell` types into. A
+ *  refusal keeps them for the Notes list, like a send from there. */
+export async function sendAdded() {
+  const ws = currentSession()?.workspace;
+  const fresh = ws ? list(ws).filter((n) => added.has(noteKey(ws, n))) : [];
+  added.clear();
+  if (!ws || !fresh.length) return;
+  const kept = `, ${fresh.length === 1 ? 'the note is' : 'the notes are'} kept under Notes`;
+  if (await tell(prompt(fresh), kept)) drop(ws, fresh);
 }
 
 // ---------------------------------------------------------------------------

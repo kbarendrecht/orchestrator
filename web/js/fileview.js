@@ -222,7 +222,7 @@ async function openReadOnly(ws, abs, url, at) {
   state.path = abs;
   borrowFocus('fileview');
   $('fvoverlay').classList.add('on');
-  Split.start('file');
+  if (Split.start('file')) Notes.begin();
   notes();
   if (content == null) viewer().image(abs, url(at.base));
   else viewer().showText(abs, content);
@@ -300,7 +300,7 @@ async function show(ws, path, line, last, pinned = false, onTrail = false) {
   state.last = Math.max(0, last ?? 0);
   borrowFocus('fileview');
   $('fvoverlay').classList.add('on');
-  Split.start('file');
+  if (Split.start('file')) Notes.begin();
   notes();
   // Opened without a line, none is active: line 1 used to be, which marked a
   // line nobody had asked about.
@@ -347,7 +347,7 @@ export async function close() {
   state.trail = [];
   state.path = null;
   Notes.closeBox();
-  Split.end('file');
+  if (Split.end('file')) void Notes.sendAdded();
   $('fvoverlay').classList.remove('on');
   returnFocus('fileview', $('fvoverlay'));
   return true;
