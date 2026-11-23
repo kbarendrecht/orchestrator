@@ -143,13 +143,22 @@ pub fn lock_path(config_dir: &Path, checkout: Option<&Path>) -> PathBuf {
 /// inherit its `ORCHD_CONFIG_DIR`, else `config_dir` itself. Beside
 /// [`lock_path`] because both read the one layout, and a second copy of it is the
 /// one that would go stale when the layout moves.
+///
+/// Every level is stripped, not one: a host once started on a child's dir nests
+/// its own children a level deeper, and a session there hands the next start
+/// `checkouts/<key>/checkouts/<key>`.
 pub fn host_config_dir(config_dir: &Path) -> PathBuf {
-    match config_dir.parent() {
-        Some(checkouts) if checkouts.file_name() == Some("checkouts".as_ref()) => checkouts
-            .parent()
-            .map_or_else(|| config_dir.to_path_buf(), Path::to_path_buf),
-        _ => config_dir.to_path_buf(),
+    let mut dir = config_dir;
+    while let Some(checkouts) = dir.parent() {
+        if checkouts.file_name() != Some("checkouts".as_ref()) {
+            break;
+        }
+        let Some(root) = checkouts.parent() else {
+            break;
+        };
+        dir = root;
     }
+    dir.to_path_buf()
 }
 
 /// The name of a checkout's state directory: `<leaf>-<hash>`.
@@ -309,6 +318,8 @@ mod tests {
             root
         );
         assert_eq!(host_config_dir(root), root);
+        let nested = root.join("checkouts/app-1a2b/checkouts/app-1a2b");
+        assert_eq!(host_config_dir(&nested), root);
     }
 
     fn scratch(tag: &str) -> PathBuf {

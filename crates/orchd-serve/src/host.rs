@@ -1071,6 +1071,28 @@ fn default_usage_ping() -> bool {
 /// nothing else.
 pub const DERIVED: [&str; 3] = ["plugin", "hooks.json", "window.json"];
 
+/// Point this process at the host's own config dir when it was handed a
+/// checkout's.
+///
+/// Every session inherits its checkout daemon's `ORCHD_CONFIG_DIR`, which is
+/// `<root>/checkouts/<key>`. An app started from a session pane, `/new` among
+/// them, then took that directory as its root: it read a `host.json` listing one
+/// checkout, so every other project was gone after the restart, and it nested
+/// that one's state a level deeper. A dir set on purpose (`app-check`, the e2e
+/// harness) is not a checkout's, and [`orchd::instance::host_config_dir`] leaves
+/// it as it is.
+///
+/// A `set_var`, so call it before any thread exists.
+pub fn take_the_hosts_config_dir() {
+    let Ok(dir) = orchd::config::Config::config_dir() else {
+        return;
+    };
+    let root = orchd::instance::host_config_dir(&dir);
+    if root != dir {
+        std::env::set_var("ORCHD_CONFIG_DIR", root);
+    }
+}
+
 fn host_file() -> anyhow::Result<PathBuf> {
     Ok(orchd::config::Config::config_dir()?.join("host.json"))
 }

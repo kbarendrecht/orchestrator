@@ -173,6 +173,10 @@ fn main() {
     a link clicked five times would have pushed the running app's own log out of
     the window. When nothing takes it, this is the launch, and the host opens it
     once it is up. */
+    // First, because everything below reads the config dir: the link hand-off,
+    // the logger, the remembered PATH and the host file.
+    orchd_serve::host::take_the_hosts_config_dir();
+
     let handed = match orchd_serve::link::in_args(std::env::args()) {
         Some(url) => match orchd_serve::link::forward(orchd_serve::host::PORT, &url) {
             Ok(()) => return,
