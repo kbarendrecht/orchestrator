@@ -82,6 +82,14 @@ pub fn check() -> Result<(), String> {
     Ok(())
 }
 
+/// Whether the machine is already under its floor, before any new session.
+///
+/// What puts idle agents to sleep early. `false` when memory cannot be read, the
+/// same "no opinion" [`check`] takes.
+pub fn below_floor() -> bool {
+    available_mb().is_some_and(|free| free < FLOOR_MB)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

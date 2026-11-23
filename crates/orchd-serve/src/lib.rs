@@ -2058,17 +2058,19 @@ fn start_external_poller(app: Arc<AppState>) {
     });
 }
 
-/// Ask once a minute whether an idle session is due to sleep.
+/// Ask every five seconds whether an idle session is due to sleep.
 ///
 /// The restart watcher already asks on every snapshot, which covers a fold and a
 /// turn that just ended; an idle session sends no snapshots, so without a clock
-/// it would sleep only when some other session happened to do something.
+/// it would sleep only when some other session happened to do something. Five
+/// seconds rather than a minute because the same pass sheds agents when memory
+/// runs out, and oomd acts after twenty seconds of pressure.
 fn start_sleep_tick(app: Arc<AppState>) {
     tokio::spawn(async move {
-        let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
         loop {
             tick.tick().await;
-            orchd::sleep::run_due(&app).await;
+            orchd::sleep::run_tick(&app).await;
         }
     });
 }
