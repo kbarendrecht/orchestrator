@@ -118,6 +118,8 @@
   --rail:320px;
   --files:326px;
   --drawer:210px;
+  /* The session under a diff or a file, open (#52); split.js stores a dragged one. */
+  --split-h:30vh;
   /* The find overlay's index, as a share rather than a length: it is the only one
      of these the window's own height has to divide, and a percentage survives a
      window that changes size while the overlay is shut. A drag replaces it with
@@ -993,68 +995,84 @@ body.cpal-sizing{user-select:none}
 .termhost{position:absolute;inset:8px 6px 8px 12px;transition:opacity .35s ease;background:var(--term-ground,var(--bg))}
 .termhost[hidden]{display:none}
 
-/* ---------- the agent over a file (#52) ----------
-   **The same pane, repositioned, not a copy.** `body.fvagent` lifts `#termwrap`
-   out of the column and over the file overlay (z 20) as a card the shape of the
-   ask box: centred in the centre column, off the bottom edge, rounded, nothing
-   darkened behind it. The terminal inside is the session's own xterm, and the
-   `ResizeObserver` on `#termwrap` in app.js refits it to the card and back. */
+/* ---------- the session under a diff or a file (#52) ----------
+   **The same pane, pinned to the bottom, not a copy.** `body.agentsplit` keeps
+   `#termwrap` under the diff and the file overlays (z 20) and ends those two
+   overlays above it, so nothing covers the file. Collapsed, it is the header
+   alone, a bar that keeps saying what the session is doing; open, it is
+   `--split-h` tall. The `ResizeObserver` on `#termwrap` in app.js refits the
+   terminal to each. The find overlay keeps the whole column. */
 .agenthead{display:none}
-body.fvagent .termwrap{
-  position:fixed;z-index:21;left:var(--rail);right:var(--files);margin-inline:auto;
-  width:min(900px, calc(100vw - var(--rail) - var(--files) - 24px));
-  bottom:12px;height:45vh;min-height:140px;max-height:calc(100vh - 70px);
-  padding:0;overflow:hidden;
-  border:1px solid var(--line);border-radius:12px;
-  box-shadow:0 24px 60px -12px rgba(0,0,0,.75);
-  animation:agentrise .32s cubic-bezier(.2,.8,.2,1) both;
+body.agentsplit{--split:37px}
+body.agentsplit-open{--split:var(--split-h)}
+body.agentsplit :is(#overlay, #fvoverlay){bottom:var(--split)}
+body.agentsplit .termwrap{
+  position:fixed;z-index:21;left:var(--rail);right:var(--files);bottom:0;
+  height:var(--split);padding:0;overflow:hidden;border-top:1px solid var(--line);
 }
-@keyframes agentrise{from{opacity:0;transform:translateY(10px) scale(.985)}to{opacity:1;transform:none}}
-body.fvagent .agenthead{
-  display:flex;align-items:center;gap:10px;position:absolute;top:0;left:0;right:0;height:40px;
-  padding:0 10px 0 14px;border-bottom:1px solid var(--line);background:var(--raised);
+body.agentsplit .agenthead{
+  display:flex;align-items:center;gap:10px;position:absolute;top:0;left:0;right:0;height:36px;
+  padding:0 10px 0 16px;user-select:none;cursor:pointer;
 }
-body.fvagent .agenthead{cursor:move;user-select:none}
-body.fvagent .agenthead .ctx-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-body.fvagent .termhost{inset:48px 6px 8px 12px}
-.agentx{
-  display:inline-grid;place-items:center;width:26px;height:26px;border-radius:var(--r);
-  color:var(--faint-solid);background:none;border:0;cursor:pointer;
-}
-.agentx:hover{color:var(--text);background:var(--hover)}
-/* Moved or resized: a window of its own, at the box `fileview.js` keeps. */
-body.fvagent.fvagent-placed .termwrap{
-  left:var(--agent-x);top:var(--agent-y);width:var(--agent-w);height:var(--agent-h);
-  right:auto;bottom:auto;margin:0;max-height:none;
-}
-/* The edges and corners, over the terminal so a drag reaches them first. */
-.agentedge{display:none}
-body.fvagent .agentedge{display:block;position:absolute;z-index:2}
-.agentedge[data-edge="n"]{top:0;left:10px;right:10px;height:6px;cursor:ns-resize}
-.agentedge[data-edge="s"]{bottom:0;left:10px;right:10px;height:6px;cursor:ns-resize}
-.agentedge[data-edge="e"]{right:0;top:10px;bottom:10px;width:6px;cursor:ew-resize}
-.agentedge[data-edge="w"]{left:0;top:10px;bottom:10px;width:6px;cursor:ew-resize}
-.agentedge[data-edge="ne"]{top:0;right:0;width:16px;height:16px;cursor:nesw-resize}
-.agentedge[data-edge="sw"]{bottom:0;left:0;width:16px;height:16px;cursor:nesw-resize}
-.agentedge[data-edge="nw"]{top:0;left:0;width:16px;height:16px;cursor:nwse-resize}
-.agentedge[data-edge="se"]{bottom:0;right:0;width:16px;height:16px;cursor:nwse-resize}
-/* No text selection and no terminal picking up the pointer while a drag runs. */
-body.agent-dragging{user-select:none}
-body.agent-dragging .termhost{pointer-events:none}
-/* Folded: the header alone, a bar that keeps saying what the session is doing.
-   The host goes to no size, which `resize` in term.js waits out rather than
-   handing the pty a terminal of nothing. */
-body.fvagent.fvagent-folded .termwrap{height:40px;min-height:0;border-radius:10px;animation:none}
-body.fvagent-folded .agenthead{border-bottom:0}
-body.fvagent-folded .agentedge,body.fvagent-folded .termhost{display:none}
-/* What the session is blocked on stays over its card, raised clear of its input
-   the way it is over the pane. Fixed, because the card left the column. */
-body.fvagent .oq{
+body.agentsplit-open .agenthead{cursor:row-resize;border-bottom:1px solid var(--line-soft)}
+body.agentsplit .agenthead .ctx-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+body.agentsplit .termhost{inset:40px 6px 4px 12px}
+/* Collapsed: the host goes to no size, which `resize` in term.js waits out
+   rather than handing the pty a terminal of nothing. */
+body.agentsplit:not(.agentsplit-open) .termhost{display:none}
+/* What the session is blocked on stays over the split, raised clear of its input
+   the way it is over the pane, or just above the bar when collapsed. Fixed,
+   because the split left the column. */
+body.agentsplit .oq{
   position:fixed;z-index:22;left:calc(var(--rail) + (100vw - var(--rail) - var(--files)) / 2);
-  bottom:calc(12px + var(--oq-clear));
+  bottom:calc(var(--split) + 12px);
 }
-body.fvagent-folded .oq{bottom:60px}
-#fvagent[aria-pressed="true"]{background:var(--bg);border-color:var(--faint-solid)}
+body.agentsplit-open .oq{bottom:var(--oq-clear)}
+
+/* ---------- notes on a line (#52) ----------
+   **Over the rows, never between them**: the file viewer's band is rows of one
+   measured height, so a note row would break its scroll. The + is one button
+   notes.js moves to the hovered row, its glyph drawn so a copy does not take it;
+   a row with a note wears a dot in its gutter; the box is a popover under the
+   line. */
+.ln[data-side],.fnrow{position:relative}
+.nplus{
+  display:none;position:absolute;left:3px;top:50%;width:16px;height:16px;margin-top:-8px;padding:0;
+  border:0;border-radius:4px;background:var(--text);color:var(--bg);cursor:pointer;
+  place-items:center;font:600 13px/1 var(--sans);z-index:1;
+}
+.nplus::before{content:'+'}
+.ln:hover>.nplus,.fnrow:hover>.nplus{display:grid}
+.noted>i::after{
+  content:'';position:absolute;left:8px;top:50%;width:6px;height:6px;margin-top:-3px;
+  border-radius:50%;background:var(--text);
+}
+.notebox,.notelist{
+  position:fixed;z-index:30;background:var(--raised);border:1px solid var(--line);border-radius:var(--r-lg);
+  box-shadow:0 12px 32px -8px rgba(0,0,0,.6);font-family:var(--sans);
+}
+.notebox{display:flex;flex-direction:column;border-color:var(--faint-solid)}
+.notebox-ref{font-family:var(--mono);font-size:calc(11px * var(--fs));color:var(--faint-solid);padding:8px 12px 0}
+.notebox textarea{
+  resize:none;border:0;outline:0;background:none;color:var(--text);
+  font:inherit;font-size:calc(13px * var(--fs));line-height:1.45;padding:4px 12px;
+}
+.notebox-foot,.notelist-foot{display:flex;align-items:center;gap:6px;padding:6px 8px 8px 12px}
+.notebox-hint{flex:1;min-width:0;font-size:calc(11.5px * var(--fs));color:var(--faint-solid)}
+.notebox-add{border-color:var(--faint-solid)}
+.notelist{width:min(440px, calc(100vw - 16px));padding:4px}
+.notelist-head{display:flex;align-items:center;padding:8px 12px 4px;font-size:calc(11.5px * var(--fs));color:var(--faint-solid)}
+.notelist-head>span{flex:1}
+.notelist-clear{background:none;border:0;color:var(--faint-solid);font:inherit;cursor:pointer}
+.notelist-clear:hover{color:var(--text)}
+.notelist-row{
+  display:grid;grid-template-columns:16px 1fr;gap:10px;align-items:start;padding:8px 12px;
+  border-radius:var(--r);cursor:pointer;font-size:calc(13px * var(--fs));
+}
+.notelist-row:hover{background:var(--hover)}
+.notelist-row input{accent-color:var(--text);margin:3px 0 0}
+.notelist-ref{display:block;font-family:var(--mono);font-size:calc(11px * var(--fs));color:var(--faint-solid)}
+.notelist-foot{border-top:1px solid var(--line);margin-top:4px}
 /* A pane whose pty is not yet carrying live output: starting up before the first
    attach, or a dropped socket reconnecting. xterm keeps blinking its cursor from
    its own buffer, so without this a blank or deaf pane looks alive and — on a

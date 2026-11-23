@@ -10,6 +10,8 @@ import { $, FORGE_LABEL, activeWorkspaceId, borrowFocus, call, confirmBox, curre
 import * as Editor from './editor.js';
 import { changeBlocks, revertedText } from './revert.js';
 import { STATE_MAX, charRanges, langFor, lineSegments, lineTokens } from './source.js';
+import * as Notes from './notes.js';
+import * as Split from './split.js';
 import * as Tree from './tree.js';
 
 // ---------------------------------------------------------------------------
@@ -723,6 +725,9 @@ function lineEl(/** @type {import('../repo').Row} */ row, /** @type {'old' | 'ne
      a selection *crosses* it, so dragging over a hunk and copying it brought the
      line numbers along into whatever you pasted it into. Generated content is not
      in the document at all, so no engine can take it. */
+  // Which side the number counts, for a note on the row (#52): a removed line
+  // has only its old one.
+  if (!empty) div.dataset.side = side;
   const num = el('i');
   num.dataset.n = empty ? '' : String((side === 'old' ? row.old : row.new) ?? '');
   div.appendChild(num);
@@ -1477,6 +1482,28 @@ function importsOnly(/** @type {import('../repo').Hunk} */ h) {
   return at.length > 0 && at.every((n) => runs.some((f) => n >= f.line && n <= f.last));
 }
 
+/** The diff as a pane that holds notes (#52), made on the first open. A row's
+ *  number is the side it is drawn on, and a removed row's own text is what names
+ *  it to the session.
+ *  @type {import('./notes.js').View | null} */
+let notesView = null;
+function notes() {
+  notesView ??= Notes.attach({
+    mount: $('diffbody'), host: $('overlay'), button: $('ovnotes'), rows: '.ln[data-side]',
+    ws: () => diffState.ws, path: () => diffState.path,
+    anchor: (row) => {
+      const line = Number(row.querySelector('i')?.dataset.n);
+      return line ? { side: row.dataset.side === 'old' ? 'old' : 'new', line, text: row.querySelector('s')?.textContent ?? '' } : null;
+    },
+  });
+  return notesView;
+}
+
+/** MOD L in the diff: a note on the selected lines. */
+export function noteSelection() {
+  Notes.openOnSelection(notes());
+}
+
 async function openDiff(/** @type {string} */ path) {
   // No falling back to `currentWorkspaceId`, which answers main when nothing is
   // selected. `activeWorkspaceId` already decided what the file pane does with a
@@ -1505,6 +1532,8 @@ async function openDiff(/** @type {string} */ path) {
   $('ovcount').textContent = '';
   drawMap();
   $('overlay').classList.add('on');
+  Split.start('diff');
+  notes();
   await loadSummary();
   const files = diffState.summary?.files ?? [];
   /* A collapsed untracked folder (`newdir/`) is a row in the pane but not a file
@@ -1525,7 +1554,9 @@ async function closeDiff() {
   diffState.ws = null;
   diffState.file = null;
   diffState.path = null;
+  Notes.closeBox();
   $('overlay').classList.remove('on');
+  Split.end('diff');
   returnFocus('diff', $('overlay'));
   renderFiles();
 }

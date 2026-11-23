@@ -17,6 +17,8 @@ import {
 import * as Editor from './editor.js';
 import { folders, hoverText, level, matching } from './pathlink.js';
 import { MAX, hitLines, matches, nextIndex, offsetOf, replaceAll, substitute } from './seek.js';
+import * as Notes from './notes.js';
+import * as Split from './split.js';
 import * as Viewer from './viewer.js';
 
 /** The open overlay. `ws` is pinned at open for the reason the finder's is:
@@ -56,210 +58,45 @@ const viewer = () => {
   view ??= Viewer.create({
     mount: $('fvsrc'), path: $('fvpath'), where: $('fvwhere'), crumbs: $('fvcrumbs'),
     onFile: (rel, line) => void follow(rel, line),
-    ask: { who: () => asker?.who() ?? null, at: (from, to) => askAbout(from, to) },
+    note: { at: (from, to) => noteOn(from, to) },
   });
   return view;
 };
 
-/* ---------- the agent over the file (#52) ----------
+/* ---------- notes on the file (#52) ----------
 
-   **The session's own terminal, lifted over the file as a card**, so a question
-   about what you are reading is asked and answered with the file still on
-   screen. Not a copy and not a second view: `#termwrap` is the pane the session
-   already runs in, and `body.fvagent` repositions it (app.css says how). The file
-   stays mounted underneath and keeps its scroll.
+   The session's own pane sits under the file as a split, and `split.js` owns
+   it; a note on a line, and handing it to that session, is `notes.js`. What is
+   left here is which pane and which file a note is about. */
 
-   Three states, and the header button answers only one question, whether the
-   agent is on screen: `open` is the card, `folded` is the card down to its
-   header, a bar that still shows the session's state. Closing the file closes
-   the card, so the terminal is never left floating over nothing. */
-const agent = { open: false, folded: false };
-
-/** What the page knows that this module does not: which session the card is,
- *  by name or null when there is none, how to type into it and how to give it
- *  the keyboard. Set from `app.js`, for the reason `Term.onPathClick` is.
- *  @type {{ who: () => string | null, ask: (text: string) => boolean, focus: () => void } | null} */
-let asker = null;
-export function onAsk(/** @type {NonNullable<typeof asker>} */ fn) {
-  asker = fn;
-}
-
-function paintAgent() {
-  document.body.classList.toggle('fvagent', agent.open);
-  document.body.classList.toggle('fvagent-folded', agent.open && agent.folded);
-  const button = $('fvagent');
-  button.setAttribute('aria-pressed', String(agent.open));
-  const fold = $('agentfold');
-  fold.textContent = agent.folded ? 'Expand' : 'Collapse';
-  fold.title = agent.folded ? 'Show the whole conversation again' : 'Collapse to a bar that keeps showing the session';
-}
-
-/** The header button and MOD ;: the agent on screen, or not. */
-export function toggleAgent() {
-  if (!state.open) return;
-  if (!agent.open && !asker?.who()) return toast('no session here to ask', true);
-  agent.open = !agent.open;
-  agent.folded = false;
-  paintAgent();
-  if (agent.open) asker?.focus();
-}
-
-/** Down to a bar and back up again. */
-export function foldAgent(/** @type {boolean} */ folded) {
-  if (!agent.open) return;
-  agent.folded = folded;
-  paintAgent();
-  if (!folded) asker?.focus();
-}
-
-/** Open the card and type `path:from-to ` into the session's input, for the
- *  question to follow. Typed, never sent: the question is yours to write. */
-function askAbout(/** @type {number} */ from, /** @type {number} */ to) {
-  if (!state.open || !state.path || !asker) return;
-  agent.open = true;
-  agent.folded = false;
-  paintAgent();
-  const range = to > from ? `${from}-${to}` : `${from}`;
-  if (!asker.ask(`${state.path}:${range} `)) toast('that session has no terminal open to type into', true);
-}
-
-/* **Where the card is, once it has been moved or resized.** Until then it sits
-   where the stylesheet puts it, centred at the bottom of the centre column; the
-   first drag of its header or an edge takes that box as its start and from then
-   on the card is a window of its own, remembered across runs. A double-click on
-   the header puts it back. */
-const AGENT_AT = { key: 'orch.agentcard', minW: 360, minH: 140, bar: 40 };
-/** @type {{ x: number, y: number, w: number, h: number } | null} */
-let placed = null;
-
-/** `p` kept on screen: no smaller than the floor, no larger than the window,
- *  and the header always inside it, so the card can always be dragged back. */
-function onScreen(/** @type {{ x: number, y: number, w: number, h: number }} */ p) {
-  const w = Math.min(Math.max(p.w, AGENT_AT.minW), window.innerWidth);
-  const h = Math.min(Math.max(p.h, AGENT_AT.minH), window.innerHeight);
-  return {
-    w, h,
-    x: Math.min(Math.max(p.x, 0), window.innerWidth - w),
-    y: Math.min(Math.max(p.y, 0), window.innerHeight - AGENT_AT.bar),
-  };
-}
-
-function applyPlace() {
-  const root = document.documentElement;
-  document.body.classList.toggle('fvagent-placed', !!placed);
-  if (!placed) {
-    for (const v of ['--agent-x', '--agent-y', '--agent-w', '--agent-h']) root.style.removeProperty(v);
-    return;
-  }
-  const p = onScreen(placed);
-  root.style.setProperty('--agent-x', `${Math.round(p.x)}px`);
-  root.style.setProperty('--agent-y', `${Math.round(p.y)}px`);
-  root.style.setProperty('--agent-w', `${Math.round(p.w)}px`);
-  root.style.setProperty('--agent-h', `${Math.round(p.h)}px`);
-}
-
-function savePlace() {
-  try {
-    if (placed) localStorage.setItem(AGENT_AT.key, JSON.stringify(onScreen(placed)));
-    else localStorage.removeItem(AGENT_AT.key);
-  } catch { /* private mode: the drag still worked for this run */ }
-}
-
-/** The card's box now, as a starting point for a drag. */
-function boxNow() {
-  if (placed) return onScreen(placed);
-  const r = $('termwrap').getBoundingClientRect();
-  return { x: r.left, y: r.top, w: r.width, h: r.height };
-}
-
-/** Follow the pointer from `ev` until the button comes up. `step` gets how far
- *  it moved; `end` is told whether it moved at all, so a click stays a click. */
-function track(/** @type {MouseEvent} */ ev, /** @type {(dx: number, dy: number) => void} */ step,
-  /** @type {(moved: boolean) => void} */ end) {
-  const x0 = ev.clientX;
-  const y0 = ev.clientY;
-  let moved = false;
-  const move = (/** @type {MouseEvent} */ e) => {
-    const dx = e.clientX - x0;
-    const dy = e.clientY - y0;
-    if (!moved && Math.hypot(dx, dy) < 3) return;
-    moved = true;
-    step(dx, dy);
-  };
-  window.addEventListener('mousemove', move);
-  window.addEventListener('mouseup', () => {
-    window.removeEventListener('mousemove', move);
-    document.body.classList.remove('agent-dragging');
-    end(moved);
-  }, { once: true });
-}
-
-function placeAgent() {
-  try {
-    const kept = JSON.parse(localStorage.getItem(AGENT_AT.key) ?? 'null');
-    if (kept && [kept.x, kept.y, kept.w, kept.h].every(Number.isFinite)) placed = kept;
-  } catch { /* nothing kept, or private mode: the default place */ }
-  applyPlace();
-  // A smaller window must not strand the card off its edge.
-  window.addEventListener('resize', applyPlace);
-
-  // The header moves it, and a click on a collapsed one expands it.
-  $('agenthead').addEventListener('mousedown', (ev) => {
-    if (ev.button !== 0 || /** @type {HTMLElement} */ (ev.target).closest('button')) return;
-    ev.preventDefault();
-    const from = boxNow();
-    document.body.classList.add('agent-dragging');
-    track(ev, (dx, dy) => {
-      placed = { ...from, x: from.x + dx, y: from.y + dy };
-      applyPlace();
-    }, (moved) => {
-      if (moved) savePlace();
-      else if (agent.folded) foldAgent(false);
-    });
+/** @type {import('./notes.js').View | null} */
+let notesView = null;
+function notes() {
+  notesView ??= Notes.attach({
+    mount: $('fvsrc'), host: $('fvoverlay'), button: $('fvnotes'), rows: '.fnrow',
+    ws: () => state.ws, path: () => state.path,
+    // A scope pinned to the top is a copy of a row further down, not a line.
+    anchor: (row) => {
+      const line = Number(row.querySelector('i')?.dataset.n);
+      return line && !row.closest('.fnstick') ? { side: 'new', line, text: row.querySelector('s')?.textContent ?? '' } : null;
+    },
   });
-  $('agenthead').addEventListener('dblclick', (ev) => {
-    if (/** @type {HTMLElement} */ (ev.target).closest('button')) return;
-    placed = null;
-    applyPlace();
-    savePlace();
-  });
-
-  // Each edge and corner resizes from its own side, the opposite one staying put.
-  for (const edge of document.querySelectorAll('#termwrap .agentedge')) {
-    edge.addEventListener('mousedown', (e) => {
-      const ev = /** @type {MouseEvent} */ (e);
-      if (ev.button !== 0 || agent.folded) return;
-      ev.preventDefault();
-      ev.stopPropagation();
-      const side = /** @type {HTMLElement} */ (edge).dataset.edge ?? '';
-      const from = boxNow();
-      document.body.classList.add('agent-dragging');
-      track(ev, (dx, dy) => {
-        let { x, y, w, h } = from;
-        if (side.includes('e')) w = Math.max(AGENT_AT.minW, from.w + dx);
-        if (side.includes('s')) h = Math.max(AGENT_AT.minH, from.h + dy);
-        if (side.includes('w')) {
-          w = Math.max(AGENT_AT.minW, from.w - dx);
-          x = from.x + from.w - w;
-        }
-        if (side.includes('n')) {
-          h = Math.max(AGENT_AT.minH, from.h - dy);
-          y = from.y + from.h - h;
-        }
-        placed = { x, y, w, h };
-        applyPlace();
-      }, (moved) => { if (moved) savePlace(); });
-    });
-  }
+  return notesView;
 }
 
-/** MOD L: ask about the selected lines, or the active one. */
-export function askSelection() {
+/** The line menu: the note box on `from`..`to`. */
+function noteOn(/** @type {number} */ from, /** @type {number} */ to) {
+  if (!state.open || !state.path) return;
+  Notes.openAt(notes(), from, to);
+}
+
+/** MOD L: a note on the selected lines, or the active one. */
+export function noteSelection() {
   if (!state.open) return;
   const active = viewer().activeLine();
   const lines = viewer().selectedLines() ?? (active ? [active, active] : null);
-  if (!lines) return toast('click or select the lines to ask about first', true);
-  askAbout(lines[0], lines[1]);
+  if (!lines) return toast('click or select the lines to note first', true);
+  noteOn(lines[0], lines[1]);
 }
 
 /** Open a file a rendered page links to, above the page. */
@@ -385,6 +222,8 @@ async function openReadOnly(ws, abs, url, at) {
   state.path = abs;
   borrowFocus('fileview');
   $('fvoverlay').classList.add('on');
+  Split.start('file');
+  notes();
   if (content == null) viewer().image(abs, url(at.base));
   else viewer().showText(abs, content);
   // The same two steps `show` takes, or a handoff `.md` opened as source under a
@@ -461,6 +300,8 @@ async function show(ws, path, line, last, pinned = false, onTrail = false) {
   state.last = Math.max(0, last ?? 0);
   borrowFocus('fileview');
   $('fvoverlay').classList.add('on');
+  Split.start('file');
+  notes();
   // Opened without a line, none is active: line 1 used to be, which marked a
   // line nobody had asked about.
   const drawn = await viewer().show(ws, path, {
@@ -488,7 +329,6 @@ function renderHead(/** @type {boolean} */ drawn) {
   $('fvmode').hidden = !can;
   // A picture has no source to edit, and the editor's refusal would say so late.
   $('fvedit').hidden = (drawn && viewer().isImage()) || state.scratch || viewer().readOnly();
-  $('fvagent').hidden = !asker?.who();
   const html = viewer().kind() === 'html';
   $('fvmode').textContent = state.rendered ? 'Source' : html ? 'Preview' : 'Rendered';
   $('fvmode').title = state.rendered
@@ -506,8 +346,8 @@ export async function close() {
   state.pinned = false;
   state.trail = [];
   state.path = null;
-  agent.open = false;
-  paintAgent();
+  Notes.closeBox();
+  Split.end('file');
   $('fvoverlay').classList.remove('on');
   returnFocus('fileview', $('fvoverlay'));
   return true;
@@ -995,16 +835,6 @@ export function init() {
   $('fvedit').onclick = () => (Editor.isOpen() ? Editor.close() : edit());
   $('fvsave').onclick = () => Editor.save();
   $('fvclose').onclick = () => void close();
-  $('fvagent').onclick = () => toggleAgent();
-  $('agentclose').onclick = (ev) => {
-    ev.stopPropagation();
-    toggleAgent();
-  };
-  $('agentfold').onclick = (ev) => {
-    ev.stopPropagation();
-    foldAgent(!agent.folded);
-  };
-  placeAgent();
   $('fvback').onclick = () => void back();
   /* The mouse's back button steps back, like `Escape`: through the files a
      rendered page's links led to, and then out. Button 3 is the back one. */

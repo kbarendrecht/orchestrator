@@ -3565,83 +3565,93 @@ try {
   check(offered.includes('copy path:line') && offered.includes('copy path'),
     `a row offers its path and line, got ${JSON.stringify(offered)}`)
 
-  /* --- the agent over the file (#52) ----------------------------------------- */
+  /* --- the session under the file (#52) ------------------------------------- */
 
-  /* **The session's own pane, lifted over the file as a card.** The ask is the
-     menu's first item, it opens the card with the file still up, and the line is
-     typed into the agent's input rather than sent. */
-  check(/^ask .+ about line 2$/.test(offered[0] ?? ''),
-    `the row's menu offers the ask first, got ${JSON.stringify(offered[0])}`)
+  /* **The session's own pane, as a split under the file.** It is there from the
+     open, collapsed to its header. */
+  check(await page.evaluate(() => document.body.classList.contains('agentsplit')
+    && !document.body.classList.contains('agentsplit-open')),
+  'an open file has the session under it, collapsed')
+
+  /* **A note on a line, kept and then asked.** The note is the menu's first item;
+     Enter keeps it, with a dot on the line and a count in the header. */
+  check(offered[0] === 'note on line 2', `the row's menu offers a note first, got ${JSON.stringify(offered[0])}`)
   await page.click('#ctxmenu .ctxmenu-item >> nth=0').catch(() => {})
-  const agentCard = await page.waitForFunction(() => {
-    if (!document.body.classList.contains('fvagent')) return null
+  const boxRef = await page.waitForSelector('#fvoverlay .notebox textarea', { timeout: 3000 })
+    .then(() => page.$eval('#fvoverlay .notebox-ref', (r) => r.textContent)).catch(() => null)
+  check(boxRef === 'other.md:2', `the note box names the line, got ${JSON.stringify(boxRef)}`)
+  await page.keyboard.type('why is this here')
+  await page.keyboard.press('Enter')
+  const noted = await page.waitForFunction(() => {
+    const n = document.querySelectorAll('#fvsrc .fnrow.noted i[data-n="2"]').length
+    const b = document.getElementById('fvnotes')
+    return n === 1 && b && !b.hidden ? b.textContent : null
+  }, null, { timeout: 3000 }).then((h) => h.jsonValue()).catch(() => null)
+  check(!!noted && noted.includes('1') && !(await page.$('#fvoverlay .notebox')),
+    `Enter keeps the note: a dot on line 2 and Notes 1 in the header, got ${JSON.stringify(noted)}`)
+
+  /* The + on the line opens the note again, and MOD Enter asks it now: typed
+     into the session as a user turn, the split opened, the note gone. */
+  await page.hover('#fvsrc .fnrow:has(> i[data-n="2"])')
+  await page.click('#fvsrc .fnrow:has(> i[data-n="2"]) > .nplus').catch(() => {})
+  const reopened = await page.waitForSelector('#fvoverlay .notebox textarea', { timeout: 3000 })
+    .then((area) => area.inputValue()).catch(() => null)
+  check(reopened === 'why is this here', `the + opens the note that is there, got ${JSON.stringify(reopened)}`)
+  await page.keyboard.press(chord('Enter'))
+  const split = await page.waitForFunction(() => {
+    if (!document.body.classList.contains('agentsplit-open')) return null
     const w = document.getElementById('termwrap')
-    if (!w) return null
+    const o = document.getElementById('fvoverlay')
+    if (!w || !o) return null
     const r = w.getBoundingClientRect()
     return {
       fixed: getComputedStyle(w).position === 'fixed',
-      above: Number(getComputedStyle(w).zIndex) > Number(getComputedStyle(document.getElementById('fvoverlay')).zIndex),
+      under: Math.abs(o.getBoundingClientRect().bottom - r.top) <= 1,
       onScreen: r.bottom <= window.innerHeight && r.height >= 140,
-      pressed: document.getElementById('fvagent')?.getAttribute('aria-pressed'),
       fileOpen: !!document.querySelector('#fvoverlay.on'),
-      inTerminal: !!document.activeElement?.closest('#termwrap'),
+      gone: !!document.getElementById('fvnotes')?.hidden,
     }
   }, null, { timeout: 5000 }).then((h) => h.jsonValue()).catch(() => null)
-  check(!!agentCard && agentCard.fixed && agentCard.above && agentCard.onScreen && agentCard.fileOpen,
-    `the ask lifts the agent's pane over the open file, got ${JSON.stringify(agentCard)}`)
-  check(!!agentCard && agentCard.pressed === 'true' && agentCard.inTerminal,
-    `with the Agent button pressed and the keyboard in the terminal, got ${JSON.stringify(agentCard)}`)
-  /* The line, typed into the agent's input: the pty echoes it back, so the
-     terminal's own buffer is where it shows up. */
-  const typed = await page.waitForFunction(async () => {
+  check(!!split && split.fixed && split.under && split.onScreen && split.fileOpen,
+    `asking opens the agent's pane under the open file, got ${JSON.stringify(split)}`)
+  check(!!split && split.gone, `and the note it asked is gone, got ${JSON.stringify(split)}`)
+  /* The note, told to the session: the pty echoes it back, so the terminal's own
+     buffer is where it shows up. */
+  const told = await page.waitForFunction(async () => {
     const core = await import('/js/core.js')
     const term = await import('/js/term.js')
     const s = core.currentSession()
-    const text = s ? term.readTerm(core.activeCheckout(), `session:${s.id}`, 20) : null
-    return text && text.includes('other.md:2') ? text : null
+    const text = s ? term.readTerm(core.activeCheckout(), `session:${s.id}`, 40) : null
+    return text && text.includes('other.md:2') && text.includes('why is this here') ? text : null
   }, null, { timeout: 5000 }).then((h) => h.jsonValue()).catch(() => null)
-  check(!!typed, 'the ask types other.md:2 into the agent\'s input')
-  // In the card's terminal, Escape is the agent's interrupt, never a close.
+  check(!!told, 'Ask now types other.md:2 and the question into the session')
+  await page.click('#termwrap .termhost:not([hidden])').catch(() => {})
+  // In the split's terminal, Escape is the agent's interrupt, never a close.
   await page.keyboard.press('Escape')
   check(await page.$$eval('#fvoverlay.on', (o) => o.length) === 1,
-    'Escape in the card reaches the agent and leaves the file open')
-  await page.keyboard.press(chord('Semicolon'))
-  check(
-    await page.evaluate(() => !document.body.classList.contains('fvagent')
-      && document.getElementById('fvagent')?.getAttribute('aria-pressed') === 'false'),
-    'MOD ; puts the card away',
-  )
-  // And closing the file takes the card with it, so it never floats over nothing.
-  await page.keyboard.press(chord('Semicolon'))
+    'Escape in the split reaches the agent and leaves the file open')
 
   {
-    /* The card is a window of its own: its header moves it, a corner resizes it,
-       Collapse takes it down to the bar, and its frame is the terminal's ground. */
     const box = () => page.$eval('#termwrap', (w) => {
       const r = w.getBoundingClientRect()
-      return { x: r.left, y: r.top, w: r.width, h: r.height }
+      return { y: r.top, h: r.height }
     })
-    await page.waitForFunction(() => document.body.classList.contains('fvagent'), null, { timeout: 3000 })
-      .catch(() => {})
-    await page.waitForTimeout(400)
+    await page.keyboard.press(chord('Semicolon'))
+    const bar = await box()
+    check(bar.h <= 40 && await page.$eval('#agentfold', (b) => b.textContent) === 'Expand',
+      `MOD ; collapses it to a bar that offers Expand, got ${JSON.stringify(bar)}`)
+    await page.click('#agentfold')
+    await page.waitForTimeout(200)
     const before = await box()
-    const grab = { x: before.x + 60, y: before.y + 20 }
+    // The header is the handle: dragged up, the split grows by as much.
+    const grab = { x: 600, y: before.y + 18 }
     await page.mouse.move(grab.x, grab.y)
     await page.mouse.down()
-    await page.mouse.move(grab.x - 60, grab.y - 50, { steps: 5 })
+    await page.mouse.move(grab.x, grab.y - 50, { steps: 5 })
     await page.mouse.up()
-    const moved = await box()
-    check(Math.abs(moved.x - (before.x - 60)) <= 2 && Math.abs(moved.y - (before.y - 50)) <= 2,
-      `dragging the card's header moves it, got ${JSON.stringify({ before, moved })}`)
-    const corner = { x: moved.x + moved.w - 8, y: moved.y + moved.h - 8 }
-    await page.mouse.move(corner.x, corner.y)
-    await page.mouse.down()
-    await page.mouse.move(corner.x - 40, corner.y - 30, { steps: 5 })
-    await page.mouse.up()
-    const sized = await box()
-    check(Math.abs(sized.w - (moved.w - 40)) <= 2 && Math.abs(sized.h - (moved.h - 30)) <= 2
-      && Math.abs(sized.x - moved.x) <= 2,
-      `dragging its corner resizes it from that corner, got ${JSON.stringify({ moved, sized })}`)
+    const grown = await box()
+    check(Math.abs(grown.h - (before.h + 50)) <= 2,
+      `dragging the split's header resizes it, got ${JSON.stringify({ before, grown })}`)
     const grounds = await page.evaluate(() => {
       const host = document.querySelector('#termwrap .termhost:not([hidden])')
       return {
@@ -3650,32 +3660,74 @@ try {
       }
     })
     check(grounds.frame === grounds.terminal,
-      `the card's frame is the terminal's own ground, got ${JSON.stringify(grounds)}`)
-    check(await page.$eval('#agentfold', (b) => b.textContent) === 'Collapse', 'the card offers Collapse')
-    await page.click('#agentfold')
-    const bar = await box()
-    check(bar.h <= 42 && await page.$eval('#agentfold', (b) => b.textContent) === 'Expand',
-      `Collapse takes it down to a bar that offers Expand, got ${JSON.stringify(bar)}`)
-    await page.click('#agentfold')
+      `the split's frame is the terminal's own ground, got ${JSON.stringify(grounds)}`)
     await page.dblclick('#agentname')
     const home = await box()
-    check(Math.abs(home.y + home.h - before.y - before.h) <= 2,
-      `a double-click on the header puts it back, got ${JSON.stringify({ before, home })}`)
+    check(Math.abs(home.h - before.h) <= 2,
+      `a double-click on the header puts the default height back, got ${JSON.stringify({ before, home })}`)
   }
-  // The × closes it, like the Agent button and the key.
-  await page.click('#agentclose')
-  check(
-    await page.evaluate(() => !document.body.classList.contains('fvagent')
-      && document.getElementById('fvagent')?.getAttribute('aria-pressed') === 'false'),
-    'the card\'s × closes it',
-  )
-  await page.keyboard.press(chord('Semicolon'))
   await page.click('#fvclose')
   check(
-    await page.evaluate(() => !document.body.classList.contains('fvagent')
+    await page.evaluate(() => !document.body.classList.contains('agentsplit')
       && !document.querySelector('#fvoverlay.on')),
-    'closing the file closes the card',
+    'closing the file takes the split away',
   )
+
+  /* **A note on a removed line, sent from the Notes list.** The line is not in
+     the file on disk any more, so the box names its old number and the prompt
+     carries its text. */
+  {
+    /* A tracked file, so the diff has a removed line to draw, in the selected
+       session's own worktree: the diff is that session's, wherever the file
+       above was opened from. */
+    const selectedId = await page.evaluate(async () => (await import('/js/core.js')).currentSession()?.id ?? null)
+    const readme = path.join((await t.session(selectedId))?.cwd ?? t.worktreePath('page'), 'README.md')
+    const was = fs.readFileSync(readme, 'utf8')
+    fs.writeFileSync(readme, was.replace('# fixture', '# fixture, renamed'))
+    await page.evaluate(async () => {
+      const Diff = await import('/js/diff.js')
+      await Diff.open('README.md')
+    })
+    // The daemon sees the write on its own clock, so the diff is asked again until it does.
+    await page.waitForFunction(async () => {
+      if (document.querySelector('#diffbody .ln.del')) return true
+      const Diff = await import('/js/diff.js')
+      await Diff.loadFile('README.md')
+      return false
+    }, null, { timeout: 10_000, polling: 500 }).catch(() => {})
+    const del = '#diffbody .ln.del[data-side="old"]'
+    await page.hover(del, { timeout: 5000 }).catch(() => {})
+    await page.click(`${del} > .nplus`).catch(() => {})
+    const ref = await page.waitForSelector('#overlay .notebox textarea', { timeout: 3000 })
+      .then(() => page.$eval('#overlay .notebox-ref', (r) => r.textContent)).catch(() => null)
+    const seen = await page.evaluate((sel) => ({
+      rows: document.querySelectorAll(sel).length,
+      lines: document.querySelectorAll('#diffbody .ln').length,
+      plusIn: document.querySelector('.nplus')?.parentElement?.className ?? null,
+      path: document.getElementById('ovpath')?.textContent,
+      body: document.getElementById('diffbody')?.textContent?.slice(0, 200),
+    }), del)
+    check(/^was \d+$/.test(ref ?? ''), `a removed line's note names its old number, got ${JSON.stringify({ ref, seen })}`)
+    await page.keyboard.type('why removed')
+    await page.keyboard.press('Enter')
+    await page.waitForFunction(() => !document.getElementById('ovnotes')?.hidden, null, { timeout: 3000 }).catch(() => {})
+    await page.click('#ovnotes')
+    await page.click('.notelist .notelist-foot .head-btn').catch(() => {})
+    const sent = await page.waitForFunction(async () => {
+      const core = await import('/js/core.js')
+      const term = await import('/js/term.js')
+      const s = core.currentSession()
+      const text = s ? term.readTerm(core.activeCheckout(), `session:${s.id}`, 60) : null
+      return text && text.includes('Review notes') && text.includes('(removed:') && text.includes('why removed')
+        && document.getElementById('ovnotes')?.hidden ? text : null
+    }, null, { timeout: 5000 }).then((h) => h.jsonValue()).catch(() => null)
+    check(!!sent, 'Send types the batch with the removed line into the session, and the note goes')
+    fs.writeFileSync(readme, was)
+    await page.evaluate(async () => {
+      const Diff = await import('/js/diff.js')
+      await Diff.close()
+    })
+  }
 
   /* --- a file opened without a line marks none, and a click marks one -------- */
 

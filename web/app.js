@@ -900,7 +900,7 @@ function renderContext() {
   // this session is — see `sessionDot`.
   $('ctxdot').className = s ? sessionDot(s) : 'dot sdot idle';
   $('ctxname').textContent = s ? Rail.rowName(s, { id: wsId }) : (wsId || 'no session');
-  // The card over a file (#52) is this same session, so it wears the same two.
+  // The split under a diff or a file (#52) is this same session, so it wears the same two.
   $('agentdot').className = $('ctxdot').className;
   $('agentname').textContent = $('ctxname').textContent;
   $('ctxforked').hidden = !(s && s.forked_from);
@@ -1125,6 +1125,7 @@ import * as Queue from './js/queue.js';
 import * as Find from './js/find.js';
 import * as Editor from './js/editor.js';
 import * as FileView from './js/fileview.js';
+import * as Split from './js/split.js';
 
 
 
@@ -1591,20 +1592,8 @@ window.addEventListener('blur', () => document.body.classList.remove('modheld'))
 // The find overlay's own chrome: its two boxes and three toggles all ask the
 // same question again, so the module wires them rather than five lines here.
 Find.init();
-/* The agent over the file (#52): the session the centre pane shows, by the name
-   the rail gives it, and its terminal to type into. */
-FileView.onAsk({
-  who: () => {
-    const s = currentSession();
-    return s && s.alive ? Rail.rowName(s, { id: currentWorkspaceId() }) : null;
-  },
-  ask: (text) => {
-    const s = currentSession();
-    return !!s && Term.pasteInto(activeCheckout(), `session:${s.id}`, text);
-  },
-  focus: () => Term.focusSelected(activeCheckout()),
-});
 FileView.init();
+Split.init();
 // Not `onclick = newShell`: the click event would arrive as the text to type.
 $('addshell').onclick = () => void newShell();
 $('keyhelpx').onclick = () => closeLegend();
@@ -1935,13 +1924,18 @@ for (const ev of /** @type {const} */ (['pointerdown', 'wheel'])) {
   }, { capture: true, passive: true });
 }
 
-/** Whether a key was pressed in the session's terminal while it is lifted over a
- *  file (#52). The file overlay used to cover the pty, so its keys could claim
- *  chords the terminal needs; with the card up they must not. */
-const inAgentCard = (/** @type {KeyboardEvent} */ e) => document.body.classList.contains('fvagent')
+/** Whether a key was pressed in the session's terminal while it sits under a
+ *  diff or a file (#52). The overlays used to cover the pty, so their keys could
+ *  claim chords the terminal needs; with the split up they must not. */
+const inSplit = (/** @type {KeyboardEvent} */ e) => document.body.classList.contains('agentsplit')
   && !!/** @type {HTMLElement} */ (e.target).closest?.('#termwrap');
 
 function keymap(/** @type {KeyboardEvent} */ e) {
+  /* **A note's box and the notes list answer their own Escape and Enter** (#52):
+     Escape there closes the box, not the diff or the file under it, and Enter
+     keeps the note. MOD Enter still falls through to the form binding below. */
+  if ((e.key === 'Escape' || (e.key === 'Enter' && !appMod(e)))
+      && /** @type {HTMLElement} */ (e.target).closest?.('.notebox, .notelist')) return;
   /* **A bare `Backspace` outside a text field is a navigation key, and this app
      has nowhere to navigate to.** Clicking a titlebar puts focus on something
      that is not editable, and one press then took the window back to the splash
@@ -2048,27 +2042,28 @@ function keymap(/** @type {KeyboardEvent} */ e) {
      costs the terminal nothing: the binding is live only while the file overlay
      is up, and that overlay covers the pty it would otherwise shadow. */
   if (appMod(e) && (e.key === 'f' || e.key === 'F') && !e.shiftKey && !e.altKey && FileView.isOpen()
-      && !inAgentCard(e)) {
+      && !inSplit(e)) {
     e.preventDefault();
     FileView.seek();
     return;
   }
-  /* **The agent over the file (#52): MOD ;, from anywhere in it.** Not a letter,
-     because every Ctrl+letter is a key in the agent's input on Linux (Ctrl+J is
-     its newline), and Ctrl+; sends the terminal nothing at all. Claimed in the
-     terminal too, so the key that opened the card also puts it away. By `code`,
-     like MOD ., so it is the same key on a layout where `;` needs Shift. */
-  if (appMod(e) && !e.shiftKey && !e.altKey && e.code === 'Semicolon' && FileView.isOpen()) {
+  /* **The session under a diff or a file (#52): MOD ;, from anywhere in it.** Not
+     a letter, because every Ctrl+letter is a key in the agent's input on Linux
+     (Ctrl+J is its newline), and Ctrl+; sends the terminal nothing at all. Claimed
+     in the terminal too, so the key that opened the split also collapses it. By
+     `code`, like MOD ., so it is the same key on a layout where `;` needs Shift. */
+  if (appMod(e) && !e.shiftKey && !e.altKey && e.code === 'Semicolon' && (FileView.isOpen() || Diff.state.open)) {
     e.preventDefault();
-    FileView.toggleAgent();
+    Split.toggle();
     return;
   }
-  /* MOD L asks about the selected lines. From the file only: in the terminal,
-     Ctrl+L is the agent's to redraw with. */
-  if (appMod(e) && !e.shiftKey && !e.altKey && (e.key === 'l' || e.key === 'L') && FileView.isOpen()
+  /* MOD L puts a note on the selected lines (#52), in the file or the diff. Not
+     from a text field: in the terminal, Ctrl+L is the agent's to redraw with. */
+  if (appMod(e) && !e.shiftKey && !e.altKey && (e.key === 'l' || e.key === 'L') && (FileView.isOpen() || Diff.state.open)
       && !/** @type {HTMLElement} */ (e.target).closest?.('textarea, input, [contenteditable="true"]')) {
     e.preventDefault();
-    FileView.askSelection();
+    if (FileView.isOpen()) FileView.noteSelection();
+    else Diff.noteSelection();
     return;
   }
   /* One save chord for both overlays. It used to name the diff's editor, which
@@ -2107,8 +2102,8 @@ function keymap(/** @type {KeyboardEvent} */ e) {
   /* The find overlay: bare keys are its while it is up, which is the contract's
      first line. `j`/`k` only once focus has left the query box — it is a text
      field, so the letters belong to what you are typing until Tab moves off it. */
-  // In the card's terminal, Escape is the agent's: an interrupt, not a close.
-  if (FileView.isOpen() && e.key === 'Escape' && !inAgentCard(e)) {
+  // In the split's terminal, Escape is the agent's: an interrupt, not a close.
+  if (FileView.isOpen() && e.key === 'Escape' && !inSplit(e)) {
     e.preventDefault();
     // The find bar is the topmost thing in this overlay when it is up, so it is
     // what Escape dismisses — the same rule the legend and the menu follow above.
@@ -2143,7 +2138,8 @@ function keymap(/** @type {KeyboardEvent} */ e) {
     }
   }
   if (Diff.state.open) {
-    if (e.key === 'Escape') { e.preventDefault(); void Diff.close(); return; }
+    // In the split's terminal, Escape is the agent's: an interrupt, not a close.
+    if (e.key === 'Escape' && !inSplit(e)) { e.preventDefault(); void Diff.close(); return; }
     // j/k steps through the changeset, matching the review overlay's motion so
     // "next/previous in a list" is one idiom everywhere. Guarded on not-typing
     // because the diff hosts an editor. The modifier plus ←/→ stays as an alias — it was the

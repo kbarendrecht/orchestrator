@@ -174,6 +174,9 @@
         <span class="ov-path" id="ovpath"></span>
         <div class="ov-nav">
           <span class="ov-count" id="ovcount"></span>
+          <!-- The notes kept in this workspace (#52), and the one send for them.
+               Hidden while there are none; notes.js keeps the count. -->
+          <button class="head-btn" id="ovnotes" hidden>Notes <kbd>0</kbd></button>
           <button class="head-btn" id="ovprev"><span data-mod>Prev <kbd>MOD &#8592;</kbd></span></button>
           <button class="head-btn" id="ovnext"><span data-mod>Next <kbd>MOD &#8594;</kbd></span></button>
           <button class="head-btn" id="ovedit">Edit</button>
@@ -260,12 +263,8 @@
         <span class="ov-count" id="fvwhere"></span>
         <!-- Only on a file this can render, and it names what you would get
              rather than what you are looking at. -->
+        <button class="head-btn" id="fvnotes" hidden>Notes <kbd>0</kbd></button>
         <button class="head-btn" id="fvmode" hidden>Source</button>
-        <!-- The session's own pane, over the file as a card (#52). A toggle, so
-             aria-pressed says whether the agent is on screen; hidden when there
-             is no session to ask. -->
-        <button class="head-btn" id="fvagent" aria-pressed="false" hidden
-                title="Show the session's terminal over the file"><span data-mod>Agent <kbd>MOD ;</kbd></span></button>
         <button class="head-btn" id="fvedit">Edit</button>
         <button class="head-btn" id="fvsave" hidden><span data-mod>Save <kbd>MOD S</kbd></span></button>
         <button class="head-btn" id="fvclose">Close <kbd>Esc</kbd></button>
@@ -305,21 +304,14 @@
     <div class="oq" id="oq" hidden></div>
 
     <div class="termwrap" id="termwrap">
-      <!-- The card's header, drawn only while the pane is lifted over a file
-           (`body.fvagent`, see fileview.js). Its name and dot are the context
-           bar's, painted beside them in app.js. -->
-      <div class="agenthead" id="agenthead" title="Drag to move · double-click to put it back">
+      <!-- The split's header, drawn only while the pane sits under a diff or a
+           file (`body.agentsplit`, see split.js). Its name and dot are the
+           context bar's, painted beside them in app.js. -->
+      <div class="agenthead" id="agenthead" data-mod title="Drag to resize · double-click for the default height · MOD ;">
         <span class="dot sdot" id="agentdot"></span>
         <span class="ctx-name" id="agentname"></span>
-        <button class="head-btn" id="agentfold" type="button">Collapse</button>
-        <button class="agentx" id="agentclose" type="button" data-mod title="Close · MOD ;"
-                aria-label="Close"><svg viewBox="0 0 16 16" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
+        <button class="head-btn" id="agentfold" type="button" aria-expanded="false">Expand</button>
       </div>
-      <!-- Its edges and corners, each resizing from its own side. -->
-      <div class="agentedge" data-edge="n"></div><div class="agentedge" data-edge="s"></div>
-      <div class="agentedge" data-edge="e"></div><div class="agentedge" data-edge="w"></div>
-      <div class="agentedge" data-edge="ne"></div><div class="agentedge" data-edge="nw"></div>
-      <div class="agentedge" data-edge="se"></div><div class="agentedge" data-edge="sw"></div>
       <!-- An empty pane is the one moment someone is looking for what to do, so it
            names the moves and their chords. MOD is resolved to the platform
            modifier at boot in app.js, the same way the legend is. -->
@@ -1131,7 +1123,7 @@
       <dt data-mod>MOD&nbsp;Shift&nbsp;K</dt><dd>search conversations, live and past</dd>
       <dt data-mod>MOD&nbsp;Shift&nbsp;F</dt><dd>find in this workspace's files</dd>
       <dt data-mod>MOD&nbsp;F</dt><dd>find in the file on screen, and replace while editing</dd>
-      <dt data-mod>MOD&nbsp;;</dt><dd>show or hide the session's terminal over the open file</dd>
+      <dt data-mod>MOD&nbsp;;</dt><dd>open or collapse the session under the diff or the open file</dd>
       <dt data-mod>MOD&nbsp;L</dt><dd>ask the session about the lines selected in the open file</dd>
       <dt>Shift&nbsp;Shift</dt><dd>find a file by name</dd>
       <dt>Enter</dt><dd>open the found file on its own, with the markdown view</dd>

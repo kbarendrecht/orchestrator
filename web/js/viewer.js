@@ -90,13 +90,12 @@ function age(/** @type {number} */ secs) {
  *  `crumbs` is where the scope the pane is scrolled to is named, `Order › total`,
  *  and a click on it lists the file's outline. A pane without one passes nothing.
  *
- *  `ask` puts "ask <session> about line N" at the top of the line menu (#52):
- *  `who` names the session, or null when there is none to ask, and `at` is
+ *  `note` puts "note on line N" at the top of the line menu (#52), and `at` is
  *  handed the lines. A pane without one has no such item.
  *
  *  @param {{ mount: HTMLElement, path?: HTMLElement | null, where?: HTMLElement | null,
  *            crumbs?: HTMLElement | null, onFile?: (rel: string, line: number) => void,
- *            ask?: { who: () => string | null, at: (from: number, to: number) => void } }} on
+ *            note?: { at: (from: number, to: number) => void } }} on
  */
 export function create(on) {
   /** `mode` is which of the two pictures is mounted. It exists because the band
@@ -470,17 +469,16 @@ export function create(on) {
     };
     /** @type {[string, string | null, (() => void) | null][]} */
     const items = [];
-    /* **The ask first, because it is the one item that is about the code.**
-       Inside a selection it asks about the selected lines, elsewhere about the
-       line clicked: a right-click is a click on one line, and moving the
-       selection to it would throw away the range somebody just dragged. */
-    const who = view.mode === 'source' && n ? on.ask?.who() : null;
-    if (on.ask && who && n) {
+    /* **The note first, because it is the one item that is about the code.**
+       Inside a selection it is on the selected lines, elsewhere on the line
+       clicked: a right-click is a click on one line, and moving the selection to
+       it would throw away the range somebody just dragged. */
+    if (on.note && view.mode === 'source' && n) {
       const [from, to] = selectedLines() ?? [0, 0];
       const at = Number(n);
       const [a, b] = from && at >= from && at <= to ? [from, to] : [at, at];
-      const ask = on.ask;
-      items.push([`ask ${who} about ${a === b ? `line ${a}` : `lines ${a}-${b}`}`, null, () => ask.at(a, b)]);
+      const note = on.note;
+      items.push([`note on ${a === b ? `line ${a}` : `lines ${a}-${b}`}`, null, () => note.at(a, b)]);
     }
     const picked = String(window.getSelection() ?? '');
     if (picked) items.push(['copy selection', null, copy(picked)]);
