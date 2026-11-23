@@ -513,6 +513,10 @@ main() {
   fi
 
   wait_for check.yml check "--commit $head" 1800 "fix it before tagging"
+  # **`health` gates a release, not a commit.** An advisory arrives without a
+  # commit, so it stays out of `check`; but a red `health` that nothing waits on
+  # stayed red, and a release is the moment its crates reach people.
+  wait_for health.yml health "--commit $head" 1800 "fix it before tagging, an advisory is usually cargo update -p <crate>"
   wait_for bundle.yml bundle "--commit $head" 2700 "fix it before tagging"
 
   if [ "$RETRY" = 1 ]; then

@@ -485,6 +485,11 @@ that may publish nothing. That has happened three times, twice a test that passe
 on Linux and failed on macos-14. Nothing in git stops you tagging a red commit, so
 the guard has to be in front of the tag.
 
+**It waits for `health` on the commit too.** An advisory stays out of `check`,
+because it arrives without a commit, but a red `health` that nothing waited on
+stayed red and shipped. A release is when those crates reach people, so a red
+one stops it; the fix is usually `cargo update -p <crate>`.
+
 **A tag is not a release, and the task waits for that too now.** It used to stop at
 the push and print a `gh run watch` line, so a failed release was found only when
 somebody went to look — v2026.9.20 sat dead for hours that way. Two things are
