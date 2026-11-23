@@ -2965,6 +2965,9 @@ const isNudgeable = (/** @type {import('../snapshot').SessionView} */ s) =>
 /** The ids the strip was closed on: ✕ holds until a different set is cut off. */
 let nudgeDismissed = '';
 
+/** Per checkout path, the ids the restart cut off mid-turn; see `renderNudge`. */
+const restartCut = new Map();
+
 /** The strip above the sessions after a restart: how many it cut off mid-turn,
  *  and one press to send them all on.
  *
@@ -2983,6 +2986,8 @@ function renderNudge() {
      resuming, or with a session still starting, holds it. */
   const settling = CHECKOUTS.some((c) => {
     const s = snapshotOf(c.path);
+    // A daemon that resumes is a restart, so its set is taken again once it settles.
+    if (!s || s.resuming) restartCut.delete(c.path);
     return !s || s.resuming || s.sessions.some((x) => x.state.state === 'starting');
   });
   if (settling) {
@@ -2990,8 +2995,18 @@ function renderNudge() {
     delete bar.dataset.ids;
     return;
   }
+  /* **The restart's sessions, taken once per checkout when it first settles.** A
+     sleep quits a cut-off turn too, and a wake brings it back at `ready` with
+     `interrupted` still set, so counting live drew this card for every wake. The
+     set only shrinks: a session that left it is not put back by the next wake. */
   const by = CHECKOUTS
-    .map((c) => ({ c, ids: (snapshotOf(c.path)?.sessions ?? []).filter(isNudgeable).map((s) => s.id) }))
+    .map((c) => {
+      const now = (snapshotOf(c.path)?.sessions ?? []).filter(isNudgeable).map((s) => s.id);
+      const cut = restartCut.get(c.path) ?? new Set(now);
+      for (const id of cut) if (!now.includes(id)) cut.delete(id);
+      restartCut.set(c.path, cut);
+      return { c, ids: [...cut] };
+    })
     .filter((x) => x.ids.length);
   const ids = by.flatMap((x) => x.ids).sort().join(',');
   const want = !!ids && ids !== nudgeDismissed;
