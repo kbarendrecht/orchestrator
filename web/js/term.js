@@ -67,9 +67,10 @@ export function onPathMenu(/** @type {NonNullable<typeof pathMenu>} */ fn) {
 
 /** Told when a `! command` an agent printed is clicked (`pathlink.commandsIn`).
  *  Set from `app.js`, for the reason `onPathClick` is: which workspace's drawer
- *  gets the shell is a question about the snapshot, not the terminal.
+ *  gets the shell is a question about the snapshot, not the terminal. `into` is
+ *  where it goes: the session that printed it (a click), or a new shell.
  *
- *  @type {((hit: { checkout: string, target: string, cmd: string }) => void) | null} */
+ *  @type {((hit: { checkout: string, target: string, cmd: string, into: 'session' | 'shell' }) => void) | null} */
 let commandClick = null;
 export function onCommandClick(/** @type {NonNullable<typeof commandClick>} */ fn) {
   commandClick = fn;
@@ -329,7 +330,7 @@ function linkPaths(term, checkout, target) {
             if (h.kind === 'url') { openUrl(checkout, h.url); return; }
             if (h.kind === 'ref') { openRef(checkout, h.ref); return; }
             if (h.kind === 'git') { openGit(checkout, h); return; }
-            if (h.kind === 'cmd') { commandClick?.({ checkout: checkout.path, target, cmd: h.cmd }); return; }
+            if (h.kind === 'cmd') { commandClick?.({ checkout: checkout.path, target, cmd: h.cmd, into: 'session' }); return; }
             pathClick?.({
               checkout: checkout.path, target, path: h.path, line: h.line, last: h.last, col: h.col, ev,
             });
@@ -547,7 +548,9 @@ function openTerm(checkout, target, parent) {
       e.stopPropagation();
       const cmd = found.cmd;
       openMenu(e, [
-        ['Type it into a new shell', null, commandClick ? () => commandClick?.({ checkout: checkout.path, target, cmd }) : null],
+        ['Run it in the session', null, commandClick && target.startsWith('session:')
+          ? () => commandClick?.({ checkout: checkout.path, target, cmd, into: 'session' }) : null],
+        ['Type it into a new shell', null, commandClick ? () => commandClick?.({ checkout: checkout.path, target, cmd, into: 'shell' }) : null],
         ['Copy command', null, () => void copyText(cmd).then((ok) => { if (ok) toast('copied the command'); })],
       ]);
       return;

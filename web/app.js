@@ -1332,11 +1332,21 @@ Term.onPathClick(({ checkout, target, path, line, last, ev }) => {
   });
 });
 
-/* **A `! command` goes to a new shell in this pane's drawer**, typed and not run.
-   The drawer shows the current workspace, so a pane from any other one (which a
-   visible pane never is today) is refused rather than given a shell you cannot
+/* **A `! command` runs in the session that printed it, by default.** Typed as
+   `! command`, Claude Code's bash mode, so the output lands in the conversation
+   the agent asked from. The tell route owns when: mid-turn, a permission prompt
+   or a question refuse with a toast, and a sleeping session gets it on waking.
+   A pane that is not a session's, and the menu's other item, type it into a new
+   shell in this pane's drawer, not run. The drawer shows the current workspace,
+   so a pane from any other one is refused rather than given a shell you cannot
    see. */
-Term.onCommandClick(({ checkout, target, cmd }) => {
+Term.onCommandClick(({ checkout, target, cmd, into }) => {
+  if (into === 'session' && target.startsWith('session:')) {
+    const id = target.slice('session:'.length);
+    return void callOn(checkoutAt(checkout), `/api/session/${encodeURIComponent(id)}/tell`, { text: `! ${cmd}` })
+      .then((r) => { if (r?.waking) toast('waking the session, the command goes in when it is up'); })
+      .catch((e) => toast(reason(e), true));
+  }
   const where = ptyRoot(snapshotOf(checkout) ?? snap, target);
   if (!where || where.workspace !== currentWorkspaceId()) {
     return toast('that pane is not in the workspace the drawer shows', true);

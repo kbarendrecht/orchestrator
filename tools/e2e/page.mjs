@@ -3315,7 +3315,10 @@ try {
   check(closed, 'and with a drawer shell focused, it closes that shell')
   await t.api('POST', `/api/process/${spareShell}/close`).catch(() => {})
 
-  /* --- a `! command` an agent printed goes to a new shell, typed and not run - */
+  /* --- a `! command` in a shell pane goes to a new shell, typed and not run - */
+
+  /* A session's pane runs it in that session instead (app.js); a shell pane has
+     no session to run it in, so this is the shell path. */
 
   /* **Typed, not run, and that is the half worth a browser.** The click is a plain
      click on a line of output, so a command that ran on it would run whatever an
