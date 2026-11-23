@@ -1228,7 +1228,7 @@ try {
     const real = core.snapshotOf(c.path)
     const one = real?.sessions.find((s) => s.alive)
     if (!real || !one) return 'no live session to mark'
-    core.receive(c, {
+    const marked = {
       ...real,
       sessions: real.sessions.map((s) => (s === one ? {
         ...s,
@@ -1236,19 +1236,27 @@ try {
         has_transcript: true,
         interrupted: true,
       } : s)),
-    })
-    Rail.render()
+    }
     const bar = /** @type {HTMLElement} */ (document.getElementById('railnudge'))
+    // Marked after the boot settled is a wake, not a restart: no card.
+    core.receive(c, marked)
+    Rail.render()
+    const woke = !bar.hidden
+    // Through a resume first, it is what a restart left.
+    core.receive(c, { ...marked, resuming: true })
+    Rail.render()
+    core.receive(c, marked)
+    Rail.render()
     const shown = !bar.hidden && (bar.textContent ?? '').includes('1 session stopped by the restart')
     const x = /** @type {HTMLElement} */ (bar.querySelector('.railnudge-x'))
     x.click()
     const closed = bar.hidden
     core.receive(c, real)
     Rail.render()
-    return JSON.stringify({ shown, closed })
+    return JSON.stringify({ woke, shown, closed })
   })
-  check(nudge === '{"shown":true,"closed":true}',
-    `a session a restart cut off gets the Continue card, and Dismiss hides it, got ${nudge}`)
+  check(nudge === '{"woke":false,"shown":true,"closed":true}',
+    `a session a restart cut off gets the Continue card, a woken one does not, and Dismiss hides it, got ${nudge}`)
 
   /* **A snapshot that changes nothing the add row draws keeps its button.** It
      was rebuilt on every snapshot, and WebKit sends no click when the press and
