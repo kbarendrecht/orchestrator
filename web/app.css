@@ -1370,6 +1370,10 @@ kbd{
 .trow .tname{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .trow.dir .tname{color:var(--dim)}
 .trow .tpre{color:var(--ghost)}
+/* The flat list's path (`listRow` in diff.js): right to left so a narrow pane
+   cuts the start and keeps the name, and the folder as quiet as the tree's. */
+.trow .tpath{direction:rtl;text-align:left}
+.trow .tpath i{font-style:normal;color:var(--ghost)}
 .trow.gone .tname{color:var(--ghost);text-decoration:line-through}
 .trow.inert{cursor:default}
 .trow .tdot,.trow .tcd{width:6px;height:6px;border-radius:50%;flex:none}

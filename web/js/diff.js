@@ -279,6 +279,29 @@ const NOT_SHOWN = [
 /** What the pane was last built from — see `unchanged`. */
 const drawn = { sig: null, name: 'changed-files' };
 
+/** One changed file in the flat list: its path, the folder dimmed, and the
+ *  tree's status dot, so the two views read alike.
+ *
+ *  The path cell runs right to left, so a narrow pane cuts the start of the
+ *  path and keeps the name. The embedding mark keeps the characters in order
+ *  across the two parts. A whole untracked folder (`src/`) is all name. */
+function listRow(
+  /** @type {import('../snapshot').WorkspaceView} */ w, /** @type {import('../base').DiffFile} */ f,
+  /** @type {boolean} */ on, /** @type {(path: string) => void} */ pick,
+) {
+  const st = (f.status || 'M')[0] ?? 'M';
+  const row = el('button', 'trow' + (st === 'D' ? ' gone' : '') + (on ? ' on' : ''));
+  const cut = f.path.lastIndexOf('/', f.path.length - 2);
+  const name = el('span', 'tname tpath');
+  name.append(el('i', null, '\u202a' + f.path.slice(0, cut + 1)), f.path.slice(cut + 1));
+  // `?` is untracked, which CSS spells `.tcd.U`, as in the tree.
+  row.append(name, el('span', 'tcd ' + (st === '?' ? 'U' : st)));
+  row.title = f.old_path ? `${f.old_path} → ${f.path}` : f.path;
+  row.onclick = () => pick(f.path);
+  row.oncontextmenu = (ev) => openMenu(ev, fileMenu(w, f));
+  return row;
+}
+
 function renderFiles() {
   // The diff overlay is opened against a workspace and keeps describing it while
   // it is open, session or no session.
@@ -317,7 +340,7 @@ function renderFiles() {
   const commits = w && !tree ? commitsOf(w) : null;
   if (unchanged(drawn, [wsId, w, cur?.id ?? null, !!(cur && pending(cur)), snap.upstream_ref,
     diffState.open, diffState.path, diffState.summary, mode, listSum, known, commits, diffState.view,
-    Tree.rev()], NOT_SHOWN)) return;
+    changesTree, Tree.rev()], NOT_SHOWN)) return;
   if (w) renderDivergence(w);
   const panes = $('filepanes');
 
@@ -375,24 +398,34 @@ function renderFiles() {
 
 
 
+  const pick = (/** @type {string} */ path) => {
+    if (sum) {
+      diffState.cursor = 0;
+      diffState.context = 3;
+      void loadFile(path);
+    } else {
+      void openDiff(path);
+    }
+  };
   /* **The changes as a tree**: only the changed files and the folders on the way
      to them (#46). Not for an empty list, whose sentence says more than an empty
      tree. */
-  if (files.length) {
+  if (files.length && changesTree) {
     Tree.render(panes, w.id, files, renderFiles, {
       onlyChanged: true,
       picked: sum ? diffState.path : null,
-      pick: (path) => {
-        if (sum) {
-          diffState.cursor = 0;
-          diffState.context = 3;
-          void loadFile(path);
-        } else {
-          void openDiff(path);
-        }
-      },
+      pick,
       menu: (f) => fileMenu(w, f),
     });
+  } else if (files.length) {
+    /* **Keyed on the path, and the container is kept**, because a rebuild
+       destroys the row under the pointer (`core.reconcile`). A row's signature is
+       its record plus whether it is the one the open diff shows. */
+    reconcile(panes, files.map((/** @type {import('../base').DiffFile} */ f) => ({
+      key: `f:${f.path}`,
+      sig: paintSig([f, sum ? f.path === diffState.path : false, w.id]),
+      build: () => listRow(w, f, !!sum && f.path === diffState.path, pick),
+    })));
   } else {
     reconcile(panes, [{
       key: 'empty',
@@ -619,6 +652,13 @@ const WS_KEY = 'orch.diffIgnoreWs';
 try {
   diffState.ignoreWs = localStorage.getItem(WS_KEY) === '1';
 } catch (err) { /* no storage: whitespace counts */ }
+/* Whether the changes are grouped by folder or listed flat. A tree unless
+   somebody turned it off, so the key missing means on. */
+const TREE_KEY = 'orch.changesTree';
+let changesTree = true;
+try {
+  changesTree = localStorage.getItem(TREE_KEY) !== '0';
+} catch (err) { /* no storage: the tree */ }
 const VIEW_KEY = 'orch.changesView';
 try {
   if (localStorage.getItem(VIEW_KEY) === 'files') diffState.view = 'files';
@@ -686,6 +726,13 @@ function baseMenu(/** @type {MouseEvent} */ ev) {
     `pick${key === diffState.base ? ' on' : ''}`,
     () => void setBase(key),
   ]));
+  items.push(['Group by folder', `pick${changesTree ? ' on' : ''}`, () => {
+    changesTree = !changesTree;
+    try {
+      localStorage.setItem(TREE_KEY, changesTree ? '1' : '0');
+    } catch (err) { /* private mode: it still switched for this session */ }
+    renderFiles();
+  }]);
   openMenu(ev, items);
 }
 

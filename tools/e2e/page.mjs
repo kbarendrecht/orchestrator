@@ -406,6 +406,31 @@ try {
       .then(() => true, () => false)
     check(staged, 'and a right-click on it offers to stage it')
     await page.keyboard.press('Escape')
+
+    /* **"Group by folder" off is a flat list**: one row per file with its path
+       and the same dot, no folder rows, and the same right-click menu. Switched
+       back after, so every check below reads the tree. */
+    const groupBy = async () => {
+      await page.click('#filestitle')
+      await page.locator('#ctxmenu:not([hidden]) button', { hasText: 'Group by folder' }).click()
+    }
+    await groupBy()
+    const flat = await page.waitForFunction(() => {
+      const rows = [...document.querySelectorAll('#filepanes .trow')]
+      return rows.length > 0 && rows.every((r) => !r.classList.contains('dir')
+        && !!r.querySelector('.tpath') && !!r.querySelector('.tcd'))
+    }, null, { timeout: 5000 }).then(() => true, () => false)
+    check(flat, 'Group by folder off lists the changes flat, each row a path and a dot')
+    await page.click(markRow, { button: 'right' })
+    const flatMenu = await page.locator('#ctxmenu:not([hidden]) button', { hasText: 'stage' }).waitFor({ timeout: 5000 })
+      .then(() => true, () => false)
+    check(flatMenu, 'and its rows keep the right-click menu')
+    await page.keyboard.press('Escape')
+    await groupBy()
+    // The one change sits at the root, so the tree has no folder row to wait for.
+    const back = await page.waitForFunction(() => !!document.querySelector('#filepanes .trow')
+      && !document.querySelector('#filepanes .tpath'), null, { timeout: 5000 }).then(() => true, () => false)
+    check(back, 'and turning it on again brings the tree back')
   }
   fs.rmSync(treeMark)
   await t.api('POST', '/api/workspace/page/reconcile')
