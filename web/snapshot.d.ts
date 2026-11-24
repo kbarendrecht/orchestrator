@@ -774,7 +774,15 @@ tail: string,
  * The agent being upgraded, carried for the same reason as `to`; `None` for
  * the app's own upgrade.
  */
-agent: Agent | null, };
+agent: Agent | null, 
+/**
+ * The installed app a restart must start, when that is not this build.
+ *
+ * Set only after a build in a checkout upgraded the app its checkout pins:
+ * restarting that build would bring the dev build back, not the release it
+ * just installed. `None` everywhere else, which is the ordinary restart.
+ */
+restart_into: string | null, };
 
 export type WorkspaceKind = { "kind": "main" } | { "kind": "worktree", name: string, };
 

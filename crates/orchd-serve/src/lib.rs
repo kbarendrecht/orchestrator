@@ -2392,4 +2392,19 @@ mod tests {
         let answer: serde_json::Value = serde_json::from_str(&body_of(bogus).await).unwrap();
         assert_eq!(answer["error"], "no such window command: explode");
     }
+
+    /// A restart into another build is checked before any window is asked, so a
+    /// page cannot hand the shell a program to run.
+    #[tokio::test]
+    async fn a_restart_into_a_path_that_is_not_an_installed_app_is_refused() {
+        let (app, host, _dir) = app_and_host("restart-into");
+        let mut r = req(&app, "POST", "/api/window/restart-into", true);
+        r.headers_mut()
+            .insert("content-type", "application/json".parse().unwrap());
+        *r.body_mut() = Body::from(r#"{"exe":"/bin/sh"}"#);
+        let res = router(app.clone(), host).oneshot(r).await.unwrap();
+        assert_eq!(res.status(), 400);
+        let answer: serde_json::Value = serde_json::from_str(&body_of(res).await).unwrap();
+        assert_eq!(answer["error"], "not an installed app: /bin/sh");
+    }
 }

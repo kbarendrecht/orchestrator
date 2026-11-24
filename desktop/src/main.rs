@@ -64,6 +64,10 @@ static RT: OnceLock<tokio::runtime::Handle> = OnceLock::new();
 /// `claude` processes share a worktree. `shutdown` is what makes that true.
 static RESTART: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// The build a restart starts in place of this one, set by
+/// `WindowCmd::RestartInto`. Empty is the ordinary restart, into this build.
+static RESTART_INTO: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
+
 /// Set by the first exit request, so the ones that arrive while the children
 /// are stopping do not start a second shutdown.
 static EXITING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -1188,9 +1192,18 @@ fn ensure_on_screen(win: &tauri::WebviewWindow) {
 /// window so the exit path tears the daemon down and `relaunch` starts the
 /// replacement. Called off the main thread (a window command or a bootstrap request),
 /// where `close` belongs — wry panics if it is handled on the main thread.
-fn request_restart(app: &AppHandle) -> bool {
-    match launcher_target() {
+///
+/// `into` is another build to come back as; `None` comes back as this one.
+fn request_restart(app: &AppHandle, into: Option<std::path::PathBuf>) -> bool {
+    let target = match into.clone() {
+        Some(exe) => Ok(exe),
+        None => launcher_target(),
+    };
+    match target {
         Ok(exe) if exe.exists() => {
+            if let Ok(mut slot) = RESTART_INTO.lock() {
+                *slot = into;
+            }
             RESTART.store(true, std::sync::atomic::Ordering::SeqCst);
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.close();
@@ -1430,7 +1443,8 @@ fn relaunch() {
     // this runs, the path this process was started from may be the version that was
     // just replaced, or gone. The `latest` symlink beside it is the one that means
     // "the build to run now".
-    let exe = match launcher_target() {
+    let into = RESTART_INTO.lock().ok().and_then(|mut slot| slot.take());
+    let exe = match into.map_or_else(launcher_target, Ok) {
         Ok(p) => p,
         Err(e) => return tracing::error!("cannot restart, no path to this binary: {e}"),
     };
@@ -1840,7 +1854,10 @@ impl WindowControl for TauriWindow {
             // that cannot happen must refuse rather than take every live session
             // with it. `relaunch` runs after `shutdown`, too late to change course.
             WindowCmd::Restart => {
-                request_restart(&self.app);
+                request_restart(&self.app, None);
+            }
+            WindowCmd::RestartInto(exe) => {
+                request_restart(&self.app, Some(exe));
             }
             WindowCmd::StartDrag => start_dragging(&self.app, &w)?,
             WindowCmd::Focus => {

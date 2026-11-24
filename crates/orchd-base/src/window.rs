@@ -18,7 +18,7 @@
 use serde::Deserialize;
 
 /// What the chrome in the top bar can ask of its window.
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum WindowCmd {
     Minimize,
@@ -32,6 +32,13 @@ pub enum WindowCmd {
     /// what wants it — mise repoints the install, but a `claude` already running is
     /// still the old build, and the only way onto the new one is a fresh spawn.
     Restart,
+    /// `Restart`, but into the installed app an upgrade from a build in a
+    /// checkout just put in place, rather than into this build again.
+    ///
+    /// Skipped by the parser, so no word in a URL can name a program to run: the
+    /// host builds this one, and only after `update::is_installed_app` agrees.
+    #[serde(skip)]
+    RestartInto(std::path::PathBuf),
     /// Hand the drag to the compositor. Sent once the pointer has **moved** with
     /// the button down — never on the press itself.
     ///

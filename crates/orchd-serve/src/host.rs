@@ -1690,6 +1690,7 @@ pub fn router(host: Arc<Host>) -> Router {
         .route("/api/host/validate", post(validate))
         .route("/api/host/git-init", post(git_init))
         .route("/api/host/detect", post(detect))
+        .route("/api/window/restart-into", post(window_restart_into))
         .route("/api/window/resize/:edge", post(window_resize))
         .route("/api/window/:cmd", post(window_cmd))
         .layer(axum::middleware::from_fn_with_state(host.clone(), guard))
@@ -2257,6 +2258,33 @@ async fn window_resize(State(host): State<Arc<Host>>, UrlPath(edge): UrlPath<Str
         Some(parsed) => dispatch(&host, orchd::window::WindowCmd::StartResize(parsed)).await,
         None => refusal(&format!("no such resize edge: {edge}")),
     }
+}
+
+/// The installed app a restart should come back as.
+#[derive(serde::Deserialize)]
+struct RestartInto {
+    exe: String,
+}
+
+/// Restart into the app an upgrade from a build in a checkout installed.
+///
+/// The page hands the path over, so this is where it is checked: a route that
+/// runs whatever it is given is a route that runs anything.
+/// `update::is_installed_app` is the whole of that check, off the runtime
+/// because it stats the file.
+async fn window_restart_into(
+    State(host): State<Arc<Host>>,
+    Json(body): Json<RestartInto>,
+) -> Response {
+    let exe = PathBuf::from(body.exe);
+    let probe = exe.clone();
+    let ok = tokio::task::spawn_blocking(move || orchd::update::is_installed_app(&probe))
+        .await
+        .unwrap_or(false);
+    if !ok {
+        return refusal(&format!("not an installed app: {}", exe.display()));
+    }
+    dispatch(&host, orchd::window::WindowCmd::RestartInto(exe)).await
 }
 
 /// The same shape `api::ApiError` produces, so the SPA's `call` reads a refusal

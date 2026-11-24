@@ -459,8 +459,13 @@ function renderUpdate() {
   go.onclick = async () => {
     // A restart takes the window down, so there is nothing to report back into:
     // the answer is the app coming back on the new version.
+    // A build in a checkout comes back as the app its upgrade installed, not as
+    // itself; the daemon says which, on the run.
+    const restart = () => (run?.restart_into
+      ? callHost('/api/window/restart-into', { exe: run.restart_into })
+      : callHost('/api/window/restart'));
     try {
-      await (succeeded ? callHost('/api/window/restart') : call('/api/update/upgrade'));
+      await (succeeded ? restart() : call('/api/update/upgrade'));
     } catch (e) {
       toast(reason(e), true);
     }

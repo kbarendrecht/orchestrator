@@ -557,11 +557,12 @@ pub async fn start_upgrade(
             running: true,
             tail: String::new(),
             agent,
+            restart_into: None,
         });
         (plan, version)
     };
     app.notify().await;
-    run_upgrade(app.clone(), plan, version.to.clone(), subject);
+    run_upgrade(app.clone(), plan, version.to.clone(), subject, install);
     Ok(version)
 }
 
@@ -595,13 +596,31 @@ fn run_upgrade(
     plan: Plan,
     to: String,
     subject: Subject,
+    install: Install,
 ) {
     tokio::spawn(async move {
         let main = app.cfg.main_checkout.clone();
         let argv = plan.argv.clone();
         let privileged = plan.argv.first().is_some_and(|a| a == PKEXEC);
+        /* **mise caches a tool's version list for an hour**, so a list fetched
+        just before a release still ends at the old version and `mise upgrade`
+        exits 0 having installed nothing. The release the bar offers is already
+        known to exist, so the upgrade fetches the list fresh. Only mise reads
+        the variable. */
+        let envs = [(
+            "MISE_FETCH_REMOTE_VERSIONS_CACHE".to_string(),
+            "0".to_string(),
+        )];
         let done = tokio::task::spawn_blocking(move || {
-            crate::proc::run_bounded(&main, UPGRADE_TIMEOUT_SECS, &argv, "agent upgrade")
+            crate::proc::run_bounded_with_input(
+                &main,
+                UPGRADE_TIMEOUT_SECS,
+                &argv,
+                "agent upgrade",
+                None,
+                &envs,
+                None,
+            )
         })
         .await;
 
@@ -642,16 +661,27 @@ fn run_upgrade(
         packager that exits 0 having done nothing is the ordinary way that is not
         what was asked for (see `plan`). Off the runtime, because answering it
         spawns a process. */
+        /* **A build in a checkout restarts into what mise installed**, not into
+        itself: the upgrade wrote the checkout's pin, and the build that is running
+        is a `cargo build` the upgrade never touched. So for a checkout, both the
+        version asked and the restart offered are the pinned app's. */
+        let mut restart_into = None;
         let failure = match (subject, &failure) {
             (Subject::App, None) => {
-                let have = tokio::task::spawn_blocking(|| {
+                let main = app.cfg.main_checkout.clone();
+                let (have, pinned) = tokio::task::spawn_blocking(move || {
                     // The one environment read, at the edge.
-                    std::env::current_exe()
-                        .ok()
-                        .and_then(|exe| installed_version(&exe))
+                    let probe = if install == Install::Checkout {
+                        pinned_app(&main)
+                    } else {
+                        std::env::current_exe().ok()
+                    };
+                    let have = probe.as_deref().and_then(installed_version);
+                    (have, probe.filter(|_| install == Install::Checkout))
                 })
                 .await
-                .unwrap_or(None);
+                .unwrap_or((None, None));
+                restart_into = pinned.map(|p| p.to_string_lossy().into_owned());
                 upgrade_landed(&plan.shown, &to, have)
             }
             _ => failure,
@@ -669,6 +699,7 @@ fn run_upgrade(
             *subject.run_slot(&mut inner) = Some(UpgradeRun {
                 to,
                 running: false,
+                restart_into: restart_into.filter(|_| failure.is_none()),
                 tail: failure.unwrap_or_default(),
                 agent,
             });
@@ -942,13 +973,54 @@ pub fn start_stale_poller(app: Arc<AppState>) {
 /// accepts and carries `install_path` beside it, so the answer is a prefix match
 /// rather than a guess about how a backend spells its directory.
 ///
-/// `None` for every install that is not mise's — a `.deb`, an AppImage, a `cargo
-/// build` in a checkout — and that is the answer that hides the button.
-pub fn app_providing_tool(main: &Path) -> Option<String> {
+/// `None` for every install that is not mise's — a `.deb`, an AppImage — and that
+/// is the answer that hides the button.
+///
+/// **A build in a checkout is the exception**: it is nobody's install, but the
+/// checkout's mise may pin the app, and then upgrading that pin and restarting
+/// into it is how a dev build gets onto a release. Only for a checkout, because
+/// a `.deb` that found a mise pin beside it would be upgraded by the wrong
+/// installer.
+pub fn app_providing_tool(main: &Path, install: Install) -> Option<String> {
     let exe = std::env::current_exe().ok()?;
     // Bounded, through the same helper the agent half uses.
     let out = mise(main, &["ls", "--json"], "listing mise's installs")?;
+    if install == Install::Checkout {
+        // Resolved, because mise lists the versioned directory and `which`
+        // answers through `latest`.
+        let pinned = std::fs::canonicalize(pinned_app(main)?).ok()?;
+        return tool_owning(&out.stdout, &pinned);
+    }
     tool_owning(&out.stdout, &exe)
+}
+
+/// The app the main checkout's mise pins, as a restart should start it.
+///
+/// `mise which` rather than a path built from the tool's name, so whatever the
+/// pin resolves to is what comes back, and `None` when the checkout pins no app.
+/// Through `latest`, like [`stable_exe`], so the path still names the new build
+/// after the upgrade it is asked after.
+fn pinned_app(main: &Path) -> Option<std::path::PathBuf> {
+    let out = mise(
+        main,
+        &["which", "orchestrator-desktop"],
+        "finding the app mise pins",
+    )?;
+    let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!path.is_empty()).then(|| stable_exe(Path::new(&path)))
+}
+
+/// Is `exe` an app mise installed, so a restart may start it in place of this one?
+///
+/// The host asks this of a path the page hands it, so it is the whole guard on
+/// what a restart may run: under mise's `installs`, outside a build tree, named
+/// like the app, and there.
+pub fn is_installed_app(exe: &Path) -> bool {
+    exe.is_absolute()
+        && exe.file_name() == Some(std::ffi::OsStr::new("orchestrator-desktop"))
+        && exe.components().any(|c| c.as_os_str() == INSTALLS)
+        && !exe.components().any(|c| c.as_os_str() == "target")
+        && exe.is_file()
 }
 
 /// Split from [`app_providing_tool`] so the shape mise emits can be tested without
@@ -1136,7 +1208,7 @@ pub async fn check_release(app: &Arc<AppState>) -> Result<Checked> {
     // say about those.
     let tool = if newer {
         let main = app.cfg.main_checkout.clone();
-        tokio::task::spawn_blocking(move || app_providing_tool(&main))
+        tokio::task::spawn_blocking(move || app_providing_tool(&main, Install::of_running()))
             .await
             .unwrap_or(None)
     } else {
@@ -1338,6 +1410,40 @@ mod tests {
     /// Three shapes, and each one is a real install: a bare directory (a tarball),
     /// mise's versioned one where `latest` is what a restart resolves, and a
     /// `Contents/MacOS` bundle where the daemon sits beside the app's own binary.
+    /// The host runs whatever path passes this, so each way out of it is pinned:
+    /// only an app binary mise installed may be restarted into.
+    #[test]
+    fn only_an_installed_app_may_be_restarted_into() {
+        let dir = crate::testutil::scratch("installed-app");
+        let stage = |rel: &str| {
+            let p = dir.join(rel);
+            std::fs::create_dir_all(p.parent().expect("a parent")).expect("the layout");
+            std::fs::write(&p, "").expect("the binary");
+            p
+        };
+        let installed = stage("installs/github-o/latest/orchestrator-desktop");
+        assert!(is_installed_app(&installed), "mise's install is the target");
+
+        for (refused, why) in [
+            (
+                stage("dev/target/release/orchestrator-desktop"),
+                "a build tree",
+            ),
+            (stage("installs/github-o/latest/orchd"), "not the app"),
+            (stage("opt/orchestrator-desktop"), "not mise's"),
+            (
+                dir.join("installs/github-o/2026.1.1/orchestrator-desktop"),
+                "not there",
+            ),
+            (
+                std::path::PathBuf::from("installs/github-o/latest/orchestrator-desktop"),
+                "relative",
+            ),
+        ] {
+            assert!(!is_installed_app(&refused), "{why}: {}", refused.display());
+        }
+    }
+
     #[test]
     fn the_installed_version_is_read_from_the_build_a_restart_would_start() {
         let dir = crate::testutil::scratch("installed-version");

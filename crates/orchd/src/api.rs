@@ -3891,6 +3891,7 @@ mod tests {
             running: true,
             tail: String::new(),
             agent: None,
+            restart_into: None,
         });
         assert!(
             upgrade_app(State(app.clone())).await.is_err(),
