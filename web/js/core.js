@@ -134,6 +134,17 @@ export let selected = null;
 const selectionListeners = [];
 export function onSelection(/** @type {(id: string | null, auto: boolean) => void} */ fn) { selectionListeners.push(fn); }
 
+/* The sessions you were on, for the mouse's back and forward buttons. Ids only:
+   a session that ended since is skipped when the walk reaches it, rather than
+   pruned on every snapshot. */
+const TRAIL_MAX = 50;
+/** @type {{ back: string[], forward: string[] }} */
+const trail = { back: [], forward: [] };
+/** @type {string | null} */
+let lastShown = null;
+/** Set while a step is selecting, so the step does not push itself. */
+let walking = false;
+
 /** Pick a session. What *happens* next is whoever registered's business.
  *
  *  `auto` marks the pick the app made for you, which is what the snapshot does
@@ -149,6 +160,16 @@ export function setSelected(/** @type {string | null} */ id, auto = false) {
     // Another session is a different place to be; the one you were on is not.
     if (id !== selected) startingFollow = false;
   }
+  /* The way back. Every move counts, the app's own picks too: a session you just
+     created lands as an `auto` pick, and back from it should be where you were.
+     Measured against the last session shown rather than `selected`, so passing
+     through nothing (a session ending) still leaves the one before on the trail. */
+  if (id && lastShown && id !== lastShown && !walking) {
+    trail.back.push(lastShown);
+    if (trail.back.length > TRAIL_MAX) trail.back.shift();
+    trail.forward.length = 0;
+  }
+  if (id) lastShown = id;
   selected = id;
   // Picking a session is also saying which checkout you are in, which is what
   // holds the pane still when that session ends.
@@ -158,6 +179,26 @@ export function setSelected(/** @type {string | null} */ id, auto = false) {
   // new selection means.
   adopt();
   for (const fn of selectionListeners) fn(id, auto);
+}
+
+/** Step back (`-1`) or forward (`1`) through the sessions you were on.
+ *
+ *  Skips a session that is gone or archived, which the snapshot handler would
+ *  drop straight after selecting it. False when there was nowhere to go. */
+export function walkSessions(/** @type {-1 | 1} */ step) {
+  const [from, to] = step < 0 ? [trail.back, trail.forward] : [trail.forward, trail.back];
+  const live = (/** @type {string} */ id) => everySession().some((r) => r.session.id === id && !isArchived(r.session));
+  let next = from.pop();
+  while (next !== undefined && (next === lastShown || !live(next))) next = from.pop();
+  if (next === undefined) return false;
+  if (lastShown) to.push(lastShown);
+  walking = true;
+  try {
+    setSelected(next);
+  } finally {
+    walking = false;
+  }
+  return true;
 }
 
 /** One checkout: what the host said about it, and how to reach its daemon.

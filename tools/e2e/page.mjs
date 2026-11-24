@@ -3445,6 +3445,33 @@ try {
 
   await t.api('POST', `/api/process/${shell}/close`)
 
+  /* --- the mouse's back and forward buttons walk the sessions --------------- */
+
+  /* Dispatched, like the find overlay's back above, and for the same reason:
+     whether the webview hands button 3 to the page is not something a run here
+     can see. What is held is the walk: back to where you were, forward again, and
+     a press with nowhere to go leaving the pane where it is. */
+  {
+    const { session: walkA } = await t.api('POST', '/api/worktree', { name: 'walk-a' })
+    const { session: walkB } = await t.api('POST', '/api/worktree', { name: 'walk-b' })
+    await t.settled(walkA)
+    await t.settled(walkB)
+    const shown = () => page.evaluate(async () => (await import('/js/core.js')).selected)
+    const press = (/** @type {number} */ button) => page.evaluate((b) => document.body.dispatchEvent(
+      new MouseEvent('mousedown', { button: b, bubbles: true, cancelable: true })), button)
+    const lands = (/** @type {string} */ id) => until(`the pane on ${id}`, async () => await shown() === id)
+      .then(() => true, () => false)
+    await page.click(`#rail .sess[data-id="${walkA}"]`)
+    await page.click(`#rail .sess[data-id="${walkB}"]`)
+    check(await lands(walkB), 'the second session is the one shown')
+    await press(3)
+    check(await lands(walkA), 'the back button returns to the session before')
+    await press(4)
+    check(await lands(walkB), 'and forward goes to it again')
+    await press(4)
+    check(await shown() === walkB, 'and forward with nowhere to go stays put')
+  }
+
   /* --- a restart puts the pane back on the new process (#35) ----------------- */
 
   /* **The one half the restart flows cannot see**, because they drive the API: a

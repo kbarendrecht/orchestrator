@@ -819,8 +819,8 @@ export function init() {
      everywhere else. Button 3 is the back one (4 is forward) and `mousedown` is
      where it arrives; `preventDefault` keeps the webview from treating it as its
      own history, which in an app with one page would be a navigation to nothing.
-     Bound to the overlay rather than the window, because outside it there is no
-     trail and the button should stay the platform's. */
+     Bound to the overlay, so it answers before the window's listener, which walks
+     the sessions you were on (`app.js`), and the `preventDefault` stops that one. */
   $('fnoverlay').addEventListener('mousedown', (ev) => {
     if (/** @type {MouseEvent} */ (ev).button !== 3) return;
     ev.preventDefault();

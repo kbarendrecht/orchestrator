@@ -159,6 +159,14 @@ WebKitGTK and WKWebView hand button 3 to the page at all is not. Nothing
 available here answers it; the app on a real machine is where it gets answered,
 and the binding degrades to nothing if the answer is no.
 
+**Outside the overlay the same buttons walk the sessions you were on.** The trail
+is `walkSessions` in `core.js`, fed by `setSelected`, and the listener is on the
+window in `app.js`. Two rules hold it. Every move pushes, the app's own `auto`
+picks included, because a session you just created arrives as one and back from
+it should be where you were. And the overlay answers first: its listener is on a
+descendant, so its `preventDefault` reaches the window's before that one acts,
+and a back inside the overlay never also changes the session.
+
 ## A path an agent printed is clickable, and three modules each own one third of that.
 Click a path in any terminal and the file pane opens on it, at that line. The work is split where the knowledge is: `web/js/term.js` finds the
 text in the buffer, `web/js/pathlink.js` decides what is a path, `web/app.js`

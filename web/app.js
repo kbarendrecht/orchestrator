@@ -3,7 +3,7 @@
 // The SPA is a module now, so what it reaches for is written down. `core.js` holds
 // the primitives every part needs; `queue.js` is the first seam extracted whole.
 import {
-$, AGENT_LABEL, checkoutOf, getOn, onBadgesChange, el, icon, toast, reason, safeHref, copyText, call, callHost, get, activeCheckout, CHECKOUTS, setCheckouts, HOST, snapshotOf, snapshotFor, repoSummary, everySession, enterCheckout, snap, receive, keyActivate, setZoom, setUiPx, uiPx, saveZoom, onScaleChange, onNoFocusBack, ZOOM, selected, setSelected, onSelection, prForWorkspace, terms, CHROME, sessionDot, isWaiting, isArchived, isStopped, byNewest, currentSession, activeWorkspaceId, currentWorkspaceId, closeMenu, menuOpen, openMenu, callOn, newSession, newWorktree, newShell, mainWorkspace, workspaceById, prState, prSeverity, prsOf, handedToPr, drawerCollapsed, setDrawerCollapsed, pendingSelect, setPendingSelect, onDrawerChange, onCreatingChange, creating, creatingIn, startingShown, appMod, IS_MAC, MOD_LABEL, closeLegend, toggleLegend, typingElsewhere, mark, reportBoot, dialogOpen, dismissDialog, promptBox, bytesOn, unchanged, tick,
+$, AGENT_LABEL, checkoutOf, getOn, onBadgesChange, el, icon, toast, reason, safeHref, copyText, call, callHost, get, activeCheckout, CHECKOUTS, setCheckouts, HOST, snapshotOf, snapshotFor, repoSummary, everySession, enterCheckout, snap, receive, keyActivate, setZoom, setUiPx, uiPx, saveZoom, onScaleChange, onNoFocusBack, ZOOM, selected, setSelected, walkSessions, onSelection, prForWorkspace, terms, CHROME, sessionDot, isWaiting, isArchived, isStopped, byNewest, currentSession, activeWorkspaceId, currentWorkspaceId, closeMenu, menuOpen, openMenu, callOn, newSession, newWorktree, newShell, mainWorkspace, workspaceById, prState, prSeverity, prsOf, handedToPr, drawerCollapsed, setDrawerCollapsed, pendingSelect, setPendingSelect, onDrawerChange, onCreatingChange, creating, creatingIn, startingShown, appMod, IS_MAC, MOD_LABEL, closeLegend, toggleLegend, typingElsewhere, mark, reportBoot, dialogOpen, dismissDialog, promptBox, bytesOn, unchanged, tick,
 } from './js/core.js';
 import { onThemeChange } from './js/theme.js';
 import { detailEl, symbolAt } from './js/source.js';
@@ -1863,6 +1863,18 @@ window.addEventListener('keydown', (e) => {
   keymap(e);
   if (e.defaultPrevented) e.stopPropagation();
 }, true);
+
+/* **The mouse's back and forward buttons walk the sessions you were on.** Button
+ * 3 is back and 4 is forward, and `mousedown` is where they arrive. Bubbling, so
+ * the find overlay's own back, a step through its jumps, answers first and its
+ * `preventDefault` keeps this from stepping too. Ours to prevent here as well,
+ * since the webview's own history in a one-page app is a navigation to nothing.
+ * A dialog holds the keyboard and the decision, so the session stays put under it. */
+window.addEventListener('mousedown', (e) => {
+  if ((e.button !== 3 && e.button !== 4) || e.defaultPrevented || dialogOpen()) return;
+  e.preventDefault();
+  walkSessions(e.button === 3 ? -1 : 1);
+});
 
 /* **Shift-Shift opens the file search, and the guard is the whole of it.**
  *
