@@ -477,7 +477,7 @@ const SETTINGS_ITEM: &str = "settings";
 #[cfg(target_os = "macos")]
 const CLOSE_ITEM: &str = "close";
 
-/// The id of the Help menu's "Orchestrator Help", in [`with_app_menu`].
+/// The id of the Help menu's "Krabbe Help", in [`with_app_menu`].
 #[cfg(target_os = "macos")]
 const HELP_ITEM: &str = "help";
 
@@ -555,7 +555,7 @@ fn with_app_menu(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::W
             {
                 Some(help) => {
                     let item =
-                        MenuItem::with_id(app, HELP_ITEM, "Orchestrator Help", true, None::<&str>)?;
+                        MenuItem::with_id(app, HELP_ITEM, "Krabbe Help", true, None::<&str>)?;
                     help.insert(&item, 0)?;
                 }
                 None => tracing::warn!("no Help submenu to hang the app's help on"),
@@ -663,7 +663,7 @@ fn build_window(
     not a cost this app pays: it ships as a dmg. */
     let see_through = orchd_serve::host::see_through_window();
     let mut builder = WebviewWindowBuilder::new(app_handle, "main", url)
-        .title("Orchestrator")
+        .title("Krabbe")
         .transparent(see_through)
         /* **The ground is the app's, not the toolkit's white.** A webview paints
         white until a document says otherwise, and there are two moments here
@@ -1558,7 +1558,7 @@ fn fail(app_handle: &AppHandle, message: &str) {
         .dialog()
         .message(message)
         .kind(MessageDialogKind::Error)
-        .title("Orchestrator could not start")
+        .title("Krabbe could not start")
         .blocking_show();
     app_handle.exit(1);
 }

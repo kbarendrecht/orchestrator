@@ -118,7 +118,7 @@ impl Install {
 
 /// Where a cask or a dragged `.dmg` puts the app. A cask can be told another
 /// `appdir`; the Caskroom still answers for it, so this is only the `.dmg` probe.
-const SYSTEM_BUNDLE: &str = "/Applications/Orchestrator.app";
+const SYSTEM_BUNDLE: &str = "/Applications/Krabbe.app";
 /// Where the `.deb` puts the app, per its `files` map in `desktop/tauri.conf.json`.
 const DEB_EXE: &str = "/usr/bin/orchestrator-desktop";
 

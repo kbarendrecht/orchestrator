@@ -2368,7 +2368,7 @@ mod tests {
         let file = dir.join("a file.rs");
         std::fs::write(&file, "fn main() {}\n").unwrap();
         let url = format!(
-            "orchestrator://open?file={}&line=7",
+            "krabbe://open?file={}&line=7",
             file.display().to_string().replace(' ', "%20")
         );
 

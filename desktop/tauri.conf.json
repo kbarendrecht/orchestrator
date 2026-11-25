@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Orchestrator",
+  "productName": "Krabbe",
   "version": "2026.11.9",
-  "identifier": "dev.orchd.orchestrator",
+  "identifier": "dev.orchd.krabbe",
   "build": {},
   "app": {
     "macOSPrivateApi": true,

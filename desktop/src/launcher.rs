@@ -14,8 +14,8 @@ use anyhow::{Context, Result};
 /// application to the desktop rather than two. **A later package install does not
 /// replace an entry written here**, though: it installs to its own place and the
 /// old entry stays, which is what [`retire_own_entry`] is for.
-const APP_ID: &str = "dev.orchd.orchestrator";
-const APP_NAME: &str = "Orchestrator";
+const APP_ID: &str = "dev.orchd.krabbe";
+const APP_NAME: &str = "Krabbe";
 
 /// The binaries a bundle carries, and the first is the bundle's executable.
 ///
@@ -402,7 +402,7 @@ pub(crate) fn install_desktop_entry() -> Result<Option<std::path::PathBuf>> {
     anyhow::bail!("a launcher entry is written on Linux and macOS only")
 }
 
-/// Write `<apps>/Orchestrator.app` around the install `exec` belongs to.
+/// Write `<apps>/Krabbe.app` around the install `exec` belongs to.
 ///
 /// Says whether anything changed, so the launch-time refresh can stay quiet.
 ///
@@ -749,7 +749,7 @@ mod tests {
             "CFBundleExecutable must name the copy, not the old script"
         );
         assert!(
-            !bundle.join("Contents/MacOS/Orchestrator").exists(),
+            !bundle.join("Contents/MacOS/Krabbe").exists(),
             "the sh stub is what #24 was, and it must not be left beside the copy"
         );
     }
@@ -780,7 +780,7 @@ mod tests {
     #[test]
     fn a_dmg_install_is_still_packaged() {
         let d = scratch("dmg");
-        let exe = d.join("Applications/Orchestrator.app/Contents/MacOS/orchestrator-desktop");
+        let exe = d.join("Applications/Krabbe.app/Contents/MacOS/orchestrator-desktop");
         std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
         std::fs::write(&exe, "x").unwrap();
 
@@ -809,7 +809,7 @@ mod tests {
             "a moved install is a rewrite"
         );
         assert_eq!(
-            std::fs::read_to_string(apps.join("Orchestrator.app/Contents/MacOS/orchd")).unwrap(),
+            std::fs::read_to_string(apps.join("Krabbe.app/Contents/MacOS/orchd")).unwrap(),
             "v2-orchd",
             "the copies follow the install, or the app runs last year's daemon for ever"
         );
@@ -827,13 +827,13 @@ mod tests {
         let exe = install(&d.join("bin"), "v1");
 
         // The bundle as a version before #24 left it.
-        let macos = apps.join("Orchestrator.app/Contents/MacOS");
+        let macos = apps.join("Krabbe.app/Contents/MacOS");
         std::fs::create_dir_all(&macos).unwrap();
-        std::fs::write(macos.join("Orchestrator"), "#!/bin/sh\nexec somewhere\n").unwrap();
+        std::fs::write(macos.join("Krabbe"), "#!/bin/sh\nexec somewhere\n").unwrap();
 
         write_app_bundle(&apps, &exe).unwrap();
         assert!(
-            !macos.join("Orchestrator").exists(),
+            !macos.join("Krabbe").exists(),
             "the stub outlived the upgrade and is inside the signature"
         );
         for name in BINARIES {
@@ -960,24 +960,24 @@ mod tests {
         assert!(!ours.exists());
 
         // The `sh` stub from before it, which an older mise build left behind.
-        let stub = d.join("old/Orchestrator.app");
+        let stub = d.join("old/Krabbe.app");
         std::fs::create_dir_all(stub.join("Contents/MacOS")).unwrap();
         std::fs::write(
-            stub.join("Contents/MacOS/Orchestrator"),
+            stub.join("Contents/MacOS/Krabbe"),
             format!("#!/bin/sh\n{STUB_LINE}, and rewritten\nexec /x \"$@\"\n"),
         )
         .unwrap();
         assert!(retire(&stub, &running).unwrap());
 
         // A dragged `.dmg`: the same shape, nothing of ours in it.
-        let dmg = d.join("dmg/Orchestrator.app");
+        let dmg = d.join("dmg/Krabbe.app");
         std::fs::create_dir_all(dmg.join("Contents/MacOS")).unwrap();
         std::fs::write(dmg.join("Contents/MacOS/orchestrator-desktop"), "binary").unwrap();
         assert!(!retire(&dmg, &running).unwrap());
         assert!(dmg.exists());
 
         // A `.desktop` file is ours by its comment line, and nothing else is.
-        let entry = d.join("dev.orchd.orchestrator.desktop");
+        let entry = d.join("dev.orchd.krabbe.desktop");
         std::fs::write(&entry, format!("[Desktop Entry]\n{ENTRY_COMMENT}\n")).unwrap();
         assert!(retire(&entry, &running).unwrap());
         std::fs::write(&entry, "[Desktop Entry]\nComment=mine\n").unwrap();

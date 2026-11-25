@@ -173,7 +173,7 @@ function welcomePanel() {
   x.title = 'Close · Esc';
   x.appendChild(icon('', 1.5, 'M4 4l8 8M12 4l-8 8'));
   x.onclick = () => void close();
-  brand.append(brandMark(), el('span', 'opname', 'orchestrator'), x);
+  brand.append(brandMark(), el('span', 'opname', 'krabbe'), x);
   panel.append(brand, el('h1', 'ophead', 'Open a project to orchestrate'));
   panel.append(el('p', 'opsub',
     'A project is a git checkout. orchd runs one daemon per checkout, cuts worktrees '

@@ -1014,9 +1014,9 @@ pub const TEST_BUILD: bool = cfg!(any(test, feature = "test-util"));
 /// races every other test in a parallel suite.
 fn default_config_dir(home: &Path) -> PathBuf {
     if cfg!(target_os = "macos") {
-        home.join("Library/Application Support/orchd")
+        home.join("Library/Application Support/krabbe")
     } else {
-        home.join(".config/orchd")
+        home.join(".config/krabbe")
     }
 }
 
@@ -2186,15 +2186,15 @@ mod tests {
         if cfg!(target_os = "macos") {
             assert_eq!(
                 dir,
-                Path::new("/home/someone/Library/Application Support/orchd"),
+                Path::new("/home/someone/Library/Application Support/krabbe"),
                 "a Mac keeps application state in Library, not ~/.config"
             );
             // The space is one path component, not two. Anything that hands this
             // to a shell must quote it (`hooks::sh_quote`).
-            assert_eq!(dir.file_name().unwrap(), "orchd");
+            assert_eq!(dir.file_name().unwrap(), "krabbe");
             assert!(dir.to_string_lossy().contains("Application Support"));
         } else {
-            assert_eq!(dir, Path::new("/home/someone/.config/orchd"));
+            assert_eq!(dir, Path::new("/home/someone/.config/krabbe"));
         }
     }
 

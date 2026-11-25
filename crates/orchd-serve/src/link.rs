@@ -1,4 +1,4 @@
-//! `orchestrator://open?file=…&line=…`, the app's own deep link.
+//! `krabbe://open?file=…&line=…`, the app's own deep link.
 //!
 //! The same shape as `phpstorm://open`, so a tool that can already point an editor
 //! at a file can point this app at one. The file opens in the file pane of
@@ -16,7 +16,7 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 
 /// The scheme, without `://`.
-pub const SCHEME: &str = "orchestrator";
+pub const SCHEME: &str = "krabbe";
 
 /// Where the running app leaves its host token for a second process to read.
 ///
@@ -36,7 +36,7 @@ pub struct OpenFile {
     pub line: u32,
 }
 
-/// Read `orchestrator://open?file=/abs/path&line=42`.
+/// Read `krabbe://open?file=/abs/path&line=42`.
 ///
 /// `file` is required and must be absolute: a link comes from outside any
 /// checkout, so a relative path has nothing to be relative to. `line` is optional,
@@ -222,7 +222,7 @@ mod tests {
 
     #[test]
     fn a_link_names_a_file_and_maybe_a_line() {
-        let got = parse("orchestrator://open?file=/home/me/src/app.rs&line=42").unwrap();
+        let got = parse("krabbe://open?file=/home/me/src/app.rs&line=42").unwrap();
         assert_eq!(
             got,
             OpenFile {
@@ -231,35 +231,35 @@ mod tests {
             }
         );
         // No line, a line that is not a number, and the fields an editor link adds.
-        assert_eq!(parse("orchestrator://open?file=/a").unwrap().line, 0);
-        assert_eq!(parse("orchestrator://open?file=/a&line=x").unwrap().line, 0);
+        assert_eq!(parse("krabbe://open?file=/a").unwrap().line, 0);
+        assert_eq!(parse("krabbe://open?file=/a&line=x").unwrap().line, 0);
         assert_eq!(
-            parse("orchestrator://open?line=3&column=9&file=/a").unwrap(),
+            parse("krabbe://open?line=3&column=9&file=/a").unwrap(),
             OpenFile {
                 path: "/a".into(),
                 line: 3
             }
         );
         // The single-slash spelling some tools produce.
-        assert_eq!(parse("orchestrator:/open?file=/a").unwrap().path, "/a");
+        assert_eq!(parse("krabbe:/open?file=/a").unwrap().path, "/a");
     }
 
     #[test]
     fn a_path_is_percent_decoded() {
         assert_eq!(
-            parse("orchestrator://open?file=/Users/me/My%20Code/a+b.md")
+            parse("krabbe://open?file=/Users/me/My%20Code/a+b.md")
                 .unwrap()
                 .path,
             "/Users/me/My Code/a b.md"
         );
         assert_eq!(
-            parse("orchestrator://open?file=%2Fhome%2Fme%2F%C3%A9t%C3%A9.txt")
+            parse("krabbe://open?file=%2Fhome%2Fme%2F%C3%A9t%C3%A9.txt")
                 .unwrap()
                 .path,
             "/home/me/été.txt"
         );
         assert!(
-            parse("orchestrator://open?file=/a%2").is_err(),
+            parse("krabbe://open?file=/a%2").is_err(),
             "a truncated escape"
         );
     }
@@ -268,9 +268,9 @@ mod tests {
     fn what_is_not_a_file_link_is_refused() {
         for bad in [
             "phpstorm://open?file=/a",
-            "orchestrator://close?file=/a",
-            "orchestrator://open?line=3",
-            "orchestrator://open?file=relative/path",
+            "krabbe://close?file=/a",
+            "krabbe://open?line=3",
+            "krabbe://open?file=relative/path",
         ] {
             assert!(parse(bad).is_err(), "{bad}");
         }
@@ -280,8 +280,8 @@ mod tests {
     fn only_a_link_argument_is_a_link() {
         let args = |a: &[&str]| a.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
         assert_eq!(
-            in_args(args(&["orchestrator", "orchestrator://open?file=/a"])).as_deref(),
-            Some("orchestrator://open?file=/a")
+            in_args(args(&["orchestrator", "krabbe://open?file=/a"])).as_deref(),
+            Some("krabbe://open?file=/a")
         );
         assert_eq!(
             in_args(args(&["orchestrator", "--install-desktop-entry"])),
