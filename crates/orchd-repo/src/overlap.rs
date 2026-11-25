@@ -328,13 +328,21 @@ fn copied_stack(
                    my_head: &str,
                    their_base: &str,
                    their_head: &str| {
-        let by_change: std::collections::HashSet<String> =
-            git(cwd, &["cherry", their_head, my_head, my_base])
+        let matched = |against: &str| -> std::collections::HashSet<String> {
+            git(cwd, &["cherry", against, my_head, my_base])
                 .unwrap_or_default()
                 .lines()
                 .filter_map(|l| l.strip_prefix("- "))
                 .map(|id| id.trim().to_string())
-                .collect();
+                .collect()
+        };
+        /* **Not a change upstream already has.** `git cherry` searches all of
+        `their_head`'s history, upstream included, so a commit squash-merged
+        upstream read as carried by every branch cut after the merge, and a
+        merged branch's stale worktree sat under all of them. */
+        let landed = matched(upstream);
+        let by_change: std::collections::HashSet<String> =
+            matched(their_head).difference(&landed).cloned().collect();
         let theirs = commits(format!("{their_base}..{their_head}"));
         let subjects: std::collections::HashSet<&str> =
             theirs.iter().map(|(_, s)| s.as_str()).collect();
@@ -1005,6 +1013,59 @@ mod tests {
         assert!(std::fs::read_to_string(main.join("same.txt"))
             .unwrap()
             .contains("changed 10"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A branch whose change already landed upstream under a new id (a squash
+    /// merge) is not under a branch cut from upstream after that. The newer
+    /// branch's history holds the change, but upstream gave it that, not the
+    /// branch: its own commits carry nothing of the old one.
+    #[test]
+    fn a_branch_merged_upstream_is_not_under_one_cut_after_the_merge() {
+        let root = std::env::temp_dir().join(format!("orchd-merged-{}", uuid::Uuid::new_v4()));
+        let main = root.join("main");
+        std::fs::create_dir_all(&main).unwrap();
+        let run = |cwd: &Path, args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(cwd)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        run(&main, &["init", "-q", "-b", "develop"]);
+        run(&main, &["config", "user.email", "t@t"]);
+        run(&main, &["config", "user.name", "t"]);
+        std::fs::write(main.join("base.txt"), "base\n").unwrap();
+        run(&main, &["add", "-A"]);
+        run(&main, &["commit", "-qm", "base"]);
+        let merged = root.join("merged");
+        let wt = |name: &str, dir: &Path| {
+            run(
+                &main,
+                &["worktree", "add", "-q", "-b", name, dir.to_str().unwrap()],
+            );
+        };
+        wt("merged", &merged);
+        std::fs::write(merged.join("lsp.txt"), "lsp\n").unwrap();
+        run(&merged, &["add", "-A"]);
+        run(&merged, &["commit", "-qm", "install the lsp plugins"]);
+        // The squash merge: the same change on develop, as a commit of its own.
+        std::fs::write(main.join("lsp.txt"), "lsp\n").unwrap();
+        run(&main, &["add", "-A"]);
+        run(&main, &["commit", "-qm", "install the lsp plugins (#1)"]);
+        let fresh = root.join("fresh");
+        wt("fresh", &fresh);
+        std::fs::write(fresh.join("hook.txt"), "hook\n").unwrap();
+        run(&fresh, &["add", "-A"]);
+        run(&fresh, &["commit", "-qm", "remind about the pr body"]);
+
+        assert_eq!(stack_of(&merged, &fresh, "develop", None), None);
+        assert_eq!(stack_of(&fresh, &merged, "develop", None), None);
         let _ = std::fs::remove_dir_all(&root);
     }
 
