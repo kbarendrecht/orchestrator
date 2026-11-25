@@ -314,7 +314,9 @@ function linkPaths(term, checkout, target) {
           range: { start: cell(h.start, map, from), end: cell(h.end - 1, map, from) },
           hover: (/** @type {MouseEvent} */ ev) => {
             const said = h.kind === 'path' ? pathHover?.({ checkout: checkout.path, target, path: h.path })
-              : h.kind === 'cmd' ? 'type it into a new shell in the drawer' : null;
+              // What the click does, which is `onCommandClick`'s choice in app.js.
+              : h.kind === 'cmd' ? (target.startsWith('session:') ? 'run it in this session'
+                : 'type it into a new shell in the drawer') : null;
             if (said) showTip(said, ev);
           },
           leave: hideTip,
