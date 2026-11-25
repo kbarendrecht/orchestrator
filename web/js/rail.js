@@ -2502,6 +2502,9 @@ function sessionRow(/** @type {import('../snapshot').SessionView} */ s, /** @typ
     s.restart_queued
       ? ['cancel the restart', null, () => restartSession(s, true)]
       : ['restart', null, s.alive && agentHere(s) ? () => restartSession(s, false) : null],
+    // Greyed where the daemon refuses (`sleep::now`): only a session idle at
+    // its prompt goes, so a turn or a question is never cut off from here.
+    ['sleep', null, isSleepable(s) ? () => sleepSession(s) : null],
     ['copy', null, [
       ['id', null, s.conversation_id ? () => copyId(s) : null],
       ['branch', null, sessionBranch(s) ? () => copyBranch(s) : null],
@@ -2612,6 +2615,23 @@ async function restartSession(/** @type {import('../snapshot').SessionView} */ s
     const r = await callFor(s.id, `/api/session/${s.id}/restart`, cancel ? { cancel: true } : {});
     if (cancel) toast('restart cancelled');
     else toast(r.now ? `restarting on the installed ${AGENT_LABEL[s.agent]}` : 'restarts when this turn ends');
+  } catch (e) {
+    toast(reason(e), true);
+  }
+}
+
+/** At its prompt with a conversation to come back to, the half of the daemon's
+ *  `sleepable` the snapshot carries. Background work it cannot see, so the
+ *  route still refuses that one and the toast says why. */
+const isSleepable = (/** @type {import('../snapshot').SessionView} */ s) =>
+  s.alive && !s.asleep && !s.pass && !s.restart_queued && s.has_transcript
+  && s.state.state === 'your_turn'
+  && s.state.reason !== 'asked_a_question' && s.state.reason !== 'needs_permission';
+
+async function sleepSession(/** @type {import('../snapshot').SessionView} */ s) {
+  try {
+    await callFor(s.id, `/api/session/${s.id}/sleep`);
+    toast('asleep, a press on the row wakes it');
   } catch (e) {
     toast(reason(e), true);
   }

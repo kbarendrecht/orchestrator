@@ -748,6 +748,7 @@ fn daemon_router(app: Arc<AppState>) -> Router {
         .route("/api/session/:id/rewind", post(api::rewind_session))
         .route("/api/session/:id/resume", post(api::resume_session))
         .route("/api/session/:id/restart", post(api::restart_session))
+        .route("/api/session/:id/sleep", post(api::sleep_session))
         .route("/api/sessions/restart", post(api::restart_sessions))
         .route("/api/external/refresh", post(api::refresh_external))
         .route("/api/external/:id/resume", post(api::resume_external))

@@ -3454,6 +3454,31 @@ try {
 
   await t.api('POST', `/api/process/${shell}/close`)
 
+  /* --- sleep from a row's menu ------------------------------------------------ */
+
+  /* The menu item is the daemon's `sleep::now` behind a greyed rule: a session
+     idle at its prompt goes, and the row says so with the moon. */
+  {
+    const { session: sleeper } = await t.api('POST', '/api/worktree', { name: 'sleeper' })
+    await t.settled(sleeper)
+    await page.click(`#rail .sess[data-id="${sleeper}"]`, { button: 'right' })
+    const item = page.locator('#ctxmenu:not([hidden]) button', { hasText: /^sleep$/ })
+    const offered = await item.waitFor({ timeout: 5000 }).then(() => item.isEnabled(), () => false)
+    check(offered, 'a session idle at its prompt offers sleep in its row menu')
+    if (offered) await item.click()
+    else await page.keyboard.press('Escape')
+    const slept = await until('the row to sleep', async () => (await t.session(sleeper))?.asleep === true)
+      .then(() => true, () => false)
+    check(slept, 'and choosing it puts the session to sleep')
+    const moon = await page.waitForFunction((id) => document.querySelector(`#rail .sess[data-id="${id}"] .sess-state`)
+      ?.textContent === 'sleeping', sleeper, { timeout: 5000 }).then(() => true, () => false)
+    check(moon, 'and the row says sleeping')
+    await page.click(`#rail .sess[data-id="${sleeper}"]`, { button: 'right' })
+    const again = await item.waitFor({ timeout: 5000 }).then(() => item.isEnabled(), () => true)
+    check(!again, 'and a sleeping row offers no second sleep')
+    await page.keyboard.press('Escape')
+  }
+
   /* --- the mouse's back and forward buttons walk the sessions --------------- */
 
   /* Dispatched, like the find overlay's back above, and for the same reason:

@@ -66,6 +66,32 @@ pub async fn run_tick(app: &Arc<AppState>) {
     quit(app, quitting).await;
 }
 
+/// Put one session to sleep now, from its row's menu.
+///
+/// The idle rule without the wait: [`sleepable`], so a busy session, one holding
+/// a question, a pass or a session with background work is refused rather than
+/// cut off. The `! command` check the idle path runs through `ps` is skipped,
+/// because a press is somebody looking at the session and choosing.
+pub async fn now(app: &Arc<AppState>, id: crate::model::SessionId) -> anyhow::Result<()> {
+    let pty = {
+        let mut inner = app.inner.write().await;
+        let s = inner
+            .sessions
+            .get_mut(&id)
+            .ok_or_else(|| crate::state::no_such_session(id))?;
+        if !sleepable(s) {
+            anyhow::bail!(
+                "session {} is not idle at its prompt, so it cannot sleep now",
+                crate::model::short_id(&id)
+            );
+        }
+        s.asleep = true;
+        s.pty.clone()
+    };
+    quit(app, pty.into_iter().collect()).await;
+    Ok(())
+}
+
 type Pty = Arc<crate::pty::PtyHandle>;
 
 async fn quit(app: &Arc<AppState>, quitting: Vec<Pty>) {
@@ -553,6 +579,41 @@ mod tests {
         assert!(
             !inner.sessions[&asking].asleep,
             "a question keeps its session"
+        );
+    }
+
+    /// The menu's sleep: the same rule without the wait, so a session at its
+    /// prompt goes the moment it is asked and a busy or asking one is refused.
+    #[tokio::test]
+    async fn sleep_now_takes_a_session_at_its_prompt_and_refuses_the_rest() {
+        let (app, dir) = crate::testutil::app("sleep-now");
+        let at_prompt = live(&app, &dir, idle()).await;
+        let busy = live(&app, &dir, State::Working).await;
+        let asking = live(
+            &app,
+            &dir,
+            State::YourTurn {
+                since: std::time::SystemTime::now(),
+                reason: TurnReason::NeedsPermission,
+            },
+        )
+        .await;
+
+        now(&app, at_prompt)
+            .await
+            .expect("a session at its prompt sleeps");
+        assert!(asleep(&app, at_prompt).await);
+        for (id, why) in [
+            (busy, "a turn is never cut off"),
+            (asking, "a prompt keeps its session"),
+        ] {
+            let err = now(&app, id).await.expect_err(why);
+            assert!(err.to_string().contains("cannot sleep now"), "{why}: {err}");
+            assert!(!asleep(&app, id).await, "{why}");
+        }
+        assert!(
+            now(&app, at_prompt).await.is_err(),
+            "asleep is not asked twice"
         );
     }
 

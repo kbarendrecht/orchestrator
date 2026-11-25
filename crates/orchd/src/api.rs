@@ -2080,6 +2080,16 @@ pub async fn restart_session(
     )?))
 }
 
+/// Put one session to sleep now: the rail menu's sleep. [`crate::sleep::now`]
+/// says which sessions may go.
+pub async fn sleep_session(
+    State(app): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> ApiResult<serde_json::Value> {
+    crate::sleep::now(&app, id).await?;
+    Ok(Json(json!({ "asleep": true })))
+}
+
 /// What "restart all" may be told.
 #[derive(Default, Deserialize)]
 pub struct RestartAll {
