@@ -3980,12 +3980,16 @@ try {
       title: c.querySelector('.ovc-title b')?.textContent,
       rows: [...c.querySelectorAll('.ovc-cfl button.ovc-who')].map((b) => b.querySelector('.ovc-state')?.textContent),
       who: c.querySelectorAll('button.ovc-who').length,
-      now: c.querySelector('.ovc-now')?.textContent ?? null,
+      now: c.querySelector('.ovc-bar .ovc-do')?.textContent ?? null,
+      tip: c.querySelector('.ovc-bar .ovc-do')?.getAttribute('title') ?? null,
+      count: c.querySelector('.ovc-title .ovc-meta')?.textContent ?? null,
     }
   }, null, { timeout: 5000 }).then((h) => h.jsonValue()).catch(() => null)
   check(!!card && card.title === 'Conflicts' && card.who === 1 && card.rows[0] === '1 file',
     `hovering the mark opens the Conflicts card with one row for the other session and its file count, got ${JSON.stringify(card)}`)
   check(card?.now === 'Tell them now', `and it offers to tell them now, got ${JSON.stringify(card?.now)}`)
+  check(card?.count === '1 file', `and counts the files in its title, got ${JSON.stringify(card?.count)}`)
+  check(!!card?.tip?.includes('when it pushes'), `and the button says on hover what it does, got ${JSON.stringify(card?.tip)}`)
   await page.click('.ovcard button.ovc-who')
   check(await page.evaluate(async () => (await import('/js/core.js')).selected) === session,
     'and pressing the session in it goes there')

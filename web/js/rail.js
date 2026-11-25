@@ -3146,8 +3146,37 @@ function stackChain(state, ws) {
   return { below, above };
 }
 
+/** The frame both cards share, in three bands: the title with a count, one
+ *  status line, then the list the caller adds. Both are drawn alike on purpose,
+ *  so the two marks read as one feature. */
+function cardFrame(/** @type {string} */ title, /** @type {string} */ count, /** @type {string} */ status) {
+  const card = overlapCard();
+  card.replaceChildren();
+  const head = card.appendChild(el('div', 'ovc-title'));
+  head.append(el('b', '', title), el('span', 'ovc-meta', count));
+  card.appendChild(el('div', 'ovc-sub', status));
+  return card;
+}
+
+/** The action bar: buttons, not links, each saying on hover what it does.
+ *  Nothing is drawn when there is nothing to do.
+ *  @param {HTMLElement} card
+ *  @param {[string, string, () => void | Promise<void>][]} actions label, tooltip, press */
+function cardBar(card, actions) {
+  if (!actions.length) return;
+  const bar = card.appendChild(el('div', 'ovc-bar'));
+  for (const [label, tip, press] of actions) {
+    const b = bar.appendChild(el('button', 'ovc-do', label));
+    b.type = 'button';
+    b.title = tip;
+    b.onclick = () => void press();
+  }
+}
+
+const plural = (/** @type {number} */ k, /** @type {string} */ word) => `${k} ${word}${k === 1 ? '' : 's'}`;
+
 /** The Stacked card: the whole stack as a ladder, bottom first in merge order,
- *  this branch lit, and the gap that moved drawn dashed. */
+ *  this branch lit, and the link that moved drawn dashed. */
 function fillStackCard(
   /** @type {import('../snapshot').Snapshot} */ state,
   /** @type {import('../snapshot').SessionView} */ s,
@@ -3159,34 +3188,39 @@ function fillStackCard(
   if (!stack && !above.length) return false;
   const prOf = (/** @type {string} */ ws) => state.prs.find((p) => p.workspace === ws)?.number ?? null;
   const rows = [...[...above].reverse(), mine, ...below];
-  const sig = paintSig(['stack', rows.map((w) => [w.id, w.stacked_on, prOf(w.id), liveIn(state, w.id).map((x) => [x.id, railName(x, { id: w.id }), stateLabel(x)])]), state.upstream_ref]);
+  const sig = paintSig(['stack', rows.map((w) => [w.id, w.stacked_on, prOf(w.id), liveIn(state, w.id).map((x) => [x.id, railName(x, { id: w.id })])]), state.upstream_ref]);
   if (sig === ovSig) return true;
   ovSig = sig;
-  const card = overlapCard();
-  card.replaceChildren();
-  const head = card.appendChild(el('div', 'ovc-title'));
-  head.append(el('b', '', 'Stacked'), el('span', 'ovc-meta', `${rows.length} branches · merges bottom first`));
+  const base = state.upstream_ref.replace(/^[^/]+\//, '');
+  const lowerName = stack ? (state.workspaces.find((w) => w.id === stack.on)?.branch ?? stack.on) : '';
+  /* The stack against the base: a question for the whole stack, settled from
+     its bottom, so it is here and not a conflict with nothing behind it. */
+  const against = stack ? stack.upstream : mine.upstream_conflicts.length;
+  // The one thing that matters now, most pressing first.
+  const status = stack?.stale ? `built on an older version of ${lowerName}, ${plural(stack.conflicts, 'file')} differ`
+    : stack?.behind ? `${plural(stack.behind, 'new commit')} under it, ${stack.conflicts ? `${plural(stack.conflicts, 'file')} will conflict` : 'applies cleanly'}`
+    : against ? `${base} moved on, ${plural(against, 'file')} will not merge`
+    : 'up to date, merges bottom first';
+  // A stack is two branches at least, so the word is always plural.
+  const card = cardFrame('Stacked', `${rows.length} branches`, status);
   const ladder = card.appendChild(el('div', 'ovc-ladder'));
-  const gap = (/** @type {import('../snapshot').StackView | null} */ link) => {
-    const g = el('div', 'ovc-gap' + (link?.behind || link?.stale ? ' behind' : ''));
-    const n = link?.behind ?? 0;
-    const c = link?.conflicts ?? 0;
-    g.appendChild(el('span', '', !link ? ''
-      : link.stale ? `an older version of it, ${c} file${c === 1 ? '' : 's'} differ`
-      : n === 0 ? 'up to date'
-      : `${n} new commit${n === 1 ? '' : 's'} under it, ${c ? `${c} file${c === 1 ? '' : 's'} will conflict` : 'applies cleanly'}`));
-    return g;
-  };
-  rows.forEach((w, i) => {
+  // How a branch stands on the one under it, said on its own row.
+  const link = (/** @type {import('../snapshot').StackView | null} */ l) => !l ? ''
+    : l.stale ? `older copy, ${plural(l.conflicts, 'file')} differ`
+    : !l.behind ? 'up to date'
+    : `${l.behind} behind${l.conflicts ? `, ${plural(l.conflicts, 'conflict')}` : ''}`;
+  for (const w of rows) {
     const who = liveIn(state, w.id)[0];
     const pr = prOf(w.id);
     const me = w.id === mine.id;
-    const r = ladder.appendChild(el('div', 'ovc-rung' + (me ? ' me' : '')));
+    const moved = !!(w.stacked_on?.behind || w.stacked_on?.stale);
+    const r = ladder.appendChild(el('div', 'ovc-rung' + (me ? ' me' : '') + (moved ? ' dash' : '')));
     /* The name goes to the session, or to the PR when nobody works in the branch
        any more (a lower branch in review); the number always goes to the PR. */
     const name = r.appendChild(el('button', 'ovc-rname'));
     name.type = 'button';
-    name.append(el('span', 'ovc-node' + (me ? ' fill' : '')), el('span', 'ovc-name', who ? railName(who, { id: w.id }) : w.id));
+    name.append(el('span', 'ovc-node' + (me ? ' fill' : '')), el('span', 'ovc-name', who ? railName(who, { id: w.id }) : w.id),
+      el('span', 'ovc-state' + (moved ? ' behind' : ''), link(w.stacked_on)));
     name.onclick = () => {
       closeOverlapCard();
       if (who) setSelected(who.id);
@@ -3196,58 +3230,50 @@ function fillStackCard(
       const n = r.appendChild(el('button', 'ovc-prn', `#${pr}`));
       n.type = 'button';
       n.onclick = () => { closeOverlapCard(); showPr(s.id, pr); };
-    } else {
-      r.appendChild(el('span', 'ovc-state', me ? 'this one' : who ? stateLabel(who) : ''));
     }
-    if (i < rows.length - 1) ladder.appendChild(gap(w.stacked_on));
-  });
-  /* The stack against the base: a question for the whole stack, settled from
-     its bottom, so it is here and not a conflict with a tell link that has no
-     note behind it. */
-  const against = stack ? stack.upstream : mine.upstream_conflicts.length;
-  const base = ladder.appendChild(el('div', 'ovc-gap' + (against ? ' warn' : '')));
-  base.appendChild(el('span', '', against
-    ? `${state.upstream_ref.replace(/^[^/]+\//, '')} moved on, ${against} file${against === 1 ? '' : 's'} will not merge`
-    : ''));
+  }
   const bottom = ladder.appendChild(el('div', 'ovc-rung'));
   const baseName = bottom.appendChild(el('span', 'ovc-rname'));
-  baseName.append(el('span', 'ovc-node base'), el('span', 'ovc-name', state.upstream_ref));
+  baseName.append(el('span', 'ovc-node base'), el('span', 'ovc-name', state.upstream_ref),
+    el('span', 'ovc-state' + (against ? ' warn' : ''), against ? plural(against, 'file') : ''));
   /* **Quiet unless you ask.** The agent hears it all before it pushes, orchd
      only replays a branch whose lower branch just grew, and the buttons here are
      yours for anything else. Nothing pops up for it. */
-  const line = card.appendChild(el('div', 'ovc-line'));
-  line.append('This session is told how to keep the stack right when it pushes. ');
   const act = (/** @type {string} */ label, /** @type {string} */ route, /** @type {string} */ done,
-    /** @type {string | null} */ ask = null) => {
-    const b = line.appendChild(el('button', 'ovc-now', label));
-    b.type = 'button';
-    b.onclick = async () => {
-      closeOverlapCard();
-      if (ask && !await confirmBox(ask, { ok: label, danger: false })) return;
-      try {
-        await callFor(s.id, route);
-        toast(done);
-      } catch (e) {
-        toast(reason(e), true);
-      }
-    };
-    line.append(' ');
+    /** @type {string | null} */ ask = null) => async () => {
+    closeOverlapCard();
+    if (ask && !await confirmBox(ask, { ok: label, danger: false })) return;
+    try {
+      await callFor(s.id, route);
+      toast(done);
+    } catch (e) {
+      toast(reason(e), true);
+    }
   };
+  /** @type {[string, string, () => Promise<void>][]} */
+  const actions = [];
   /* A direction read from the branches' ages, not their history, is asked about
      before the rebase acts on it: upside down, it replays the wrong branch. */
-  const lowerName = stack ? (state.workspaces.find((w) => w.id === stack.on)?.branch ?? stack.on) : '';
   if (stack && (stack.behind || stack.stale)) {
-    act('Restack it now', `/api/workspace/${encodeURIComponent(mine.id)}/restack`, 'restacked',
-      stack.proved ? null
-        : `Which of the two is built on the other is a guess from their ages here, not from their history. `
-          + `Restack ${mine.branch ?? mine.id} onto ${lowerName}?`);
+    actions.push(['Restack',
+      `Replay this branch's own commits onto the new head of ${lowerName}. A branch that is pushed goes up again with a lease. `
+        + 'The agent is told how to do this when it pushes, so this is only for doing it now.',
+      act('Restack', `/api/workspace/${encodeURIComponent(mine.id)}/restack`, 'restacked',
+        stack.proved ? null
+          : `Which of the two is built on the other is a guess from their ages here, not from their history. `
+            + `Restack ${mine.branch ?? mine.id} onto ${lowerName}?`)]);
   }
-  if (stack ? stack.base_behind : mine.behind) act(`Rebase the stack onto ${state.upstream_ref}`, `/api/workspace/${encodeURIComponent(mine.id)}/rebase-stack`, 'stack rebased');
+  if (stack ? stack.base_behind : mine.behind) {
+    actions.push([`Rebase onto ${base}`,
+      `Rebase the whole stack onto ${state.upstream_ref}, the bottom branch first and each branch then onto the one under it.`,
+      act(`Rebase onto ${base}`, `/api/workspace/${encodeURIComponent(mine.id)}/rebase-stack`, 'stack rebased')]);
+  }
+  cardBar(card, actions);
   return true;
 }
 
-/** The Conflicts card: the files first, each with who it will not merge with,
- *  then the sessions, then when the agents hear about it. */
+/** The Conflicts card: who this branch will not merge with and in how many
+ *  files, then when the agents hear about it. */
 function fillConflictCard(
   /** @type {import('../snapshot').Snapshot} */ state,
   /** @type {import('../snapshot').SessionView} */ s,
@@ -3259,40 +3285,27 @@ function fillConflictCard(
   const partners = [...new Set(list.map((o) => o.with))];
   const theirs = partners.flatMap((ws) => (state.workspaces.find((w) => w.id === ws)?.overlaps ?? []).filter((o) => o.with === mine.id));
   const sig = paintSig(['conflict', list, upstream, theirs, s.inbox, state.upstream_ref, state.prs.map((p) => [p.workspace, p.number]),
-    partners.map((ws) => liveIn(state, ws).map((x) => [x.id, railName(x, { id: ws }), stateLabel(x), sessionDot(x), x.inbox]))]);
+    partners.map((ws) => liveIn(state, ws).map((x) => [x.id, railName(x, { id: ws }), sessionDot(x), x.inbox]))]);
   if (sig === ovSig) return true;
   ovSig = sig;
-  const card = overlapCard();
-  card.replaceChildren();
-
-  const n = new Set([...list.map((o) => o.path), ...upstream]).size;
-  const head = card.appendChild(el('div', 'ovc-title warn'));
-  head.append(el('b', '', 'Conflicts'), el('span', 'ovc-meta', `${n} file${n === 1 ? '' : 's'} will not merge`));
 
   /* **A message the daemon could not deliver is shown, not kept quiet.** It waits
      for the session's turn to end, and a turn that ended on an escape never says
      so; the person can see the prompt, so the person can send it. */
-  const waiting = (/** @type {import('../snapshot').SessionView} */ x, /** @type {string} */ to) => {
-    const row = el('div', 'ovc-wait');
-    row.append(el('span', '', `${x.inbox === 1 ? '1 message' : `${x.inbox} messages`} waiting for ${to}`));
-    const send = row.appendChild(el('button', 'ovc-send', 'Send now'));
-    send.type = 'button';
-    send.onclick = async () => {
-      try {
-        await callFor(x.id, `/api/session/${x.id}/deliver-inbox`);
-        toast('sent');
-      } catch (e) {
-        toast(reason(e), true);
-      }
-    };
-    return row;
-  };
-  if (s.inbox) card.appendChild(waiting(s, 'this session'));
+  const waiting = [s, ...partners.flatMap((ws) => liveIn(state, ws))].filter((x) => x.inbox);
+  const queued = waiting.reduce((k, x) => k + x.inbox, 0);
+  /* **When the agents hear it.** The note rides on each side's next push by
+     itself; the button types it in at once, mid-turn or not. */
+  const told = partners.length > 0 && list.every((o) => o.told) && theirs.every((o) => o.told);
+  const status = (told ? 'each session has been told'
+    : partners.length ? 'each session is told when it pushes' : 'this session is told when it pushes')
+    + (queued ? ` · ${plural(queued, 'message')} waiting` : '');
+  const n = new Set([...list.map((o) => o.path), ...upstream]).size;
+  const card = cardFrame('Conflicts', plural(n, 'file'), status);
 
   /* **One row per other side**: the session, how many files, and its PR. The
      files themselves are in the agents' notes and in each side's changes pane;
      here the question is only with whom. */
-  const files = (/** @type {number} */ k) => `${k} file${k === 1 ? '' : 's'}`;
   const prOf = (/** @type {string} */ ws) => state.prs.find((p) => p.workspace === ws)?.number ?? null;
   const rows = card.appendChild(el('div', 'ovc-grp'));
   for (const ws of partners) {
@@ -3302,42 +3315,50 @@ function fillConflictCard(
       const r = rows.appendChild(el('div', 'ovc-cfl'));
       const b = r.appendChild(el('button', 'ovc-who'));
       b.type = 'button';
-      b.append(el('span', sessionDot(x)), el('span', 'ovc-name', railName(x, { id: ws })), el('span', 'ovc-state', files(k)));
+      b.append(el('span', sessionDot(x)), el('span', 'ovc-name', railName(x, { id: ws })), el('span', 'ovc-state', plural(k, 'file')));
       b.onclick = () => { closeOverlapCard(); setSelected(x.id); };
       if (pr) {
         const p = r.appendChild(el('button', 'ovc-prn', `#${pr}`));
         p.type = 'button';
         p.onclick = () => { closeOverlapCard(); showPr(s.id, pr); };
       }
-      if (x.inbox) rows.appendChild(waiting(x, railName(x, { id: ws })));
     }
   }
   if (upstream.length) {
     const r = rows.appendChild(el('div', 'ovc-cfl'));
     const u = r.appendChild(el('div', 'ovc-who'));
-    u.append(el('span', 'ovc-node base'), el('span', 'ovc-name', state.upstream_ref), el('span', 'ovc-state', files(upstream.length)));
+    u.append(el('span', 'ovc-node base'), el('span', 'ovc-name', state.upstream_ref), el('span', 'ovc-state', plural(upstream.length, 'file')));
   }
 
-  /* **When the agents hear it, and a way to make it now.** The note rides on
-     each side's next prompt by itself; the link types it in at once, mid-turn
-     or not, for when waiting for the next prompt is too long. */
-  const told = list.every((o) => o.told) && theirs.every((o) => o.told);
-  const line = card.appendChild(el('div', 'ovc-line'));
-  if (partners.length && told) {
-    line.append('Each session has been told.');
-  } else {
-    line.append(partners.length ? 'Each session is told when it pushes. ' : 'This session is told when it pushes. ');
-    const now = line.appendChild(el('button', 'ovc-now', partners.length ? 'Tell them now' : 'Tell it now'));
-    now.type = 'button';
-    now.onclick = async () => {
-      try {
-        const r = await callFor(s.id, `/api/session/${s.id}/tell-overlaps`);
-        toast(r?.told ? `told ${r.told === 1 ? 'it' : `${r.told} sessions`}` : 'there was nothing new to tell');
-      } catch (e) {
-        toast(reason(e), true);
-      }
-    };
+  /** @type {[string, string, () => Promise<void>][]} */
+  const actions = [];
+  if (!told) {
+    actions.push([partners.length ? 'Tell them now' : 'Tell it now',
+      `Type the note about these conflicts into ${partners.length ? 'each session' : 'this session'} now, mid-turn or not. `
+        + 'Without it, each one hears about them when it pushes.',
+      async () => {
+        try {
+          const r = await callFor(s.id, `/api/session/${s.id}/tell-overlaps`);
+          toast(r?.told ? `told ${r.told === 1 ? 'it' : `${r.told} sessions`}` : 'there was nothing new to tell');
+        } catch (e) {
+          toast(reason(e), true);
+        }
+      }]);
   }
+  if (queued) {
+    actions.push(['Send waiting',
+      `${plural(queued, 'message')} for ${waiting.map((x) => x === s ? 'this session' : railName(x, { id: x.workspace })).join(', ')} `
+        + 'still wait: orchd types a message in when a turn ends, and a turn stopped with Escape never says it ended. This types them in now.',
+      async () => {
+        try {
+          await Promise.all(waiting.map((x) => callFor(x.id, `/api/session/${x.id}/deliver-inbox`)));
+          toast('sent');
+        } catch (e) {
+          toast(reason(e), true);
+        }
+      }]);
+  }
+  cardBar(card, actions);
   return true;
 }
 
