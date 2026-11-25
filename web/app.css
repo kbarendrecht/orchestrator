@@ -221,8 +221,11 @@ body[data-chrome="custom"] .top,
 body[data-chrome="overlay"] .top{-webkit-user-select:none;user-select:none}
 
 /* macOS: the real traffic lights float over the top-left, so buy them room.
-   78px = 3 buttons at 20px pitch from a 16px inset, plus breathing space. */
-body[data-chrome="overlay"] .top-l{padding-left:86px}
+   AppKit puts the close button at x 9, 14 wide, and the three sit at a 20px pitch
+   (`titlebar:` in the app's log, from CI's macOS run), so they end at 63px. 75px
+   leaves 12px after them: 86 left 23, which on a 320px rail is room the title
+   needed more than the lights did. */
+body[data-chrome="overlay"] .top-l{padding-left:75px}
 /* **Thin scrollbars on macOS.** WKWebView draws the legacy 15px bar with a track
    whenever a mouse is plugged in or "Show scroll bars" is Always, which in a 320px
    rail is a stripe a twentieth of its width. Thin, trackless and the board's own
@@ -417,6 +420,8 @@ button.ctx-btn:hover{color:var(--text)}
    gear and dimmer, and next to it that read as a lesser control rather than a
    quieter one. At 26px it is past WCAG 2.5.8's 24px target on its own. */
 .helpbtn:hover,.helpbtn[aria-expanded="true"]{color:var(--text);background:var(--raised)}
+/* The pair reads as one group: half the bar's gap between them. */
+.gear + .helpbtn{margin-left:-6px}
 
 /* ---------- rail ---------- */
 .rail{border-right:1px solid var(--line);background:var(--panel-ground,var(--surface));display:flex;flex-direction:column;overflow:hidden}
@@ -816,7 +821,7 @@ button.ovc-rname:hover,button.ovc-who:hover{background:var(--hover)}
 
 
 /* The search field's strip, over the scroller: one for every open project. */
-.railsearch{flex:0 0 auto;padding:8px 10px;border-bottom:1px solid var(--line-soft)}
+.railsearch{flex:0 0 auto;padding:8px 10px;border-bottom:1px solid var(--line-soft);container-type:inline-size}
 .railsearch:empty{display:none}
 .arcfield{
   display:flex;align-items:center;gap:7px;width:100%;height:32px;padding:0 9px;cursor:pointer;
@@ -832,12 +837,17 @@ button.ovc-rname:hover,button.ovc-who:hover{background:var(--hover)}
 .arcq{
   flex:1 1 auto;min-width:0;color:var(--ghost);
   font-family:var(--sans);font-size:calc(12px * var(--fs));line-height:1.8;
+  /* One line, cut with an ellipsis: wrapped, a narrow rail grew the field to two. */
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
 }
 /* The chord that opens the palette, in the field that opens it. */
 .arcn{
   font-family:var(--mono);font-size:calc(9px * var(--fs));color:var(--faint-solid);
   white-space:nowrap;flex:0 0 auto;
 }
+/* Gone on a narrow rail, where it squeezed the placeholder; the field's tooltip
+   still names the chord. */
+@container (max-width:250px){ .arcn{display:none} }
 
 /* The settings pane's project colours: a swatch per band, ringed when picked,
    and "auto" for the order's own. `--sw` is the band, set per button. */

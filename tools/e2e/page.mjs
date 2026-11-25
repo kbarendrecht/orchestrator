@@ -1348,6 +1348,32 @@ try {
   check(await withDiffOpen({ key: 'ArrowLeft', ctrlKey: true, altKey: true, metaKey: true }) === false,
     'Ctrl+Option+Cmd+Left is left to the window manager')
 
+  /* **The rail at its narrowest still fits.** The search placeholder wrapped onto
+     two lines beside the chord, and on macOS the traffic lights left the top bar
+     full at the default width. At the 210px minimum: one line of placeholder, no
+     chord, and nothing in the top bar past its edge. */
+  const narrow = await page.evaluate(async () => {
+    const root = document.documentElement
+    const was = root.style.getPropertyValue('--rail')
+    root.style.setProperty('--rail', '210px')
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))
+    const q = document.querySelector('.arcq')
+    const n = document.querySelector('.arcn')
+    const top = document.querySelector('.top-l')
+    const edge = top ? top.getBoundingClientRect().right : 0
+    const out = {
+      oneLine: !!q && q.getBoundingClientRect().height < 2 * parseFloat(getComputedStyle(q).lineHeight),
+      chord: !!n && getComputedStyle(n).display !== 'none',
+      past: top ? [...top.children].filter((c) => c.getBoundingClientRect().right > edge + 0.5).map((c) => c.className) : ['no top bar'],
+      inset: top ? getComputedStyle(top).paddingLeft : null,
+    }
+    root.style.setProperty('--rail', was)
+    return out
+  })
+  check(narrow.oneLine && !narrow.chord && narrow.past.length === 0,
+    `at the 210px rail the search is one line with no chord and the top bar holds, got ${JSON.stringify(narrow)}`)
+  if (asMac) check(narrow.inset === '75px', `and the traffic lights get 75px, got ${narrow.inset}`)
+
   /* --- the chord labels and the drawn icons are nodes, not markup ------------- */
 
   /* Both were `innerHTML` and are DOM calls now, which is what lets the SPA's
