@@ -196,14 +196,27 @@ fn to_pty(data: &[u8], agent: bool) -> std::borrow::Cow<'_, [u8]> {
 /// a conversation you abandoned mid-thought sits there for good. The pane is where
 /// the escape is typed, so the pane is where the daemon can know.
 ///
-/// Only out of `Working`: an escape at the prompt dismisses something, an escape at
-/// a question cancels it (`api::rewind` refuses for exactly these reasons), and
-/// neither is a turn ending.
+/// **And out of a question or a permission prompt.** An escape there rejects the
+/// tool and interrupts the turn, and then no hook fires: `PostToolUse` skips a
+/// rejected tool and `Stop` skips an interrupt. The session sat on "needs
+/// permission" until your next prompt. An escape at the plain prompt dismisses
+/// something and is not a turn ending, so `Ready` and a finished turn stay.
 pub(crate) async fn note_interrupt(app: &Arc<AppState>, id: Uuid) {
     {
         let mut inner = app.inner.write().await;
         match inner.sessions.get_mut(&id) {
-            Some(s) if matches!(s.state, SessionState::Working) => {
+            Some(s)
+                if matches!(
+                    s.state,
+                    SessionState::Working
+                        | SessionState::YourTurn {
+                            reason: TurnReason::AskedAQuestion | TurnReason::NeedsPermission,
+                            ..
+                        }
+                ) =>
+            {
+                // The wait was on the tool the escape just rejected.
+                s.waits_on_tool = None;
                 s.set_state(SessionState::YourTurn {
                     since: std::time::SystemTime::now(),
                     reason: TurnReason::Interrupted,

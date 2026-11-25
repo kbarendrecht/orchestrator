@@ -734,6 +734,11 @@ pub struct Session {
     /// agent's, finishes while the question is still open. Memory only, like the
     /// state it qualifies.
     pub waits_on_tool: Option<String>,
+    /// The tool the session's own agent started last, from `PreToolUse`. A
+    /// permission prompt arrives right after the start of the tool it is for, and
+    /// this is how a question is told from a permission prompt without trusting
+    /// the prompt's wording. Memory only, like `waits_on_tool`.
+    pub last_tool: Option<String>,
     /// The PR pass the last prompt asked for, typed by a PR row's button or by
     /// hand (`/orchd:fix-pr`). While the session works, the row shows the pass
     /// running rather than offering it again. Memory only, like the state it
@@ -917,6 +922,7 @@ impl Session {
             prs: Vec::new(),
             prs_unlinked: Vec::new(),
             waits_on_tool: None,
+            last_tool: None,
             prompted_pass: None,
             spawned_by: None,
             spawn_cut_worktree: false,

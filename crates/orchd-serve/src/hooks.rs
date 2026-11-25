@@ -781,7 +781,10 @@ pub async fn post_tool_use(
     ok()
 }
 
-/// Which of the two a `permission_prompt` really is.
+/// Claude Code's multiple-choice tool, which asks through the permission system.
+const QUESTION_TOOL: &str = "AskUserQuestion";
+
+/// Which of the two a `permission_prompt` really is, read off its wording.
 ///
 /// Claude Code runs `AskUserQuestion` through the permission system, so a
 /// multiple choice arrives as "Claude needs your permission to use
@@ -789,7 +792,7 @@ pub async fn post_tool_use(
 /// prompt that was not there.
 fn permission_reason(message: Option<&str>) -> TurnReason {
     match message {
-        Some(m) if m.contains("AskUserQuestion") => TurnReason::AskedAQuestion,
+        Some(m) if m.contains(QUESTION_TOOL) => TurnReason::AskedAQuestion,
         _ => TurnReason::NeedsPermission,
     }
 }
@@ -811,15 +814,24 @@ pub async fn notification(
     let Some(id) = session_of(&headers, &payload) else {
         return ok();
     };
-    let reason = match kind.as_str() {
-        "agent_needs_input" => TurnReason::AskedAQuestion,
-        "permission_prompt" => permission_reason(payload.message.as_deref()),
-        _ => TurnReason::TurnComplete,
-    };
-    let tool = (kind == "permission_prompt")
-        .then(|| waited_tool(payload.message.as_deref()))
-        .flatten();
+    // Logged, so the wording a prompt arrived with can be checked when the label
+    // it got looks wrong.
+    tracing::debug!(session = %id, %kind, message = ?payload.message, "notification");
+    let message = payload.message.as_deref();
     app.with_session(id, |s| {
+        /* **A question is known by its tool, not by its wording.** Claude Code
+        sends a question as a permission prompt, and the message names the tool
+        in whatever words that version uses; `PreToolUse` names it exactly. The
+        wording is the fallback for a prompt with no tool start before it. */
+        let asking = s.last_tool.as_deref() == Some(QUESTION_TOOL);
+        let (reason, tool) = match kind.as_str() {
+            "agent_needs_input" => (TurnReason::AskedAQuestion, None),
+            "permission_prompt" if asking => {
+                (TurnReason::AskedAQuestion, Some(QUESTION_TOOL.to_string()))
+            }
+            "permission_prompt" => (permission_reason(message), waited_tool(message)),
+            _ => (TurnReason::TurnComplete, None),
+        };
         s.wait_for(reason);
         // Only when this prompt is the wait, not one `wait_for` left in place.
         if matches!(s.state, State::YourTurn { reason: r, .. } if r == reason) {
@@ -836,8 +848,8 @@ pub async fn notification(
 /// Codex's `Interrupt`: the turn you cut short, said by the agent itself.
 ///
 /// The pane's escape already says it ([`crate::ws::note_interrupt`]), and both
-/// arrive for one escape. That is safe because the move is out of `Working` only,
-/// so whichever lands second finds nothing to do.
+/// arrive for one escape. That is safe because the move is into `Interrupted`,
+/// which is not a state it moves from, so whichever lands second finds nothing to do.
 pub async fn interrupt(
     AxState(app): AxState<Arc<AppState>>,
     headers: HeaderMap,
@@ -1123,6 +1135,8 @@ pub async fn pre_edit(
     // stopped; only the session's own agent starting a tool is a new turn.
     if payload.agent_id.is_none() {
         lift_interrupt_on_a_new_tool(&app, id).await;
+        let tool = payload.tool_name.clone();
+        app.with_session(id, |s| s.last_tool = tool).await;
     }
 
     // Said before anything about the file, and said here rather than at the prompt.
@@ -2518,6 +2532,117 @@ mod tests {
             Some("Bash")
         );
         assert_eq!(waited_tool(Some("Claude is waiting for your input")), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A question is a question whatever the prompt's wording, because the tool
+    /// start before it says so; answering it lifts it, and an escape on it is an
+    /// interrupt, since no hook follows a rejected question.
+    #[tokio::test]
+    async fn a_question_is_known_by_its_tool_and_an_escape_on_it_interrupts() {
+        let dir = orchd::testutil::scratch("hooks-ask-tool");
+        let app = orchd::testutil::app_at(&dir, "");
+        let id = uuid::Uuid::new_v4();
+        {
+            let mut inner = app.inner.write().await;
+            let mut s = Session::new(id, MAIN.to_string(), dir.clone(), None);
+            s.set_state(State::Working);
+            inner.sessions.insert(id, s);
+        }
+        let mut headers = HeaderMap::new();
+        headers.insert("x-orch-session", id.to_string().parse().unwrap());
+        let reason = || async {
+            match app.inner.read().await.sessions.get(&id).unwrap().state {
+                State::YourTurn { reason, .. } => Some(reason),
+                _ => None,
+            }
+        };
+        let ask = |tool: &str, message: &str| {
+            let (app, headers) = (app.clone(), headers.clone());
+            let (tool, message) = (tool.to_string(), message.to_string());
+            async move {
+                let _ = pre_edit(
+                    AxState(app.clone()),
+                    headers.clone(),
+                    Json(HookPayload {
+                        tool_name: Some(tool),
+                        ..HookPayload::default()
+                    }),
+                )
+                .await;
+                let _ = notification(
+                    AxState(app),
+                    AxPath("permission_prompt".to_string()),
+                    headers,
+                    Json(HookPayload {
+                        message: Some(message),
+                        ..HookPayload::default()
+                    }),
+                )
+                .await;
+            }
+        };
+
+        ask(
+            "AskUserQuestion",
+            "Claude needs your permission to use Question",
+        )
+        .await;
+        assert_eq!(
+            reason().await,
+            Some(TurnReason::AskedAQuestion),
+            "the tool says question"
+        );
+        let _ = post_tool_use(
+            AxState(app.clone()),
+            headers.clone(),
+            Json(HookPayload {
+                tool_name: Some("AskUserQuestion".into()),
+                ..HookPayload::default()
+            }),
+        )
+        .await;
+        assert_eq!(reason().await, None, "and answering it lifts it");
+
+        ask(
+            "AskUserQuestion",
+            "Claude needs your permission to use Question",
+        )
+        .await;
+        crate::ws::note_interrupt(&app, id).await;
+        assert_eq!(
+            reason().await,
+            Some(TurnReason::Interrupted),
+            "an escape on a question interrupts"
+        );
+
+        app.with_session(id, |s| s.set_state(State::Working)).await;
+        ask("Bash", "Claude needs your permission to use Bash").await;
+        assert_eq!(
+            reason().await,
+            Some(TurnReason::NeedsPermission),
+            "a Bash prompt is a permission"
+        );
+        crate::ws::note_interrupt(&app, id).await;
+        assert_eq!(
+            reason().await,
+            Some(TurnReason::Interrupted),
+            "and an escape on it interrupts too"
+        );
+
+        app.with_session(id, |s| {
+            s.set_state(State::YourTurn {
+                since: std::time::SystemTime::now(),
+                reason: TurnReason::TurnComplete,
+            })
+        })
+        .await;
+        crate::ws::note_interrupt(&app, id).await;
+        assert_eq!(
+            reason().await,
+            Some(TurnReason::TurnComplete),
+            "an escape at the prompt is no interrupt"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
