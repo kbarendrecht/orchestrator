@@ -1035,8 +1035,17 @@ try {
       sevRunning: core.prSeverity({ checks: 'pending' }),
       sevMerged: core.prSeverity({ outcome: 'merged' }),
       sevClosed: core.prSeverity({ outcome: 'closed' }),
+      /* A sleeping row with a PR says the PR, not `sleeping`: the moon dot
+         already says it sleeps. Built from the session's own memory of an
+         ended PR, the one source this forge-less sandbox can carry. */
+      asleepWithPr: core.stateLabel(/** @type {any} */ ({
+        id: 'asleep-with-pr', workspace: 'nowhere', asleep: true, killed: false, pass: null,
+        state: { state: 'exited' }, prs: [{ number: 7, outcome: 'merged' }], prs_unlinked: [],
+      })),
     }
   })
+  check(prWords.asleepWithPr === '#7 merged',
+    `a sleeping session with a PR shows the PR on its row, got ${JSON.stringify(prWords.asleepWithPr)}`)
   check(prWords.counted === 'checks failing',
     `a thread count no longer outranks the PR's state, got ${JSON.stringify(prWords.counted)}`)
   check(prWords.conflicted === 'conflicted' && prWords.merged === 'merged'

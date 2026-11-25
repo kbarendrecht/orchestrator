@@ -1684,8 +1684,15 @@ export const terms = new Map();      // termKey -> a TermEntry
  */
 export const termKey = (checkout, target) => `${checkout.path}\u0000${target}`;
 
+/** The PR a row's words are about, if they are about one: a session parked on
+ *  its PR, or one asleep with a PR. Asleep, the PR is the news, and the moon
+ *  dot already says it sleeps. */
+export function wordsPr(/** @type {import('../snapshot').SessionView} */ s) {
+  return handedToPr(s) || (s.asleep && isStopped(s) ? prOf(s) || endedOf(s) : null);
+}
+
 export function stateLabel(/** @type {import('../snapshot').SessionView} */ s) {
-  const handed = handedToPr(s);
+  const handed = wordsPr(s);
   if (handed) return `#${handed.number} ${prState(handed)}`;
   switch (s.state.state) {
     case 'starting': return 'starting';
