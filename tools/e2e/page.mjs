@@ -3461,10 +3461,21 @@ try {
   {
     const { session: sleeper } = await t.api('POST', '/api/worktree', { name: 'sleeper' })
     await t.settled(sleeper)
+    /* **The page's snapshot, not the daemon's.** The menu greys sleep from what
+       the page holds, which can be a snapshot behind `settled`: a slow runner
+       right-clicked a row that still read as starting. */
+    await until('the page to see the session at its prompt', () => page.evaluate(async (id) => {
+      const s = (await import('/js/core.js')).snap.sessions.find((x) => x.id === id)
+      return !!s && s.state.state === 'your_turn' && s.has_transcript
+    }, sleeper), { timeout: 15_000 }).catch(() => {})
     await page.click(`#rail .sess[data-id="${sleeper}"]`, { button: 'right' })
     const item = page.locator('#ctxmenu:not([hidden]) button', { hasText: /^sleep$/ })
     const offered = await item.waitFor({ timeout: 5000 }).then(() => item.isEnabled(), () => false)
-    check(offered, 'a session idle at its prompt offers sleep in its row menu')
+    const seen = await page.evaluate(async (id) => {
+      const s = (await import('/js/core.js')).snap.sessions.find((x) => x.id === id)
+      return s ? { state: s.state, transcript: s.has_transcript, alive: s.alive, pass: s.pass } : null
+    }, sleeper)
+    check(offered, `a session idle at its prompt offers sleep in its row menu, the page saw ${JSON.stringify(seen)}`)
     if (offered) await item.click()
     else await page.keyboard.press('Escape')
     const slept = await until('the row to sleep', async () => (await t.session(sleeper))?.asleep === true)
